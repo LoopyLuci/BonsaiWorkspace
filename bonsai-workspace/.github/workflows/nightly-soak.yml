@@ -1,0 +1,114 @@
+name: nightly-soak
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak-routing-windows:
+    name: Nightly Soak Routing (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      BONSAI_UI_STEP_TIMEOUT_MS: "60000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bonsai-workspace/src/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            bonsai-workspace/src-tauri
+
+      - name: Install frontend deps
+        working-directory: bonsai-workspace/src
+        run: npm ci
+
+      - name: Run soak loop and collect flaky trend data
+        shell: pwsh
+        working-directory: bonsai-workspace/src
+        run: |
+          New-Item -Path ../ci-artifacts -ItemType Directory -Force | Out-Null
+
+          $iterations = 10
+          $passCount = 0
+          $failCount = 0
+          $attemptResults = @()
+
+          for ($i = 1; $i -le $iterations; $i++) {
+            Write-Host "Nightly soak iteration $i/$iterations"
+            $logPath = "../ci-artifacts/soak-iteration-$i.log"
+            npm run test:agent-routing-ci *>&1 | Tee-Object -FilePath $logPath
+            $exitCode = $LASTEXITCODE
+
+            if ($exitCode -eq 0) {
+              $passCount++
+              $attemptResults += @{ iteration = $i; status = "pass"; exitCode = $exitCode }
+            } else {
+              $failCount++
+              $attemptResults += @{ iteration = $i; status = "fail"; exitCode = $exitCode }
+            }
+          }
+
+          $flakeRate = 0.0
+          if ($iterations -gt 0) {
+            $flakeRate = [math]::Round(($failCount / $iterations) * 100, 2)
+          }
+
+          $summary = [ordered]@{
+            workflow = "nightly-soak"
+            timestampUtc = (Get-Date).ToUniversalTime().ToString("o")
+            iterations = $iterations
+            passCount = $passCount
+            failCount = $failCount
+            flakeRatePercent = $flakeRate
+            attempts = $attemptResults
+          }
+
+          $summary | ConvertTo-Json -Depth 6 | Set-Content ../ci-artifacts/flaky-trend.json
+
+          $md = @(
+            "# Nightly Soak Trend"
+            ""
+            "- Iterations: $iterations"
+            "- Passes: $passCount"
+            "- Fails: $failCount"
+            "- Flake rate: $flakeRate%"
+            ""
+            "## Attempt Results"
+          )
+
+          foreach ($a in $attemptResults) {
+            $md += "- Iteration $($a.iteration): $($a.status) (exit $($a.exitCode))"
+          }
+
+          $md -join "`n" | Set-Content ../ci-artifacts/flaky-trend.md
+
+          if ($failCount -gt 0) {
+            Write-Error "Nightly soak detected failures ($failCount/$iterations). See artifacts."
+            exit 1
+          }
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-soak-artifacts
+          path: bonsai-workspace/ci-artifacts/
+          if-no-files-found: ignore

@@ -1,80 +1,216 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { addAssistantMessage } from '$lib/stores/chat';
-  import { activeModel, orchestratorStatus, refreshStatus, modelSwitchStatus } from '$lib/stores/models';
+  import { availableModels, activeModel, activeModelId, orchestratorStatus, refreshStatus, refreshModels, modelSwitchStatus } from '$lib/stores/models';
+  import { apiHost, apiPort, apiBaseUrl, loadApiSettings, saveApiSettings } from '$lib/stores/settings';
+  import {
+    BONSAI_CATALOG, findRegistryModel,
+    downloadCatalogModel, downloadingId, downloadPct, downloadError,
+  } from '$lib/stores/catalog';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
-  interface Model {
-    id:              string;
-    name:            string;
-    quant:           string;
-    ram_required_mb: number;
-    valid:           boolean;
-    download_url?:   string;
-    file_name?:      string;
-  }
+  let hwInfo:          Record<string, unknown> = {};
+  let loadingOp        = '';
+  let errorMsg         = '';
+  let switchDetails    = '';
+  let apiTestResult    = '';
+  let apiTestLoading   = false;
+  let saveApiLoading   = false;
 
-  let models:     Model[] = [];
-  let hwInfo:     Record<string, unknown> = {};
-  let loadingOp   = '';
-  let errorMsg    = '';
-  let switchDetails = '';
+  let remoteSessionId  = '';
+  let remoteState      = 'inactive';
+  let remoteStatus     = '';
+  let remoteStreamUrl  = '';
+  let remoteFrameUrl   = '';
+  let remoteInputUrl   = '';
+  let remoteLoading    = false;
+  let remotePreviewSrc = '';
+  let remotePreviewErr = '';
+  let remoteInputResult = '';
+  let remoteEventSource: EventSource | null = null;
 
   onMount(async () => {
-    await refresh();
+    await refreshModels();
     await refreshStatus();
     modelSwitchStatus.set('');
-    try {
-      hwInfo = await invoke<Record<string,unknown>>('get_hardware_info');
-    } catch {}
+    try { hwInfo = await invoke<Record<string,unknown>>('get_hardware_info'); } catch {}
+    try { await loadApiSettings(); } catch (e) { console.warn('Failed to load API settings', e); }
   });
 
-  async function refresh() {
-    models = await invoke<Model[]>('list_available_models');
-  }
-
   async function switchModel(modelId: string, name: string) {
+    activeModelId.set(modelId);
     loadingOp = `Switching to ${name}…`;
-    const progressText = `Switching to ${name} — requesting backend switch and slot allocation.`;
-    switchDetails = progressText;
-    modelSwitchStatus.set(progressText);
+    switchDetails = `Switching to ${name}…`;
+    modelSwitchStatus.set(switchDetails);
     errorMsg = '';
     try {
-      const msg = await invoke<string>('switch_model', { model_id: modelId });
-      await refresh();
+      const msg = await invoke<string>('switch_model', { modelId });
+      await refreshModels();
       await refreshStatus();
-      const successText = `${msg} Orchestrator state refreshed.`;
-      switchDetails = successText;
-      modelSwitchStatus.set(successText);
+      switchDetails = `${msg} Orchestrator refreshed.`;
+      modelSwitchStatus.set(switchDetails);
       addAssistantMessage(msg);
     } catch (e) {
       errorMsg = String(e);
-      const failText = `Model switch failed: ${errorMsg}`;
-      switchDetails = failText;
-      modelSwitchStatus.set(failText);
-    } finally {
-      loadingOp = '';
+      switchDetails = `Model switch failed: ${errorMsg}`;
+      modelSwitchStatus.set(switchDetails);
+    } finally { loadingOp = ''; }
+  }
+
+  async function copyApiEndpoint() {
+    try {
+      await navigator.clipboard.writeText($apiBaseUrl);
+      apiTestResult = `Copied API endpoint: ${$apiBaseUrl}`;
+    } catch {
+      apiTestResult = 'Unable to copy API endpoint. Please copy manually.';
     }
   }
 
-  async function downloadGguf(model: Model) {
-    if (!model.download_url || !model.file_name) {
-      addAssistantMessage('⚠️ No download URL for this model. Use **Import GGUF** to load a local file.');
+  async function testApiEndpoint() {
+    apiTestLoading = true;
+    apiTestResult = '';
+    try {
+      const resp = await fetch(`${$apiBaseUrl}/v1/models`);
+      const json = await resp.json();
+      if (resp.ok) {
+        apiTestResult = `API reachable: ${json.data?.length ?? 'unknown'} model(s) available.`;
+      } else {
+        apiTestResult = `API error: ${json.error?.message ?? resp.statusText}`;
+      }
+    } catch (e) {
+      apiTestResult = `API test failed: ${String(e)}`;
+    } finally {
+      apiTestLoading = false;
+    }
+  }
+
+  async function applyApiSettings() {
+    saveApiLoading = true;
+    apiTestResult = '';
+    try {
+      const config = await saveApiSettings($apiHost, $apiPort);
+      apiTestResult = `API settings saved: ${config.api_host}:${config.api_port}`;
+    } catch (e) {
+      apiTestResult = `Save failed: ${String(e)}`;
+    } finally {
+      saveApiLoading = false;
+    }
+  }
+
+  function disconnectRemotePreview() {
+    remotePreviewSrc = '';
+    remotePreviewErr = '';
+    if (remoteEventSource) {
+      remoteEventSource.close();
+      remoteEventSource = null;
+    }
+  }
+
+  function connectRemotePreview(url: string) {
+    disconnectRemotePreview();
+    try {
+      remoteEventSource = new EventSource(url);
+      remoteEventSource.onmessage = event => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.frame) {
+            remotePreviewSrc = `data:image/png;base64,${data.frame}`;
+            remotePreviewErr = '';
+          }
+        } catch (err) {
+          remotePreviewErr = `Preview parse error: ${String(err)}`;
+        }
+      };
+      remoteEventSource.onerror = () => {
+        remotePreviewErr = 'Remote preview connection lost.';
+      };
+    } catch (err) {
+      remotePreviewErr = `Failed to connect preview: ${String(err)}`;
+    }
+  }
+
+  async function startRemoteSession() {
+    remoteLoading = true;
+    remoteStatus = 'Starting remote session…';
+    try {
+      const result = await invoke<{
+        session_id: string;
+        state: string;
+        stream_url: string;
+        frame_url: string;
+        input_url: string;
+      }>('start_remote_session');
+      remoteSessionId = result.session_id;
+      remoteState = result.state;
+      remoteStreamUrl = result.stream_url;
+      remoteFrameUrl = result.frame_url;
+      remoteInputUrl = result.input_url;
+      remoteStatus = `Remote session started. Stream URL is available.`;
+      connectRemotePreview(remoteStreamUrl);
+    } catch (e) {
+      remoteStatus = `Failed to start remote session: ${String(e)}`;
+    } finally {
+      remoteLoading = false;
+    }
+  }
+
+  async function stopRemoteSession() {
+    remoteLoading = true;
+    remoteStatus = 'Stopping remote session…';
+    try {
+      await invoke('stop_remote_session');
+      remoteSessionId = '';
+      remoteState = 'inactive';
+      remoteStreamUrl = '';
+      remoteFrameUrl = '';
+      remoteInputUrl = '';
+      remoteStatus = 'Remote session stopped.';
+      disconnectRemotePreview();
+    } catch (e) {
+      remoteStatus = `Failed to stop remote session: ${String(e)}`;
+    } finally {
+      remoteLoading = false;
+    }
+  }
+
+  async function copyRemoteStreamUrl() {
+    if (!remoteStreamUrl) return;
+    try {
+      await navigator.clipboard.writeText(remoteStreamUrl);
+      remoteStatus = 'Remote stream URL copied to clipboard.';
+    } catch {
+      remoteStatus = 'Unable to copy remote stream URL. Copy manually.';
+    }
+  }
+
+  async function sendRemoteInputTest(eventType: string) {
+    if (!remoteSessionId) {
+      remoteInputResult = 'Start a session before sending remote input.';
       return;
     }
-    loadingOp = `Downloading ${model.name}…`;
+    remoteInputResult = 'Sending test input…';
+    const payload = {
+      event_type: eventType,
+      x: 100,
+      y: 100,
+      button: 'left',
+      key: eventType === 'key' ? 'Enter' : undefined,
+      modifiers: eventType === 'key' ? ['control'] : undefined,
+    };
+
     try {
-      const path = await invoke<string>('download_gguf_model', {
-        url: model.download_url,
-        fileName: model.file_name,
-      });
-      addAssistantMessage(`✅ Model saved to \`${path}\``);
-      await refresh();
-    } catch (e) { errorMsg = String(e); }
-    finally { loadingOp = ''; }
+      const result = await invoke<{ status: string }>('send_remote_input', { event: payload });
+      remoteInputResult = `Remote input accepted: ${result.status}`;
+    } catch (e) {
+      remoteInputResult = `Remote input failed: ${String(e)}`;
+    }
   }
+
+  onDestroy(() => {
+    disconnectRemotePreview();
+  });
 
   async function downloadWhisper() {
     loadingOp = 'Downloading Whisper model…';
@@ -88,8 +224,42 @@
   async function importGguf() {
     try {
       const path = await invoke<string>('prompt_gguf_import');
-      if (path) { addAssistantMessage(`📦 Model imported from \`${path}\``); await refresh(); }
+      if (path) { addAssistantMessage(`📦 Model imported from \`${path}\``); await refreshModels(); }
     } catch (e) { errorMsg = String(e); }
+  }
+
+  async function handleDownload(entry: typeof BONSAI_CATALOG[number]) {
+    await downloadCatalogModel(entry);
+    if ($downloadError) errorMsg = $downloadError;
+  }
+
+  // ── Connection / pairing ──────────────────────────────────────────────────
+  let pairToken    = '';
+  let pairQrSvg   = '';
+  let localIp     = '';
+  let wsClientCount = 0;
+  let pairLoading = false;
+  let pairError   = '';
+
+  async function loadPairInfo() {
+    pairLoading = true;
+    pairError   = '';
+    try {
+      [pairToken, localIp, pairQrSvg] = await Promise.all([
+        invoke<string>('get_pair_token'),
+        invoke<string>('get_local_ip'),
+        invoke<string>('generate_pair_qr'),
+      ]);
+      wsClientCount = await invoke<number>('ws_client_count');
+    } catch (e) {
+      pairError = String(e);
+    } finally {
+      pairLoading = false;
+    }
+  }
+
+  async function refreshWsCount() {
+    try { wsClientCount = await invoke<number>('ws_client_count'); } catch {}
   }
 </script>
 
@@ -149,6 +319,83 @@
       </section>
     {/if}
 
+    <section class="section api-settings">
+      <h3 class="section-title">API Settings</h3>
+      <div class="form-group">
+        <label for="api-host">API Host</label>
+        <input id="api-host" type="text" bind:value={$apiHost} />
+      </div>
+      <div class="form-group">
+        <label for="api-port">API Port</label>
+        <input id="api-port" type="number" min="1" max="65535" bind:value={$apiPort} />
+      </div>
+      <div class="form-note">
+        External agents can connect to the OpenAI-compatible endpoint shown here.
+      </div>
+      <div class="action-grid">
+        <button class="action-btn blue" type="button" on:click={copyApiEndpoint} disabled={apiTestLoading || saveApiLoading || remoteLoading}>
+          📋 Copy endpoint
+        </button>
+        <button class="action-btn green" type="button" on:click={testApiEndpoint} disabled={apiTestLoading || saveApiLoading || remoteLoading}>
+          {apiTestLoading ? 'Testing…' : 'Test API'}
+        </button>
+        <button class="action-btn blue" type="button" on:click={applyApiSettings} disabled={apiTestLoading || saveApiLoading || remoteLoading}>
+          {saveApiLoading ? 'Saving…' : 'Save API settings'}
+        </button>
+      </div>
+      {#if apiTestResult}
+        <div class="api-test-result">{apiTestResult}</div>
+      {/if}
+      <div class="api-endpoint">Current endpoint: <code>{$apiBaseUrl}</code></div>
+    </section>
+
+    <section class="section remote-control">
+      <h3 class="section-title">Remote Control</h3>
+      <div class="form-note">
+        Start a local remote session to stream screen frames and negotiate input.
+      </div>
+      <div class="action-grid">
+        <button class="action-btn green" type="button" on:click={startRemoteSession} disabled={remoteLoading || apiTestLoading || saveApiLoading}>
+          {remoteLoading ? 'Starting…' : 'Start Remote Session'}
+        </button>
+        <button class="action-btn red" type="button" on:click={stopRemoteSession} disabled={remoteLoading || !remoteSessionId}>
+          {remoteLoading ? 'Stopping…' : 'Stop Remote Session'}
+        </button>
+      </div>
+      {#if remoteStatus}
+        <div class="api-test-result">{remoteStatus}</div>
+      {/if}
+      {#if remoteSessionId}
+        <div class="remote-info">
+          <div><strong>Session ID:</strong> <code>{remoteSessionId}</code></div>
+          <div><strong>Stream URL:</strong> <code>{remoteStreamUrl}</code> <button class="copy-link" type="button" on:click={copyRemoteStreamUrl}>Copy</button></div>
+          <div><strong>Frame URL:</strong> <code>{remoteFrameUrl}</code></div>
+          <div><strong>Input URL:</strong> <code>{remoteInputUrl}</code></div>
+        </div>
+        <div class="remote-action-grid">
+          <button class="action-btn blue" type="button" on:click={() => sendRemoteInputTest('click')} disabled={!remoteSessionId || remoteLoading}>
+            Send Test Click
+          </button>
+          <button class="action-btn blue" type="button" on:click={() => sendRemoteInputTest('key')} disabled={!remoteSessionId || remoteLoading}>
+            Send Test Key
+          </button>
+        </div>
+        {#if remoteInputResult}
+          <div class="api-test-result">{remoteInputResult}</div>
+        {/if}
+        <div class="remote-preview">
+          {#if remotePreviewErr}
+            <div class="remote-error">{remotePreviewErr}</div>
+          {/if}
+          {#if remotePreviewSrc}
+            <img class="remote-preview-img" src={remotePreviewSrc} alt="Remote preview" />
+          {:else}
+            <div class="remote-preview-placeholder">Waiting for first frame…</div>
+          {/if}
+        </div>
+      {/if}
+    </section>
+
     {#if switchDetails}
       <section class="section switch-details">
         <h3 class="section-title">Switch details</h3>
@@ -160,7 +407,41 @@
     <section class="section">
       <h3 class="section-title">Language Models</h3>
       <div class="model-list">
-        {#each models as model (model.id)}
+        {#each BONSAI_CATALOG as entry (entry.catalogId)}
+          {@const reg = findRegistryModel(entry, $availableModels)}
+          {@const isActive = !!reg && $activeModel?.id === reg.id}
+          {@const isDling = $downloadingId === entry.catalogId}
+          <div class="model-row" class:active-model={isActive}>
+            <div class="model-info">
+              <div class="model-name">
+                {entry.name}
+                {#if entry.isDefault}<span class="badge-default">default</span>{/if}
+              </div>
+              <div class="model-meta">
+                {entry.quant} · ~{entry.ramGb} GB RAM
+                {#if !reg}<span class="badge-notlocal">not downloaded</span>{/if}
+              </div>
+            </div>
+            <div class="model-actions">
+              {#if isActive}
+                <span class="badge-active">Active</span>
+              {:else if reg && !isDling}
+                <button class="btn-sm" on:click={() => switchModel(reg.id, entry.name)} disabled={!!loadingOp}>
+                  Use
+                </button>
+              {:else if isDling}
+                <span class="badge-active" style="background: var(--accent)">{$downloadPct}%</span>
+              {:else}
+                <button class="btn-sm btn-dl" on:click={() => handleDownload(entry)} disabled={!!loadingOp}>
+                  ⬇ Download
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/each}
+
+        <!-- Any extra local models not in the catalog -->
+        {#each $availableModels.filter(m => !BONSAI_CATALOG.some(e => findRegistryModel(e, $availableModels)?.id === m.id)) as model (model.id)}
           <div class="model-row" class:active-model={model.id === $activeModel?.id}>
             <div class="model-info">
               <div class="model-name">{model.name}</div>
@@ -170,15 +451,7 @@
               {#if model.id === $activeModel?.id}
                 <span class="badge-active">Active</span>
               {:else}
-                <button class="btn-sm" on:click={() => switchModel(model.id, model.name)} disabled={!!loadingOp}>
-                  Use
-                </button>
-              {/if}
-              {#if model.download_url}
-                <button class="btn-sm" on:click={() => downloadGguf(model)} disabled={!!loadingOp}
-                  title="Download {model.name}">
-                  ⬇
-                </button>
+                <button class="btn-sm" on:click={() => switchModel(model.id, model.name)} disabled={!!loadingOp}>Use</button>
               {/if}
             </div>
           </div>
@@ -194,6 +467,51 @@
         </button>
       </div>
     </section>
+
+    <!-- ── Connection / Pairing ──────────────────────────────────────────── -->
+    <section class="section connection-section">
+      <h3 class="section-title">Mobile & VSCode Connection</h3>
+      <p class="section-desc">
+        Scan the QR code with the Bonsai Android app, or paste the token into
+        the <strong>Bonsai Workspace Runner</strong> VSCode extension settings.
+      </p>
+      <div class="pair-row">
+        <div class="qr-area">
+          {#if pairQrSvg}
+            {@html pairQrSvg}
+          {:else}
+            <button class="action-btn" on:click={loadPairInfo} disabled={pairLoading}>
+              {pairLoading ? 'Loading…' : 'Show QR Code'}
+            </button>
+          {/if}
+        </div>
+        <div class="pair-info">
+          {#if pairToken}
+            <div class="pair-field">
+              <span class="pair-label">Pair token</span>
+              <code class="pair-token">{pairToken}</code>
+            </div>
+            <div class="pair-field">
+              <span class="pair-label">LAN IP</span>
+              <code class="pair-token">{localIp || '…'}</code>
+            </div>
+            <div class="pair-field">
+              <span class="pair-label">WebSocket</span>
+              <code class="pair-token">ws://{localIp || '…'}:11369/ws</code>
+            </div>
+            <div class="pair-field">
+              <span class="pair-label">WS clients</span>
+              <code class="pair-token">{wsClientCount}</code>
+            </div>
+            <button class="action-btn" on:click={refreshWsCount}>↺ Refresh</button>
+          {/if}
+          {#if pairError}
+            <div class="pair-error">{pairError}</div>
+          {/if}
+        </div>
+      </div>
+    </section>
+
   </div>
 </div>
 
@@ -323,8 +641,93 @@
   }
   .model-row.active-model { border-color: var(--accent); }
 
+  .remote-info {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 12px;
+  }
+
+  .remote-preview {
+    margin-top: 12px;
+    background: var(--bg);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .remote-action-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .remote-preview-placeholder,
+  .remote-error {
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  .remote-preview-img {
+    width: 100%;
+    border-radius: 10px;
+    max-height: 320px;
+    object-fit: contain;
+    background: var(--bg2);
+  }
+
+  .copy-link {
+    margin-left: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .copy-link:hover { background: var(--bg-hover); }
+
   .model-name { font-size: 13px; font-weight: 500; }
   .model-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  .badge-default {
+    font-size: 9px;
+    background: rgba(251,191,36,0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.3);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-notlocal {
+    font-size: 9px;
+    background: rgba(239,68,68,0.12);
+    color: var(--red);
+    border: 1px solid rgba(239,68,68,0.25);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+
+  .btn-dl {
+    background: rgba(251,191,36,0.1) !important;
+    border-color: rgba(251,191,36,0.4) !important;
+    color: #fbbf24 !important;
+  }
+  .btn-dl:hover { background: rgba(251,191,36,0.2) !important; }
 
   .badge-active {
     font-size: 11px;
@@ -379,5 +782,115 @@
     padding: 6px 16px;
     animation: pulse 1.2s infinite;
   }
+
+  .api-settings .form-group {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .api-settings label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .api-settings input {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .api-settings .form-note {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: -6px;
+    margin-bottom: 12px;
+  }
+  .api-test-result {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(59,130,246,0.08);
+    border: 1px solid rgba(59,130,246,0.2);
+    color: #fff;
+    font-size: 12px;
+  }
+  .api-endpoint {
+    margin-top: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    word-break: break-all;
+  }
+
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.7} }
+
+  /* ── Connection / pairing ── */
+  .connection-section .section-desc {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    line-height: 1.5;
+  }
+
+  .pair-row {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .qr-area {
+    flex-shrink: 0;
+    width: 160px;
+    height: 160px;
+    background: #fff;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .qr-area :global(svg) {
+    width: 100%;
+    height: 100%;
+  }
+
+  .pair-info {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-width: 180px;
+  }
+
+  .pair-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .pair-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .pair-token {
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 13px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    word-break: break-all;
+  }
+
+  .pair-error {
+    color: var(--red);
+    font-size: 12px;
+  }
 </style>

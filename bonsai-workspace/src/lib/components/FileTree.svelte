@@ -236,8 +236,8 @@
   .ws-branch {
     font-size: 10px;
     color: var(--accent-hl);
-    background: rgba(96, 165, 250, 0.12);
-    border: 1px solid rgba(96, 165, 250, 0.25);
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.25);
     border-radius: 10px;
     padding: 1px 7px;
     flex-shrink: 0;
@@ -323,7 +323,7 @@
   }
   .row:hover    { background: var(--bg-hover); }
   .row:focus    { outline: 1px solid var(--accent); outline-offset: -1px; }
-  .row.selected { background: rgba(59, 130, 246, 0.18); }
+  .row.selected { background: rgba(34, 197, 94, 0.18); }
   .row.dir      { color: var(--text); font-weight: 500; }
 
   /* Chevron: rotates to indicate open/closed state */

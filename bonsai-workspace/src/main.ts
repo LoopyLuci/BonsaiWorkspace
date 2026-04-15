@@ -1,27 +1,15 @@
 import App from './App.svelte';
 import { listen } from '@tauri-apps/api/event';
-import { messages, addAssistantMessage, addPermissionCard, tokenSpeed } from '$lib/stores/chat';
+import { addAssistantMessage, addPermissionCard, tokenSpeed } from '$lib/stores/chat';
 import { receiveAgentDiff } from '$lib/stores/diff';
 import { fileTreeRefresh } from '$lib/stores/workspace';
 
 // ── Tauri event listeners ──────────────────────────────────────────────────
 
 async function setupListeners() {
-  // Streaming tokens from llama.cpp — appended to last assistant message
-  await listen<string>('token-stream', (e) => {
-    messages.update((list) => {
-      const last = list[list.length - 1];
-      if (last?.role === 'assistant') {
-        return [...list.slice(0, -1), { ...last, content: last.content + e.payload }];
-      }
-      return [...list, {
-        id:        crypto.randomUUID(),
-        role:      'assistant' as const,
-        content:   e.payload,
-        timestamp: new Date(),
-      }];
-    });
-  });
+  // token-stream is handled inside ChatPanel.svelte per-send to support
+  // live thinking display and correct message finalisation.
+  // Do NOT add a global token-stream listener here — it causes duplicate messages.
 
   // Agent actions dispatched by the Rust action_parser
   await listen<{

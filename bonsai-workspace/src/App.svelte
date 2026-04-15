@@ -5,22 +5,57 @@
   import StatusBar       from '$lib/components/StatusBar.svelte';
   import CommandPalette  from '$lib/components/CommandPalette.svelte';
   import SettingsPanel   from '$lib/components/SettingsPanel.svelte';
+  import SessionPanel    from '$lib/components/SessionPanel.svelte';
+  import AgentConnectPanel from '$lib/components/AgentConnectPanel.svelte';
   import TerminalPanel   from '$lib/components/TerminalPanel.svelte';
+  import VscodeViewer    from '$lib/components/VscodeViewer.svelte';
+  import MobileLayout    from '$lib/components/MobileLayout.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import BootstrapScreen from '$lib/components/BootstrapScreen.svelte';
 
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
+  import { currentSessionTitle, clearCurrentSession, restorePersistentSession } from '$lib/stores/chat';
+  import Toasts from '$lib/components/Toast.svelte';
 
   // ── Layout toggles ────────────────────────────────────────────────────────
   let showFileTree  = true;
   let showChat      = true;
   let showSettings  = false;
+  let showSession   = false;
+  let showAgentConnect = false;
+  let showVscode    = false;
   let sidebarWidth  = 280;
   let chatWidth     = 360;
   let resizingPane: 'sidebar' | 'chat' | null = null;
   let pointerStartX = 0;
   let pointerStartWidth = 0;
+
+  const MIN_PANE_WIDTH = 120;
+  const MIN_EDITOR_WIDTH = 260;
+  const RESIZER_WIDTH = 10;
+
+  function visibleResizerCount() {
+    let count = 0;
+    if (showFileTree) count += 1;
+    if (showChat) count += 1;
+    return count;
+  }
+
+  function paneMaxWidth(pane: 'sidebar' | 'chat') {
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const sidePaneCount = (showFileTree ? 1 : 0) + (showChat ? 1 : 0);
+    const shareLimit = sidePaneCount >= 2 ? 0.5 : 0.75;
+    const maxByShare = Math.floor(viewportWidth * shareLimit);
+    const otherPaneWidth = pane === 'sidebar'
+      ? (showChat ? chatWidth : 0)
+      : (showFileTree ? sidebarWidth : 0);
+    const maxByEditor = Math.max(
+      MIN_PANE_WIDTH,
+      viewportWidth - otherPaneWidth - MIN_EDITOR_WIDTH - (visibleResizerCount() * RESIZER_WIDTH),
+    );
+    return Math.max(MIN_PANE_WIDTH, Math.min(maxByShare, maxByEditor));
+  }
 
   function startResizingSidebar(event: PointerEvent) {
     event.preventDefault();
@@ -44,9 +79,9 @@
     if (!resizingPane) return;
     const delta = event.clientX - pointerStartX;
     if (resizingPane === 'sidebar') {
-      sidebarWidth = Math.min(420, Math.max(180, pointerStartWidth + delta));
+      sidebarWidth = Math.min(paneMaxWidth('sidebar'), Math.max(MIN_PANE_WIDTH, pointerStartWidth + delta));
     } else if (resizingPane === 'chat') {
-      chatWidth = Math.min(520, Math.max(220, pointerStartWidth - delta));
+      chatWidth = Math.min(paneMaxWidth('chat'), Math.max(MIN_PANE_WIDTH, pointerStartWidth - delta));
     }
   }
 
@@ -66,13 +101,52 @@
     document.documentElement.dataset.theme = theme;
   }
 
+  // Mobile detection — true when running inside Tauri on Android.
+  // Falls back to user-agent check so it works in dev/browser previews too.
+  let isMobile = false;
+
   // Sync theme on mount; initialise model/bootstrap listeners
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+
+  function globalKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      showSession = true;
+    }
+  }
+
+  function openSessionEvent() {
+    showSession = true;
+  }
+
   onMount(() => {
     document.documentElement.dataset.theme = theme;
     initModelStores();
+    void restorePersistentSession();
+    window.addEventListener('keydown', globalKey);
+    window.addEventListener('open-session', openSessionEvent);
+    // Detect Android — works both in Tauri mobile and browser dev preview.
+    isMobile = /android/i.test(navigator.userAgent);
   });
+
+  onDestroy(() => {
+    window.removeEventListener('keydown', globalKey);
+    window.removeEventListener('open-session', openSessionEvent);
+  });
+
+  $: if (showFileTree) {
+    sidebarWidth = Math.max(MIN_PANE_WIDTH, Math.min(sidebarWidth, paneMaxWidth('sidebar')));
+  }
+
+  $: if (showChat) {
+    chatWidth = Math.max(MIN_PANE_WIDTH, Math.min(chatWidth, paneMaxWidth('chat')));
+  }
 </script>
+
+<!-- Android: render the mobile tab-bar layout instead of the desktop shell -->
+{#if isMobile}
+  <MobileLayout />
+{:else}
 
 <!-- Root shell -->
 <div class="root">
@@ -80,6 +154,14 @@
   <!-- Top toolbar -->
   <header class="toolbar">
     <span class="logo">🌿 Bonsai</span>
+    {#if $currentSessionTitle}
+      <div class="toolbar-session">
+        <button class="toolbar-session-open" on:click={() => (showSession = true)} title="Open session manager" type="button">
+          Session: {$currentSessionTitle}
+        </button>
+        <button class="toolbar-session-clear" on:click|stopPropagation={clearCurrentSession} aria-label="Clear current session" type="button">×</button>
+      </div>
+    {/if}
     <div class="toolbar-actions">
       <button class="btn-icon" title="Toggle File Tree (Ctrl+B)"
         on:click={() => (showFileTree = !showFileTree)}>
@@ -91,6 +173,10 @@
         on:click={() => (showChat = !showChat)}>Chat</button>
       <button class="btn-icon" title="Settings"
         on:click={() => (showSettings = !showSettings)}>⚙</button>
+      <button class="btn-icon" title="Agent Connect"
+        on:click={() => (showAgentConnect = true)}>Agent Connect</button>
+      <button class="btn-icon" title="Toggle VSCode Viewer"
+        on:click={() => (showVscode = !showVscode)}>VSCode</button>
       <button class="btn-icon" title="Cycle Theme"
         on:click={cycleTheme}>
         {theme === 'dark' ? '☀' : theme === 'light' ? '⬛' : '🌑'}
@@ -120,7 +206,20 @@
         <MonacoEditor {theme} />
       </div>
 
-      {#if showChat}
+      {#if showVscode}
+        <div
+          class="split-resizer right-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          on:pointerdown={startResizingChat}
+          title="Resize VSCode pane"
+        >
+          <span>⋮</span>
+        </div>
+        <div class="pane chat-pane" style="width: {chatWidth}px">
+          <VscodeViewer />
+        </div>
+      {:else if showChat}
         <div
           class="split-resizer right-resizer"
           role="separator"
@@ -131,7 +230,7 @@
           <span>⋮</span>
         </div>
         <div class="pane chat-pane" style="width: {chatWidth}px">
-          <ChatPanel />
+          <ChatPanel on:openSession={() => (showSession = true)} />
         </div>
       {/if}
     </div>
@@ -144,16 +243,22 @@
     </div>
   {/if}
 
+  <Toasts />
+
   <!-- Status bar -->
   <StatusBar />
 
   <!-- Overlays -->
   <CommandPalette />
   {#if showSettings}<SettingsPanel on:close={() => (showSettings = false)} />{/if}
+  {#if showSession}<SessionPanel on:close={() => (showSession = false)} />{/if}
+  {#if showAgentConnect}<AgentConnectPanel on:close={() => (showAgentConnect = false)} />{/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
 
 </div>
+
+{/if}
 
 <style>
   /* ── CSS custom properties ── */
@@ -164,8 +269,8 @@
     --text:      #e4e4e7;
     --text-dim:  #71717a;
     --border:    #3f3f46;
-    --accent:    #3b82f6;
-    --accent-hl: #60a5fa;
+    --accent:    #16a34a;
+    --accent-hl: #4ade80;
     --green:     #22c55e;
     --red:       #ef4444;
     --amber:     #f59e0b;
@@ -177,8 +282,8 @@
     --text:      #18181b;
     --text-dim:  #71717a;
     --border:    #d4d4d8;
-    --accent:    #2563eb;
-    --accent-hl: #3b82f6;
+    --accent:    #15803d;
+    --accent-hl: #16a34a;
     --green:     #16a34a;
     --red:       #dc2626;
     --amber:     #d97706;
@@ -190,8 +295,8 @@
     --text:      #ffffff;
     --text-dim:  #a1a1aa;
     --border:    #ffffff;
-    --accent:    #60a5fa;
-    --accent-hl: #93c5fd;
+    --accent:    #4ade80;
+    --accent-hl: #86efac;
     --green:     #4ade80;
     --red:       #f87171;
     --amber:     #fbbf24;
@@ -283,6 +388,56 @@
     border-color: var(--border);
   }
 
+  .toolbar-session {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(34, 197, 94, 0.14);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 999px;
+    color: var(--text);
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .toolbar-session-open,
+  .toolbar-session-clear {
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+
+  .toolbar-session-open {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 6px 10px;
+    transition: background 0.1s, border-color 0.1s;
+  }
+
+  .toolbar-session-open:hover {
+    background: rgba(34, 197, 94, 0.18);
+  }
+
+  .toolbar-session-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    font-size: 12px;
+    transition: background 0.1s;
+  }
+
+  .toolbar-session-clear:hover {
+    background: rgba(255,255,255,0.2);
+  }
+
   .work-area {
     flex: 1;
     overflow: hidden;
@@ -327,8 +482,8 @@
 
   .sidebar-pane {
     width: 280px;
-    min-width: 180px;
-    max-width: 420px;
+    min-width: 120px;
+    max-width: none;
     border-right: 1px solid var(--border);
   }
 
@@ -339,8 +494,9 @@
 
   .chat-pane {
     width: 22%;
-    min-width: 240px;
-    max-width: 420px;
+    min-width: 120px;
+    max-width: none;
+    overflow: visible;
     border-left: 1px solid var(--border);
   }
 

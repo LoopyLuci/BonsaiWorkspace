@@ -4,14 +4,16 @@
   import { invoke }             from '@tauri-apps/api/core';
   import { currentWorkspace }   from '$lib/stores/workspace';
   import { isThinking }         from '$lib/stores/chat';
-  import { activeModel, orchestratorStatus } from '$lib/stores/models';
+  import { orchestratorStatus } from '$lib/stores/models';
 
+  let apiPort     = 11369;
   let tokenSpeed  = 0;
   let lowMemory   = false;
   let gitBranch   = '';
   let unlisten:   (() => void)[] = [];
 
   onMount(async () => {
+    try { apiPort = await invoke<number>('get_api_port'); } catch {}
     const u1 = await listen<number>('token-speed', (e) => { tokenSpeed = e.payload; });
     const u2 = await listen<boolean>('low-memory-mode', (e) => { lowMemory = e.payload; });
     unlisten = [u1, u2];
@@ -54,11 +56,6 @@
 
   <!-- Right -->
   <div class="status-right">
-    {#if $activeModel}
-      <span class="status-item" title="Active model">🧠 {$activeModel.name}</span>
-    {:else}
-      <span class="status-item dim">No model loaded</span>
-    {/if}
     {#if $orchestratorStatus}
       <span class="status-item dim" title="Orchestrator queue depth">📥 {$orchestratorStatus.queue_depth}</span>
       <span class="status-item dim" title="Loaded slots">📦 {$orchestratorStatus.slots.length}</span>
@@ -72,6 +69,9 @@
     {#if lowMemory}
       <span class="status-item warn" title="Low system memory">⚠ Low RAM</span>
     {/if}
+    <span class="status-item api-badge" title="OpenAI-compatible API — point Claude, Copilot, or Continue.dev here">
+      API :{apiPort}
+    </span>
     <span class="status-item dim" title="Bonsai Workspace">Bonsai v0.1</span>
   </div>
 </footer>
@@ -110,6 +110,16 @@
   .status-item.accent   { font-weight: 600; opacity: 1; }
   .status-item.warn     { background: var(--amber); border-radius: 3px; color: #000; opacity: 1; }
   .status-item.thinking { animation: blink 1.2s infinite; }
+  .status-item.api-badge {
+    background: rgba(251,191,36,0.2);
+    color: #fbbf24;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 1;
+    cursor: default;
+  }
   @keyframes blink {
     0%, 100% { opacity: 0.92; }
     50%       { opacity: 0.4;  }

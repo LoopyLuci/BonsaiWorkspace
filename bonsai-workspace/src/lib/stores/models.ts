@@ -49,10 +49,13 @@ export const isBootstrapping   = writable(false);
 export const bootstrapProgress = writable<Record<string, BootstrapProgress>>({});
 export const bootstrapError    = writable<string | null>(null);
 
-// Derived: the first Ready slot's model_id
+// Derived: the active model is either the user-selected model or the first Ready slot.
 export const activeModel = derived(
-  [availableModels, orchestratorStatus],
-  ([$models, $status]) => {
+  [availableModels, orchestratorStatus, activeModelId],
+  ([$models, $status, $activeModelId]) => {
+    if ($activeModelId) {
+      return $models.find(m => m.id === $activeModelId) ?? null;
+    }
     if (!$status) return null;
     const readySlot = $status.slots.find(s => s.state.state === 'ready');
     if (!readySlot?.state.model_id) return null;
@@ -82,7 +85,7 @@ export async function refreshStatus() {
 
 export async function loadModel(modelId: string) {
   activeModelId.set(modelId);
-  await invoke('load_model', { model_id: modelId });
+  await invoke('load_model', { modelId });
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
