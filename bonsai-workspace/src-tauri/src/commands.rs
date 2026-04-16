@@ -1950,8 +1950,9 @@ pub async fn browse_bonsai_services() -> Result<Vec<serde_json::Value>, String> 
                     }));
                 }
                 Ok(_) => {}
-                Err(flume::RecvTimeoutError::Timeout) => {}
-                Err(flume::RecvTimeoutError::Disconnected) => break,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
         }
 
