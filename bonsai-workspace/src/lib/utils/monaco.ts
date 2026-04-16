@@ -23,7 +23,8 @@ export function createEditor(
     cursorSmoothCaretAnimation: 'on',
     bracketPairColorization: { enabled: true },
     renderLineHighlight: 'gutter',
-    padding:           { top: 8, bottom: 8 },
+    // Keep first line visible beneath overlay pills/buttons in MonacoEditor.
+    padding:           { top: 44, bottom: 8 },
     tabSize:           2,
     insertSpaces:      true,
     formatOnPaste:     true,
