@@ -239,6 +239,29 @@
     await sendText(text);
   }
 
+  type SwarmAgentResult = {
+    agent_id: string;
+    slot_index: number;
+    subtask?: string;
+    result?: string;
+    stats?: {
+      prompt_tokens: number;
+      completion_tokens: number;
+      tokens_per_second: number;
+      time_to_first_token_ms: number;
+      total_time_ms: number;
+    };
+  };
+
+  function normalizeAgentResultContent(agentOut: SwarmAgentResult): string {
+    const raw = stripThinkTags(agentOut.result ?? '').trim();
+    if (raw) return raw;
+    if ((agentOut.subtask ?? '').trim()) {
+      return `No final output was generated for this subtask.\n\nSubtask:\n${agentOut.subtask}`;
+    }
+    return 'No final output was generated for this agent.';
+  }
+
   async function sendText(text: string) {
     const noWorkspace = !$currentWorkspace?.path;
     const looksLikeFileListingRequest = /(list|show|display|enumerate)\s+.*(files|directory|folder)|\b(list files|readme|read me|read file|read the file|show files)\b/i.test(text);
@@ -279,16 +302,21 @@
         const byId = new Map($agentConfigs.map((a) => [a.config.id, a]));
         const bySlot = new Map($agentConfigs.map((a) => [a.config.slot_index, a]));
 
-        const workerResults = (result.agent_results ?? [])
+        const workerResults = ((result.agent_results ?? []) as SwarmAgentResult[])
           .slice()
           .sort((a, b) => a.slot_index - b.slot_index);
 
         for (const agentOut of workerResults) {
+          if (agentOut.slot_index === 0) {
+            // Slot 0 is the leader synthesis lane and is rendered separately below.
+            continue;
+          }
           const cfg = byId.get(agentOut.agent_id) ?? bySlot.get(agentOut.slot_index);
           const label = cfg?.config?.label ?? `Worker ${agentOut.slot_index}`;
           const color = cfg?.config?.color ?? '#4a9eff';
+          const workerContent = normalizeAgentResultContent(agentOut);
           addAssistantMessage(
-            stripThinkTags(agentOut.result ?? ''),
+            workerContent,
             agentOut.stats ?? undefined,
             undefined,
             {
@@ -546,7 +574,7 @@
     await loadToolCatalog();
 
     const handleGlobalClick = (event: MouseEvent) => {
-      void applyCodeBlockToEditor(event);
+      void handleCodeBlockActions(event);
     };
     document.addEventListener('click', handleGlobalClick);
 
@@ -655,7 +683,7 @@
   /** Minimal, safe markdown → HTML. */
   function renderMarkdown(text: string): string {
     const codeBlocks: Array<{ lang: string; raw: string }> = [];
-    const withPlaceholders = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang = '', code = '') => {
+    const withPlaceholders = text.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_m, lang = '', code = '') => {
       const index = codeBlocks.push({ lang, raw: code }) - 1;
       return `@@CODE_BLOCK_${index}@@`;
     });
@@ -680,18 +708,41 @@
       .replace(/@@CODE_BLOCK_(\d+)@@/g, (_m, idx) => {
         const block = codeBlocks[Number(idx)];
         if (!block) return '';
+        const safeLang = (block.lang || 'text').replace(/[^\w+-]/g, '');
+        const langLabel = safeLang || 'text';
         const escapedCode = block.raw
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;');
         const encodedCode = encodeURIComponent(block.raw);
-        return `<div class="code-block-wrap"><div class="code-block-actions"><button type="button" class="apply-code-btn" data-code="${encodedCode}" data-lang="${block.lang}">Apply to editor</button></div><pre><code class="lang-${block.lang}">${escapedCode}</code></pre></div>`;
+        return `<div class="code-block-wrap"><div class="code-block-actions"><span class="code-block-lang">${langLabel}</span><div class="code-block-buttons"><button type="button" class="copy-code-btn" data-code="${encodedCode}">Copy code</button><button type="button" class="apply-code-btn" data-code="${encodedCode}" data-lang="${safeLang}">Apply to editor</button></div></div><pre><code class="lang-${safeLang}">${escapedCode}</code></pre></div>`;
       });
 
     return DOMPurify.sanitize(html, {
       ALLOWED_TAGS: ['strong','em','code','pre','a','br','span','div','button'],
       ALLOWED_ATTR: ['class','href','target','rel','type','data-code','data-lang'],
     });
+  }
+
+  async function handleCodeBlockActions(event: MouseEvent) {
+    await copyCodeBlockToClipboard(event);
+    await applyCodeBlockToEditor(event);
+  }
+
+  async function copyCodeBlockToClipboard(event: MouseEvent) {
+    const target = (event.target as HTMLElement).closest('.copy-code-btn') as HTMLButtonElement | null;
+    if (!target) return;
+
+    const encodedCode = target.dataset.code;
+    if (!encodedCode) return;
+
+    const code = decodeURIComponent(encodedCode);
+    try {
+      await navigator.clipboard.writeText(code);
+      addToast('Code copied to clipboard.', 'success');
+    } catch {
+      addToast('Copy failed. Clipboard permission may be blocked.', 'error');
+    }
   }
 
   async function applyCodeBlockToEditor(event: MouseEvent) {
@@ -1386,7 +1437,33 @@
   }
   .msg-bubble :global(.code-block-actions) {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .msg-bubble :global(.code-block-lang) {
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .msg-bubble :global(.code-block-buttons) {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .msg-bubble :global(.copy-code-btn) {
+    background: rgba(74, 158, 255, 0.16);
+    border: 1px solid rgba(74, 158, 255, 0.35);
+    color: #9fc7ff;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
   }
   .msg-bubble :global(.apply-code-btn) {
     background: rgba(34, 197, 94, 0.16);
@@ -1397,6 +1474,7 @@
     font-size: 11px;
     cursor: pointer;
   }
+  .msg-bubble :global(.copy-code-btn:hover),
   .msg-bubble :global(.apply-code-btn:hover) { opacity: 0.88; }
   .msg-bubble :global(a) { color: var(--accent-hl); }
 

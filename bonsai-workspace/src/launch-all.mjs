@@ -11,6 +11,7 @@ const TAURI_DIR = path.join(ROOT_DIR, 'bonsai-workspace', 'src-tauri');
 const LAUNCHER_ARTIFACT_DIR = path.join(ROOT_DIR, 'tool_test', 'launcher');
 const LAUNCHER_ARTIFACT_FILE = path.join(LAUNCHER_ARTIFACT_DIR, 'latest.json');
 const DEFAULT_API_PORT = 11369;
+const DEFAULT_DEV_UI_PORT = 1420;
 
 function readConfiguredApiPort() {
   try {
@@ -205,6 +206,53 @@ function isReclaimableBonsaiProcess(imageName) {
   return n === 'bonsai-workspace.exe' || n === 'bonsai-workspace';
 }
 
+function getProcessCommandLine(pid) {
+  if (process.platform !== 'win32') return '';
+  try {
+    const ps = spawnSync('powershell', [
+      '-NoProfile',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${Number(pid)}\").CommandLine`,
+    ], { encoding: 'utf8' });
+    return String(ps.stdout || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function isReclaimableBonsaiViteProcess(imageName, commandLine) {
+  const img = String(imageName || '').toLowerCase();
+  if (img !== 'node.exe' && img !== 'node') return false;
+  const cmd = String(commandLine || '').toLowerCase();
+  return cmd.includes('vite') && cmd.includes('bonsaiworkspace') && cmd.includes('bonsai-workspace\\src');
+}
+
+function tryReleasePortFromStaleVite(port) {
+  if (process.platform !== 'win32') return false;
+  const pids = getListeningPidsOnPort(port);
+  if (pids.length === 0) return false;
+
+  let killedAny = false;
+  for (const pid of pids) {
+    const image = getProcessImageName(pid);
+    const cmd = getProcessCommandLine(pid);
+    if (!isReclaimableBonsaiViteProcess(image, cmd)) {
+      continue;
+    }
+    log(`[preflight] reclaiming stale Vite listener on port ${port} (PID ${pid}, ${image})...`);
+    try {
+      const kill = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8' });
+      if (kill.status === 0) {
+        killedAny = true;
+      }
+    } catch {
+      // best effort
+    }
+  }
+
+  return killedAny;
+}
+
 function tryReleasePortFromStaleBonsai(port) {
   if (process.platform !== 'win32') return false;
   const pids = getListeningPidsOnPort(port);
@@ -270,6 +318,17 @@ async function waitForPortToBecomeAvailable(port, timeoutMs) {
   return false;
 }
 
+async function waitForListenerToClear(port, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isPortActivelyListening(port)) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 async function waitForApiHealth(timeoutMs, apiPort) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -282,6 +341,22 @@ async function waitForApiHealth(timeoutMs, apiPort) {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return false;
+}
+
+async function waitForApiHealthAcrossPorts(timeoutMs, initialPort) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const probePorts = new Set([initialPort, readConfiguredApiPort()]);
+    for (const port of probePorts) {
+      if (!Number.isFinite(port) || port <= 0) continue;
+      const ok = await checkApiHealthyOnce(port);
+      if (ok) {
+        return { ok: true, port };
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { ok: false, port: initialPort };
 }
 
 async function checkApiHealthyOnce(apiPort) {
@@ -303,6 +378,23 @@ function spawnTauriDev() {
     stdio: 'inherit',
     env: { ...process.env },
   });
+}
+
+function tryReleaseDesktopBinaryLock() {
+  if (process.platform !== 'win32') return false;
+  try {
+    const list = spawnSync('tasklist', ['/FI', 'IMAGENAME eq bonsai-workspace.exe'], { encoding: 'utf8' });
+    const text = `${list.stdout || ''}${list.stderr || ''}`;
+    if (/No tasks are running/i.test(text) || !/bonsai-workspace\.exe/i.test(text)) {
+      return false;
+    }
+
+    log('[preflight] reclaiming stale bonsai-workspace.exe process lock...');
+    const kill = spawnSync('taskkill', ['/IM', 'bonsai-workspace.exe', '/T', '/F'], { encoding: 'utf8' });
+    return kill.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 function runUsbRegression(cfg) {
@@ -382,6 +474,26 @@ async function run() {
 
     ensureFrontendDeps(cfg);
 
+    if (!cfg.preflightOnly) {
+      // Use netstat listener detection here because Vite can bind ::1 while
+      // a 127.0.0.1 bind probe still succeeds, causing false "free" results.
+      let uiPortBusy = isPortActivelyListening(DEFAULT_DEV_UI_PORT);
+      if (uiPortBusy) {
+        log(`[preflight] Vite dev port ${DEFAULT_DEV_UI_PORT} is in use; attempting stale listener reclaim...`);
+        const reclaimedUi = tryReleasePortFromStaleVite(DEFAULT_DEV_UI_PORT);
+        if (reclaimedUi) {
+          const released = await waitForListenerToClear(DEFAULT_DEV_UI_PORT, 8000);
+          if (released) {
+            uiPortBusy = false;
+            log(`[preflight] Vite dev port ${DEFAULT_DEV_UI_PORT} reclaimed.`);
+          }
+        }
+      }
+      if (uiPortBusy) {
+        throw new Error(`Vite dev port ${DEFAULT_DEV_UI_PORT} is already in use. Close the existing dev server and retry.`);
+      }
+    }
+
     let apiFree = await checkPortAvailable(cfg.apiPort);
     report.api_healthy = await checkApiHealthyOnce(cfg.apiPort);
 
@@ -412,8 +524,16 @@ async function run() {
       }
     }
 
-    if (!apiFree && !cfg.allowPortInUse && !cfg.preflightOnly && !(cfg.attachExisting && report.api_healthy)) {
-      throw new Error(`Port ${cfg.apiPort} is already in use. Close existing Bonsai/API process, use --allow-port-in-use, or keep attach-to-existing enabled.`);
+    if (!apiFree && !cfg.allowPortInUse && !cfg.preflightOnly) {
+      if (cfg.attachExisting && report.api_healthy) {
+        // handled below
+      } else if (report.api_healthy) {
+        throw new Error(`Port ${cfg.apiPort} is already in use by a healthy API runtime. Close existing process, use --allow-port-in-use, or enable attach-to-existing.`);
+      } else {
+        // Non-healthy listeners can be stale/phantom. Continue launch and let the app
+        // reclaim or fall back, then detect whichever port becomes healthy.
+        log(`[preflight] port ${cfg.apiPort} occupied by a non-healthy listener; continuing and waiting for runtime health on configured/fallback ports.`);
+      }
     }
     if (!apiFree && cfg.preflightOnly) {
       log(`[preflight] port ${cfg.apiPort} already in use; reporting warning only in preflight mode.`);
@@ -438,6 +558,9 @@ async function run() {
     let shuttingDown = false;
 
     if (!report.attached_existing_runtime) {
+      // A stale desktop process can lock target/debug/bonsai-workspace.exe and
+      // cause cargo rebuild failures (`os error 5`). Reclaim best-effort.
+      tryReleaseDesktopBinaryLock();
       const launchPhase = beginPhase(report, 'spawn_tauri');
       log('[launcher] starting cargo tauri dev...');
       tauri = spawnTauriDev();
@@ -460,14 +583,18 @@ async function run() {
     process.on('SIGTERM', shutdown);
 
     const healthPhase = beginPhase(report, 'wait_for_api_health', { timeout_ms: cfg.healthTimeoutMs });
-    const healthy = report.api_healthy || (await waitForApiHealth(cfg.healthTimeoutMs, cfg.apiPort));
-    if (!healthy) {
+    const health = report.api_healthy
+      ? { ok: true, port: cfg.apiPort }
+      : await waitForApiHealthAcrossPorts(cfg.healthTimeoutMs, cfg.apiPort);
+    if (!health.ok) {
       endPhase(healthPhase, false, {}, `API did not become healthy within ${cfg.healthTimeoutMs}ms.`);
       shutdown();
       throw new Error(`API did not become healthy within ${cfg.healthTimeoutMs}ms.`);
     }
+    cfg.apiPort = health.port;
+    report.api_port = health.port;
     report.api_healthy = true;
-    endPhase(healthPhase, true);
+    endPhase(healthPhase, true, { active_api_port: health.port });
 
     log(`[launcher] API is healthy on http://127.0.0.1:${cfg.apiPort}/health`);
 
