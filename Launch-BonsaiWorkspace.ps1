@@ -20,6 +20,7 @@ $ErrorActionPreference = 'Stop'
 
 $workspaceRoot = $PSScriptRoot
 $srcDir = Join-Path $workspaceRoot 'bonsai-workspace\src'
+$defaultReportPath = Join-Path $workspaceRoot 'tool_test\launcher\latest.json'
 
 if (-not (Test-Path $srcDir)) {
   throw "Could not find source directory: $srcDir"
@@ -46,7 +47,30 @@ try {
   Write-Host "[one-click] npm $($launchArgs -join ' ')" -ForegroundColor DarkGray
 
   & npm @launchArgs
-  exit $LASTEXITCODE
+  $npmExit = $LASTEXITCODE
+
+  # launch-all writes a structured report; prefer that truth source when npm exits
+  # nonzero despite a healthy/complete launch sequence.
+  $effectiveReportPath = if ($ReportPath) {
+    if ([System.IO.Path]::IsPathRooted($ReportPath)) { $ReportPath } else { Join-Path $srcDir $ReportPath }
+  } else {
+    $defaultReportPath
+  }
+
+  if ($npmExit -ne 0 -and (Test-Path $effectiveReportPath)) {
+    try {
+      $report = Get-Content -Raw -Path $effectiveReportPath | ConvertFrom-Json
+      if ($null -ne $report -and $report.ok -eq $true) {
+        Write-Host "[one-click] launch report indicates success; normalizing wrapper exit code to 0." -ForegroundColor Yellow
+        exit 0
+      }
+    }
+    catch {
+      # If report parsing fails, keep original npm exit code.
+    }
+  }
+
+  exit $npmExit
 }
 finally {
   Pop-Location
