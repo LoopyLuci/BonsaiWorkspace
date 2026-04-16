@@ -224,6 +224,71 @@ jobs:
           path: bonsai-workspace/ci-artifacts/
           if-no-files-found: ignore
 
+  api-smoke-orchestrated:
+    name: API Smoke Orchestrated (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      BONSAI_SKIP_UI: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bonsai-workspace/src/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            bonsai-workspace/src-tauri
+
+      - name: Install frontend deps
+        working-directory: bonsai-workspace/src
+        run: npm ci
+
+      - name: Run orchestrated API smoke with retries
+        shell: pwsh
+        working-directory: bonsai-workspace/src
+        run: |
+          New-Item -Path ../ci-artifacts -ItemType Directory -Force | Out-Null
+          $maxAttempts = 2
+          $passed = $false
+
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Starting orchestrated API smoke attempt $attempt/$maxAttempts"
+            $log = "../ci-artifacts/api-smoke-orchestrated-attempt-$attempt.log"
+            npm run test:agent-orchestrated *>&1 | Tee-Object -FilePath $log
+
+            if ($LASTEXITCODE -eq 0) {
+              $passed = $true
+              break
+            }
+
+            Write-Host "Attempt $attempt failed with exit code $LASTEXITCODE"
+          }
+
+          if (-not $passed) {
+            Write-Error "Orchestrated API smoke failed after $maxAttempts attempts"
+            exit 1
+          }
+
+      - name: Upload API smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-smoke-orchestrated-logs
+          path: bonsai-workspace/ci-artifacts/
+          if-no-files-found: ignore
+
   required-checks:
     name: Required Checks Gate
     runs-on: ubuntu-latest
@@ -232,20 +297,23 @@ jobs:
       - vscode-extension-quality
       - rust-quality
       - routing-deterministic
+      - api-smoke-orchestrated
     if: always()
 
     steps:
       - name: Evaluate dependent jobs
         run: |
           echo "frontend-quality=${{ needs.frontend-quality.result }}"
-           echo "vscode-extension-quality=${{ needs.vscode-extension-quality.result }}"
+          echo "vscode-extension-quality=${{ needs.vscode-extension-quality.result }}"
           echo "rust-quality=${{ needs.rust-quality.result }}"
           echo "routing-deterministic=${{ needs.routing-deterministic.result }}"
+          echo "api-smoke-orchestrated=${{ needs.api-smoke-orchestrated.result }}"
 
           if [ "${{ needs.frontend-quality.result }}" != "success" ] || \
              [ "${{ needs.vscode-extension-quality.result }}" != "success" ] || \
              [ "${{ needs.rust-quality.result }}" != "success" ] || \
-             [ "${{ needs.routing-deterministic.result }}" != "success" ]; then
+             [ "${{ needs.routing-deterministic.result }}" != "success" ] || \
+             [ "${{ needs.api-smoke-orchestrated.result }}" != "success" ]; then
             echo "One or more required checks failed"
             exit 1
           fi
