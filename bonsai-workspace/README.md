@@ -37,6 +37,69 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget \
 
 ## Build & Run
 
+### One-click launcher from workspace root (Windows)
+
+From `z:/Projects/BonsaiWorkspace` you can start Bonsai with one command:
+
+```powershell
+.\Launch-BonsaiWorkspace.cmd
+```
+
+Useful examples:
+
+```powershell
+# Preflight only
+.\Launch-BonsaiWorkspace.cmd -PreflightOnly
+
+# Desktop + USB regression in strict mode
+.\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -StrictApp -ApkPath "C:\path\to\app.apk" -Serial "DEVICE_SERIAL"
+```
+
+The script forwards arguments to `bonsai-workspace/src/launch-all.mjs` and removes the need to manually change directories first.
+
+Desktop shortcut generator (for non-technical users):
+
+```powershell
+# Create or refresh desktop icon for current user
+cd z:/Projects/BonsaiWorkspace
+.\Generate-BonsaiDesktopShortcut.cmd
+
+# Create for all users (requires elevated shell)
+.\Generate-BonsaiDesktopShortcut.cmd -DesktopScope Public
+```
+
+This creates a desktop shortcut named `Bonsai Workspace.lnk` that launches `Launch-BonsaiWorkspace.cmd` with the Bonsai icon.
+
+### One-command launcher (recommended)
+
+Run from `bonsai-workspace/src`:
+
+```bash
+# Preflight only (checks tools/paths/port)
+npm run launch:preflight
+
+# Preflight + explicit report artifact path
+npm run launch:preflight:report
+
+# Full desktop launch (starts cargo tauri dev and waits for API health)
+npm run launch:desktop
+
+# Full desktop launch + USB regression + evidence append
+npm run launch:desktop+usb
+```
+
+Optional flags:
+
+```bash
+npm run launch:all -- --mode desktop+usb --strict-app --apk-path "C:\path\to\app.apk" --serial "DEVICE_SERIAL"
+```
+
+Launcher runtime behavior:
+
+- If port `11369` is already occupied by a healthy Bonsai API, launcher attaches to that runtime instead of spawning a duplicate process.
+- Every launch run writes a structured report JSON to `tool_test/launcher/latest.json` (override with `--report-path`).
+- If launcher exits with an error, the report file is still written with `ok=false` and error details.
+
 > **Important — project layout:** The frontend (`package.json`, `vite.config.ts`) lives
 > inside `src/`, not at the workspace root. All `npm` commands must be run from there.
 > `cargo tauri dev` must be run from `src-tauri/` (or the workspace root — Tauri finds
@@ -292,3 +355,150 @@ BONSAI_API_BASE=http://127.0.0.1:11369 npm run test:agent-api
 ```
 
 If the API is not running, the script exits with actionable guidance.
+
+---
+
+## Bonsai Workspace Live-Testing Feature
+
+Use this feature to run a full series of visible live sessions that validate the
+major interactive surfaces of Bonsai Workspace with deterministic pass/fail output.
+
+### Scenario matrix
+
+- Shell Layout and Toggles
+  - Loads app shell, verifies toolbar/status bar render, toggles terminal and theme.
+- Command Palette Session
+  - Opens command palette with keyboard, filters commands, validates close behavior.
+- Settings Remote Pairing Session
+  - Validates API settings flow, remote control lifecycle, and mobile pairing scan/save.
+- Agent Connect Timeline Session
+  - Starts and ends an Agent Connect session and verifies timeline/session updates.
+- Chat HITL Tooling Session
+  - Opens workspace, validates list-files tool use, approval chain (approve/approve),
+    file write verification (`tool_test/live-testing/hello.txt`), and deny behavior.
+
+### Run it
+
+Run from `src/`:
+
+```bash
+# Visible run for live observation
+npm run test:bonsai-live-testing-feature
+
+# Fully paced visible watch mode (slower actions + per-scenario pauses)
+npm run test:bonsai-live-testing-feature:watch
+
+# CI/headless run
+npm run test:bonsai-live-testing-feature:headless
+```
+
+Useful options:
+
+```bash
+# Keep successful visible run open longer for review (ms)
+BONSAI_UI_KEEP_OPEN_MS=20000 npm run test:bonsai-live-testing-feature
+
+# Pause between scenarios so each session is easy to watch (ms)
+BONSAI_LIVE_SCENARIO_PAUSE_MS=2000 npm run test:bonsai-live-testing-feature
+
+# Increase interaction pacing for easier visual tracking (ms)
+BONSAI_LIVE_SLOW_MO_MS=180 npm run test:bonsai-live-testing-feature
+
+# Override step timeout for slower machines (ms)
+BONSAI_LIVE_STEP_TIMEOUT_MS=60000 npm run test:bonsai-live-testing-feature
+```
+
+The runner is implemented in `src/bonsai-live-testing-feature.mjs` and reuses a
+mocked Tauri bridge to keep sessions deterministic while still exercising live UI
+behavior, streaming, HITL approvals, and filesystem tool effects.
+
+---
+
+## Mobile QR Pairing Verification (Real Device)
+
+Use this flow to verify Android pairing at runtime and capture auditable evidence.
+
+1. Start desktop Bonsai and open Settings > Mobile & VSCode Connection.
+2. On Android, tap `Scan Mobile QR` and scan the desktop QR.
+3. Confirm `Saved desktop connection` and pairing verification output.
+4. Tap `Verify Saved Pairing` to validate persisted reconnect behavior.
+5. Restart the Android app and run `Verify Saved Pairing` again.
+
+Evidence capture:
+
+- The app writes one JSON record per verification to `mobile-pairing-evidence.jsonl` in app data.
+- Settings shows both the evidence file path and the latest record snapshot.
+- Captured fields include:
+  - timestamp
+  - source (`qr_scan` or `saved_connection`)
+  - ip
+  - verified
+  - detail
+  - ws_url
+  - elapsed_ms
+  - token_hint
+
+---
+
+## Android USB Lab (Desktop-Controlled)
+
+Bonsai Settings includes a full **USB Lab Runtime System** in `Android USB Lab`.
+An operator can go from USB plug-in to PASS without using a terminal.
+
+**One-click operator flow:**
+
+1. Plug tablet in with USB debugging enabled.
+2. Settings → Android USB Lab → **Refresh Devices**.
+3. Select device serial, click **Check Readiness**. Badge shows `DISCONNECTED` / `UNAUTHORIZED` / `ONLINE` / `READY`.
+4. If `UNAUTHORIZED`: tap "Allow USB debugging" on device, then refresh.
+5. Enter APK path or click **Resolve** to auto-discover from Tauri build output.
+6. Enable **Strict mode** if the app must be installed for the run to count.
+7. Click **Install & Launch** — installs APK, verifies package, launches app, verifies process.
+8. Click **Bootstrap Connection** — sets `adb reverse tcp:11369`, verifies, optionally bridges WiFi.
+9. Click **Run Full Validation** — end-to-end regression with per-step table (PASS/SKIP/FAIL + ms).
+10. Run ledger helper to append evidence row.
+
+**CLI regression runner:**
+
+```powershell
+# Basic non-strict run (from bonsai-workspace/src):
+npm run test:android-usb-regression
+
+# Strict run with APK:
+$env:BONSAI_REQUIRE_APP = "1"
+$env:ANDROID_APK_PATH = "C:\path\to\app.apk"
+npm run test:android-usb-regression
+
+# Append evidence to ledger:
+npm run evidence:append-usb-ledger
+```
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANDROID_SERIAL` | auto | Target device serial |
+| `BONSAI_API_PORT` | `11369` | Port for `adb reverse` |
+| `ANDROID_PACKAGE` | `com.bonsai.workspace` | Package name |
+| `ANDROID_ACTIVITY` | (monkey) | Explicit launch activity |
+| `ANDROID_APK_PATH` | (auto) | APK path; auto-resolves from Tauri build output |
+| `BONSAI_REQUIRE_APP` | `0` | `1` = strict: fail if app not installed or launch fails |
+| `ANDROID_ENABLE_BOOTSTRAP` | `0` | `1` = run WiFi bridge after reverse mapping |
+| `ANDROID_WIFI_HOST` | (none) | Device WiFi IP for bridge |
+| `ANDROID_WIFI_PORT` | `5555` | WiFi debug port |
+
+**Artifact schema (v2):** `tool_test/android-usb-regression/latest.json` — fields include `schema_version`, `ts`, `ok`, `serial`, `apiPort`, `strict_require_app`, `resolved_apk_path`, and `steps[]` with `label`, `ok`, `stdout`, `stderr`, `duration_ms`, `hint`.
+
+**GitHub Actions manual hardware lane:**
+
+- Workflow: `android-usb-regression-manual` (self-hosted Windows runner with USB device).
+- Inputs: `android_apk_path`, `require_app` (strict), `enable_bootstrap`, and all env vars above.
+- Summary: overall status table + per-step PASS/SKIP/FAIL + ms + SHA256 + Run URL.
+- SHA256 from summary → copy into evidence ledger row.
+
+**Ledger helper:**
+
+- `npm run evidence:append-usb-ledger` (from `bonsai-workspace/src`) appends one row to the ledger in `Runner-Streaming_System.md` if the SHA256 is new.
+- Row includes timestamp, source, run reference, SHA256, serial, verdict, and strict mode label.
+
+**ADB resolution:** Bonsai auto-detects `adb` from `%LOCALAPPDATA%\Android\Sdk\platform-tools\`, `ANDROID_HOME`, and `ANDROID_SDK_ROOT`. Resolved path shown in the USB Lab panel advanced section.

@@ -39,6 +39,7 @@
     modelSwitchStatus.set('');
     try { hwInfo = await invoke<Record<string,unknown>>('get_hardware_info'); } catch {}
     try { await loadApiSettings(); } catch (e) { console.warn('Failed to load API settings', e); }
+    try { await refreshAndroidUsbDevices(); } catch {}
   });
 
   async function switchModel(modelId: string, name: string) {
@@ -243,7 +244,55 @@
   let pairLoading = false;
   let pairScanLoading = false;
   let pairScanResult = '';
+  let pairVerifyLoading = false;
+  let pairVerifyResult = '';
+  let pairEvidencePath = '';
+  let pairLastEvidence: Record<string, unknown> | null = null;
   let pairError   = '';
+
+  type AndroidUsbDevice = {
+    serial: string;
+    state: string;
+    model?: string;
+    device?: string;
+    transport_id?: string;
+    raw?: string;
+  };
+
+  let usbBusy = false;
+  let usbError = '';
+  let usbResult = '';
+  let usbDevices: AndroidUsbDevice[] = [];
+  let usbSelectedSerial = '';
+  let usbApkPath = '';
+  let usbPackageName = 'com.bonsai.workspace';
+  let usbActivity = '';
+  let usbWifiHost = '';
+  let usbWifiPort = 5555;
+  let usbShellCommand = 'getprop ro.product.model';
+  let usbAdbExecutable = '';
+  let usbAdbCandidates: string[] = [];
+  let usbRegressionEvidencePath = '';
+  let usbRegressionLast: Record<string, unknown> | null = null;
+
+  // USB Lab Runtime System — new state.
+  type UsbReadiness = {
+    serial: string;
+    adb_executable: string;
+    connected: boolean;
+    authorized: boolean;
+    model: string | null;
+    reverse_api_active: boolean;
+    api_port: number;
+    status: 'disconnected' | 'unauthorized' | 'online' | 'ready';
+    next_action: string;
+  };
+  let usbReadiness: UsbReadiness | null = null;
+  let usbStrictMode = false;
+  let usbEnableWifiBridge = false;
+  let usbResolvedApk: { path: string; package: string | null; version_name: string | null; size_bytes: number } | null = null;
+  type UsbStep = { label: string; ok: boolean; stdout: string; stderr: string; duration_ms: number; skipped?: boolean; hint?: string };
+  let usbLastSteps: UsbStep[] = [];
 
   function extractScannedValue(payload: unknown): string {
     if (typeof payload === 'string') return payload;
@@ -285,6 +334,122 @@
     return { ip, token };
   }
 
+  function buildPairingWsUrl(ip: string): string {
+    const trimmed = ip.trim();
+    if (!trimmed) throw new Error('Desktop connection IP is empty.');
+
+    const hasScheme = /^wss?:\/\//i.test(trimmed);
+    const base = hasScheme ? trimmed : `ws://${trimmed}`;
+    const url = new URL(base);
+    if (!url.port) {
+      url.port = String(DEFAULT_API_PORT);
+    }
+    url.pathname = '/ws';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  }
+
+  function tokenHint(token: string): string {
+    const t = token.trim();
+    if (!t) return '';
+    if (t.length <= 4) return t;
+    return `${t.slice(0, 2)}***${t.slice(-2)}`;
+  }
+
+  async function verifyMobilePairingOverWs(connection: { ip: string; token: string }): Promise<{ ok: boolean; detail: string; wsUrl: string; elapsedMs: number }> {
+    const wsUrl = buildPairingWsUrl(connection.ip);
+    const start = Date.now();
+
+    return await new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let socket: WebSocket | null = null;
+
+      const finish = (ok: boolean, detail: string) => {
+        if (settled) return;
+        settled = true;
+        const elapsedMs = Date.now() - start;
+        if (timer) clearTimeout(timer);
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+        resolve({ ok, detail, wsUrl, elapsedMs });
+      };
+
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch (err) {
+        finish(false, `WebSocket init failed: ${String(err)}`);
+        return;
+      }
+
+      timer = setTimeout(() => {
+        finish(false, 'Timed out waiting for auth_ok/auth_fail response.');
+      }, 8000);
+
+      socket.onopen = () => {
+        try {
+          socket?.send(JSON.stringify({
+            type: 'auth',
+            payload: { token: connection.token },
+          }));
+        } catch (err) {
+          finish(false, `Failed to send auth payload: ${String(err)}`);
+        }
+      };
+
+      socket.onmessage = (event) => {
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(String(event.data));
+        } catch {
+          finish(false, 'Received non-JSON response from desktop websocket.');
+          return;
+        }
+
+        const type = String(msg.type || '');
+        if (type === 'auth_ok') {
+          finish(true, 'Received auth_ok from desktop websocket.');
+          return;
+        }
+        if (type === 'auth_fail') {
+          const payload = msg.payload as Record<string, unknown> | undefined;
+          const reason = payload && typeof payload.reason === 'string' ? payload.reason : 'unknown reason';
+          finish(false, `Received auth_fail: ${reason}`);
+        }
+      };
+
+      socket.onerror = () => {
+        finish(false, 'WebSocket connection error while verifying pairing.');
+      };
+    });
+  }
+
+  async function captureMobilePairingEvidence(params: {
+    source: string;
+    connection: { ip: string; token: string };
+    scannedPayload?: string;
+    verification: { ok: boolean; detail: string; wsUrl: string; elapsedMs: number };
+  }) {
+    try {
+      const res = await invoke<{ path?: string; record?: Record<string, unknown> }>('record_mobile_pairing_evidence', {
+        source: params.source,
+        ip: params.connection.ip,
+        verified: params.verification.ok,
+        detail: params.verification.detail,
+        wsUrl: params.verification.wsUrl,
+        elapsedMs: params.verification.elapsedMs,
+        scannedPayload: params.scannedPayload ?? null,
+        tokenHint: tokenHint(params.connection.token),
+      });
+      pairEvidencePath = String(res?.path || '');
+      pairLastEvidence = (res?.record || null) as Record<string, unknown> | null;
+    } catch (e) {
+      pairError = `Evidence capture failed: ${String(e)}`;
+    }
+  }
+
   async function loadPairInfo() {
     pairLoading = true;
     pairError   = '';
@@ -295,6 +460,11 @@
         invoke<string>('generate_pair_qr'),
       ]);
       wsClientCount = await invoke<number>('ws_client_count');
+      const evidence = await invoke<{ path?: string; items?: Record<string, unknown>[] }>('get_mobile_pairing_evidence', { limit: 1 });
+      pairEvidencePath = String(evidence?.path || '');
+      pairLastEvidence = Array.isArray(evidence?.items) && evidence.items.length > 0
+        ? evidence.items[evidence.items.length - 1]
+        : null;
     } catch (e) {
       pairError = String(e);
     } finally {
@@ -320,11 +490,287 @@
       const connection = parseBonsaiConnectUrl(scanned);
       await invoke('save_desktop_connection', connection);
       pairScanResult = `Saved desktop connection: ${connection.ip}`;
-      addAssistantMessage(`📱 Mobile pairing target saved: ${connection.ip}`);
+
+      pairVerifyLoading = true;
+      const verification = await verifyMobilePairingOverWs(connection);
+      pairVerifyResult = verification.ok
+        ? `Pairing verified (${verification.elapsedMs}ms): ${verification.detail}`
+        : `Pairing verification failed (${verification.elapsedMs}ms): ${verification.detail}`;
+
+      await captureMobilePairingEvidence({
+        source: 'qr_scan',
+        connection,
+        scannedPayload: scanned,
+        verification,
+      });
+
+      addAssistantMessage(`Mobile pairing target saved: ${connection.ip}. ${pairVerifyResult}`);
     } catch (e) {
       pairError = `Scan failed: ${String(e)}`;
     } finally {
+      pairVerifyLoading = false;
       pairScanLoading = false;
+    }
+  }
+
+  async function verifySavedMobilePairing() {
+    pairVerifyLoading = true;
+    pairVerifyResult = '';
+    pairError = '';
+    try {
+      const saved = await invoke<{ ip: string; token: string } | null>('load_desktop_connection');
+      if (!saved) {
+        throw new Error('No saved desktop connection found. Scan QR first.');
+      }
+
+      const connection = {
+        ip: String(saved.ip || '').trim(),
+        token: String(saved.token || '').trim(),
+      };
+      if (!connection.ip || !connection.token) {
+        throw new Error('Saved desktop connection is incomplete.');
+      }
+
+      const verification = await verifyMobilePairingOverWs(connection);
+      pairVerifyResult = verification.ok
+        ? `Saved pairing verified (${verification.elapsedMs}ms): ${verification.detail}`
+        : `Saved pairing verification failed (${verification.elapsedMs}ms): ${verification.detail}`;
+
+      await captureMobilePairingEvidence({
+        source: 'saved_connection',
+        connection,
+        verification,
+      });
+    } catch (e) {
+      pairError = `Saved pairing verification failed: ${String(e)}`;
+    } finally {
+      pairVerifyLoading = false;
+    }
+  }
+
+  function appendUsbResult(title: string, payload: unknown) {
+    const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const line = `[${new Date().toISOString()}] ${title}: ${body}`;
+    usbResult = usbResult ? `${line}\n${usbResult}` : line;
+  }
+
+  function getSelectedUsbSerial(): string {
+    const serial = usbSelectedSerial.trim();
+    if (!serial) {
+      throw new Error('No Android device selected. Connect over USB and press Refresh USB Devices.');
+    }
+    return serial;
+  }
+
+  async function refreshAndroidUsbDevices() {
+    usbBusy = true;
+    usbError = '';
+    try {
+      const adbInfo = await invoke<{ adb_executable?: string; candidates?: string[] }>('android_usb_get_adb_info');
+      usbAdbExecutable = String(adbInfo?.adb_executable || 'adb');
+      usbAdbCandidates = Array.isArray(adbInfo?.candidates) ? adbInfo.candidates : [];
+
+      const res = await invoke<{ devices?: AndroidUsbDevice[] }>('android_usb_list_devices');
+      usbDevices = Array.isArray(res?.devices) ? res.devices : [];
+      if (usbDevices.length > 0) {
+        const current = usbSelectedSerial.trim();
+        if (!current || !usbDevices.some((d) => d.serial === current)) {
+          usbSelectedSerial = usbDevices[0].serial;
+        }
+      }
+      appendUsbResult('ADB device refresh', { count: usbDevices.length, selected: usbSelectedSerial || null });
+    } catch (e) {
+      usbError = String(e);
+      appendUsbResult('ADB device refresh failed', usbError);
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function checkDeviceReadiness() {
+    const serial = usbSelectedSerial.trim();
+    usbBusy = true;
+    usbError = '';
+    try {
+      const r = await invoke<UsbReadiness>('android_usb_get_device_readiness', {
+        serial,
+        apiPort: Number($apiPort || DEFAULT_API_PORT),
+      });
+      usbReadiness = r;
+      appendUsbResult('Device readiness check', r);
+    } catch (e) {
+      usbError = String(e);
+      usbReadiness = null;
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function resolveApk() {
+    usbBusy = true;
+    usbError = '';
+    try {
+      const r = await invoke<{ path: string; package: string | null; version_name: string | null; size_bytes: number }>(
+        'android_usb_resolve_apk',
+        { explicitPath: usbApkPath.trim() || null },
+      );
+      usbResolvedApk = r;
+      usbApkPath = r.path;
+      appendUsbResult('APK resolved', r);
+    } catch (e) {
+      usbError = String(e);
+      usbResolvedApk = null;
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function installAndLaunch() {
+    const serial = getSelectedUsbSerial();
+    if (!usbApkPath.trim()) {
+      usbError = 'APK path is required. Use Resolve APK or enter a path manually.';
+      return;
+    }
+    usbBusy = true;
+    usbError = '';
+    usbLastSteps = [];
+    try {
+      const r = await invoke<{ ok: boolean; steps: UsbStep[] }>('android_usb_install_and_launch', {
+        serial,
+        apkPath: usbApkPath.trim(),
+        packageName: usbPackageName.trim() || null,
+        activity: usbActivity.trim() || null,
+        strictRequireApp: usbStrictMode,
+      });
+      usbLastSteps = r.steps || [];
+      appendUsbResult('Install & Launch', { ok: r.ok, steps: r.steps?.length });
+      if (!r.ok) {
+        const failed = r.steps?.find((s) => !s.ok && !s.skipped);
+        usbError = failed ? `Step failed: ${failed.label}. ${failed.stderr || failed.hint || ''}` : 'Install & Launch failed.';
+      }
+    } catch (e) {
+      usbError = String(e);
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function bootstrapConnection() {
+    const serial = getSelectedUsbSerial();
+    usbBusy = true;
+    usbError = '';
+    usbLastSteps = [];
+    try {
+      const r = await invoke<{ ok: boolean; steps: UsbStep[] }>('android_usb_bootstrap_connection', {
+        serial,
+        apiPort: Number($apiPort || DEFAULT_API_PORT),
+        wifiHost: usbWifiHost.trim() || null,
+        wifiPort: Number(usbWifiPort || 5555),
+        enableWifiBridge: usbEnableWifiBridge,
+      });
+      usbLastSteps = r.steps || [];
+      appendUsbResult('Bootstrap Connection', { ok: r.ok, steps: r.steps?.length });
+      if (r.ok) {
+        // Refresh readiness so the badge updates.
+        await checkDeviceReadiness();
+      } else {
+        const failed = r.steps?.find((s) => !s.ok);
+        usbError = failed ? `Step failed: ${failed.label}. ${failed.stderr || ''}` : 'Bootstrap failed.';
+      }
+    } catch (e) {
+      usbError = String(e);
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function runUsbAction(title: string, runner: () => Promise<unknown>) {
+    usbBusy = true;
+    usbError = '';
+    try {
+      const out = await runner();
+      appendUsbResult(title, out);
+      return out;
+    } catch (e) {
+      usbError = String(e);
+      appendUsbResult(`${title} failed`, usbError);
+      throw e;
+    } finally {
+      usbBusy = false;
+    }
+  }
+
+  async function clearUsbReverse() {
+    const serial = getSelectedUsbSerial();
+    await runUsbAction('Clear adb reverse mappings', () => invoke('android_usb_reverse_clear', { serial }));
+  }
+
+  async function enableUsbWifiDebug() {
+    const serial = getSelectedUsbSerial();
+    await runUsbAction('Enable WiFi debugging (adb tcpip)', () =>
+      invoke('android_usb_enable_wifi_debug', {
+        serial,
+        port: Number(usbWifiPort || 5555),
+      }),
+    );
+  }
+
+  async function connectUsbWifiDebug() {
+    const host = (usbWifiHost || localIp || '').trim();
+    if (!host) {
+      usbError = 'WiFi host is required. Use device IP on the same network.';
+      return;
+    }
+    await runUsbAction('Connect WiFi debugging', () =>
+      invoke('android_usb_connect_wifi', {
+        host,
+        port: Number(usbWifiPort || 5555),
+      }),
+    );
+    await refreshAndroidUsbDevices();
+  }
+
+  async function disconnectUsbWifiDebug() {
+    await runUsbAction('Disconnect WiFi debugging', () => invoke('android_usb_disconnect_wifi', { host: null }));
+    await refreshAndroidUsbDevices();
+  }
+
+  async function runUsbShellCommand() {
+    const serial = getSelectedUsbSerial();
+    if (!usbShellCommand.trim()) {
+      usbError = 'Shell command is required.';
+      return;
+    }
+    await runUsbAction('ADB shell command', () =>
+      invoke('android_usb_shell', {
+        serial,
+        shellCommand: usbShellCommand.trim(),
+      }),
+    );
+  }
+
+  async function runUsbRegressionSuite() {
+    const serial = getSelectedUsbSerial();
+    const host = (usbWifiHost || '').trim();
+    try {
+      const out = await runUsbAction('Run Android USB regression suite', () =>
+        invoke<{ path?: string; record?: Record<string, unknown> }>('android_usb_run_regression', {
+          serial,
+          apiPort: Number($apiPort || DEFAULT_API_PORT),
+          packageName: usbPackageName.trim() || null,
+          activity: usbActivity.trim() || null,
+          wifiHost: host || null,
+          wifiPort: Number(usbWifiPort || 5555),
+          strictRequireApp: usbStrictMode,
+          apkPath: usbApkPath.trim() || null,
+          enableBootstrap: usbEnableWifiBridge,
+        }),
+      ) as { path?: string; record?: Record<string, unknown> };
+
+      usbRegressionEvidencePath = String(out?.path || '');
+      usbRegressionLast = (out?.record || null) as Record<string, unknown> | null;
+    } catch {
+      // runUsbAction already captures details
     }
   }
 </script>
@@ -574,9 +1020,27 @@
               <button class="action-btn blue" on:click={scanMobilePairQr} disabled={pairScanLoading}>
                 {pairScanLoading ? 'Scanning…' : 'Scan Mobile QR'}
               </button>
+              <button class="action-btn" on:click={verifySavedMobilePairing} disabled={pairVerifyLoading}>
+                {pairVerifyLoading ? 'Verifying…' : 'Verify Saved Pairing'}
+              </button>
             </div>
             {#if pairScanResult}
               <div class="api-test-result">{pairScanResult}</div>
+            {/if}
+            {#if pairVerifyResult}
+              <div class="api-test-result">{pairVerifyResult}</div>
+            {/if}
+            {#if pairEvidencePath}
+              <div class="pair-field">
+                <span class="pair-label">Evidence log</span>
+                <code class="pair-token">{pairEvidencePath}</code>
+              </div>
+            {/if}
+            {#if pairLastEvidence}
+              <div class="pair-field">
+                <span class="pair-label">Last evidence</span>
+                <code class="pair-token">{JSON.stringify(pairLastEvidence)}</code>
+              </div>
             {/if}
           {/if}
           {#if pairError}
@@ -584,6 +1048,181 @@
           {/if}
         </div>
       </div>
+    </section>
+
+    <section class="section usb-lab-section">
+      <h3 class="section-title">Android USB Lab</h3>
+      <p class="section-desc">
+        Plug in an Android tablet, click <strong>Refresh Devices</strong>, then follow the guided flow:
+        Readiness → Install &amp; Launch → Bootstrap Connection → Run Full Validation.
+      </p>
+
+      <!-- ── Device picker + readiness card ── -->
+      <div class="action-grid">
+        <button class="action-btn" on:click={refreshAndroidUsbDevices} disabled={usbBusy}>
+          {usbBusy ? 'Refreshing…' : 'Refresh Devices'}
+        </button>
+        <button class="action-btn" on:click={checkDeviceReadiness} disabled={usbBusy || !usbSelectedSerial}>
+          Check Readiness
+        </button>
+      </div>
+
+      <div class="form-group usb-form-group">
+        <label for="usb-device">Device (adb serial)</label>
+        <select id="usb-device" bind:value={usbSelectedSerial}>
+          <option value="">Select device</option>
+          {#each usbDevices as d}
+            <option value={d.serial}>{d.serial} ({d.state}{d.model ? ` · ${d.model}` : ''})</option>
+          {/each}
+        </select>
+      </div>
+
+      {#if usbReadiness}
+        <div class="usb-readiness-card status-{usbReadiness.status}">
+          <div class="readiness-badge">{usbReadiness.status.toUpperCase()}</div>
+          <div class="readiness-detail">
+            {#if usbReadiness.model}<div><strong>Model:</strong> {usbReadiness.model}</div>{/if}
+            <div><strong>ADB:</strong> <code>{usbReadiness.adb_executable}</code></div>
+            <div><strong>Reverse active:</strong> {usbReadiness.reverse_api_active ? '✓ yes' : '✗ no'} (port {usbReadiness.api_port})</div>
+          </div>
+          {#if usbReadiness.status !== 'ready'}
+            <div class="readiness-next-action">→ {usbReadiness.next_action}</div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- ── APK + package config ── -->
+      <div class="form-group usb-form-group">
+        <label for="apk-path">APK Path</label>
+        <div class="input-with-btn">
+          <input id="apk-path" type="text" bind:value={usbApkPath} placeholder="C:/path/to/app.apk or leave blank to auto-resolve" />
+          <button class="action-btn" on:click={resolveApk} disabled={usbBusy}>Resolve</button>
+        </div>
+        {#if usbResolvedApk}
+          <div class="apk-meta">
+            {#if usbResolvedApk.package}<span>pkg: <code>{usbResolvedApk.package}</code></span>{/if}
+            {#if usbResolvedApk.version_name}<span>v{usbResolvedApk.version_name}</span>{/if}
+            <span>{Math.round(usbResolvedApk.size_bytes / 1024)} KB</span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="form-group usb-form-group">
+        <label for="pkg-name">Package Name</label>
+        <input id="pkg-name" type="text" bind:value={usbPackageName} placeholder="com.bonsai.workspace" />
+      </div>
+
+      <div class="form-group usb-form-group">
+        <label for="activity-name">Launch Activity (optional)</label>
+        <input id="activity-name" type="text" bind:value={usbActivity} placeholder=".MainActivity" />
+      </div>
+
+      <div class="usb-toggle-row">
+        <label class="toggle-label">
+          <input type="checkbox" bind:checked={usbStrictMode} />
+          Strict mode <span class="toggle-hint">(fail if app not installed or launch fails)</span>
+        </label>
+      </div>
+
+      <!-- ── One-click flow buttons ── -->
+      <div class="action-grid usb-flow-grid">
+        <button class="action-btn green" on:click={installAndLaunch} disabled={usbBusy || !usbSelectedSerial}>
+          Install &amp; Launch
+        </button>
+        <button class="action-btn blue" on:click={bootstrapConnection} disabled={usbBusy || !usbSelectedSerial}>
+          Bootstrap Connection
+        </button>
+        <button class="action-btn green full-width" on:click={runUsbRegressionSuite} disabled={usbBusy || !usbSelectedSerial}>
+          Run Full Validation
+        </button>
+      </div>
+
+      <!-- ── Per-step result table ── -->
+      {#if usbLastSteps.length > 0}
+        <table class="usb-steps-table">
+          <thead><tr><th>Step</th><th>Result</th><th>ms</th><th>Detail</th></tr></thead>
+          <tbody>
+            {#each usbLastSteps as s}
+              <tr class={s.skipped ? 'step-skip' : s.ok ? 'step-ok' : 'step-fail'}>
+                <td>{s.label}</td>
+                <td>{s.skipped ? 'SKIP' : s.ok ? 'PASS' : 'FAIL'}</td>
+                <td>{s.duration_ms ?? '—'}</td>
+                <td class="step-detail">{s.hint || s.stderr || s.stdout || ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+
+      <!-- ── WiFi bridge config ── -->
+      <details class="usb-advanced">
+        <summary>WiFi Bridge &amp; Advanced</summary>
+
+        <div class="usb-toggle-row">
+          <label class="toggle-label">
+            <input type="checkbox" bind:checked={usbEnableWifiBridge} />
+            Enable WiFi bridge in Bootstrap Connection
+          </label>
+        </div>
+
+        <div class="usb-wifi-grid">
+          <div class="form-group usb-form-group">
+            <label for="wifi-host">Device WiFi Host/IP</label>
+            <input id="wifi-host" type="text" bind:value={usbWifiHost} placeholder="192.168.1.120" />
+          </div>
+          <div class="form-group usb-form-group">
+            <label for="wifi-port">WiFi Debug Port</label>
+            <input id="wifi-port" type="number" min="1" max="65535" bind:value={usbWifiPort} />
+          </div>
+        </div>
+
+        <div class="action-grid">
+          <button class="action-btn" on:click={enableUsbWifiDebug} disabled={usbBusy}>Enable tcpip over USB</button>
+          <button class="action-btn" on:click={connectUsbWifiDebug} disabled={usbBusy}>Connect WiFi Debug</button>
+        </div>
+        <div class="action-grid">
+          <button class="action-btn" on:click={disconnectUsbWifiDebug} disabled={usbBusy}>Disconnect WiFi Debug</button>
+          <button class="action-btn" on:click={clearUsbReverse} disabled={usbBusy}>Clear adb reverse</button>
+        </div>
+
+        <div class="form-group usb-form-group">
+          <label for="usb-shell">ADB Shell Command</label>
+          <input id="usb-shell" type="text" bind:value={usbShellCommand} placeholder="getprop ro.product.model" />
+        </div>
+        <div class="action-grid">
+          <button class="action-btn blue" on:click={runUsbShellCommand} disabled={usbBusy}>Run Shell Command</button>
+        </div>
+
+        <div class="pair-field">
+          <span class="pair-label">ADB executable</span>
+          <code class="pair-token">{usbAdbExecutable || 'adb'}</code>
+        </div>
+        {#if usbAdbCandidates.length > 0}
+          <div class="pair-field">
+            <span class="pair-label">ADB candidates</span>
+            <code class="pair-token">{usbAdbCandidates.join(' | ')}</code>
+          </div>
+        {/if}
+      </details>
+
+      {#if usbError}
+        <div class="pair-error">{usbError}</div>
+      {/if}
+      {#if usbRegressionEvidencePath}
+        <div class="pair-field">
+          <span class="pair-label">Evidence file</span>
+          <code class="pair-token">{usbRegressionEvidencePath}</code>
+        </div>
+      {/if}
+      {#if usbRegressionLast}
+        <div class="pair-field">
+          <span class="pair-label">Last regression: {usbRegressionLast.ok ? '✓ PASS' : '✗ FAIL'}</span>
+          <code class="pair-token">serial: {usbRegressionLast.serial} · strict: {String(usbRegressionLast.strict_require_app)}</code>
+        </div>
+      {/if}
+      {#if usbResult}
+        <pre class="usb-result">{usbResult}</pre>
+      {/if}
     </section>
 
   </div>
@@ -900,6 +1539,167 @@
   }
 
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.7} }
+
+  .usb-lab-section .section-desc {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    line-height: 1.5;
+  }
+
+  .usb-form-group {
+    margin-top: 10px;
+  }
+
+  .usb-form-group label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .usb-form-group input,
+  .usb-form-group select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .usb-wifi-grid {
+    display: grid;
+    grid-template-columns: 1fr 140px;
+    gap: 8px;
+  }
+
+  .usb-result {
+    margin-top: 10px;
+    max-height: 180px;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 11px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ── USB Lab Runtime System ── */
+  .usb-readiness-card {
+    margin: 10px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font-size: 12px;
+  }
+  .usb-readiness-card.status-ready   { border-color: #3c8; background: rgba(51,204,136,.08); }
+  .usb-readiness-card.status-online  { border-color: #fa0; background: rgba(255,170,0,.08); }
+  .usb-readiness-card.status-unauthorized { border-color: #f66; background: rgba(255,80,80,.08); }
+  .usb-readiness-card.status-disconnected { border-color: var(--border); }
+
+  .readiness-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    background: rgba(128,128,128,.15);
+  }
+  .status-ready   .readiness-badge { background: rgba(51,204,136,.25); color: #2a9; }
+  .status-online  .readiness-badge { background: rgba(255,170,0,.25);  color: #c80; }
+  .status-unauthorized .readiness-badge { background: rgba(255,80,80,.2); color: #d44; }
+
+  .readiness-detail { line-height: 1.7; color: var(--text-dim); }
+  .readiness-detail code { font-size: 11px; }
+  .readiness-next-action {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  .input-with-btn {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .input-with-btn input { flex: 1; }
+  .input-with-btn .action-btn { white-space: nowrap; flex-shrink: 0; }
+
+  .apk-meta {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+  .apk-meta code { font-size: 11px; }
+
+  .usb-toggle-row {
+    margin: 8px 0;
+  }
+  .toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .toggle-hint { color: var(--text-dim); font-size: 11px; }
+
+  .usb-flow-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 10px 0;
+  }
+  .usb-flow-grid .full-width { grid-column: 1 / -1; }
+
+  .usb-steps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    margin: 10px 0;
+  }
+  .usb-steps-table th {
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .usb-steps-table td {
+    padding: 3px 6px;
+    border-bottom: 1px solid rgba(128,128,128,.1);
+    vertical-align: top;
+  }
+  .usb-steps-table tr.step-ok  td:first-child { color: #3c8; }
+  .usb-steps-table tr.step-fail td:first-child { color: #f66; }
+  .usb-steps-table tr.step-skip td:first-child { color: var(--text-dim); }
+  .step-detail { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+
+  .usb-advanced {
+    margin: 12px 0 4px;
+    font-size: 12px;
+  }
+  .usb-advanced summary {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 4px 0;
+    user-select: none;
+  }
+  .usb-advanced summary:hover { color: var(--text); }
 
   /* ── Connection / pairing ── */
   .connection-section .section-desc {

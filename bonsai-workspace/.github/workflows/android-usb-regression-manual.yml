@@ -1,0 +1,178 @@
+name: android-usb-regression-manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_serial:
+        description: Android device serial (optional; auto-select first healthy device if empty)
+        required: false
+        type: string
+      android_wifi_host:
+        description: Device WiFi host/IP for adb connect (optional)
+        required: false
+        type: string
+      android_wifi_port:
+        description: WiFi debug port
+        required: false
+        default: "5555"
+        type: string
+      bonsai_api_port:
+        description: Bonsai API port used for adb reverse
+        required: false
+        default: "11369"
+        type: string
+      android_package:
+        description: Android app package expected on device
+        required: false
+        default: com.bonsai.workspace
+        type: string
+      android_activity:
+        description: Explicit launch activity (optional)
+        required: false
+        type: string
+      android_apk_path:
+        description: Absolute path to APK on the runner (optional; auto-resolves from build output if empty)
+        required: false
+        type: string
+      require_app:
+        description: Strict mode — fail if app package is not installed or launch fails
+        required: false
+        default: false
+        type: boolean
+      enable_bootstrap:
+        description: Run WiFi bridge bootstrap after reverse mapping
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  usb-regression:
+    name: USB Regression (Self-hosted)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 25
+    env:
+      ANDROID_SERIAL: ${{ inputs.android_serial }}
+      ANDROID_WIFI_HOST: ${{ inputs.android_wifi_host }}
+      ANDROID_WIFI_PORT: ${{ inputs.android_wifi_port }}
+      BONSAI_API_PORT: ${{ inputs.bonsai_api_port }}
+      ANDROID_PACKAGE: ${{ inputs.android_package }}
+      ANDROID_ACTIVITY: ${{ inputs.android_activity }}
+      ANDROID_APK_PATH: ${{ inputs.android_apk_path }}
+      BONSAI_REQUIRE_APP: ${{ inputs.require_app && '1' || '0' }}
+      ANDROID_ENABLE_BOOTSTRAP: ${{ inputs.enable_bootstrap && '1' || '0' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bonsai-workspace/src/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: bonsai-workspace/src
+        run: npm ci
+
+      - name: Run Android USB regression
+        shell: pwsh
+        working-directory: bonsai-workspace/src
+        run: |
+          New-Item -Path ../../tool_test/android-usb-regression -ItemType Directory -Force | Out-Null
+          npm run test:android-usb-regression
+
+      - name: Summarize regression output
+        shell: pwsh
+        run: |
+          $artifactPath = "tool_test/android-usb-regression/latest.json"
+          if (!(Test-Path $artifactPath)) {
+            Write-Error "Missing regression artifact at $artifactPath"
+            exit 1
+          }
+
+          $json = Get-Content $artifactPath -Raw | ConvertFrom-Json
+          $artifactHash = (Get-FileHash $artifactPath -Algorithm SHA256).Hash
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+
+          Write-Host "Android USB regression ok: $($json.ok)"
+          Write-Host "Serial: $($json.serial)"
+          Write-Host "ADB: $($json.adb)"
+          Write-Host "Step count: $($json.steps.Count)"
+          Write-Host "Strict mode: $($json.strict_require_app)"
+          Write-Host "APK path: $($json.resolved_apk_path)"
+          Write-Host "Artifact SHA256: $artifactHash"
+          Write-Host "Run URL: $runUrl"
+
+          $summaryPath = $env:GITHUB_STEP_SUMMARY
+          if ($summaryPath) {
+            $overall = if ($json.ok) { "✅ PASS" } else { "❌ FAIL" }
+            Add-Content -Path $summaryPath -Value "# Android USB Regression Summary"
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "| Field | Value |"
+            Add-Content -Path $summaryPath -Value "| --- | --- |"
+            Add-Content -Path $summaryPath -Value "| **Overall** | $overall |"
+            Add-Content -Path $summaryPath -Value "| Serial | $($json.serial) |"
+            Add-Content -Path $summaryPath -Value "| ADB | $($json.adb) |"
+            Add-Content -Path $summaryPath -Value "| Strict mode | $($json.strict_require_app) |"
+            Add-Content -Path $summaryPath -Value "| APK path | $($json.resolved_apk_path ?? '(none)') |"
+            Add-Content -Path $summaryPath -Value "| Artifact SHA256 | ``$artifactHash`` |"
+            Add-Content -Path $summaryPath -Value "| Run URL | $runUrl |"
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "## Inputs"
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "| Input | Value |"
+            Add-Content -Path $summaryPath -Value "| --- | --- |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_SERIAL | $env:ANDROID_SERIAL |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_WIFI_HOST | $env:ANDROID_WIFI_HOST |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_WIFI_PORT | $env:ANDROID_WIFI_PORT |"
+            Add-Content -Path $summaryPath -Value "| BONSAI_API_PORT | $env:BONSAI_API_PORT |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_PACKAGE | $env:ANDROID_PACKAGE |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_ACTIVITY | $env:ANDROID_ACTIVITY |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_APK_PATH | $env:ANDROID_APK_PATH |"
+            Add-Content -Path $summaryPath -Value "| BONSAI_REQUIRE_APP | $env:BONSAI_REQUIRE_APP |"
+            Add-Content -Path $summaryPath -Value "| ANDROID_ENABLE_BOOTSTRAP | $env:ANDROID_ENABLE_BOOTSTRAP |"
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "## Step Results"
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "| Step | Result | ms | Detail |"
+            Add-Content -Path $summaryPath -Value "| --- | --- | --- | --- |"
+
+            foreach ($step in $json.steps) {
+              $label = [string]$step.label
+              $ok = $true
+              if ($null -ne $step.ok) { $ok = [bool]$step.ok }
+              $result = if ($step.skipped) { "SKIP" } elseif ($ok) { "PASS" } else { "FAIL" }
+              $ms = if ($null -ne $step.duration_ms) { [string]$step.duration_ms } else { "—" }
+
+              $detail = ""
+              if ($step.hint)   { $detail = [string]$step.hint }
+              elseif ($step.stderr -and $step.stderr -ne "") { $detail = [string]$step.stderr }
+              elseif ($step.stdout -and $step.stdout -ne "") { $detail = ([string]$step.stdout).Substring(0, [Math]::Min(80, ([string]$step.stdout).Length)) }
+              $detail = $detail -replace "\|", "/"
+              if (-not $detail) { $detail = "-" }
+
+              Add-Content -Path $summaryPath -Value "| $label | $result | $ms | $detail |"
+            }
+
+            Add-Content -Path $summaryPath -Value ""
+            Add-Content -Path $summaryPath -Value "---"
+            Add-Content -Path $summaryPath -Value "_To append this run to the evidence ledger, copy the SHA256 and Run URL above into the ledger table in Runner-Streaming_System.md._"
+          }
+
+          if (-not $json.ok) {
+            Write-Error "USB regression reported ok=false"
+            exit 1
+          }
+
+      - name: Upload USB regression artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-usb-regression-artifact
+          path: tool_test/android-usb-regression/latest.json
+          if-no-files-found: error

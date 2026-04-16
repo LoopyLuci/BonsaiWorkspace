@@ -1,17 +1,49 @@
-# Bonsai Workspace: Android App + VSCode Runner/Streaming System
+﻿# Bonsai Workspace: Android App + VSCode Runner/Streaming System
 
 ## Overview
 
 Two tightly related systems built on top of the existing Bonsai Workspace (Tauri 2 + SvelteKit):
 
-1. **Bonsai Android App** — Tauri Mobile build that connects to the running desktop instance over LAN, providing chat, file browsing, and editor access from a phone.
-2. **VSCode Runner/Streamer System** — A VSCode extension that streams semantic state (file tree, editor content, cursor, diagnostics) to Bonsai over WebSocket, rendered in Bonsai's own UI components. Bidirectional: Bonsai can send commands back to VSCode.
+1. **Bonsai Android App** â€” Tauri Mobile build that connects to the running desktop instance over LAN, providing chat, file browsing, and editor access from a phone.
+2. **VSCode Runner/Streamer System** â€” A VSCode extension that streams semantic state (file tree, editor content, cursor, diagnostics) to Bonsai over WebSocket, rendered in Bonsai's own UI components. Bidirectional: Bonsai can send commands back to VSCode.
 
 Both systems share the same WebSocket infrastructure added to the existing Axum server.
 
 ---
 
-## Phase 1 — WebSocket Server (Axum, port 11369)
+## Progress Snapshot (April 2026)
+
+Current status is strong for desktop and extension flows, with mobile runtime validation remaining as the primary gap.
+
+### Latest validation signal
+
+- Live visible watch suite passes end-to-end: 5/5 scenarios.
+- Command used:
+
+```powershell
+npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run test:bonsai-live-testing-feature:watch
+```
+
+### Phase status
+
+| Phase | Status | Notes |
+|---|---|---|
+| 1 â€” WebSocket server | Done | Stable and validated through repeated live runs. |
+| 2 â€” Token auth + QR | Done (Desktop), Partial (Mobile runtime) | Desktop pairing/token/QR flows pass in live suite; real-device mobile scan validation still pending. |
+| 3 â€” VSCode extension | Done | Extension lane and integration behavior are in place; desktop rendering + command loop works in current architecture. |
+| 4 â€” VSCode Viewer pane | Done | Wired and functioning in the current UI architecture. |
+| 5 â€” Android app | Partial | Mobile path implemented, but still needs full on-device validation pass and sign-off checklist. |
+| 6 â€” mDNS | Partial | Implemented path exists; needs final runtime/behavior confidence pass under mobile conditions. |
+
+### Remaining work to claim release-grade completion
+
+1. Execute and document a real Android device validation pass for pairing, reconnect, and session continuity.
+2. Run final mobile-focused soak pass for discovery and reconnect stability.
+3. Mark each phase with objective exit criteria evidence (logs/artifacts) in this document after device validation.
+
+---
+
+## Phase 1 â€” WebSocket Server (Axum, port 11369)
 
 **File:** `bonsai-workspace/src-tauri/src/api_server.rs`
 
@@ -19,7 +51,7 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 
 ### Message Protocol (JSON)
 
-**Desktop → Client:**
+**Desktop â†’ Client:**
 ```json
 { "type": "vscode_state", "payload": { ... } }
 { "type": "chat_token", "payload": { "token": "..." } }
@@ -27,7 +59,7 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 { "type": "auth_fail", "payload": { "reason": "..." } }
 ```
 
-**Client → Desktop:**
+**Client â†’ Desktop:**
 ```json
 { "type": "auth", "payload": { "token": "..." } }
 { "type": "vscode_cmd", "payload": { "cmd": "open_file", "args": { "path": "..." } } }
@@ -36,7 +68,7 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 
 ### Implementation Steps
 
-1. Add `tokio-tungstenite` or use `axum`'s built-in WebSocket support (`axum::extract::ws`) — axum 0.7 includes WebSocket natively, no new dep needed.
+1. Add `tokio-tungstenite` or use `axum`'s built-in WebSocket support (`axum::extract::ws`) â€” axum 0.7 includes WebSocket natively, no new dep needed.
 2. Create `ws_router.rs`: `WsRouter` struct with `broadcast()`, `send_to()`, `register()`, `unregister()`.
 3. Add `AppState.ws_router: Arc<WsRouter>` field.
 4. Register `/ws` route in `build_router()`.
@@ -46,12 +78,12 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 - `src-tauri/src/ws_router.rs`
 
 **Modified files:**
-- `src-tauri/src/api_server.rs` — add `/ws` route + state
-- `src-tauri/src/lib.rs` — add `ws_router` to `AppState`
+- `src-tauri/src/api_server.rs` â€” add `/ws` route + state
+- `src-tauri/src/lib.rs` â€” add `ws_router` to `AppState`
 
 ---
 
-## Phase 2 — Authentication (Token Pairing)
+## Phase 2 â€” Authentication (Token Pairing)
 
 **Goal:** Android connects to desktop without manual IP entry or passwords.
 
@@ -59,8 +91,8 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 1. Desktop generates a random 6-character alphanumeric token on startup, stored in `AppState.pair_token: String`.
 2. Tauri command `get_pair_token()` returns the token.
 3. Desktop Settings panel shows: token in large text + QR code encoding `bonsai://connect?ip=192.168.x.x:11369&token=ABC123`.
-4. Android scans QR → extracts IP + token → connects to `ws://IP:11369/ws` → sends `{"type":"auth","payload":{"token":"ABC123"}}`.
-5. Server validates token → sends `auth_ok` → client is registered.
+4. Android scans QR â†’ extracts IP + token â†’ connects to `ws://IP:11369/ws` â†’ sends `{"type":"auth","payload":{"token":"ABC123"}}`.
+5. Server validates token â†’ sends `auth_ok` â†’ client is registered.
 
 ### QR Code
 - Use `qrcode` crate (pure Rust, no native deps) to generate SVG/PNG from token+IP string.
@@ -68,19 +100,19 @@ Add a new Axum route `/ws` that upgrades to WebSocket. The server maintains a `W
 - Render in Settings panel via `{@html qrSvg}`.
 
 ### IP Discovery
-- New Tauri command `get_local_ip() -> String` — iterates network interfaces, returns first non-loopback IPv4.
+- New Tauri command `get_local_ip() -> String` â€” iterates network interfaces, returns first non-loopback IPv4.
 - Display alongside QR code.
 
 **New files:** none  
 **Modified files:**
-- `src-tauri/Cargo.toml` — add `qrcode = "0.13"`, `local-ip-address = "0.6"`
-- `src-tauri/src/lib.rs` — add `pair_token` to `AppState`, generate on init
-- `src-tauri/src/commands.rs` — add `get_pair_token`, `generate_pair_qr`, `get_local_ip`
-- `src/lib/components/SettingsPanel.svelte` — add Connection section with QR + token display
+- `src-tauri/Cargo.toml` â€” add `qrcode = "0.13"`, `local-ip-address = "0.6"`
+- `src-tauri/src/lib.rs` â€” add `pair_token` to `AppState`, generate on init
+- `src-tauri/src/commands.rs` â€” add `get_pair_token`, `generate_pair_qr`, `get_local_ip`
+- `src/lib/components/SettingsPanel.svelte` â€” add Connection section with QR + token display
 
 ---
 
-## Phase 3 — VSCode Extension
+## Phase 3 â€” VSCode Extension
 
 **Directory:** `vscode-extension/` (new top-level sibling to `bonsai-workspace/`)
 
@@ -95,7 +127,7 @@ vscode-extension/
     command-handler.ts (receives commands from Bonsai, executes in VSCode)
 ```
 
-### State Streamer — Events Sent to Bonsai
+### State Streamer â€” Events Sent to Bonsai
 
 | Event type | Trigger | Payload |
 |---|---|---|
@@ -108,7 +140,7 @@ vscode-extension/
 
 ### Delta Compression
 - On `vscode_editor_open`: send full `content`.
-- On `vscode_editor_delta`: send VSCode's `TextDocumentChangeEvent.contentChanges` array directly — these are already ranged diffs, no OT library needed.
+- On `vscode_editor_delta`: send VSCode's `TextDocumentChangeEvent.contentChanges` array directly â€” these are already ranged diffs, no OT library needed.
 
 ### Commands Received from Bonsai
 
@@ -122,19 +154,19 @@ vscode-extension/
 
 ### Connection
 - On `activate()`: attempt WebSocket connect to `ws://127.0.0.1:11369/ws`.
-- Send `{"type":"auth","payload":{"token":"..."}}` — token configured in VSCode settings (`bonsai.pairToken`).
+- Send `{"type":"auth","payload":{"token":"..."}}` â€” token configured in VSCode settings (`bonsai.pairToken`).
 - Reconnect with exponential backoff on disconnect.
 - Status bar item shows connection state.
 
 ---
 
-## Phase 4 — VSCode Viewer Pane (Desktop)
+## Phase 4 â€” VSCode Viewer Pane (Desktop)
 
 **New Svelte component:** `src/lib/components/VscodeViewer.svelte`
 
 Subscribes to a `vscodeState` store (writable, updated by WebSocket messages). Renders:
 - **File tree tab**: reuses existing `FileTree` component style, but data comes from `vscode_file_tree` messages instead of Tauri invoke.
-- **Editor tab**: reuses `MonacoEditor` component, but content comes from `vscode_editor_open` + applies `vscode_editor_delta` ops. When user edits → send `text_edit` command back to VSCode (toggle: "mirror" vs "read-only" mode).
+- **Editor tab**: reuses `MonacoEditor` component, but content comes from `vscode_editor_open` + applies `vscode_editor_delta` ops. When user edits â†’ send `text_edit` command back to VSCode (toggle: "mirror" vs "read-only" mode).
 - **Diagnostics tab**: styled list of errors/warnings with file + line links.
 - **Copilot tab**: shows current inline suggestion, "Accept" button sends `text_edit`.
 
@@ -165,7 +197,7 @@ Add a "VSCode" tab in the left sidebar (or as a collapsible panel). `VscodeViewe
 
 ---
 
-## Phase 5 — Bonsai Android App (Tauri Mobile)
+## Phase 5 â€” Bonsai Android App (Tauri Mobile)
 
 ### Setup
 1. Run `cargo tauri android init` to generate `src-tauri/gen/android/`.
@@ -182,10 +214,10 @@ tauri-plugin-barcode-scanner = "2"
 **New file:** `src/lib/components/MobileLayout.svelte`
 
 Tab bar at bottom with 4 tabs:
-- **Chat** — full ChatPanel (already works, just needs mobile CSS)
-- **Files** — FileTree with touch-friendly larger hit targets
-- **Editor** — MonacoEditor (Monaco has mobile support)
-- **VSCode** — VscodeViewer (connects to desktop over LAN)
+- **Chat** â€” full ChatPanel (already works, just needs mobile CSS)
+- **Files** â€” FileTree with touch-friendly larger hit targets
+- **Editor** â€” MonacoEditor (Monaco has mobile support)
+- **VSCode** â€” VscodeViewer (connects to desktop over LAN)
 
 Show/hide `MobileLayout` vs desktop layout based on Tauri's platform detection:
 ```typescript
@@ -200,9 +232,9 @@ const isMobile = (await platform()) === 'android';
 - QR scan uses `@tauri-apps/plugin-barcode-scanner`.
 
 ### Android-Specific Commands
-- `scan_qr() -> String` — retained as a compatibility command; mobile QR scanning is handled in the frontend via `@tauri-apps/plugin-barcode-scanner`.
-- `save_desktop_connection(ip, token)` — persist to DB.
-- `load_desktop_connection() -> Option<{ip, token}>` — load from DB.
+- `scan_qr() -> String` â€” retained as a compatibility command; mobile QR scanning is handled in the frontend via `@tauri-apps/plugin-barcode-scanner`.
+- `save_desktop_connection(ip, token)` â€” persist to DB.
+- `load_desktop_connection() -> Option<{ip, token}>` â€” load from DB.
 
 ### Tauri Plugins (Android)
 Add to `Cargo.toml`:
@@ -212,18 +244,18 @@ tauri-plugin-barcode-scanner = "2"
 
 ---
 
-## Phase 6 — mDNS Discovery (Optional Enhancement)
+## Phase 6 â€” mDNS Discovery (Optional Enhancement)
 
 Instead of QR code only, allow Android to auto-discover desktop on same LAN.
 
 - Add `mdns-sd = "0.11"` to `Cargo.toml`.
 - Desktop registers `_bonsai._tcp.local.` service on port 11369 at startup.
 - Android browses for `_bonsai._tcp.local.` services and lists found desktops by hostname.
-- User taps a desktop → token entry dialog (or QR scan to get token).
+- User taps a desktop â†’ token entry dialog (or QR scan to get token).
 
 **Modified files:**
-- `src-tauri/src/lib.rs` — start mDNS service registration in `setup()`
-- `src-tauri/src/commands.rs` — add `browse_bonsai_services() -> Vec<{name, ip, port}>`
+- `src-tauri/src/lib.rs` â€” start mDNS service registration in `setup()`
+- `src-tauri/src/commands.rs` â€” add `browse_bonsai_services() -> Vec<{name, ip, port}>`
 
 ---
 
@@ -231,14 +263,14 @@ Instead of QR code only, allow Android to auto-discover desktop on same LAN.
 
 | Phase | Est. Complexity | Prerequisite |
 |---|---|---|
-| 1 — WebSocket server | Medium | None |
-| 2 — Token auth + QR | Low | Phase 1 |
-| 3 — VSCode extension | Medium | Phase 1 |
-| 4 — VSCode Viewer pane | Medium | Phase 1, 3 |
-| 5 — Android app | High | Phase 1, 2 |
-| 6 — mDNS | Low | Phase 1 |
+| 1 â€” WebSocket server | Medium | None |
+| 2 â€” Token auth + QR | Low | Phase 1 |
+| 3 â€” VSCode extension | Medium | Phase 1 |
+| 4 â€” VSCode Viewer pane | Medium | Phase 1, 3 |
+| 5 â€” Android app | High | Phase 1, 2 |
+| 6 â€” mDNS | Low | Phase 1 |
 
-Recommended order: 1 → 2 → 4 → 3 → 5 → 6
+Recommended order: 1 â†’ 2 â†’ 4 â†’ 3 â†’ 5 â†’ 6
 
 ---
 
@@ -268,164 +300,170 @@ Recommended order: 1 → 2 → 4 → 3 → 5 → 6
 | `src/App.svelte` | Add VSCode tab, mobile layout detection |
 | `src/lib/components/SettingsPanel.svelte` | Add Connection section (QR display, token, IP) |
 
+---
+
+## Release Readiness Checklist
+
+Use this checklist to close remaining gaps and record objective evidence.
+
+### Completed baseline
+
+- [x] Desktop live visible validation passes (5/5 scenarios).
+- [x] Repeatable watch-mode command validated.
+
+```powershell
+npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run test:bonsai-live-testing-feature:watch
+```
+
+### Remaining required checks
+
+- [ ] Android QR pairing verified on a real device.
+- [ ] Persisted reconnect verified after app restart (`save_desktop_connection` / `load_desktop_connection`).
+- [ ] mDNS browse flow verified under mobile runtime conditions.
+- [x] Final contract consistency pass (ports, routes, token docs vs runtime defaults). All ports confirmed at 11369.
+- [x] USB-first Android desktop control implemented (install/launch/reverse/tcpip/connect/shell).
+- [x] USB Lab Runtime System implemented (readiness state machine, APK resolver, install/launch orchestrator, connection bootstrap, full validation with schema_version 2 artifacts).
+- [ ] Strict mode pass (`BONSAI_REQUIRE_APP=1` + valid APK) on physical device — blocked pending APK build.
+- [ ] Manual CI hardware run with strict mode enabled — blocked pending APK build and self-hosted runner access.
+
+### Real Device Verification Procedure
+
+1. Launch desktop Bonsai and open Settings > Mobile & VSCode Connection.
+2. On Android build, tap `Scan Mobile QR` and scan the desktop QR.
+3. Confirm `Saved desktop connection` appears.
+4. Confirm pairing verification result appears (`Pairing verified ... auth_ok`).
+5. Tap `Verify Saved Pairing` to validate persisted reconnect path.
+6. Restart mobile app and repeat step 5.
+
+Evidence capture behavior:
+
+- Each verification appends one JSON record to `mobile-pairing-evidence.jsonl` in app data.
+- Settings displays `Evidence log` path and `Last evidence` snapshot.
+- Record fields include timestamp, source (`qr_scan` or `saved_connection`), IP, verification result, websocket URL, elapsed milliseconds, and token hint.
+
+### USB Lab Runtime System — Operator Runbook
+
+Bonsai Desktop provides a complete USB Lab Runtime System in Settings → Android USB Lab.
+A new operator can go from USB plug-in to PASS without terminal usage.
+
+**One-click flow:**
+
+1. Plug Android tablet in over USB and enable USB debugging on device.
+2. Open Bonsai Desktop → Settings → Android USB Lab.
+3. Click **Refresh Devices** — device appears in the dropdown.
+4. Select the device serial and click **Check Readiness**.
+   - Badge shows `DISCONNECTED` / `UNAUTHORIZED` / `ONLINE` / `READY`.
+   - If `UNAUTHORIZED`: tap "Allow USB debugging" on device, then refresh.
+5. Enter APK path or click **Resolve** to auto-discover from build output.
+   - Enable **Strict mode** if the app must be installed for the run to pass.
+6. Click **Install & Launch** — installs APK, verifies package, launches app, verifies process.
+7. Click **Bootstrap Connection** — sets `adb reverse tcp:11369`, verifies listing, optionally bridges WiFi.
+8. Badge should now show `READY`.
+9. Click **Run Full Validation** — runs end-to-end regression with schema_version 2 artifact.
+10. Check per-step table for PASS/SKIP/FAIL with ms timings and detail.
+11. Run `npm run evidence:append-usb-ledger` from `bonsai-workspace/src` to append to ledger.
+
+**CLI equivalent (for CI or scripting):**
+
+```powershell
+# Basic non-strict run:
+npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run test:android-usb-regression
+
+# Strict run with specific APK:
+$env:BONSAI_REQUIRE_APP = "1"
+$env:ANDROID_APK_PATH = "C:\path\to\app.apk"
+npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run test:android-usb-regression
+
+# Append to evidence ledger:
+npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run evidence:append-usb-ledger
+```
+
+**Environment variables (CLI):**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANDROID_SERIAL` | auto | Target device serial |
+| `BONSAI_API_PORT` | `11369` | Port for `adb reverse` |
+| `ANDROID_PACKAGE` | `com.bonsai.workspace` | Package name |
+| `ANDROID_ACTIVITY` | (monkey) | Explicit launch activity |
+| `ANDROID_APK_PATH` | (auto) | Path to APK; auto-resolves from build output |
+| `BONSAI_REQUIRE_APP` | `0` | `1` = strict mode: fail if not installed/launched |
+| `ANDROID_ENABLE_BOOTSTRAP` | `0` | `1` = run WiFi bridge after reverse mapping |
+| `ANDROID_WIFI_HOST` | (none) | Device WiFi IP for bridge |
+| `ANDROID_WIFI_PORT` | `5555` | WiFi debug port |
+
+**Implemented Desktop controls (ADB):**
+
+- Device discovery with state/model display
+- Device readiness state machine (`disconnected` → `unauthorized` → `online` → `ready`)
+- APK resolver (auto-discovers from Tauri mobile build outputs)
+- Install & Launch orchestrator with per-step results + strict mode
+- Connection bootstrap (reverse mapping + optional WiFi bridge) with step verification
+- Full regression suite with schema_version 2 artifact
+- Shell command execution for diagnostics
+
+ADB resolution:
+
+- Desktop auto-resolves `adb` from common SDK locations when PATH is not configured.
+- The resolved adb executable path is shown in Settings (`Android USB Lab`) for diagnostics.
+
+USB regression artifacts:
+
+- `Run USB Regression Suite` appends JSONL evidence to `android-usb-regression-evidence.jsonl` in app data.
+- Each record includes step results (discover/model/reverse/launch and optional WiFi bridge steps).
+- CLI companion: `npm run test:android-usb-regression` (from `bonsai-workspace/src`) writes `tool_test/android-usb-regression/latest.json`.
+- Manual CI companion: workflow `android-usb-regression-manual` runs the same regression on a self-hosted Windows runner and uploads `tool_test/android-usb-regression/latest.json`.
+- Manual CI also writes a GitHub Actions Summary table with input parameters and per-step PASS/FAIL details for operator sign-off.
+
+Latest local USB regression evidence snapshot (2026-04-16):
+
+- Command: `npm run test:android-usb-regression` (from `bonsai-workspace/src`)
+- Artifact: `tool_test/android-usb-regression/latest.json`
+- Artifact SHA256: `6882AC4B5E0B6C834DF2B6E8499837D11776161CD23C2EC54BDEA85626B55FC6`
+- Timestamp (artifact): `2026-04-16T12:57:19.566Z`
+- Result: `ok=true`
+- Device serial: `G8S1KT06151202JN`
+- Model check: `KFTRWI`
+- API reverse mapping: `tcp:11369 -> tcp:11369`
+- Package check: `com.bonsai.workspace` not installed (non-fatal because `BONSAI_REQUIRE_APP` was not set)
+
+Release evidence ledger:
+
+| Date (UTC) | Evidence source | Run reference | Artifact | SHA256 | Device serial | Verdict | Notes |
+|---|---|---|---|---|---|---|---|
+| 2026-04-16T12:57:19.566Z | Local CLI (`test:android-usb-regression`) | local-shell | `tool_test/android-usb-regression/latest.json` | `6882AC4B5E0B6C834DF2B6E8499837D11776161CD23C2EC54BDEA85626B55FC6` | `G8S1KT06151202JN` | PASS | Reverse mapping verified (`tcp:11369`); package launch intentionally non-fatal because `BONSAI_REQUIRE_APP` unset. |
+
+| 2026-04-16T13:17:53.111Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `4A6E7D01AC5C84BA74081B4AA60B6154209736AB69708C0FC999EF0397010F35` | `G8S1KT06151202JN` | PASS | reverse mapping target api port 11369; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
+
+| 2026-04-16T14:21:47.817Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `028F380C302859FB9A738ABCB7E02A61CF8FA0E27CBD2D13EAD402F1A324F4FD` | `G8S1KT06151202JN` | PASS | reverse mapping target api port 11369; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
+
+| 2026-04-16T14:33:27.407Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `C960F577E4FFBBE97541D34BFF449E6BE7813999594AD82241C35E7150828465` | `G8S1KT06151202JN` | PASS | api port 11369; non-strict; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
+
+| 2026-04-16T14:37:37.840Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `0692E029FDF9298799FD2B5B0047D0282E3C6522050DC228F332E91C326E63FE` | `G8S1KT06151202JN` | PASS | api port 11369; non-strict; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
+
+Ledger update rule:
+
+- Add one row for each manual CI hardware run and each local sign-off run.
+- For manual CI runs, use GitHub run URL in Run reference and copy SHA256 from the run summary.
+- Do not overwrite historical rows; append new rows only.
+- Local helper command: run `npm --prefix "z:\Projects\BonsaiWorkspace\bonsai-workspace\src" run evidence:append-usb-ledger` after each successful USB regression artifact update.
+
+### CI and automation completion
+
+- [x] API smoke included in a required CI lane.
+- [x] VSCode extension build/tests included as required checks.
+- [x] Android build lane present at smoke/check level.
+- [x] Additional OS added to nightly soak coverage.
+
+### Exit criteria for release-grade confidence
+
+1. Required checks green for desktop app, API smoke, and VSCode extension.
+2. Android real-device validation documented with command/log evidence.
+3. Pairing and reconnect succeed without manual workarounds.
+4. No known spec/runtime contract mismatches remain in this document.
 
 
-I’m going to do a focused evidence-based audit across backend, frontend, extension, and CI so I can give you a prioritized gap list with an execution path to production-grade confidence.
 
-Ran terminal command: git status --short
 
-Read [](file:///z%3A/Projects/BonsaiWorkspace/Runner-Streaming_System.md#1-1), lines 1 to 260
 
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/.github/workflows/ci.yml)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/.github/workflows/nightly-soak.yml)
-
-I’m now validating the current build/test baseline and pulling exact code evidence for remaining gaps so the audit is actionable rather than theoretical.
-
-Ran terminal command: Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace"; cargo check --manifest-path "src-tauri/Cargo.toml"
-
-Ran terminal command: Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"; npm run test:agent-routing-ci
-
-Read [](file:///c%3A/Users/limpi/AppData/Roaming/Code/User/workspaceStorage/690560126d5bfaef4e7a4ce1fac11581/GitHub.copilot-chat/chat-session-resources/feda5104-870f-4d9f-b8c7-b9f870fd6fd6/call_dvUO2Pt2hPyDnc9KlHZGEMOB__vscode-1776288642822/content.txt)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/src/commands.rs#1885-1885), lines 1885 to 1995
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/Cargo.toml)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src/lib/utils/wsClient.ts)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/vscode-extension/src/bonsai-client.ts)
-
-Searched for regex `pub async fn scan_qr|save_desktop_connection|load_desktop_connection|browse_bonsai_services|std::thread::sleep` (`**/bonsai-workspace/src-tauri/src/commands.rs`), 6 results
-
-Searched for regex `tauri-plugin-barcode-scanner|tauri-plugin-os|cfg\(not\(target_os = "android"\)\)|\[features\]` (`**/bonsai-workspace/src-tauri/Cargo.toml`), no results
-
-Searched for regex `11369|/ws` (`**/Runner-Streaming_System.md`), 19 results
-
-Searched for regex `ws://127.0.0.1:11369/ws|bonsai.wsUrl` (`**/vscode-extension/**`), 3 results
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/src/commands.rs#1868-1868), lines 1868 to 1894
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/src/config.rs#1-1), lines 1 to 50
-
-Searched for regex `\[features\]|target_os = "android"|tauri-plugin-barcode-scanner|tauri-plugin-os` (`**/bonsai-workspace/src-tauri/Cargo.toml`), no results
-
-Searched for regex `BONSAI_SKIP_API|agent-api-smoke|Skipping API smoke` (`**/bonsai-workspace/src/agent-routing-ci.mjs`), 2 results
-
-Audit completed. Current baseline is healthy, but there are still important delivery gaps before claiming end-to-end production readiness.
-
-Current state snapshot
-1. Working tree is clean.
-2. Backend compile passes.
-3. Deterministic routing regression passes (8/8).
-4. Core Runner-Streaming architecture exists across backend, desktop UI, and VSCode extension.
-
-Priority findings (ordered by risk)
-
-1. Critical: Android QR scan is still a stub, not implemented
-- Evidence: commands.rs
-- Impact: Mobile pairing flow is incomplete; users cannot actually scan and onboard via native QR from app.
-- Gap vs plan: Runner-Streaming Phase 5 expected a working scan command.
-
-2. Critical: Android-specific dependency and feature gating from the plan is missing
-- Evidence: 
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/src/commands.rs#1885-1885), lines 1885 to 1995
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src-tauri/Cargo.toml)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/bonsai-workspace/src/lib/utils/wsClient.ts)
-
-Read [](file:///z%3A/Projects/BonsaiWorkspace/vscode-extension/src/bonsai-client.ts)
-
-Cargo.toml
-- Impact: Mobile build readiness is uncertain; desktop-only dependencies are not explicitly gated for Android as specified.
-- Gap vs plan: Runner-Streaming Phase 5 calls for Android feature gates and mobile plugin wiring.
-
-3. High: Port contract drift between spec and implementation
-- Spec says 11369:
-  - Runner-Streaming_System.md
-  - Runner-Streaming_System.md
-  - Runner-Streaming_System.md
-- Implementation uses 11369:
-  - config.rs
-  - wsClient.ts
-  - package.json
-  - bonsai-client.ts
-- Impact: Integration confusion, wrong defaults in external clients, and onboarding failures if teams follow the spec doc literally.
-
-4. High: CI deterministic suite skips API smoke coverage
-- Evidence: agent-routing-ci.mjs
-- Impact: API regression risk in remote/session endpoints; current CI validates UI scripted flow but not API smoke path in that lane.
-
-5. High: CI does not validate VSCode extension build/tests
-- Extension tests exist:
-  - state-streamer.test.ts
-- CI workflows currently focus on bonsai-workspace jobs:
-  - ci.yml
-- Impact: Extension can silently break while desktop remains green.
-
-6. Medium: mDNS browse command uses blocking sleep in an async command
-- Evidence: commands.rs
-- Impact: Potential runtime responsiveness issues under load; low immediate risk, but suboptimal implementation pattern.
-
-7. Medium: Nightly soak is single-platform
-- Evidence: nightly-soak.yml
-- Impact: OS-specific flaky behavior may go undetected (especially Linux/macOS differences).
-
-8. Medium: Functional parity claim is ahead of verification scope
-- The plan includes full mobile functionality and discovery paths:
-  - Runner-Streaming_System.md
-- Current verification evidence is strong for desktop routing and backend compile, but not yet for mobile runtime behavior.
-
-Clear optimal path to full functional confidence
-
-Phase A: Contract and onboarding correctness (1 day)
-1. Decide and lock a single canonical WS/API port (11369).
-2. Update either implementation or spec so they match everywhere:
-- Runner-Streaming_System.md
-- config.rs
-- wsClient.ts
-- package.json
-3. Add one compatibility fallback if needed during migration.
-
-Exit criteria:
-1. No port mismatch between docs, defaults, and runtime.
-2. Pairing examples work without manual correction.
-
-Phase B: Complete mobile command surface (2-3 days)
-1. Implement real scan_qr behavior (platform-gated).
-2. Add Android plugin dependencies and platform feature gating.
-3. Validate save/load desktop connection + mDNS browse with actual Android device/emulator.
-
-Exit criteria:
-1. End-to-end mobile pairing works from QR and persisted reconnect.
-2. Android build succeeds in CI and local.
-
-Phase C: CI coverage completion (1-2 days)
-1. Add VSCode extension lane:
-- install, compile, run tests in vscode-extension
-2. Add API smoke lane that does not skip BONSAI_SKIP_API.
-3. Add Android build lane (even if smoke-only initially).
-4. Expand nightly soak to at least one additional OS.
-
-Exit criteria:
-1. Required checks include desktop app, extension, and API smoke.
-2. Nightly reports platform-specific flake rates.
-
-Phase D: Reliability hardening (2-4 days)
-1. Replace blocking sleep in async browse path with non-blocking approach.
-2. Add retry diagnostics for all flaky-prone jobs (attempt-level metadata already started).
-3. Add structured artifact triage docs tied to generated logs.
-
-Exit criteria:
-1. Zero known blocking calls in async hot paths.
-2. Actionable failure artifacts for every critical job.
-
-Can this be guaranteed 100%
-Absolute mathematical 100% correctness is not achievable for a distributed multi-platform system. The practical target is release-grade confidence with:
-1. Deterministic required checks all green.
-2. Soak and flaky rates below threshold for multiple days.
-3. Full contract alignment between docs and runtime.
-4. Verified mobile + extension interoperability in CI and device tests.
 

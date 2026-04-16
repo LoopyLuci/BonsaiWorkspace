@@ -113,6 +113,107 @@ jobs:
           path: bonsai-workspace/ci-artifacts/
           if-no-files-found: ignore
 
+  soak-routing-ubuntu:
+    name: Nightly Soak Routing (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libsqlite3-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bonsai-workspace/src/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            bonsai-workspace/src-tauri
+
+      - name: Install frontend deps
+        working-directory: bonsai-workspace/src
+        run: npm ci
+
+      - name: Run soak loop and collect flaky trend data
+        shell: bash
+        working-directory: bonsai-workspace/src
+        run: |
+          mkdir -p ../ci-artifacts
+
+          iterations=10
+          pass_count=0
+          fail_count=0
+          attempts_json="[]"
+
+          for i in $(seq 1 "$iterations"); do
+            echo "Nightly soak iteration $i/$iterations"
+            log_path="../ci-artifacts/soak-ubuntu-iteration-$i.log"
+
+            set +e
+            npm run test:agent-routing-ci >"$log_path" 2>&1
+            exit_code=$?
+            set -e
+
+            if [ "$exit_code" -eq 0 ]; then
+              pass_count=$((pass_count + 1))
+              status="pass"
+            else
+              fail_count=$((fail_count + 1))
+              status="fail"
+            fi
+
+            attempts_json=$(node -e "const arr=JSON.parse(process.argv[1]);arr.push({iteration:Number(process.argv[2]),status:process.argv[3],exitCode:Number(process.argv[4])});process.stdout.write(JSON.stringify(arr));" "$attempts_json" "$i" "$status" "$exit_code")
+          done
+
+          flake_rate=$(node -e "const f=Number(process.argv[1]);const t=Number(process.argv[2]);process.stdout.write((t>0?((f/t)*100).toFixed(2):'0.00'));" "$fail_count" "$iterations")
+
+          node -e "const fs=require('fs');const attempts=JSON.parse(process.argv[1]);const out={workflow:'nightly-soak',platform:'ubuntu',timestampUtc:new Date().toISOString(),iterations:Number(process.argv[2]),passCount:Number(process.argv[3]),failCount:Number(process.argv[4]),flakeRatePercent:Number(process.argv[5]),attempts};fs.writeFileSync(process.argv[6],JSON.stringify(out,null,2));" "$attempts_json" "$iterations" "$pass_count" "$fail_count" "$flake_rate" "../ci-artifacts/flaky-trend-ubuntu.json"
+
+          {
+            echo "# Nightly Soak Trend (Ubuntu)"
+            echo
+            echo "- Iterations: $iterations"
+            echo "- Passes: $pass_count"
+            echo "- Fails: $fail_count"
+            echo "- Flake rate: ${flake_rate}%"
+            echo
+            echo "## Attempt Results"
+            node -e "const attempts=JSON.parse(process.argv[1]);for(const a of attempts){console.log('- Iteration '+a.iteration+': '+a.status+' (exit '+a.exitCode+')');}" "$attempts_json"
+          } > ../ci-artifacts/flaky-trend-ubuntu.md
+
+          if [ "$fail_count" -gt 0 ]; then
+            echo "Nightly soak detected failures (${fail_count}/${iterations}). See artifacts."
+            exit 1
+          fi
+
+      - name: Upload soak artifacts (Ubuntu)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-soak-artifacts-ubuntu
+          path: bonsai-workspace/ci-artifacts/
+          if-no-files-found: ignore
+
   soak-vscode-extension:
     name: Nightly Extension Quality (Ubuntu)
     runs-on: ubuntu-latest
@@ -171,6 +272,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - soak-routing-windows
+      - soak-routing-ubuntu
       - soak-vscode-extension
     if: always()
 
@@ -181,10 +283,11 @@ jobs:
           mkdir -p bonsai-workspace/ci-artifacts
           timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           routing="${{ needs.soak-routing-windows.result }}"
+          routing_ubuntu="${{ needs.soak-routing-ubuntu.result }}"
           extension="${{ needs.soak-vscode-extension.result }}"
 
           overall="success"
-          if [ "$routing" != "success" ] || [ "$extension" != "success" ]; then
+          if [ "$routing" != "success" ] || [ "$routing_ubuntu" != "success" ] || [ "$extension" != "success" ]; then
             overall="failure"
           fi
 
@@ -195,6 +298,7 @@ jobs:
             "overall": "$overall",
             "jobs": {
               "soak-routing-windows": "$routing",
+              "soak-routing-ubuntu": "$routing_ubuntu",
               "soak-vscode-extension": "$extension"
             }
           }
@@ -208,10 +312,12 @@ jobs:
 
           ## Job Results
           - soak-routing-windows: $routing
+          - soak-routing-ubuntu: $routing_ubuntu
           - soak-vscode-extension: $extension
 
           ## Related Artifacts
           - nightly-soak-artifacts
+          - nightly-soak-artifacts-ubuntu
           - nightly-extension-artifacts
           EOF
 

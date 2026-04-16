@@ -3,6 +3,7 @@ use git2::Repository;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -1876,6 +1877,1161 @@ pub async fn ws_client_count(state: State<'_, AppState>) -> Result<usize, String
     Ok(state.ws_router.client_count())
 }
 
+fn resolve_adb_executable() -> (String, Vec<String>) {
+    let mut candidates = Vec::<String>::new();
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        candidates.push(format!(
+            "{}\\Android\\Sdk\\platform-tools\\adb.exe",
+            local_app_data
+        ));
+    }
+    if let Ok(android_home) = std::env::var("ANDROID_HOME") {
+        candidates.push(format!("{}\\platform-tools\\adb.exe", android_home));
+    }
+    if let Ok(android_sdk_root) = std::env::var("ANDROID_SDK_ROOT") {
+        candidates.push(format!("{}\\platform-tools\\adb.exe", android_sdk_root));
+    }
+
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return (c.clone(), candidates);
+        }
+    }
+
+    ("adb".to_string(), candidates)
+}
+
+fn adb_run(args: &[String]) -> Result<serde_json::Value, String> {
+    let (adb_executable, candidates) = resolve_adb_executable();
+    let output = Command::new(&adb_executable)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            format!(
+                "Failed to execute adb via '{}'. Ensure Android Platform Tools are installed. Candidate locations checked: {}. {}",
+                adb_executable,
+                candidates.join(", "),
+                e
+            )
+        })?;
+
+    let status_code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    Ok(serde_json::json!({
+        "ok": output.status.success(),
+        "status": status_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "args": args,
+        "adb_executable": adb_executable,
+    }))
+}
+
+fn adb_assert_ok(result: &serde_json::Value, label: &str) -> Result<(), String> {
+    let ok = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if ok {
+        return Ok(());
+    }
+
+    let status = result.get("status").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let stderr = result.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+    let stdout = result.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+    Err(format!("{label} failed (exit {status}). stderr: {stderr}. stdout: {stdout}"))
+}
+
+/// List Android devices visible through ADB (USB or WiFi debugging).
+#[tauri::command]
+pub async fn android_usb_list_devices() -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let args = vec!["devices".to_string(), "-l".to_string()];
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb devices")?;
+
+        let stdout = result
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let mut devices = Vec::new();
+        for line in stdout.lines().skip(1) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+
+            let serial = parts[0].to_string();
+            let state = parts[1].to_string();
+            let mut model = String::new();
+            let mut device = String::new();
+            let mut transport_id = String::new();
+
+            for part in parts.iter().skip(2) {
+                if let Some(rest) = part.strip_prefix("model:") {
+                    model = rest.to_string();
+                } else if let Some(rest) = part.strip_prefix("device:") {
+                    device = rest.to_string();
+                } else if let Some(rest) = part.strip_prefix("transport_id:") {
+                    transport_id = rest.to_string();
+                }
+            }
+
+            devices.push(serde_json::json!({
+                "serial": serial,
+                "state": state,
+                "model": model,
+                "device": device,
+                "transport_id": transport_id,
+                "raw": line,
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "devices": devices,
+            "raw": stdout,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Report which adb executable Bonsai is currently resolving.
+#[tauri::command]
+pub async fn android_usb_get_adb_info() -> Result<serde_json::Value, String> {
+    let (adb_executable, candidates) = resolve_adb_executable();
+    Ok(serde_json::json!({
+        "adb_executable": adb_executable,
+        "candidates": candidates,
+    }))
+}
+
+/// Run an arbitrary ADB shell command on a selected Android device.
+#[tauri::command]
+pub async fn android_usb_shell(serial: String, shell_command: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        let shell_command = shell_command.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if shell_command.is_empty() {
+            return Err("shell_command cannot be empty".to_string());
+        }
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            shell_command,
+        ];
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb shell")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Install an APK onto a selected Android device.
+#[tauri::command]
+pub async fn android_usb_install_apk(
+    serial: String,
+    apk_path: String,
+    replace: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        let apk_path = apk_path.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if apk_path.is_empty() {
+            return Err("apk_path cannot be empty".to_string());
+        }
+        if !std::path::Path::new(&apk_path).exists() {
+            return Err(format!("APK not found: {apk_path}"));
+        }
+
+        let mut args = vec!["-s".to_string(), serial, "install".to_string()];
+        if replace.unwrap_or(true) {
+            args.push("-r".to_string());
+        }
+        args.push(apk_path);
+
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb install")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Launch an Android app by package name (and optional activity).
+#[tauri::command]
+pub async fn android_usb_launch_app(
+    serial: String,
+    package_name: String,
+    activity: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        let package_name = package_name.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if package_name.is_empty() {
+            return Err("package_name cannot be empty".to_string());
+        }
+
+        let args = if let Some(activity_name) = activity {
+            let activity_name = activity_name.trim().to_string();
+            if activity_name.is_empty() {
+                vec![
+                    "-s".to_string(),
+                    serial,
+                    "shell".to_string(),
+                    "monkey".to_string(),
+                    "-p".to_string(),
+                    package_name,
+                    "-c".to_string(),
+                    "android.intent.category.LAUNCHER".to_string(),
+                    "1".to_string(),
+                ]
+            } else {
+                vec![
+                    "-s".to_string(),
+                    serial,
+                    "shell".to_string(),
+                    "am".to_string(),
+                    "start".to_string(),
+                    "-n".to_string(),
+                    format!("{package_name}/{activity_name}"),
+                ]
+            }
+        } else {
+            vec![
+                "-s".to_string(),
+                serial,
+                "shell".to_string(),
+                "monkey".to_string(),
+                "-p".to_string(),
+                package_name,
+                "-c".to_string(),
+                "android.intent.category.LAUNCHER".to_string(),
+                "1".to_string(),
+            ]
+        };
+
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb launch app")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Configure adb reverse for desktop API access over USB.
+#[tauri::command]
+pub async fn android_usb_reverse(
+    serial: String,
+    host_port: Option<u16>,
+    device_port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let host_port = host_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let device_port = device_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "reverse".to_string(),
+            format!("tcp:{host_port}"),
+            format!("tcp:{device_port}"),
+        ];
+
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb reverse")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Remove all adb reverse mappings for a selected device.
+#[tauri::command]
+pub async fn android_usb_reverse_clear(serial: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "reverse".to_string(),
+            "--remove-all".to_string(),
+        ];
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb reverse --remove-all")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Enable WiFi debugging mode (adb tcpip) while connected over USB.
+#[tauri::command]
+pub async fn android_usb_enable_wifi_debug(
+    serial: String,
+    port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let port = port.unwrap_or(5555);
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "tcpip".to_string(),
+            port.to_string(),
+        ];
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb tcpip")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Connect to an Android device over WiFi debugging.
+#[tauri::command]
+pub async fn android_usb_connect_wifi(
+    host: String,
+    port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let host = host.trim().to_string();
+        if host.is_empty() {
+            return Err("host cannot be empty".to_string());
+        }
+
+        let target = if host.contains(':') {
+            host
+        } else {
+            format!("{}:{}", host, port.unwrap_or(5555))
+        };
+        let args = vec!["connect".to_string(), target];
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb connect")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Disconnect one (or all) WiFi adb sessions.
+#[tauri::command]
+pub async fn android_usb_disconnect_wifi(
+    host: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut args = vec!["disconnect".to_string()];
+        if let Some(host) = host {
+            let host = host.trim().to_string();
+            if !host.is_empty() {
+                args.push(host);
+            }
+        }
+        let result = adb_run(&args)?;
+        adb_assert_ok(&result, "adb disconnect")?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn usb_regression_evidence_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("android-usb-regression-evidence.jsonl"))
+}
+
+/// Run an end-to-end Android USB regression workflow and persist an evidence record.
+#[tauri::command]
+pub async fn android_usb_run_regression(
+    app_handle: AppHandle,
+    serial: String,
+    api_port: Option<u16>,
+    package_name: Option<String>,
+    activity: Option<String>,
+    wifi_host: Option<String>,
+    wifi_port: Option<u16>,
+    strict_require_app: Option<bool>,
+    apk_path: Option<String>,
+    enable_bootstrap: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let api_port = api_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let wifi_port = wifi_port.unwrap_or(5555);
+        let pkg = package_name.unwrap_or_else(|| "com.bonsai.workspace".to_string());
+        let activity_name = activity.unwrap_or_default();
+        let wifi_host = wifi_host.unwrap_or_default().trim().to_string();
+        let strict = strict_require_app.unwrap_or(false);
+        let resolved_apk = apk_path.map(|s| s.trim().to_string()).unwrap_or_default();
+        let _enable_bootstrap = enable_bootstrap.unwrap_or(false);
+
+        let mut steps = Vec::<serde_json::Value>::new();
+
+        let run_step = |label: &str, args: Vec<String>, steps: &mut Vec<serde_json::Value>| -> Result<serde_json::Value, String> {
+            let out = adb_run(&args)?;
+            let ok = out.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            steps.push(serde_json::json!({
+                "label": label,
+                "ok": ok,
+                "result": out,
+            }));
+            Ok(steps.last().cloned().unwrap_or_else(|| serde_json::json!({})))
+        };
+
+        let mut all_ok = true;
+
+        // 1) Verify device appears.
+        let devices = run_step(
+            "adb devices -l",
+            vec!["devices".to_string(), "-l".to_string()],
+            &mut steps,
+        )?;
+        if !devices.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            all_ok = false;
+        }
+
+        // 2) Query model.
+        let model = run_step(
+            "adb shell getprop ro.product.model",
+            vec![
+                "-s".to_string(),
+                serial.clone(),
+                "shell".to_string(),
+                "getprop ro.product.model".to_string(),
+            ],
+            &mut steps,
+        )?;
+        if !model.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            all_ok = false;
+        }
+
+        // 3) Configure reverse mapping.
+        let reverse = run_step(
+            "adb reverse tcp:api tcp:api",
+            vec![
+                "-s".to_string(),
+                serial.clone(),
+                "reverse".to_string(),
+                format!("tcp:{api_port}"),
+                format!("tcp:{api_port}"),
+            ],
+            &mut steps,
+        )?;
+        if !reverse.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            all_ok = false;
+        }
+
+        let reverse_list = run_step(
+            "adb reverse --list",
+            vec![
+                "-s".to_string(),
+                serial.clone(),
+                "reverse".to_string(),
+                "--list".to_string(),
+            ],
+            &mut steps,
+        )?;
+        if !reverse_list.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            all_ok = false;
+        }
+
+        // 4) Launch app (optional but enabled by default package).
+        let launch_args = if activity_name.trim().is_empty() {
+            vec![
+                "-s".to_string(),
+                serial.clone(),
+                "shell".to_string(),
+                "monkey".to_string(),
+                "-p".to_string(),
+                pkg.clone(),
+                "-c".to_string(),
+                "android.intent.category.LAUNCHER".to_string(),
+                "1".to_string(),
+            ]
+        } else {
+            vec![
+                "-s".to_string(),
+                serial.clone(),
+                "shell".to_string(),
+                "am".to_string(),
+                "start".to_string(),
+                "-n".to_string(),
+                format!("{}/{}", pkg, activity_name.trim()),
+            ]
+        };
+        let launch = run_step("launch app", launch_args, &mut steps)?;
+        if !launch.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            all_ok = false;
+        }
+
+        // 5) Optional USB -> WiFi bridge validation.
+        if !wifi_host.is_empty() {
+            let tcpip = run_step(
+                "adb tcpip",
+                vec![
+                    "-s".to_string(),
+                    serial.clone(),
+                    "tcpip".to_string(),
+                    wifi_port.to_string(),
+                ],
+                &mut steps,
+            )?;
+            if !tcpip.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                all_ok = false;
+            }
+
+            let connect = run_step(
+                "adb connect",
+                vec!["connect".to_string(), format!("{}:{}", wifi_host, wifi_port)],
+                &mut steps,
+            )?;
+            if !connect.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                all_ok = false;
+            }
+        }
+
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis() as u64;
+
+        let record = serde_json::json!({
+            "schema_version": 2,
+            "ts_ms": ts_ms,
+            "serial": serial,
+            "api_port": api_port,
+            "wifi_host": if wifi_host.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(wifi_host.clone()) },
+            "wifi_port": wifi_port,
+            "package_name": pkg,
+            "activity": if activity_name.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(activity_name.trim().to_string()) },
+            "strict_require_app": strict,
+            "resolved_apk_path": if resolved_apk.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(resolved_apk.clone()) },
+            "ok": all_ok,
+            "steps": steps,
+            "platform": std::env::consts::OS,
+        });
+
+        let path = usb_regression_evidence_path(&app_handle)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        writeln!(file, "{}", record).map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "record": record,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ─── USB Lab Runtime System ───────────────────────────────────────────────────
+// Steps 1-4: Readiness, APK resolver, install/launch orchestrator, bootstrap.
+
+/// Step 1: Device Readiness State Machine.
+///
+/// Returns a structured readiness status for a single device so the UI can
+/// guide the operator with a deterministic next-action.
+#[tauri::command]
+pub async fn android_usb_get_device_readiness(
+    serial: String,
+    api_port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::Instant;
+
+        let serial = serial.trim().to_string();
+        let api_port = api_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let (adb_executable, _candidates) = resolve_adb_executable();
+        let adb_present = std::path::Path::new(&adb_executable).exists()
+            || which_adb_on_path();
+
+        // Helper: run a quick adb command, return (ok, stdout, stderr).
+        let quick = |args: Vec<String>| -> (bool, String, String) {
+            match adb_run(&args) {
+                Ok(v) => (
+                    v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+                    v.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    v.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                ),
+                Err(_) => (false, String::new(), String::new()),
+            }
+        };
+
+        // --- adb present? ---
+        if !adb_present {
+            return Ok(serde_json::json!({
+                "serial": serial,
+                "adb_executable": adb_executable,
+                "connected": false,
+                "authorized": false,
+                "model": null,
+                "reverse_api_active": false,
+                "api_port": api_port,
+                "status": "disconnected",
+                "next_action": "Install Android Platform Tools (adb) and ensure it is on PATH or ANDROID_HOME is set.",
+            }));
+        }
+
+        // --- Is device visible? ---
+        let (devices_ok, devices_out, _) =
+            quick(vec!["devices".to_string(), "-l".to_string()]);
+
+        let mut connected = false;
+        let mut authorized = false;
+        let mut state_str = String::new();
+
+        if devices_ok {
+            for line in devices_out.lines().skip(1) {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 2 { continue; }
+                if parts[0] == serial {
+                    connected = true;
+                    state_str = parts[1].to_string();
+                    authorized = state_str == "device";
+                    break;
+                }
+            }
+            // If serial is empty pick first "device" state entry.
+            if serial.is_empty() {
+                for line in devices_out.lines().skip(1) {
+                    let line = line.trim();
+                    if line.is_empty() { continue; }
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 && parts[1] == "device" {
+                        connected = true;
+                        authorized = true;
+                        state_str = "device".to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !connected {
+            return Ok(serde_json::json!({
+                "serial": serial,
+                "adb_executable": adb_executable,
+                "connected": false,
+                "authorized": false,
+                "model": null,
+                "reverse_api_active": false,
+                "api_port": api_port,
+                "status": "disconnected",
+                "next_action": "Connect Android device over USB and enable USB debugging.",
+            }));
+        }
+
+        if !authorized {
+            return Ok(serde_json::json!({
+                "serial": serial,
+                "adb_executable": adb_executable,
+                "connected": true,
+                "authorized": false,
+                "model": null,
+                "reverse_api_active": false,
+                "api_port": api_port,
+                "status": "unauthorized",
+                "next_action": format!("Tap 'Allow USB debugging' on the device screen (state: {state_str})."),
+            }));
+        }
+
+        // --- Model ---
+        let _t0 = Instant::now();
+        let (model_ok, model_out, _) = quick(vec![
+            "-s".to_string(), serial.clone(),
+            "shell".to_string(), "getprop".to_string(), "ro.product.model".to_string(),
+        ]);
+        let model_str = if model_ok && !model_out.is_empty() {
+            model_out.trim().to_string()
+        } else {
+            String::new()
+        };
+
+        // --- Reverse mapping active? ---
+        let (rev_ok, rev_out, _) = quick(vec![
+            "-s".to_string(), serial.clone(),
+            "reverse".to_string(), "--list".to_string(),
+        ]);
+        let needle = format!("tcp:{api_port}");
+        let reverse_api_active = rev_ok && rev_out.contains(&needle);
+
+        let status = if reverse_api_active { "ready" } else { "online" };
+        let next_action = if reverse_api_active {
+            "Device is ready. Run Install & Launch or Full Validation.".to_string()
+        } else {
+            "Click 'Bootstrap Connection' to establish reverse port mapping.".to_string()
+        };
+
+        Ok(serde_json::json!({
+            "serial": serial,
+            "adb_executable": adb_executable,
+            "connected": true,
+            "authorized": true,
+            "model": if model_str.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(model_str) },
+            "reverse_api_active": reverse_api_active,
+            "api_port": api_port,
+            "status": status,
+            "next_action": next_action,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn which_adb_on_path() -> bool {
+    Command::new("adb")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Step 2a: APK Artifact Resolver.
+///
+/// Resolution order:
+/// 1. explicit_path if provided and exists
+/// 2. Known Tauri/Gradle output candidates under the workspace
+/// 3. Error with candidate list so the UI can guide the operator.
+#[tauri::command]
+pub async fn android_usb_resolve_apk(
+    app_handle: AppHandle,
+    explicit_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        // 1. Explicit path wins.
+        if let Some(ref p) = explicit_path {
+            let p = p.trim();
+            if !p.is_empty() {
+                let path = std::path::Path::new(p);
+                if path.exists() {
+                    return apk_metadata(p);
+                }
+                return Err(format!("Explicit APK path not found: {p}"));
+            }
+        }
+
+        // 2. Known output candidates relative to the app data directory.
+        use tauri::Manager as _;
+        let app_data_dir = app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+
+        // Walk up to workspace root (app_data_dir is typically inside AppData; walk up to find bonsai src-tauri).
+        let workspace_root: std::path::PathBuf = app_data_dir
+            .ancestors()
+            .find(|p: &&std::path::Path| p.join("src-tauri").exists())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| app_data_dir.clone());
+
+        let candidates: Vec<std::path::PathBuf> = vec![
+            // Tauri mobile build output.
+            workspace_root.join("src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"),
+            workspace_root.join("src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"),
+            workspace_root.join("src-tauri/gen/android/app/build/outputs/apk/arm64-v8a/release/app-arm64-v8a-release-unsigned.apk"),
+            workspace_root.join("src-tauri/gen/android/app/build/outputs/apk/arm64-v8a/debug/app-arm64-v8a-debug.apk"),
+            // Generic gradle outputs.
+            workspace_root.join("app/build/outputs/apk/release/app-release.apk"),
+            workspace_root.join("app/build/outputs/apk/debug/app-debug.apk"),
+        ];
+
+        let candidate_strs: Vec<String> = candidates
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                let s = candidate.to_string_lossy().to_string();
+                return apk_metadata(&s);
+            }
+        }
+
+        Err(format!(
+            "No APK found. Checked candidates: {}. Provide ANDROID_APK_PATH or build the project first.",
+            candidate_strs.join("; ")
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Extract metadata from an APK file (package name, version, etc.) using aapt if available.
+fn apk_metadata(path: &str) -> Result<serde_json::Value, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("APK stat error: {e}"))?;
+    let size_bytes = meta.len();
+
+    // Try aapt2 then aapt for richer metadata.
+    let mut package = String::new();
+    let mut version_name = String::new();
+    let mut version_code = String::new();
+
+    for tool in &["aapt2", "aapt"] {
+        let result = Command::new(tool)
+            .args(["dump", "badging", path])
+            .output();
+        if let Ok(out) = result {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if line.starts_with("package:") {
+                        for part in line.split_whitespace() {
+                            if let Some(v) = part.strip_prefix("name='") {
+                                package = v.trim_end_matches('\'').to_string();
+                            } else if let Some(v) = part.strip_prefix("versionName='") {
+                                version_name = v.trim_end_matches('\'').to_string();
+                            } else if let Some(v) = part.strip_prefix("versionCode='") {
+                                version_code = v.trim_end_matches('\'').to_string();
+                            }
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "path": path,
+        "size_bytes": size_bytes,
+        "package": if package.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(package) },
+        "version_name": if version_name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(version_name) },
+        "version_code": if version_code.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(version_code) },
+    }))
+}
+
+/// Step 2b: Install and Launch Orchestrator.
+///
+/// Single command that installs an APK, verifies it, and launches the app.
+/// Returns a per-step result array so the UI can show exactly where it failed.
+#[tauri::command]
+pub async fn android_usb_install_and_launch(
+    serial: String,
+    apk_path: String,
+    package_name: Option<String>,
+    activity: Option<String>,
+    strict_require_app: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::Instant;
+
+        let serial = serial.trim().to_string();
+        let apk_path = apk_path.trim().to_string();
+        let pkg = package_name
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "com.bonsai.workspace".to_string());
+        let activity_name = activity.map(|s| s.trim().to_string()).unwrap_or_default();
+        let strict = strict_require_app.unwrap_or(false);
+
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if apk_path.is_empty() {
+            return Err("apk_path cannot be empty".to_string());
+        }
+        if !std::path::Path::new(&apk_path).exists() {
+            return Err(format!("APK not found: {apk_path}"));
+        }
+
+        let mut steps: Vec<serde_json::Value> = Vec::new();
+        let mut overall_ok = true;
+
+        macro_rules! run_step {
+            ($label:expr, $args:expr) => {{
+                let t0 = Instant::now();
+                let result = adb_run(&$args);
+                let duration_ms = t0.elapsed().as_millis() as u64;
+                match result {
+                    Ok(v) => {
+                        let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+                        let stdout = v.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let stderr = v.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let step = serde_json::json!({
+                            "label": $label,
+                            "ok": ok,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "duration_ms": duration_ms,
+                            "fatal": false,
+                        });
+                        steps.push(step.clone());
+                        if !ok { overall_ok = false; }
+                        step
+                    }
+                    Err(e) => {
+                        let step = serde_json::json!({
+                            "label": $label,
+                            "ok": false,
+                            "stdout": "",
+                            "stderr": e.clone(),
+                            "duration_ms": duration_ms,
+                            "fatal": true,
+                        });
+                        steps.push(step.clone());
+                        overall_ok = false;
+                        step
+                    }
+                }
+            }};
+        }
+
+        // 1. Install APK.
+        run_step!("adb install -r", vec![
+            "-s".to_string(), serial.clone(),
+            "install".to_string(), "-r".to_string(),
+            apk_path.clone(),
+        ]);
+
+        // 2. Verify package installed.
+        let pkg_check = run_step!("pm path", vec![
+            "-s".to_string(), serial.clone(),
+            "shell".to_string(), "pm".to_string(), "path".to_string(), pkg.clone(),
+        ]);
+        let pkg_installed = pkg_check.get("stdout")
+            .and_then(|v| v.as_str())
+            .map(|s| s.contains("package:"))
+            .unwrap_or(false);
+
+        if !pkg_installed {
+            let hint = if strict {
+                "Package not found after install (strict mode); check APK compatibility."
+            } else {
+                "Package not found after install; continuing in non-strict mode."
+            };
+            steps.last_mut().map(|s| {
+                s.as_object_mut().map(|o| {
+                    o.insert("hint".to_string(), serde_json::Value::String(hint.to_string()));
+                    if strict { o.insert("ok".to_string(), serde_json::Value::Bool(false)); }
+                });
+            });
+            if strict { overall_ok = false; }
+        }
+
+        // 3. Launch app.
+        if pkg_installed || !strict {
+            let launch_args = if !activity_name.is_empty() {
+                vec![
+                    "-s".to_string(), serial.clone(),
+                    "shell".to_string(), "am".to_string(), "start".to_string(),
+                    "-n".to_string(), format!("{pkg}/{activity_name}"),
+                ]
+            } else {
+                vec![
+                    "-s".to_string(), serial.clone(),
+                    "shell".to_string(), "monkey".to_string(),
+                    "-p".to_string(), pkg.clone(),
+                    "-c".to_string(), "android.intent.category.LAUNCHER".to_string(),
+                    "1".to_string(),
+                ]
+            };
+            run_step!("launch app", launch_args);
+
+            // 4. Verify process started.
+            let ps_step = run_step!("pidof app process", vec![
+                "-s".to_string(), serial.clone(),
+                "shell".to_string(), "pidof".to_string(), pkg.clone(),
+            ]);
+            let pid_ok = ps_step.get("stdout")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !pid_ok && strict {
+                overall_ok = false;
+            }
+        } else {
+            steps.push(serde_json::json!({
+                "label": "launch app",
+                "ok": true,
+                "stdout": "",
+                "stderr": "",
+                "duration_ms": 0,
+                "fatal": false,
+                "skipped": true,
+                "reason": format!("Package {pkg} not installed; strict_require_app=false so skipping launch."),
+            }));
+        }
+
+        Ok(serde_json::json!({
+            "serial": serial,
+            "apk_path": apk_path,
+            "package_name": pkg,
+            "strict_require_app": strict,
+            "ok": overall_ok,
+            "steps": steps,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Step 3: Connection Bootstrap Command.
+///
+/// Ensures reverse port mapping is active and optionally enables WiFi bridge.
+/// Returns a deterministic step list with no hidden side effects.
+#[tauri::command]
+pub async fn android_usb_bootstrap_connection(
+    serial: String,
+    api_port: Option<u16>,
+    ws_port: Option<u16>,
+    wifi_host: Option<String>,
+    wifi_port: Option<u16>,
+    enable_wifi_bridge: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::Instant;
+
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let api_port = api_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let ws_port = ws_port.unwrap_or(api_port); // WS shares the API port path (/ws route)
+        let wifi_port_val = wifi_port.unwrap_or(5555);
+        let wifi_host_val = wifi_host.unwrap_or_default().trim().to_string();
+        let bridge = enable_wifi_bridge.unwrap_or(false);
+
+        let mut steps: Vec<serde_json::Value> = Vec::new();
+        let mut overall_ok = true;
+
+        macro_rules! step {
+            ($label:expr, $args:expr) => {{
+                let t0 = Instant::now();
+                let r = adb_run(&$args);
+                let duration_ms = t0.elapsed().as_millis() as u64;
+                let (ok, stdout, stderr) = match r {
+                    Ok(v) => (
+                        v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("stdout").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                        v.get("stderr").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    ),
+                    Err(e) => (false, String::new(), e),
+                };
+                if !ok { overall_ok = false; }
+                steps.push(serde_json::json!({
+                    "label": $label,
+                    "ok": ok,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "duration_ms": duration_ms,
+                }));
+                ok
+            }};
+        }
+
+        // 1. Reverse API port.
+        step!("adb reverse tcp:api", vec![
+            "-s".to_string(), serial.clone(),
+            "reverse".to_string(),
+            format!("tcp:{api_port}"),
+            format!("tcp:{api_port}"),
+        ]);
+
+        // 2. If ws_port differs from api_port also map it.
+        if ws_port != api_port {
+            step!("adb reverse tcp:ws", vec![
+                "-s".to_string(), serial.clone(),
+                "reverse".to_string(),
+                format!("tcp:{ws_port}"),
+                format!("tcp:{ws_port}"),
+            ]);
+        }
+
+        // 3. Verify reverse list contains both mappings.
+        let rev_ok = step!("adb reverse --list", vec![
+            "-s".to_string(), serial.clone(),
+            "reverse".to_string(), "--list".to_string(),
+        ]);
+
+        // Check stdout of the --list step for expected mapping.
+        if let Some(list_step) = steps.last() {
+            let stdout = list_step.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+            let needle = format!("tcp:{api_port}");
+            if rev_ok && !stdout.contains(&needle) {
+                overall_ok = false;
+                // Amend the step to reflect the mapping check failure.
+                let idx = steps.len() - 1;
+                if let Some(s) = steps.get_mut(idx) {
+                    if let Some(o) = s.as_object_mut() {
+                        o.insert("ok".to_string(), serde_json::Value::Bool(false));
+                        o.insert("hint".to_string(), serde_json::Value::String(
+                            format!("Reverse --list did not contain tcp:{api_port}")
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 4. Optional WiFi bridge.
+        if bridge && !wifi_host_val.is_empty() {
+            step!("adb tcpip", vec![
+                "-s".to_string(), serial.clone(),
+                "tcpip".to_string(), wifi_port_val.to_string(),
+            ]);
+            step!("adb connect wifi", vec![
+                "connect".to_string(),
+                format!("{}:{}", wifi_host_val, wifi_port_val),
+            ]);
+        }
+
+        Ok(serde_json::json!({
+            "serial": serial,
+            "api_port": api_port,
+            "ws_port": ws_port,
+            "wifi_bridge_enabled": bridge,
+            "ok": overall_ok,
+            "steps": steps,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Compatibility command retained for legacy invoke surfaces.
 ///
 /// Mobile QR scanning is handled in the frontend via
@@ -1925,6 +3081,101 @@ pub async fn load_desktop_connection(app_handle: AppHandle) -> Result<Option<ser
         }))),
         _ => Ok(None),
     }
+}
+
+fn mobile_pairing_evidence_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("mobile-pairing-evidence.jsonl"))
+}
+
+/// Append a mobile pairing verification evidence record to app data storage.
+#[tauri::command]
+pub async fn record_mobile_pairing_evidence(
+    app_handle: AppHandle,
+    source: String,
+    ip: String,
+    verified: bool,
+    detail: String,
+    ws_url: Option<String>,
+    elapsed_ms: Option<u64>,
+    scanned_payload: Option<String>,
+    token_hint: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let path = mobile_pairing_evidence_path(&app_handle)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+
+    let record = serde_json::json!({
+        "ts_ms": now_ms,
+        "source": source,
+        "ip": ip,
+        "verified": verified,
+        "detail": detail,
+        "ws_url": ws_url,
+        "elapsed_ms": elapsed_ms,
+        "scanned_payload": scanned_payload,
+        "token_hint": token_hint,
+        "platform": std::env::consts::OS,
+    });
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(file, "{}", record).map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "record": record,
+    }))
+}
+
+/// Read recent mobile pairing verification evidence records.
+#[tauri::command]
+pub async fn get_mobile_pairing_evidence(
+    app_handle: AppHandle,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let path = mobile_pairing_evidence_path(&app_handle)?;
+    if !path.exists() {
+        return Ok(serde_json::json!({
+            "path": path.to_string_lossy(),
+            "items": [],
+        }));
+    }
+
+    let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let take = limit.unwrap_or(20).max(1).min(200);
+    let mut lines = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines.push(line);
+    }
+
+    let start = lines.len().saturating_sub(take);
+    let mut items = Vec::new();
+    for raw in lines.into_iter().skip(start) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            items.push(value);
+        }
+    }
+
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "items": items,
+    }))
 }
 
 /// Browse LAN for `_bonsai._tcp.local.` services.
