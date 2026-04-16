@@ -169,23 +169,14 @@ Add a "VSCode" tab in the left sidebar (or as a collapsible panel). `VscodeViewe
 
 ### Setup
 1. Run `cargo tauri android init` to generate `src-tauri/gen/android/`.
-2. Add Android-specific Cargo feature flags to skip desktop-only deps:
+2. Add target-specific mobile plugin dependencies in `src-tauri/Cargo.toml` (current implementation uses target-gated plugin deps rather than a desktop/mobile feature split):
 
 ```toml
-# Cargo.toml
-[features]
-desktop = ["scrap", "enigo", "portable-pty", "cpal"]
-mobile = []
-default = ["desktop"]
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
-scrap = "0.5"
-enigo = "0.0.14"
-portable-pty = "0.8"
-cpal = { version = "0.15", optional = true }
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
 ```
 
-3. Gate desktop-only modules with `#[cfg(not(target_os = "android"))]`.
+3. Initialize `tauri_plugin_barcode_scanner::init()` in `src-tauri/src/lib.rs` under `#[cfg(any(target_os = "android", target_os = "ios"))]` so desktop builds remain unchanged.
 
 ### Mobile UI Layout
 **New file:** `src/lib/components/MobileLayout.svelte`
@@ -217,7 +208,6 @@ const isMobile = (await platform()) === 'android';
 Add to `Cargo.toml`:
 ```toml
 tauri-plugin-barcode-scanner = "2"
-tauri-plugin-os = "2"
 ```
 
 ---
