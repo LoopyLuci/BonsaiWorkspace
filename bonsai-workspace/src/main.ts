@@ -1,8 +1,9 @@
 import App from './App.svelte';
 import { listen } from '@tauri-apps/api/event';
-import { addAssistantMessage, addPermissionCard, tokenSpeed } from '$lib/stores/chat';
+import { addAssistantMessage, tokenSpeed } from '$lib/stores/chat';
 import { receiveAgentDiff } from '$lib/stores/diff';
 import { fileTreeRefresh } from '$lib/stores/workspace';
+import { showTerminal } from '$lib/stores/terminal';
 
 // ── Tauri event listeners ──────────────────────────────────────────────────
 
@@ -29,18 +30,14 @@ async function setupListeners() {
     }
   });
 
-  // Permission broker — adds a card to the chat panel
-  await listen<{
-    type?:           string;
-    description?:    string;
-    rationale:       string;
-    paths_affected:  string[];
-    command?:        string;
-  }>('permission-request', (e) => addPermissionCard(e.payload));
-
   // Memory pressure warning
   await listen<boolean>('low-memory-mode', (e) => {
     console.warn('[Bonsai] Low memory mode:', e.payload);
+  });
+
+  // Agent can request opening the integrated terminal for command visibility.
+  await listen('show-terminal', () => {
+    showTerminal.set(true);
   });
 
   // Live model throughput

@@ -9,6 +9,18 @@
   import { activeEditorFile } from '$lib/stores/activeEditorFile';
   import { requestAskBonsai, type AskBonsaiAction } from '$lib/stores/chat';
   import { addToast } from '$lib/stores/toast';
+  import { showTerminal } from '$lib/stores/terminal';
+  import { currentWorkspace } from '$lib/stores/workspace';
+  import { detectFileType } from '$lib/utils/filetypes';
+  import {
+    editorToolingProfiles,
+    loadEditorToolingSettings,
+    updateToolingProfile,
+    setToolingLanguageTools,
+    resetEditorToolingSettings,
+    buildToolCommand,
+    type ToolingCommandKind,
+  } from '$lib/stores/editorTooling';
 
   export let theme: 'dark' | 'light' | 'high-contrast' = 'dark';
 
@@ -23,6 +35,11 @@
   let inlineDisposables: monaco.IDisposable[] = [];
   let isDirty          = false;
   let errorMsg         = '';
+  let showToolingPanel = false;
+
+  $: currentType = detectFileType(currentFilePath || '');
+  $: currentProfileId = currentType.toolingProfile;
+  $: currentProfile = $editorToolingProfiles[currentProfileId];
 
   // ── Theme sync ───────────────────────────────────────────────────────────
   $: if (editor) setEditorTheme(theme);
@@ -44,9 +61,70 @@
       clearDiff();
       isDirty = false;
       activeEditorFile.set({ path, content });
+      showToolingPanel = false;
     } catch (e) {
       errorMsg = `Cannot open file: ${e}`;
     }
+  }
+
+  function workspacePath(): string {
+    return get(currentWorkspace)?.path ?? '';
+  }
+
+  function quoteForShell(value: string): string {
+    if (!value) return '""';
+    return `"${value.replace(/"/g, '\\"')}"`;
+  }
+
+  function buildCurrentToolCommand(kind: ToolingCommandKind): string {
+    if (!currentFilePath) return '';
+    const workspace = workspacePath();
+    const cmd = buildToolCommand($editorToolingProfiles, currentFilePath, workspace, kind);
+    if (!cmd) return '';
+
+    // Provide safe defaults for commands that were not quoted in templates.
+    return cmd
+      .replaceAll(currentFilePath, quoteForShell(currentFilePath))
+      .replaceAll(workspace, quoteForShell(workspace));
+  }
+
+  async function runFileTool(kind: ToolingCommandKind) {
+    if (!currentFilePath) {
+      addToast('Open a file first.', 'info');
+      return;
+    }
+    if (!currentProfile?.enabled) {
+      addToast(`${currentProfile?.title ?? 'Current profile'} is disabled.`, 'info');
+      showToolingPanel = true;
+      return;
+    }
+
+    const command = buildCurrentToolCommand(kind);
+    if (!command) {
+      addToast(`No ${kind} command configured for ${currentProfile?.title ?? 'this profile'}.`, 'info');
+      showToolingPanel = true;
+      return;
+    }
+
+    try {
+      showTerminal.set(true);
+      await invoke('run_terminal_command', { command });
+      addToast(`${kind.toUpperCase()} command completed.`, 'success');
+    } catch (e) {
+      addToast(`${kind.toUpperCase()} command failed: ${String(e)}`, 'error');
+    }
+  }
+
+  function updateCurrentProfile(patch: Parameters<typeof updateToolingProfile>[1]) {
+    updateToolingProfile(currentProfileId, patch);
+  }
+
+  function checked(e: Event): boolean {
+    return (e.currentTarget as HTMLInputElement).checked;
+  }
+
+  function value(e: Event): string {
+    return (e.currentTarget as HTMLInputElement).value;
   }
 
   // ── Diff rendering ───────────────────────────────────────────────────────
@@ -319,6 +397,7 @@
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
   onMount(() => {
+    loadEditorToolingSettings();
     editor = createEditor(container, '', theme === 'dark' ? 'vs-dark' : theme === 'light' ? 'vs' : 'hc-black');
     setupAutoSave();
     setupAskBonsaiActions();
@@ -351,9 +430,93 @@
 
   {#if currentFilePath}
     <div class="file-pill">
-      {currentFilePath.split(/[/\\]/).pop()}
+      <span class="file-pill-icon">{currentType.icon}</span>
+      <span>{currentFilePath.split(/[/\\]/).pop()}</span>
+      <span class="file-pill-lang">{currentType.label}</span>
       {#if isDirty}<span class="dirty-dot" title="Unsaved changes">●</span>{/if}
     </div>
+
+    <div class="tooling-pill">
+      <button on:click={() => runFileTool('load')} title="Install/load language tools">Load Tools</button>
+      <button on:click={() => runFileTool('lint')} title="Run linter for current file">Lint</button>
+      <button on:click={() => runFileTool('format')} title="Run formatter for current file">Format</button>
+      <button on:click={() => runFileTool('test')} title="Run tests command">Test</button>
+      <button class="tools-config" on:click={() => (showToolingPanel = !showToolingPanel)} title="Edit tooling profile">Tools</button>
+    </div>
+
+    {#if showToolingPanel && currentProfile}
+      <div class="tooling-panel">
+        <div class="tooling-head">
+          <strong>{currentProfile.title} Profile</strong>
+          <button class="close-tooling" on:click={() => (showToolingPanel = false)}>x</button>
+        </div>
+
+        <label>
+          <span>Enabled</span>
+          <input
+            type="checkbox"
+            checked={currentProfile.enabled}
+            on:change={(e) => updateCurrentProfile({ enabled: checked(e) })}
+          />
+        </label>
+
+        <label>
+          <span>Load Tools Command</span>
+          <input
+            type="text"
+            value={currentProfile.loadCommand}
+            on:change={(e) => updateCurrentProfile({ loadCommand: value(e) })}
+            placeholder="Install dependencies/tooling"
+          />
+        </label>
+
+        <label>
+          <span>Lint Command</span>
+          <input
+            type="text"
+            value={currentProfile.lintCommand}
+            on:change={(e) => updateCurrentProfile({ lintCommand: value(e) })}
+            placeholder="Use placeholders file, dir, workspace"
+          />
+        </label>
+
+        <label>
+          <span>Format Command</span>
+          <input
+            type="text"
+            value={currentProfile.formatCommand}
+            on:change={(e) => updateCurrentProfile({ formatCommand: value(e) })}
+            placeholder="Use placeholders file, dir, workspace"
+          />
+        </label>
+
+        <label>
+          <span>Test Command</span>
+          <input
+            type="text"
+            value={currentProfile.testCommand}
+            on:change={(e) => updateCurrentProfile({ testCommand: value(e) })}
+            placeholder="Project-wide test command"
+          />
+        </label>
+
+        <label>
+          <span>Language Tools (comma-separated)</span>
+          <input
+            type="text"
+            value={currentProfile.languageTools.join(', ')}
+            on:change={(e) => setToolingLanguageTools(currentProfileId, value(e))}
+            placeholder="eslint, prettier, typescript"
+          />
+        </label>
+
+        <div class="tooling-note">Placeholders supported: {'{'}file{'}'}, {'{'}dir{'}'}, {'{'}workspace{'}'}</div>
+
+        <div class="tooling-actions">
+          <button on:click={() => resetEditorToolingSettings()}>Reset All Tooling Profiles</button>
+        </div>
+      </div>
+    {/if}
   {/if}
 
   <div bind:this={container} class="monaco-container"></div>
@@ -416,8 +579,111 @@
     color: var(--text-dim);
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     pointer-events: none;
+  }
+  .file-pill-icon { font-size: 13px; }
+  .file-pill-lang {
+    font-size: 10px;
+    color: var(--accent-hl);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 999px;
+  }
+
+  .tooling-pill {
+    position: absolute;
+    top: 8px;
+    left: 16px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tooling-pill button {
+    background: var(--bg2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  .tooling-pill button:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .tooling-pill .tools-config {
+    color: var(--accent-hl);
+  }
+
+  .tooling-panel {
+    position: absolute;
+    top: 42px;
+    left: 16px;
+    z-index: 12;
+    width: min(560px, calc(100% - 32px));
+    background: color-mix(in srgb, var(--bg2) 95%, #000 5%);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .tooling-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text);
+    font-size: 12px;
+  }
+  .close-tooling {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 11px;
+    padding: 2px 7px;
+    cursor: pointer;
+  }
+  .tooling-panel label {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .tooling-panel input[type='text'] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+  .tooling-note {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .tooling-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .tooling-actions button {
+    background: var(--bg);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .tooling-actions button:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
   .dirty-dot { color: var(--amber); font-size: 16px; line-height: 1; }
 

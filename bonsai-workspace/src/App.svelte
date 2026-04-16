@@ -7,6 +7,7 @@
   import SettingsPanel   from '$lib/components/SettingsPanel.svelte';
   import SessionPanel    from '$lib/components/SessionPanel.svelte';
   import AgentConnectPanel from '$lib/components/AgentConnectPanel.svelte';
+  import AgentsPanel       from '$lib/components/AgentsPanel.svelte';
   import TerminalPanel   from '$lib/components/TerminalPanel.svelte';
   import VscodeViewer    from '$lib/components/VscodeViewer.svelte';
   import MobileLayout    from '$lib/components/MobileLayout.svelte';
@@ -16,6 +17,7 @@
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
   import { currentSessionTitle, clearCurrentSession, restorePersistentSession } from '$lib/stores/chat';
+  import { loadAgentConfigs, loadPersonas } from '$lib/stores/agents';
   import Toasts from '$lib/components/Toast.svelte';
 
   // ── Layout toggles ────────────────────────────────────────────────────────
@@ -24,6 +26,7 @@
   let showSettings  = false;
   let showSession   = false;
   let showAgentConnect = false;
+  let showAgents       = false;
   let showVscode    = false;
   let sidebarWidth  = 280;
   let chatWidth     = 360;
@@ -123,6 +126,8 @@
     document.documentElement.dataset.theme = theme;
     initModelStores();
     void restorePersistentSession();
+    void loadAgentConfigs();
+    void loadPersonas();
     window.addEventListener('keydown', globalKey);
     window.addEventListener('open-session', openSessionEvent);
     // Detect Android — works both in Tauri mobile and browser dev preview.
@@ -167,6 +172,8 @@
         on:click={() => (showFileTree = !showFileTree)}>
         {showFileTree ? '◀ Tree' : '▶ Tree'}
       </button>
+      <button class="btn-icon" class:active={showAgents} title="Open Agents"
+        on:click={() => (showAgents = true)}>⚡ Agents</button>
       <button class="btn-icon" title="Toggle Terminal (Ctrl+`)"
         on:click={toggleTerminal}>Terminal</button>
       <button class="btn-icon" title="Toggle Chat"
@@ -253,6 +260,7 @@
   {#if showSettings}<SettingsPanel on:close={() => (showSettings = false)} />{/if}
   {#if showSession}<SessionPanel on:close={() => (showSession = false)} />{/if}
   {#if showAgentConnect}<AgentConnectPanel on:close={() => (showAgentConnect = false)} />{/if}
+  {#if showAgents}<AgentsPanel on:close={() => (showAgents = false)} />{/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
 
@@ -386,6 +394,11 @@
     background: var(--bg-hover);
     color: var(--text);
     border-color: var(--border);
+  }
+  .btn-icon.active {
+    color: var(--accent-hl);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
   }
 
   .toolbar-session {

@@ -1,5 +1,6 @@
 mod action_parser;
 mod agent_connect;
+mod agent_store;
 mod api_server;
 mod bootstrap;
 mod chat_sessions;
@@ -10,10 +11,12 @@ mod model_registry;
 mod remote;
 mod remote_input;
 mod sidecar_manager;
+mod swarm_orchestrator;
 mod tools;
 mod wal;
 mod ws_router;
 
+use std::collections::HashMap;
 use std::sync::{
     atomic::AtomicBool,
     Arc,
@@ -22,14 +25,18 @@ use std::sync::{
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
+pub struct PtySession {
+    pub writer: Box<dyn std::io::Write + Send>,
+    pub master: Box<dyn portable_pty::MasterPty + Send>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub orchestrator:     Arc<model_orchestrator::ModelOrchestrator>,
     pub whisper:          Arc<sidecar_manager::WhisperManager>,
     pub wal:              Arc<wal::WAL>,
     pub chat_sessions:    Arc<chat_sessions::ChatSessionStore>,
-    pub pty_writer:       Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
-    pub pty_resizer:      Arc<Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>>,
+    pub pty_sessions:     Arc<Mutex<std::collections::HashMap<String, PtySession>>>,
     /// Set to `true` to cancel an in-progress bootstrap download.
     pub bootstrap_cancel: Arc<AtomicBool>,
     /// Set to `true` to cancel in-flight chat generation.
@@ -42,6 +49,12 @@ pub struct AppState {
     pub ws_router:        Arc<ws_router::WsRouter>,
     /// One-time pairing token displayed as a QR code in Settings.
     pub pair_token:       String,
+    /// Agent persona/config store (shared SQLite pool).
+    pub agent_store:      Arc<agent_store::AgentStore>,
+    /// Swarm coordinator — routes leader/worker inference.
+    pub swarm_orchestrator: Arc<swarm_orchestrator::SwarmOrchestrator>,
+    /// Per-run per-slot cancel flags for in-flight swarm agents.
+    pub swarm_cancels:    Arc<StdMutex<HashMap<String, Vec<Arc<AtomicBool>>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -85,10 +98,17 @@ pub fn run() {
             // Remote control subsystem — Phase 1 scaffold only.
             let remote_manager = Arc::new(remote::RemoteManager::new(&app_handle));
 
-            let pty_writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>> =
-                Arc::new(Mutex::new(None));
-            let pty_resizer: Arc<Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>> =
-                Arc::new(Mutex::new(None));
+            let pty_sessions: Arc<Mutex<std::collections::HashMap<String, PtySession>>> =
+                Arc::new(Mutex::new(std::collections::HashMap::new()));
+
+            let agent_store = Arc::new(
+                tauri::async_runtime::block_on(agent_store::AgentStore::new(wal.pool()))
+                    .expect("Agent store init failed"),
+            );
+
+            let swarm_orch = Arc::new(swarm_orchestrator::SwarmOrchestrator::new(
+                orchestrator.clone(),
+            ));
 
             let bootstrap_cancel = Arc::new(AtomicBool::new(false));
             let chat_cancel = Arc::new(AtomicBool::new(false));
@@ -111,14 +131,16 @@ pub fn run() {
                 whisper:          whisper.clone(),
                 wal,
                 chat_sessions:    chat_sessions.clone(),
-                pty_writer,
-                pty_resizer,
+                pty_sessions,
                 bootstrap_cancel: bootstrap_cancel.clone(),
                 chat_cancel:      chat_cancel.clone(),
                 voice_cancel:     voice_cancel.clone(),
                 agent_connect,
-                ws_router:        ws_router.clone(),
-                pair_token:       pair_token.clone(),
+                ws_router:          ws_router.clone(),
+                pair_token:         pair_token.clone(),
+                agent_store,
+                swarm_orchestrator: swarm_orch,
+                swarm_cancels:      Arc::new(StdMutex::new(HashMap::new())),
             });
             app.manage(remote_manager.clone());
 
@@ -192,6 +214,7 @@ pub fn run() {
             // ── File system ───────────────────────────────────────────────────
             commands::read_file,
             commands::write_file,
+            commands::create_directory,
             commands::delete_file,
             commands::list_project_files,
             // ── Git ───────────────────────────────────────────────────────────
@@ -248,7 +271,10 @@ pub fn run() {
             commands::run_terminal_command,
             commands::spawn_pty_terminal,
             commands::send_to_pty,
+            commands::send_to_pty_session,
             commands::resize_pty,
+            commands::resize_pty_session,
+            commands::close_pty_session,
             commands::open_workspace,
             // ── Diff ─────────────────────────────────────────────────────────
             commands::accept_diff_hunk,
@@ -282,6 +308,17 @@ pub fn run() {
             commands::browse_bonsai_services,
             commands::ws_broadcast,
             commands::ws_client_count,
+            // ── Multi-agent swarm ─────────────────────────────────────────────
+            commands::list_personas,
+            commands::upsert_persona,
+            commands::delete_persona,
+            commands::list_agent_configs,
+            commands::upsert_agent_config,
+            commands::delete_agent_config,
+            commands::estimate_swarm_resources,
+            commands::submit_swarm_chat,
+            commands::cancel_swarm,
+            commands::cancel_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

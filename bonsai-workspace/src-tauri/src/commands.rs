@@ -68,6 +68,14 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn create_directory(path: String) -> Result<(), String> {
+    if has_parent_dir_component(&path) {
+        return Err("Path not allowed: traversal sequences are forbidden".to_string());
+    }
+    fs::create_dir_all(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn delete_file(path: String) -> Result<(), String> {
     if has_parent_dir_component(&path) {
         return Err("Path not allowed: traversal sequences are forbidden".to_string());
@@ -264,6 +272,19 @@ fn is_file_inventory_request(text: &str) -> bool {
         || t.contains("readme")
         || t.contains("read the file")
 }
+
+    fn is_system_info_request(text: &str) -> bool {
+        let t = text.to_lowercase();
+        t.contains("how much ram")
+        || t.contains("how much memory")
+        || t.contains("ram do i have")
+        || t.contains("memory do i have")
+        || t.contains("system specs")
+        || t.contains("computer specs")
+        || t.contains("hardware info")
+        || t.contains("system info")
+        || (t.contains("cpu") && t.contains("gpu"))
+    }
 
 fn emit_agent_connect_event(
     state: &AppState,
@@ -469,6 +490,15 @@ pub async fn submit_chat(
                  - If user asks to read a file and filename is known (for example README), locate it with list_all_files and then call read_file.\n"
             );
     }
+    if is_system_info_request(&last_user_text) {
+        sys_prompt.push_str(
+            "\n\n## Immediate instruction for this request\n\
+             - The user is asking for machine/system facts (for example RAM).\n\
+             - You MUST call run_command before answering.\n\
+             - Output ONLY this tool call first (no prose):\n\
+               <tool_call>{\"tool\":\"run_command\",\"args\":{\"command\":\"specs\"}}</tool_call>\n"
+        );
+    }
 
     // Build initial context list (system + conversation history)
     let mut ctx: Vec<Value> = vec![json!({"role": "system", "content": sys_prompt})];
@@ -498,6 +528,7 @@ pub async fn submit_chat(
     let mut last_auto_tool_sig = String::new();
     let mut repeated_auto_tool_count = 0usize;
     let mut malformed_retry_used = false;
+    let mut system_info_retry_used = false;
     const  MAX_TURNS: usize = 8;
     let mut loop_limit_reached = true;
 
@@ -557,6 +588,57 @@ pub async fn submit_chat(
                 ctx.push(json!({"role": "user", "content": "<tool_result>Error: malformed JSON in tool_call. Please reformat.</tool_result>"}));
                 continue;
             }
+
+            if is_system_info_request(&last_user_text) {
+                let run_command_available = tools.iter().any(|t| t.name == "run_command");
+                if !run_command_available {
+                    final_content = "I need the run_command tool enabled to retrieve machine specs. Please enable command execution tools and retry.".to_string();
+                    loop_limit_reached = false;
+                    break;
+                }
+
+                if !system_info_retry_used {
+                    system_info_retry_used = true;
+                    ctx.push(json!({"role": "assistant", "content": &response}));
+                    ctx.push(json!({
+                        "role": "user",
+                        "content": "Tool required for this request. Call run_command with command 'specs' before answering. Return only a <tool_call> block."
+                    }));
+                    continue;
+                }
+
+                // Deterministic fallback: trigger approval flow directly so system facts are gathered.
+                let fallback_args = json!({ "command": "specs" });
+                let payload = json!({
+                    "type":          "tool_approval",
+                    "tool":          "run_command",
+                    "args":          fallback_args,
+                    "description":   "Run command: specs",
+                    "rationale":     "System information request requires factual command output.",
+                    "paths_affected": [],
+                    "action":        json!({"tool": "run_command", "args": {"command": "specs"}}),
+                    "raw_response":  &response,
+                    "ctx_snapshot":  &ctx,
+                });
+                let _ = app_handle.emit("permission-request", payload);
+                emit_agent_connect_event(
+                    &state,
+                    &app_handle,
+                    "hitl.requested",
+                    "Tool approval required (system-info fallback)",
+                    json!({
+                        "tool": "run_command",
+                        "args": {"command": "specs"},
+                        "source": "system_info_fallback",
+                    }),
+                );
+
+                final_content = "I need to run a local system command to answer this accurately. Please approve the request.".to_string();
+                action_handled = true;
+                loop_limit_reached = false;
+                break;
+            }
+
             // No tool calls — this is the final prose response.
             final_content = tools::strip_tool_calls(&response);
             loop_limit_reached = false;
@@ -930,6 +1012,17 @@ pub async fn execute_tool_call(
 
     match result {
         Ok(output) => {
+            if tool == "run_command" {
+                let cmd = args["command"].as_str().unwrap_or("(unknown command)");
+                let _ = app_handle.emit("show-terminal", json!({ "source": "agent_tool" }));
+                let _ = app_handle.emit(
+                    "terminal-output",
+                    json!({
+                        "session_id": "agent-tool",
+                        "text": format!("$ {}\n{}\n", cmd, output),
+                    }),
+                );
+            }
             let _ = app_handle.emit(
                 "agent-response",
                 json!({
@@ -1287,7 +1380,13 @@ pub async fn run_terminal_command(command: String, app_handle: AppHandle) -> Res
             CommandEvent::Terminated(_) => break,
             _ => continue,
         };
-        let _ = app_handle.emit("terminal-output", text);
+        let _ = app_handle.emit(
+            "terminal-output",
+            json!({
+                "session_id": "agent-tool",
+                "text": text,
+            }),
+        );
     }
     Ok(())
 }
@@ -1296,8 +1395,11 @@ pub async fn run_terminal_command(command: String, app_handle: AppHandle) -> Res
 pub async fn spawn_pty_terminal(
     app_handle: AppHandle,
     state: State<'_, AppState>,
+    session_id: Option<String>,
 ) -> Result<(), String> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+    let session_id = session_id.unwrap_or_else(|| "default".to_string());
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -1309,17 +1411,16 @@ pub async fn spawn_pty_terminal(
 
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let master = pair.master;
+
     {
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-        let mut w  = state.pty_writer.lock().await;
-        *w = Some(writer);
-    }
-    {
-        let mut r = state.pty_resizer.lock().await;
-        *r = Some(pair.master);
+        let mut sessions = state.pty_sessions.lock().await;
+        sessions.insert(session_id.clone(), crate::PtySession { writer, master });
     }
 
     let handle = app_handle.clone();
+    let sid = session_id.clone();
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 1024];
         loop {
@@ -1328,7 +1429,13 @@ pub async fn spawn_pty_terminal(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = handle.emit("pty-output", text);
+                    let _ = handle.emit(
+                        "pty-output",
+                        json!({
+                            "session_id": sid,
+                            "text": text,
+                        }),
+                    );
                 }
             }
         }
@@ -1340,23 +1447,79 @@ pub async fn spawn_pty_terminal(
 #[tauri::command]
 pub async fn send_to_pty(input: String, state: State<'_, AppState>) -> Result<(), String> {
     use std::io::Write;
-    let mut guard = state.pty_writer.lock().await;
-    if let Some(ref mut w) = *guard {
-        w.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
-        w.write_all(b"\r").map_err(|e| e.to_string())?;
-    }
+    let session_id = "default".to_string();
+    let mut sessions = state.pty_sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| format!("No PTY session available ({session_id})"))?;
+    session
+        .writer
+        .write_all(input.as_bytes())
+        .map_err(|e| e.to_string())?;
+    session.writer.write_all(b"\r").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_to_pty_session(
+    session_id: String,
+    input: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use std::io::Write;
+    let mut sessions = state.pty_sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| format!("No PTY session available ({session_id})"))?;
+    session
+        .writer
+        .write_all(input.as_bytes())
+        .map_err(|e| e.to_string())?;
+    session.writer.write_all(b"\r").map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Result<(), String> {
     use portable_pty::PtySize;
-    let guard = state.pty_resizer.lock().await;
-    if let Some(ref master) = *guard {
-        master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-            .map_err(|e| e.to_string())?;
-    }
+    let session_id = "default".to_string();
+    let mut sessions = state.pty_sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| format!("No PTY session available ({session_id})"))?;
+    session
+        .master
+        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resize_pty_session(
+    session_id: String,
+    rows: u16,
+    cols: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use portable_pty::PtySize;
+    let mut sessions = state.pty_sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| format!("No PTY session available ({session_id})"))?;
+    session
+        .master
+        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_pty_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut sessions = state.pty_sessions.lock().await;
+    sessions.remove(&session_id);
     Ok(())
 }
 
@@ -3214,6 +3377,218 @@ pub async fn browse_bonsai_services() -> Result<Vec<serde_json::Value>, String> 
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ─── Multi-agent swarm commands ──────────────────────────────────────────────
+
+use crate::agent_store::{AgentConfig, Persona, ResolvedAgent};
+use crate::swarm_orchestrator::{SwarmRequest, SwarmResult, SwarmRuntimeSettings};
+
+#[derive(serde::Serialize)]
+pub struct AgentResourceCost {
+    pub agent_id:        String,
+    pub slot_index:      i64,
+    pub model_id:        Option<String>,
+    pub ram_required_mb: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct SwarmResourceEstimate {
+    pub total_ram_required_mb: u64,
+    pub free_ram_mb:           u64,
+    pub fits:                  bool,
+    pub per_agent:             Vec<AgentResourceCost>,
+}
+
+#[tauri::command]
+pub async fn list_personas(state: State<'_, AppState>) -> Result<Vec<Persona>, String> {
+    state.agent_store.list_personas().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn upsert_persona(state: State<'_, AppState>, persona: Persona) -> Result<Persona, String> {
+    state.agent_store.upsert_persona(persona).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_persona(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.agent_store.delete_persona(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_agent_configs(state: State<'_, AppState>) -> Result<Vec<ResolvedAgent>, String> {
+    state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn upsert_agent_config(state: State<'_, AppState>, config: AgentConfig) -> Result<AgentConfig, String> {
+    state.agent_store.upsert_agent(config).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_agent_config(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.agent_store.delete_agent(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn estimate_swarm_resources(state: State<'_, AppState>) -> Result<SwarmResourceEstimate, String> {
+    let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
+    let enabled: Vec<&ResolvedAgent> = resolved.iter().filter(|a| a.config.enabled).collect();
+
+    // Unique model RAM (same model loaded once, shared across slots)
+    let mut seen_models = std::collections::HashSet::new();
+    let mut unique_ram: u64 = 0;
+    for a in &enabled {
+        if let Some(mid) = &a.effective_model_id {
+            if seen_models.insert(mid.clone()) {
+                unique_ram += a.ram_required_mb;
+            }
+        }
+    }
+    let kv_overhead: u64 = 256 * enabled.len() as u64;
+    let total = unique_ram + kv_overhead;
+
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_memory();
+    let free_ram_mb = sys.available_memory() / 1024 / 1024;
+    let fits = total <= (free_ram_mb as f64 * 0.85) as u64;
+
+    let per_agent = enabled.iter().map(|a| AgentResourceCost {
+        agent_id:        a.config.id.clone(),
+        slot_index:      a.config.slot_index,
+        model_id:        a.effective_model_id.clone(),
+        ram_required_mb: a.ram_required_mb,
+    }).collect();
+
+    Ok(SwarmResourceEstimate { total_ram_required_mb: total, free_ram_mb, fits, per_agent })
+}
+
+#[derive(serde::Serialize)]
+pub struct SwarmChatResponse {
+    pub run_id:         String,
+    pub final_content:  String,
+    pub leader_plan:    Option<serde_json::Value>,
+    pub agent_results:  Vec<crate::swarm_orchestrator::AgentOutput>,
+    pub stats:          InferStats,
+    pub action_handled: bool,
+    pub tools_used:     Vec<String>,
+}
+
+#[tauri::command]
+pub async fn submit_swarm_chat(
+    app_handle:     AppHandle,
+    state:          State<'_, AppState>,
+    messages:       Vec<ChatMessagePayload>,
+    workspace_path: Option<String>,
+    enabled_tools:  Option<Vec<String>>,
+    swarm_settings: Option<SwarmRuntimeSettings>,
+) -> Result<SwarmChatResponse, String> {
+    let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
+    let enabled: Vec<ResolvedAgent> = resolved.into_iter().filter(|a| a.config.enabled).collect();
+
+    if enabled.len() <= 1 {
+        // Single-agent fallback: just call submit_chat logic
+        state.chat_cancel.store(false, Ordering::Relaxed);
+        let result = submit_chat(app_handle, state, messages, workspace_path, enabled_tools).await?;
+        return Ok(SwarmChatResponse {
+            run_id:        "single".to_string(),
+            final_content: result.content,
+            leader_plan:   None,
+            agent_results: vec![],
+            stats:         result.stats,
+            action_handled: result.action_handled,
+            tools_used:    result.tools_used,
+        });
+    }
+
+    // Resource gate
+    let estimate = estimate_swarm_resources(state.clone()).await?;
+    if !estimate.fits {
+        return Err(format!(
+            "Not enough RAM: need {} MB, only {} MB available. Disable an agent or choose a smaller model.",
+            estimate.total_ram_required_mb, estimate.free_ram_mb
+        ));
+    }
+
+    let user_prompt = messages.iter().rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    let run_id: String = {
+        use rand::distributions::Alphanumeric;
+        use rand::Rng;
+        rand::thread_rng().sample_iter(&Alphanumeric).take(12).map(char::from).collect()
+    };
+
+    // Build cancel flags (one per slot, indexed by slot_index)
+    let max_slot = enabled.iter().map(|a| a.config.slot_index).max().unwrap_or(0) as usize;
+    let mut cancel_flags: Vec<Arc<std::sync::atomic::AtomicBool>> = (0..=max_slot)
+        .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .collect();
+    // Ensure length matches agent slot indices
+    while cancel_flags.len() <= max_slot {
+        cancel_flags.push(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    }
+
+    {
+        let mut cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
+        cancels.insert(run_id.clone(), cancel_flags.clone());
+    }
+
+    let global_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    state.swarm_orchestrator.submit(SwarmRequest {
+        run_id:         run_id.clone(),
+        session_id:     None,
+        user_prompt,
+        workspace_path,
+        enabled_tools,
+        runtime_settings: swarm_settings.unwrap_or_default(),
+        agents:         enabled,
+        cancel_flags,
+        global_cancel,
+        resp_tx,
+        app_handle,
+    })?;
+
+    let result: SwarmResult = resp_rx.await
+        .map_err(|_| "Swarm request cancelled".to_string())?
+        .map_err(|e| e)?;
+
+    {
+        let mut cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
+        cancels.remove(&run_id);
+    }
+
+    Ok(SwarmChatResponse {
+        run_id,
+        final_content:  result.final_response,
+        leader_plan:    result.leader_plan,
+        agent_results:  result.agent_results,
+        stats:          result.stats,
+        action_handled: false,
+        tools_used:     vec![],
+    })
+}
+
+#[tauri::command]
+pub async fn cancel_swarm(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    let cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
+    if let Some(flags) = cancels.get(&run_id) {
+        for f in flags { f.store(true, Ordering::Relaxed); }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_agent(state: State<'_, AppState>, run_id: String, slot: usize) -> Result<(), String> {
+    let cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
+    if let Some(flags) = cancels.get(&run_id) {
+        if let Some(f) = flags.get(slot) { f.store(true, Ordering::Relaxed); }
+    }
+    Ok(())
 }
 
 // ─── Unit tests ──────────────────────────────────────────────────────────────

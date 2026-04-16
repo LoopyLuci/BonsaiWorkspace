@@ -93,13 +93,13 @@ async function expectJson(baseUrl, path, name, init = {}) {
   }
 }
 
-async function testSseRemoteStream() {
+async function testSseRemoteStream(apiBase) {
   const name = 'remote stream (SSE frame event)';
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const resp = await fetch(`${API_BASE}/remote/stream`, {
+    const resp = await fetch(`${apiBase}/remote/stream`, {
       method: 'GET',
       signal: controller.signal,
     });
@@ -151,44 +151,65 @@ async function testSseRemoteStream() {
 }
 
 async function runApiSmoke() {
-  log(`Bonsai API smoke test base: ${API_BASE}`);
+  const apiCandidates = process.env.BONSAI_API_BASE
+    ? [process.env.BONSAI_API_BASE]
+    : ['http://127.0.0.1:11369', 'http://127.0.0.1:12469'];
 
-  const health = await expectJson(API_BASE, '/health', 'health endpoint');
+  let liveApiBase = apiCandidates[0];
+  let health = null;
+  for (const candidate of apiCandidates) {
+    log(`Bonsai API smoke test base: ${candidate}`);
+    try {
+      const resp = await fetchWithTimeout(candidate, '/health');
+      const text = await resp.text();
+      const data = text ? JSON.parse(text) : {};
+      if (resp.ok) {
+        health = data;
+        liveApiBase = candidate;
+        pass('health endpoint', `HTTP ${resp.status}`);
+        break;
+      }
+    } catch {
+      // Probe failed; try next candidate.
+    }
+  }
+
   if (!health) {
+    fail('health endpoint', `unreachable at candidates: ${apiCandidates.join(', ')}`);
     log('');
     log('API is unreachable. Start Bonsai app first (which starts the built-in API server), then re-run this smoke test.');
     return;
   }
 
-  const version = await expectJson(API_BASE, '/api/version', 'version endpoint');
+  const version = await expectJson(liveApiBase, '/api/version', 'version endpoint');
   if (version && typeof version.version === 'string') {
     pass('version shape', version.version);
   } else {
     fail('version shape', 'missing version string');
   }
 
-  const models = await expectJson(API_BASE, '/v1/models', 'openai models endpoint');
+  const models = await expectJson(liveApiBase, '/v1/models', 'openai models endpoint');
   if (models && Array.isArray(models.data)) {
     pass('openai models payload shape', `${models.data.length} model(s)`);
   } else {
     fail('openai models payload shape', 'missing data array');
   }
 
-  const tags = await expectJson(API_BASE, '/api/tags', 'ollama tags endpoint');
+  const tags = await expectJson(liveApiBase, '/api/tags', 'ollama tags endpoint');
   if (tags && Array.isArray(tags.models)) {
     pass('ollama tags payload shape', `${tags.models.length} model(s)`);
   } else {
     fail('ollama tags payload shape', 'missing models array');
   }
 
-  const start = await expectJson(API_BASE, '/remote/session/start', 'remote session start', { method: 'POST', body: '{}' });
+  const start = await expectJson(liveApiBase, '/remote/session/start', 'remote session start', { method: 'POST', body: '{}' });
   if (!start?.session_id) {
     fail('remote session id', 'session_id missing');
     return;
   }
   pass('remote session id', start.session_id);
 
-  const offer = await expectJson(API_BASE, '/remote/session/offer', 'remote session offer', {
+  const offer = await expectJson(liveApiBase, '/remote/session/offer', 'remote session offer', {
     method: 'POST',
     body: JSON.stringify({ type: 'offer', sdp: 'dummy-sdp-for-smoke-test' }),
   });
@@ -199,7 +220,7 @@ async function runApiSmoke() {
   }
 
   try {
-    const frameResp = await fetchWithTimeout(API_BASE, '/remote/frame', { method: 'GET', headers: {} }, 20000);
+    const frameResp = await fetchWithTimeout(liveApiBase, '/remote/frame', { method: 'GET', headers: {} }, 20000);
     const bytes = new Uint8Array(await frameResp.arrayBuffer());
     const ctype = frameResp.headers.get('content-type') || '';
     if (frameResp.ok && ctype.includes('image/png') && bytes.length > 128) {
@@ -211,9 +232,9 @@ async function runApiSmoke() {
     fail('remote frame capture', String(err));
   }
 
-  await testSseRemoteStream();
+  await testSseRemoteStream(liveApiBase);
 
-  const input = await expectJson(API_BASE, '/remote/input', 'remote input event', {
+  const input = await expectJson(liveApiBase, '/remote/input', 'remote input event', {
     method: 'POST',
     body: JSON.stringify({ event_type: 'mouse_move', x: 120, y: 80 }),
   });
@@ -223,10 +244,10 @@ async function runApiSmoke() {
     fail('remote input accepted shape', JSON.stringify(input || {}).slice(0, 160));
   }
 
-  await expectJson(API_BASE, '/remote/session/stop', 'remote session stop', { method: 'POST', body: '{}' });
+  await expectJson(liveApiBase, '/remote/session/stop', 'remote session stop', { method: 'POST', body: '{}' });
 
   try {
-    const postStop = await fetchWithTimeout(API_BASE, '/remote/frame', { method: 'GET', headers: {} }, 15000);
+    const postStop = await fetchWithTimeout(liveApiBase, '/remote/frame', { method: 'GET', headers: {} }, 15000);
     if (!postStop.ok) {
       pass('remote frame denied after stop', `HTTP ${postStop.status}`);
     } else {

@@ -172,7 +172,7 @@ pub fn built_in_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "run_command".into(),
-            description: "Execute a shell command and return its stdout/stderr output. ALWAYS REQUIRES USER APPROVAL.".into(),
+            description: "Execute a shell command and return its stdout/stderr output. ALWAYS REQUIRES USER APPROVAL. Supports aliases: 'specs', 'computer specs', 'system specs', and 'hardware info'.".into(),
             args: vec![ToolArg {
                 name: "command".into(), arg_type: "string".into(),
                 description: "Shell command to execute.".into(), required: true,
@@ -352,6 +352,16 @@ pub fn system_prompt(tools: &[ToolDef], workspace_path: Option<&str>) -> String 
             - If no workspace is open and the request requires file/directory tools, do not call a tool yet; ask the user to open a folder first.\n\n"
         );
 
+    s.push_str(
+        "## Mandatory execution behavior\n\n\
+         - When a user asks for factual machine/system information (CPU, RAM, GPU, OS, computer specs), execute a tool call instead of giving manual instructions.\n\
+         - Prefer `run_command` with `command: \"specs\"` for this request category.\n\
+            - When a user asks to create/build/write a script or file, use `write_file` (and `create_dir` if needed) instead of returning pseudo-code only.\n\
+            - For shell script requests, write syntactically valid script content for the requested shell and path.\n\
+         - Do not return hypothetical example hardware values.\n\
+         - If the user asks to run a command, run it via tool_call and then summarize the real output.\n\n"
+    );
+
     s
 }
 
@@ -400,9 +410,9 @@ fn find_tag_end(haystack: &str, start_idx: usize) -> Option<usize> {
 }
 
 fn parse_json_tool_call(json_str: &str) -> Option<ToolCall> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) else {
-        return None;
-    };
+    let parsed = serde_json::from_str::<serde_json::Value>(json_str)
+        .or_else(|_| serde_json::from_str::<serde_json::Value>(&json_str.replace('\\', "\\\\")));
+    let Ok(v) = parsed else { return None; };
     let tool = v["tool"].as_str().unwrap_or("").to_string();
     if tool.is_empty() {
         return None;
@@ -506,6 +516,8 @@ pub fn parse_tool_calls(response: &str) -> ParsedToolCalls {
             }
             if let Some(call) = parse_json_tool_call(candidate_trimmed) {
                 calls.push(call);
+            } else {
+                malformed_count += 1;
             }
         }
     }
@@ -592,6 +604,58 @@ fn resolve_directory_arg(args: &serde_json::Value, workspace_path: Option<&str>)
     workspace_path
         .map(|ws| ws.to_string())
         .ok_or_else(|| "Missing 'path' arg and no workspace is open".to_string())
+}
+
+fn is_specs_request_text(raw: &str) -> bool {
+    let lowered = raw.trim().to_lowercase();
+
+    if matches!(
+        lowered.as_str(),
+        "specs" | "computer specs" | "system specs" | "hardware info" | "system info" | "info"
+    ) {
+        return true;
+    }
+
+    // Accept common natural-language requests so run_command can normalize them.
+    (lowered.contains("ram") || lowered.contains("memory"))
+        || lowered.contains("how much memory")
+        || lowered.contains("how much ram")
+        || lowered.contains("system spec")
+        || lowered.contains("hardware spec")
+        || lowered.contains("computer spec")
+        || lowered.contains("cpu")
+        || lowered.contains("gpu")
+        || lowered.contains("what are my specs")
+}
+
+fn normalize_run_command(raw: &str) -> String {
+    let trimmed = raw.trim();
+
+    if !is_specs_request_text(trimmed) {
+        return trimmed.to_string();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return "powershell -NoProfile -Command \"$os=Get-CimInstance Win32_OperatingSystem; $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1; $cs=Get-CimInstance Win32_ComputerSystem; $gpu=Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; [PSCustomObject]@{ComputerName=$env:COMPUTERNAME;OS=$os.Caption;OSVersion=$os.Version;CPU=$cpu.Name;Cores=$cpu.NumberOfCores;LogicalProcessors=$cpu.NumberOfLogicalProcessors;RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2);GPU=($gpu -join '; ')} | ConvertTo-Json -Compress\"".to_string();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return "system_profiler SPHardwareDataType SPSoftwareDataType | head -n 120".to_string();
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return "uname -a; echo; lscpu 2>/dev/null | head -n 40; echo; free -h 2>/dev/null; echo; lspci 2>/dev/null | grep -Ei 'vga|3d|display' | head -n 8".to_string();
+    }
+
+    #[allow(unreachable_code)]
+    trimmed.to_string()
+}
+
+fn is_specs_alias(raw: &str) -> bool {
+    is_specs_request_text(raw)
 }
 
 /// Execute a built-in tool synchronously (no HITL check — caller is responsible).
@@ -918,11 +982,19 @@ pub async fn execute_built_in(
         }
 
         "run_command" => {
-            let cmd = args["command"].as_str().ok_or("Missing 'command' arg")?;
+            let raw = args["command"].as_str().ok_or("Missing 'command' arg")?;
+            let cmd = normalize_run_command(raw);
             #[cfg(target_os = "windows")]
-            let output = std::process::Command::new("cmd").args(["/C", cmd]).output();
+            let output = if is_specs_alias(raw) {
+                let specs_script = "$os=Get-CimInstance Win32_OperatingSystem; $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1; $cs=Get-CimInstance Win32_ComputerSystem; $gpu=Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; [PSCustomObject]@{ComputerName=$env:COMPUTERNAME;OS=$os.Caption;OSVersion=$os.Version;CPU=$cpu.Name;Cores=$cpu.NumberOfCores;LogicalProcessors=$cpu.NumberOfLogicalProcessors;RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2);GPU=($gpu -join '; ')} | ConvertTo-Json -Compress";
+                std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", specs_script])
+                    .output()
+            } else {
+                std::process::Command::new("cmd").args(["/C", &cmd]).output()
+            };
             #[cfg(not(target_os = "windows"))]
-            let output = std::process::Command::new("sh").args(["-c", cmd]).output();
+            let output = std::process::Command::new("sh").args(["-c", &cmd]).output();
 
             match output {
                 Err(e) => Err(format!("run_command error: {e}")),
@@ -938,6 +1010,9 @@ pub async fn execute_built_in(
                             "Command exited with code {}",
                             out.status.code().unwrap_or(-1)
                         );
+                    }
+                    if cmd != raw.trim() {
+                        result = format!("[normalized command]\n{}\n\n{}", cmd, result);
                     }
                     Ok(truncate_output(result))
                 }
@@ -1030,6 +1105,23 @@ The tool call is:
         assert_eq!(parsed.calls.len(), 1);
         assert_eq!(parsed.calls[0].tool, "grep_files");
         assert_eq!(parsed.calls[0].args["pattern"], "TODO");
+    }
+
+    #[test]
+    fn parse_tool_calls_salvages_unescaped_windows_path() {
+        let response = r#"{"tool":"read_file","args":{"path":"Z:\Projects\BonsaiTest\Hello.txt"}}"#;
+        let parsed = parse_tool_calls(response);
+        assert_eq!(parsed.calls.len(), 1);
+        assert_eq!(parsed.calls[0].tool, "read_file");
+        assert_eq!(parsed.calls[0].args["path"], "Z:\\Projects\\BonsaiTest\\Hello.txt");
+    }
+
+    #[test]
+    fn parse_tool_calls_marks_malformed_fallback_json() {
+        let response = r#"{"tool":"read_file","args":{"path":"Z:/NotValid",}}"#;
+        let parsed = parse_tool_calls(response);
+        assert_eq!(parsed.calls.len(), 0);
+        assert!(parsed.malformed_count >= 1);
     }
 
     #[test]

@@ -274,7 +274,7 @@ function buildMockInitScript() {
         };
       }
 
-      if (/deny/i.test(lastUser) && /write/i.test(lastUser)) {
+      if (/deny/i.test(lastUser) && /writ(e|ing)/i.test(lastUser)) {
         const card = makeToolApproval(
           { tool: 'write_file', args: { path: `${window.__bonsaiWorkspacePath}/${LIVE_TEST_DENIED_REL_LOCAL}`, content: 'Denied path\n' } },
           'Write denied.txt',
@@ -479,8 +479,8 @@ function buildMockInitScript() {
         if (cmd === 'get_api_port') return state.apiPort;
         if (cmd === 'get_api_config') return { api_host: state.apiHost, api_port: state.apiPort };
         if (cmd === 'set_api_config') {
-          state.apiHost = String(args.api_host || state.apiHost);
-          state.apiPort = Number(args.api_port || state.apiPort);
+          state.apiHost = String(args.apiHost || args.api_host || state.apiHost);
+          state.apiPort = Number(args.apiPort || args.api_port || state.apiPort);
           return { api_host: state.apiHost, api_port: state.apiPort };
         }
 

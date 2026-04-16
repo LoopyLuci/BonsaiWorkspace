@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { currentWorkspace, fileTreeRefresh, setWorkspace } from '$lib/stores/workspace';
   import { requestOpenFile } from '$lib/stores/openFile';
+  import { detectFileType } from '$lib/utils/filetypes';
 
   interface FileEntry {
     path:   string;
@@ -16,6 +17,10 @@
   let error         = '';
   let expandedDirs  = new Set<string>();
   let selectedPath  = '';
+  let showContextMenu = false;
+  let contextX = 0;
+  let contextY = 0;
+  let contextDir = '';
 
   // ── Load files whenever workspace or refresh signal changes ──────────────
   $: $currentWorkspace, $fileTreeRefresh, loadFiles();
@@ -55,6 +60,72 @@
   }
 
   function refreshFiles() { fileTreeRefresh.set(Date.now()); }
+
+  function joinPath(base: string, leaf: string): string {
+    if (!base) return leaf;
+    if (base.endsWith('/') || base.endsWith('\\')) return `${base}${leaf}`;
+    return `${base}${base.includes('\\') ? '\\' : '/'}${leaf}`;
+  }
+
+  function dirname(path: string): string {
+    const normalized = path.replace(/[\\/]+$/, '');
+    const idx = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+    return idx >= 0 ? normalized.slice(0, idx) : normalized;
+  }
+
+  function defaultTargetDir(): string {
+    if (!$currentWorkspace) return '';
+    const selected = allFiles.find((f) => f.path === selectedPath);
+    if (!selected) return $currentWorkspace.path;
+    return selected.is_dir ? selected.path : dirname(selected.path);
+  }
+
+  function openContextMenu(event: MouseEvent, dir: string) {
+    event.preventDefault();
+    contextX = event.clientX;
+    contextY = event.clientY;
+    contextDir = dir || defaultTargetDir();
+    showContextMenu = true;
+  }
+
+  function closeContextMenu() {
+    showContextMenu = false;
+  }
+
+  async function createNewFile(dir?: string) {
+    if (!$currentWorkspace) return;
+    const targetDir = dir || defaultTargetDir();
+    const name = prompt('New file name:', 'new-file.txt');
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    try {
+      const path = joinPath(targetDir, trimmed);
+      await invoke('write_file', { path, content: '' });
+      refreshFiles();
+      requestOpenFile(path);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function createNewFolder(dir?: string) {
+    if (!$currentWorkspace) return;
+    const targetDir = dir || defaultTargetDir();
+    const name = prompt('New folder name:', 'new-folder');
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    try {
+      const path = joinPath(targetDir, trimmed);
+      await invoke('create_directory', { path });
+      refreshFiles();
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   function depth(rel: string) { return (rel.match(/\//g) ?? []).length; }
 
@@ -108,21 +179,12 @@
     }
   }
 
-  // ── Icons ───────────────────────────────────────────────────────────────
-  const EXT_ICON: Record<string, string> = {
-    rs: '🦀', ts: '🔷', tsx: '🔷', js: '🟨', jsx: '🟨',
-    py: '🐍', md: '📝', json: '📋', toml: '⚙', yaml: '⚙', yml: '⚙',
-    html: '🌐', css: '🎨', sh: '💲', sql: '🗄', go: '🐹',
-    cpp: '⚡', c: '⚡', cs: '🔵', rb: '💎', kt: '🎯', swift: '🍎',
-    lock: '🔒', env: '🔑', gitignore: '🚫',
-  };
-
   function fileIcon(name: string): string {
-    const ext = name.split('.').pop()?.toLowerCase() ?? '';
-    if (name.startsWith('.')) return EXT_ICON[name.slice(1)] ?? '🔧';
-    return EXT_ICON[ext] ?? '📄';
+    return detectFileType(name).icon;
   }
 </script>
+
+<svelte:window on:click={closeContextMenu} on:keydown={(e) => e.key === 'Escape' && closeContextMenu()} />
 
 <div class="filetree">
   <!-- Header -->
@@ -138,6 +200,8 @@
     <div class="header-actions">
       <button class="btn-open" on:click={openWorkspace}>Open Folder</button>
       {#if $currentWorkspace}
+        <button class="btn-create" on:click={() => createNewFile()} title="New File">+ File</button>
+        <button class="btn-create" on:click={() => createNewFolder()} title="New Folder">+ Folder</button>
         <button class="btn-refresh" on:click={refreshFiles} title="Refresh">↻</button>
       {/if}
     </div>
@@ -153,7 +217,7 @@
   </div>
 
   <!-- File list -->
-  <div class="file-list" role="tree" aria-label="Project files">
+  <div class="file-list" role="tree" tabindex="0" aria-label="Project files" on:contextmenu={(e) => openContextMenu(e, defaultTargetDir())}>
     {#if loading}
       <div class="notice">Loading…</div>
     {:else if error}
@@ -178,6 +242,7 @@
           aria-expanded={file.is_dir ? isExpanded : undefined}
           tabindex="0"
           on:click={() => handleClick(file)}
+          on:contextmenu={(e) => openContextMenu(e, file.is_dir ? file.path : dirname(file.path))}
           on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleClick(file)}
           title={file.rel}
         >
@@ -193,6 +258,13 @@
       {/each}
     {/if}
   </div>
+
+  {#if showContextMenu && $currentWorkspace}
+    <div class="context-menu" style="left: {contextX}px; top: {contextY}px">
+      <button class="context-item" on:click={() => { createNewFile(contextDir); closeContextMenu(); }}>New File</button>
+      <button class="context-item" on:click={() => { createNewFolder(contextDir); closeContextMenu(); }}>New Folder</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -276,6 +348,19 @@
   }
   .btn-refresh:hover { color: var(--text); border-color: var(--text-dim); }
 
+  .btn-create {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    line-height: 1;
+  }
+  .btn-create:hover { color: var(--text); border-color: var(--text-dim); }
+
   .search {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -353,5 +438,33 @@
     white-space: nowrap;
     font-size: 12.5px;
     flex: 1;
+  }
+
+  .context-menu {
+    position: fixed;
+    min-width: 140px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 6px;
+    z-index: 3000;
+  }
+
+  .context-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .context-item:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
   }
 </style>

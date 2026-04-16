@@ -20,11 +20,12 @@
   .toast-wrapper {
     position: fixed;
     right: 18px;
-    bottom: 18px;
+    /* Keep toasts above the 26px status bar and bottom controls. */
+    bottom: calc(26px + 14px);
     display: flex;
     flex-direction: column;
     gap: 10px;
-    z-index: 40;
+    z-index: 2000;
     width: min(320px, calc(100% - 32px));
   }
 

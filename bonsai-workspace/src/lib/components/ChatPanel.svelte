@@ -16,6 +16,15 @@
   import { requestOpenFile } from '$lib/stores/openFile';
   import { receiveAgentDiff, clearCurrentDiff, clearDiffForFile } from '$lib/stores/diff';
 
+  import {
+    swarmEnabled,
+    agentStreams,
+    activeSwarmRunId,
+    loadAgentConfigs,
+    swarmRuntimeSettings,
+    loadSwarmRuntimeSettings,
+  } from '$lib/stores/agents';
+
   const dispatch = createEventDispatcher<{ openSession: void }>();
 
   function openSessionPanel() {
@@ -249,10 +258,37 @@
     debouncedAutoSave();
 
     try {
-      const result = await runChat();
-      const clean  = stripThinkTags(result.content ?? rawBuffer);
-      if (!result.action_handled) {
-        addAssistantMessage(clean, result.stats ?? undefined, result.tools_used ?? []);
+      let clean: string;
+      let actionHandled = false;
+      let toolsUsed: string[] = [];
+      let stats: any = undefined;
+
+      if ($swarmEnabled) {
+        const history = $messages.map(m => ({ role: m.role, content: m.content }));
+        activeSwarmRunId.set('pending');
+        const result = await invoke<{
+          run_id: string; final_content: string; leader_plan: any;
+          agent_results: any[]; stats: any; action_handled: boolean; tools_used: string[];
+        }>('submit_swarm_chat', {
+          messages:      history,
+          workspacePath: $currentWorkspace?.path,
+          enabledTools:  getEnabledToolNames(),
+          swarmSettings: $swarmRuntimeSettings,
+        });
+        clean        = stripThinkTags(result.final_content ?? rawBuffer);
+        actionHandled = result.action_handled;
+        toolsUsed    = result.tools_used ?? [];
+        stats        = result.stats;
+      } else {
+        const result = await runChat();
+        clean        = stripThinkTags(result.content ?? rawBuffer);
+        actionHandled = result.action_handled;
+        toolsUsed    = result.tools_used ?? [];
+        stats        = result.stats;
+      }
+
+      if (!actionHandled) {
+        addAssistantMessage(clean, stats ?? undefined, toolsUsed);
         // Save again after the AI responds so the assistant message is captured.
         debouncedAutoSave();
       }
@@ -483,9 +519,16 @@
       }, 250);
     }
 
-    const unlistenPermission = await listen<any>('permission-request', (e) => {
+    const unlistenPermission = await listen<any>('permission-request', async (e) => {
       if (e.payload.tool === 'write_file' && e.payload.file_path && e.payload.unified_diff) {
-        requestOpenFile(e.payload.file_path);
+        // For create/write on a new file, opening first can throw os error 2.
+        // Only pre-open when the file already exists; still load diff preview either way.
+        try {
+          await invoke<string>('read_file', { path: e.payload.file_path });
+          requestOpenFile(e.payload.file_path);
+        } catch {
+          // File will be created after approval; skip pre-open to avoid noisy error banner.
+        }
         receiveAgentDiff(e.payload.file_path, e.payload.unified_diff);
       }
 
@@ -536,12 +579,30 @@
       askBonsaiRequest.set(null);
     });
 
+    const unlistenAgentStream = await listen<{ agent_id: string; slot: number; token: string }>('agent-token-stream', (e) => {
+      agentStreams.update(m => {
+        const next = new Map(m);
+        next.set(e.payload.agent_id, (next.get(e.payload.agent_id) ?? '') + e.payload.token);
+        return next;
+      });
+    });
+
+    const unlistenSwarmComplete = await listen<{ run_id: string; final_content: string }>('swarm-complete', () => {
+      activeSwarmRunId.set(null);
+      agentStreams.set(new Map());
+    });
+
+    loadSwarmRuntimeSettings();
+    await loadAgentConfigs();
+
     unlistenEvents = [
       () => document.removeEventListener('click', handleGlobalClick),
       unlistenPermission,
       unlistenToolUsed,
       unlistenToken,
       unsubAskBonsai,
+      unlistenAgentStream,
+      unlistenSwarmComplete,
     ];
   });
 
@@ -774,7 +835,18 @@
       </div>
     {:else}
       {#each $messages as msg (msg.id)}
-        <div class="msg-row {msg.role}">
+        <div
+          class="msg-row {msg.role}"
+          class:agent-msg={msg.agent_slot !== undefined}
+          class:is-leader={msg.agent_slot === 0}
+          style:--agent-color={msg.agent_color ?? '#4a9eff'}
+        >
+          {#if msg.agent_slot !== undefined}
+            <div class="agent-badge" class:is-leader={msg.agent_slot === 0}>
+              <span class="agent-emoji">{msg.agent_slot === 0 ? '👑' : (msg.agent_label?.[0] ?? '🤖')}</span>
+              <span class="agent-label">{msg.agent_label ?? (msg.agent_slot === 0 ? 'Leader' : `Worker ${msg.agent_slot}`)}</span>
+            </div>
+          {/if}
           <div class="msg-bubble">
             {#if msg.role === 'assistant'}
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
@@ -812,6 +884,26 @@
           {/if}
         </div>
       {/each}
+
+      {#if $activeSwarmRunId && $agentStreams.size > 0}
+        {#each [...$agentStreams.entries()] as [agentId, tokens]}
+          <div class="msg-row assistant agent-msg" style:--agent-color="#4a9eff">
+            <div class="agent-badge">
+              <span class="agent-emoji">🤖</span>
+              <span class="agent-label">Agent {agentId.slice(0, 6)}…</span>
+              <span class="swarm-pulse"></span>
+            </div>
+            <div class="msg-bubble">
+              {#if tokens}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                {@html renderMarkdown(tokens)}
+              {:else}
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      {/if}
 
       {#if $isThinking}
         <div class="msg-row assistant">
@@ -1095,7 +1187,6 @@
     font-size: 12px;
     white-space: nowrap;
   }
-
   .btn-session:hover:not(:disabled) {
     background: var(--bg-hover);
     color: var(--text);
@@ -1205,6 +1296,34 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-bottom-left-radius: 3px;
+  }
+
+  /* Agent swarm badges */
+  .agent-badge {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; margin-bottom: 3px; margin-left: 2px;
+  }
+  .agent-badge.is-leader { color: var(--accent-hl, #f5a623); font-weight: 700; }
+  .agent-emoji { font-size: 13px; }
+  .agent-label { color: var(--text-dim, #888); }
+
+  /* Agent message bubble tint */
+  .msg-row.agent-msg .msg-bubble {
+    background: color-mix(in srgb, var(--agent-color, #4a9eff) 10%, var(--bg, #141420));
+    border-color: color-mix(in srgb, var(--agent-color, #4a9eff) 35%, var(--border, #333));
+  }
+  .msg-row.agent-msg.is-leader .msg-bubble {
+    border-color: var(--accent, #4a9eff);
+  }
+
+  /* Swarm pulse dot */
+  .swarm-pulse {
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent, #4a9eff);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.2; }
   }
 
   .msg-bubble :global(code) {

@@ -20,9 +20,20 @@ export async function loadApiSettings() {
 
 export async function saveApiSettings(host: string, port: number) {
   try {
+    const normalizedHost = String(host ?? '').trim();
+    const normalizedPort = Number(port);
+
+    if (!normalizedHost) {
+      throw new Error('API host is required.');
+    }
+    if (!Number.isFinite(normalizedPort) || normalizedPort < 1 || normalizedPort > 65535) {
+      throw new Error('API port must be between 1 and 65535.');
+    }
+
     const config = await invoke<{ api_host: string; api_port: number }>('set_api_config', {
-      api_host: host,
-      api_port: port,
+      // Tauri command args are camelCase on the JS side.
+      apiHost: normalizedHost,
+      apiPort: normalizedPort,
     });
     apiHost.set(config.api_host);
     apiPort.set(config.api_port);

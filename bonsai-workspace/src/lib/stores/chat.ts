@@ -20,6 +20,10 @@ export interface ChatMessage {
   stats?:       TokenStats;
   /** Tool names auto-executed before this response. */
   tools_used?:  string[];
+  agent_id?:    string;
+  agent_label?: string;
+  agent_color?: string;
+  agent_slot?:  number;
 }
 
 export interface PermissionCardData {

@@ -1,30 +1,5 @@
 import * as monaco from 'monaco-editor';
-
-const EXT_LANG: Record<string, string> = {
-  rs:   'rust',
-  ts:   'typescript',
-  tsx:  'typescript',
-  js:   'javascript',
-  jsx:  'javascript',
-  py:   'python',
-  md:   'markdown',
-  json: 'json',
-  toml: 'ini',
-  yaml: 'yaml',
-  yml:  'yaml',
-  css:  'css',
-  html: 'html',
-  sh:   'shell',
-  bash: 'shell',
-  sql:  'sql',
-  go:   'go',
-  cpp:  'cpp',
-  c:    'c',
-  cs:   'csharp',
-  rb:   'ruby',
-  kt:   'kotlin',
-  swift:'swift',
-};
+import { detectFileType } from '$lib/utils/filetypes';
 
 export function createEditor(
   container: HTMLElement,
@@ -66,8 +41,7 @@ export function setLanguageFromPath(
   editor: monaco.editor.IStandaloneCodeEditor,
   filePath: string,
 ) {
-  const ext  = filePath.split('.').pop()?.toLowerCase() ?? '';
-  const lang = EXT_LANG[ext] ?? 'plaintext';
+  const lang = detectFileType(filePath).languageId;
   const model = editor.getModel();
   if (model) monaco.editor.setModelLanguage(model, lang);
 }
