@@ -26,6 +26,13 @@ export interface ChatMessage {
   agent_slot?:  number;
 }
 
+export interface AssistantMessageMeta {
+  agent_id?: string;
+  agent_label?: string;
+  agent_color?: string;
+  agent_slot?: number;
+}
+
 export interface PermissionCardData {
   id:              string;
   type?:           string;
@@ -170,6 +177,7 @@ export function addAssistantMessage(
   content:     string,
   stats?:      TokenStats,
   tools_used?: string[],
+  meta?:       AssistantMessageMeta,
 ) {
   messages.update((m) => [
     ...m,
@@ -180,6 +188,7 @@ export function addAssistantMessage(
       timestamp: new Date(),
       stats,
       tools_used,
+      ...(meta ?? {}),
     },
   ]);
 }

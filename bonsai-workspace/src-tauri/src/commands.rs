@@ -274,9 +274,24 @@ fn is_file_inventory_request(text: &str) -> bool {
         || t.contains("read the file")
 }
 
-    fn is_system_info_request(text: &str) -> bool {
-        let t = text.to_lowercase();
-        t.contains("how much ram")
+fn is_greeting_message(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    if t.is_empty() {
+        return false;
+    }
+
+    let normalized = t
+        .trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .to_string();
+
+    matches!(normalized.as_str(),
+        "hi" | "hello" | "hey" | "yo" | "sup" | "good morning" | "good afternoon" | "good evening"
+    )
+}
+
+fn is_system_info_request(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("how much ram")
         || t.contains("how much memory")
         || t.contains("ram do i have")
         || t.contains("memory do i have")
@@ -285,7 +300,7 @@ fn is_file_inventory_request(text: &str) -> bool {
         || t.contains("hardware info")
         || t.contains("system info")
         || (t.contains("cpu") && t.contains("gpu"))
-    }
+}
 
 fn emit_agent_connect_event(
     state: &AppState,
@@ -491,6 +506,8 @@ pub async fn submit_chat(
                  - If user asks to read a file and filename is known (for example README), locate it with list_all_files and then call read_file.\n"
             );
     }
+    let greeting_only = is_greeting_message(&last_user_text);
+
     if is_system_info_request(&last_user_text) {
         sys_prompt.push_str(
             "\n\n## Immediate instruction for this request\n\
@@ -498,6 +515,14 @@ pub async fn submit_chat(
              - You MUST call run_command before answering.\n\
              - Output ONLY this tool call first (no prose):\n\
                <tool_call>{\"tool\":\"run_command\",\"args\":{\"command\":\"specs\"}}</tool_call>\n"
+        );
+    }
+    if greeting_only {
+        sys_prompt.push_str(
+            "\n\n## Immediate instruction for this request\n\
+             - The user sent a greeting/salutation.\n\
+             - Do not call tools for this turn.\n\
+             - Reply briefly and conversationally, then ask one helpful follow-up question.\n"
         );
     }
 
@@ -530,6 +555,7 @@ pub async fn submit_chat(
     let mut repeated_auto_tool_count = 0usize;
     let mut malformed_retry_used = false;
     let mut system_info_retry_used = false;
+    let mut greeting_retry_used = false;
     const  MAX_TURNS: usize = 8;
     let mut loop_limit_reached = true;
 
@@ -642,6 +668,33 @@ pub async fn submit_chat(
 
             // No tool calls — this is the final prose response.
             final_content = tools::strip_tool_calls(&response);
+            loop_limit_reached = false;
+            break;
+        }
+
+        if greeting_only {
+            emit_agent_connect_event(
+                &state,
+                &app_handle,
+                "tool.prevented",
+                "Tool use prevented for greeting-only message",
+                json!({
+                    "tool": calls[0].tool,
+                    "reason": "greeting_only",
+                }),
+            );
+
+            if !greeting_retry_used {
+                greeting_retry_used = true;
+                ctx.push(json!({"role": "assistant", "content": &response}));
+                ctx.push(json!({
+                    "role": "user",
+                    "content": "No tools are needed for this greeting. Reply conversationally and ask what the user wants to do next."
+                }));
+                continue;
+            }
+
+            final_content = "Hello! I am ready to help. What would you like to work on right now?".to_string();
             loop_limit_reached = false;
             break;
         }

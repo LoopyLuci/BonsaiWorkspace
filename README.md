@@ -40,6 +40,23 @@ npm run launch:desktop
 npm run launch:desktop+usb
 ```
 
+### Phase 1 Babashka tasks from workspace root
+
+From Z:/Projects/BonsaiWorkspace:
+
+```powershell
+bb tasks
+bb launch-preflight
+bb launch-preflight-report
+bb api-smoke
+```
+
+Notes:
+
+- Babashka is optional, but this is the phase-1 script/task path for launcher automation.
+- `bb launch-preflight-report` writes `tool_test/launcher/preflight-bb.json`.
+- If `bb` is missing, install from https://babashka.org and rerun `bb tasks`.
+
 ### Standard development flow
 
 ```bash

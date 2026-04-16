@@ -20,6 +20,7 @@
     swarmEnabled,
     agentStreams,
     activeSwarmRunId,
+    agentConfigs,
     loadAgentConfigs,
     swarmRuntimeSettings,
     loadSwarmRuntimeSettings,
@@ -275,10 +276,46 @@
           enabledTools:  getEnabledToolNames(),
           swarmSettings: $swarmRuntimeSettings,
         });
+        const byId = new Map($agentConfigs.map((a) => [a.config.id, a]));
+        const bySlot = new Map($agentConfigs.map((a) => [a.config.slot_index, a]));
+
+        const workerResults = (result.agent_results ?? [])
+          .slice()
+          .sort((a, b) => a.slot_index - b.slot_index);
+
+        for (const agentOut of workerResults) {
+          const cfg = byId.get(agentOut.agent_id) ?? bySlot.get(agentOut.slot_index);
+          const label = cfg?.config?.label ?? `Worker ${agentOut.slot_index}`;
+          const color = cfg?.config?.color ?? '#4a9eff';
+          addAssistantMessage(
+            stripThinkTags(agentOut.result ?? ''),
+            agentOut.stats ?? undefined,
+            undefined,
+            {
+              agent_id: agentOut.agent_id,
+              agent_label: label,
+              agent_color: color,
+              agent_slot: agentOut.slot_index,
+            },
+          );
+        }
+
         clean        = stripThinkTags(result.final_content ?? rawBuffer);
         actionHandled = result.action_handled;
         toolsUsed    = result.tools_used ?? [];
         stats        = result.stats;
+
+        const leaderCfg = bySlot.get(0);
+        if (!actionHandled) {
+          addAssistantMessage(clean, stats ?? undefined, toolsUsed, {
+            agent_id: leaderCfg?.config?.id,
+            agent_label: leaderCfg?.config?.label ?? 'Leader',
+            agent_color: leaderCfg?.config?.color ?? '#f5a623',
+            agent_slot: 0,
+          });
+          debouncedAutoSave();
+          clean = '';
+        }
       } else {
         const result = await runChat();
         clean        = stripThinkTags(result.content ?? rawBuffer);
@@ -287,7 +324,7 @@
         stats        = result.stats;
       }
 
-      if (!actionHandled) {
+      if (!actionHandled && clean) {
         addAssistantMessage(clean, stats ?? undefined, toolsUsed);
         // Save again after the AI responds so the assistant message is captured.
         debouncedAutoSave();
@@ -887,10 +924,11 @@
 
       {#if $activeSwarmRunId && $agentStreams.size > 0}
         {#each [...$agentStreams.entries()] as [agentId, tokens]}
-          <div class="msg-row assistant agent-msg" style:--agent-color="#4a9eff">
+          {@const cfg = $agentConfigs.find((a) => a.config.id === agentId)}
+          <div class="msg-row assistant agent-msg" style:--agent-color={cfg?.config?.color ?? '#4a9eff'}>
             <div class="agent-badge">
-              <span class="agent-emoji">🤖</span>
-              <span class="agent-label">Agent {agentId.slice(0, 6)}…</span>
+              <span class="agent-emoji">{cfg?.config?.icon_emoji ?? '🤖'}</span>
+              <span class="agent-label">{cfg?.config?.label ?? `Agent ${agentId.slice(0, 6)}…`}</span>
               <span class="swarm-pulse"></span>
             </div>
             <div class="msg-bubble">
