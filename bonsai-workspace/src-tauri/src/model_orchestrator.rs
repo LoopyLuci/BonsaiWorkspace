@@ -32,6 +32,13 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::bootstrap;
 use crate::model_registry::{ModelInfo, ModelRegistry};
 
+const MODEL_LOAD_POLL_INTERVAL_MS: u64 = 500;
+#[cfg(target_os = "android")]
+const MODEL_LOAD_TIMEOUT_SECS: u64 = 420;
+#[cfg(not(target_os = "android"))]
+const MODEL_LOAD_TIMEOUT_SECS: u64 = 240;
+const MODEL_LOAD_MAX_POLLS: u64 = (MODEL_LOAD_TIMEOUT_SECS * 1000) / MODEL_LOAD_POLL_INTERVAL_MS;
+
 // ── Slot state ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -140,6 +147,8 @@ pub struct InferRequest {
     /// Optional cancellation flag set by the UI to stop active generation.
     pub cancel_flag: Option<Arc<AtomicBool>>,
     pub resp_tx:    oneshot::Sender<Result<(String, InferStats), String>>,
+    /// Request source tag for fairness scheduling ("workspace" | "assistant").
+    pub source: &'static str,
 }
 
 // ── Internal command ──────────────────────────────────────────────────────────
@@ -299,17 +308,7 @@ async fn handle_cmd(
                     .map(|s| s.base_url.clone())
                     .unwrap_or_default();
                 tauri::async_runtime::spawn(async move {
-                    let probe = Client::new();
-                    for _ in 0..120 {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        if probe.get(format!("{}/health", url)).send().await
-                            .is_ok_and(|r| r.status().is_success())
-                        {
-                            let _ = resp_tx.send(Ok(()));
-                            return;
-                        }
-                    }
-                    let _ = resp_tx.send(Err("model load timeout".into()));
+                    let _ = resp_tx.send(wait_for_model_health(url).await);
                 });
                 return;
             }
@@ -326,17 +325,7 @@ async fn handle_cmd(
                     spawn_model(&mut slots[idx], &info, app);
                     let url = slots[idx].base_url.clone();
                     tauri::async_runtime::spawn(async move {
-                        let probe = Client::new();
-                        for _ in 0..120 {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                            if probe.get(format!("{}/health", url)).send().await
-                                .is_ok_and(|r| r.status().is_success())
-                            {
-                                let _ = resp_tx.send(Ok(()));
-                                return;
-                            }
-                        }
-                        let _ = resp_tx.send(Err("model load timeout".into()));
+                        let _ = resp_tx.send(wait_for_model_health(url).await);
                     });
                 }
             }
@@ -382,6 +371,34 @@ async fn handle_cmd(
             drain_queue(queue, slots, cmd_tx, client, app).await;
         }
     }
+}
+
+async fn wait_for_model_health(url: String) -> Result<(), String> {
+    let probe = Client::new();
+    for _ in 0..MODEL_LOAD_MAX_POLLS {
+        tokio::time::sleep(Duration::from_millis(MODEL_LOAD_POLL_INTERVAL_MS)).await;
+        if probe_model_ready(&probe, &url).await {
+            return Ok(());
+        }
+    }
+    Err(format!("model load timeout after {}s", MODEL_LOAD_TIMEOUT_SECS))
+}
+
+async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
+    let health_ok = client
+        .get(format!("{}/health", base_url))
+        .send()
+        .await
+        .is_ok_and(|r| r.status().is_success());
+    if health_ok {
+        return true;
+    }
+
+    client
+        .get(format!("{}/v1/models", base_url))
+        .send()
+        .await
+        .is_ok_and(|r| r.status().is_success())
 }
 
 // ── Slot management ───────────────────────────────────────────────────────────
@@ -495,12 +512,8 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                     continue;
                 }
             }
-            // Probe health endpoint
-            let ok = client
-                .get(format!("{}/health", slot.base_url))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success());
+            // Probe readiness endpoints (/health and /v1/models fallback).
+            let ok = probe_model_ready(client, &slot.base_url).await;
             if ok {
                 slot.state = SlotState::Ready { model_id: model_id.clone() };
                 let _ = app.emit("model-ready", json!({
@@ -515,6 +528,10 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 
 // ── Queue drain ───────────────────────────────────────────────────────────────
 
+// Fairness counter: alternates between "workspace" and "assistant" sources.
+static FAIRNESS_TOGGLE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
 async fn drain_queue(
     queue:  &mut VecDeque<InferRequest>,
     slots:  &mut Vec<Slot>,
@@ -522,11 +539,30 @@ async fn drain_queue(
     client: &Client,
     app:    &AppHandle,
 ) {
-    while let Some(req) = queue.front() {
-        let mid = req.model_id.as_deref();
-        if let Some(idx) = best_ready_slot(slots, mid) {
-            let req = queue.pop_front().unwrap();
-            dispatch(idx, req, slots, cmd_tx, client, app);
+    while !queue.is_empty() {
+        // Check if both sources are present — if so, apply round-robin
+        let has_workspace  = queue.iter().any(|r| r.source == "workspace");
+        let has_assistant  = queue.iter().any(|r| r.source == "assistant");
+
+        let chosen_idx = if has_workspace && has_assistant {
+            let toggle = FAIRNESS_TOGGLE.fetch_xor(1, Ordering::Relaxed);
+            let prefer = if toggle == 0 { "workspace" } else { "assistant" };
+            queue.iter().position(|r| r.source == prefer)
+                .or_else(|| Some(0))
+        } else {
+            Some(0)
+        };
+
+        if let Some(qi) = chosen_idx {
+            let req = queue.remove(qi).unwrap();
+            let mid = req.model_id.as_deref();
+            if let Some(slot_idx) = best_ready_slot(slots, mid) {
+                dispatch(slot_idx, req, slots, cmd_tx, client, app);
+            } else {
+                // No slot available — put back at front and stop draining
+                queue.push_front(req);
+                break;
+            }
         } else {
             break;
         }
@@ -728,13 +764,39 @@ fn thread_count() -> usize {
 fn has_discrete_gpu() -> bool {
     #[cfg(target_os = "windows")]
     {
+        let looks_discrete = |s: &str| {
+            let lower = s.to_lowercase();
+            lower.contains("nvidia")
+                || lower.contains("radeon")
+                || lower.contains("amd")
+                || lower.contains("intel arc")
+                || lower.contains("intel xe")
+        };
+
         if let Ok(out) = std::process::Command::new("wmic")
             .args(["path", "win32_VideoController", "get", "name"])
             .output()
         {
-            let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            return s.contains("nvidia") || s.contains("radeon") || s.contains("amd")
-                || s.contains("intel arc") || s.contains("intel xe");
+            let s = String::from_utf8_lossy(&out.stdout);
+            if looks_discrete(&s) {
+                return true;
+            }
+        }
+
+        // WMIC can be unavailable/deprecated on some Windows installs.
+        // Use a PowerShell CIM fallback so GPU-first remains reliable.
+        if let Ok(out) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
+            ])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if looks_discrete(&s) {
+                return true;
+            }
         }
     }
     #[cfg(target_os = "linux")]

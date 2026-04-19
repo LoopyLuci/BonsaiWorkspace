@@ -1,11 +1,14 @@
 use futures::StreamExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use git2::Repository;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
-use std::sync::atomic::Ordering;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -17,6 +20,12 @@ use crate::action_parser::handle_agent_response;
 use crate::api_server;
 use crate::agent_connect::{AgentConnectEvent, AgentConnectSession};
 use crate::bootstrap;
+use crate::cluster_orchestrator::{
+    ClusterNode,
+    ClusterPolicy,
+    ClusterWorkload,
+    NodeRuntimeMetrics,
+};
 use crate::model_orchestrator::{InferRequest, InferStats};
 use crate::remote::RemoteManager;
 use crate::remote_input::RemoteInputEvent;
@@ -35,9 +44,20 @@ fn has_parent_dir_component(path: &str) -> bool {
         .any(|c| c == Component::ParentDir)
 }
 
+fn default_canvas_layout() -> Value {
+    json!({
+        "schema_version": 1,
+        "saved_at": Value::Null,
+        "viewport": { "x": 0.0, "y": 0.0, "zoom": 1.0 },
+        "nodes": [],
+        "connections": []
+    })
+}
+
 // ─── File system ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn open_workspace(app_handle: AppHandle) -> Result<String, String> {
     let path = app_handle
         .dialog()
@@ -46,6 +66,12 @@ pub async fn open_workspace(app_handle: AppHandle) -> Result<String, String> {
         .map(|p| p.to_string())
         .ok_or_else(|| "No folder selected".to_string())?;
     Ok(path)
+}
+
+#[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn open_workspace(_app_handle: AppHandle) -> Result<String, String> {
+    Err("Workspace folder picker is not supported on mobile targets".to_string())
 }
 
 #[tauri::command]
@@ -66,6 +92,72 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn load_canvas_layout(workspace_path: String) -> Result<Value, String> {
+    if has_parent_dir_component(&workspace_path) {
+        return Err("Path not allowed: traversal sequences are forbidden".to_string());
+    }
+
+    let bonsai_dir = std::path::Path::new(&workspace_path).join(".bonsai");
+    let canvas_path = bonsai_dir.join("canvas.json");
+    if !canvas_path.exists() {
+        return Ok(json!({
+            "layout": default_canvas_layout(),
+        }));
+    }
+
+    let raw = fs::read_to_string(&canvas_path).map_err(|e| e.to_string())?;
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(layout) => Ok(json!({ "layout": layout })),
+        Err(err) => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_secs();
+            let backup_path = bonsai_dir.join(format!("canvas.corrupt.{}.json", ts));
+            fs::rename(&canvas_path, &backup_path).map_err(|e| e.to_string())?;
+            Ok(json!({
+                "layout": default_canvas_layout(),
+                "recovered_corrupt_file": backup_path.to_string_lossy().to_string(),
+                "error": err.to_string(),
+            }))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn save_canvas_layout(workspace_path: String, layout: Value) -> Result<Value, String> {
+    if has_parent_dir_component(&workspace_path) {
+        return Err("Path not allowed: traversal sequences are forbidden".to_string());
+    }
+
+    let bonsai_dir = std::path::Path::new(&workspace_path).join(".bonsai");
+    fs::create_dir_all(&bonsai_dir).map_err(|e| e.to_string())?;
+
+    let canvas_path = bonsai_dir.join("canvas.json");
+    let tmp_path = bonsai_dir.join("canvas.json.tmp");
+    let mut doc = layout;
+    if doc.get("schema_version").is_none() {
+        doc["schema_version"] = json!(1);
+    }
+    let saved_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    doc["saved_at"] = json!(saved_at_ms.to_string());
+
+    let payload = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    {
+        let mut temp = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+        temp.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+        temp.write_all(b"\n").map_err(|e| e.to_string())?;
+        temp.sync_all().map_err(|e| e.to_string())?;
+    }
+
+    fs::rename(&tmp_path, &canvas_path).map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true, "path": canvas_path.to_string_lossy().to_string() }))
 }
 
 #[tauri::command]
@@ -126,6 +218,7 @@ pub async fn list_project_files(workspace_path: String) -> Result<Vec<serde_json
 
 // ─── Git ─────────────────────────────────────────────────────────────────────
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn get_git_status(workspace_path: String) -> Result<Vec<serde_json::Value>, String> {
     let repo = Repository::open(&workspace_path).map_err(|e| e.to_string())?;
@@ -147,11 +240,24 @@ pub async fn get_git_status(workspace_path: String) -> Result<Vec<serde_json::Va
     Ok(entries)
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub async fn get_git_status(_workspace_path: String) -> Result<Vec<serde_json::Value>, String> {
+    Err("Git status is not supported on mobile targets".to_string())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn get_git_branch(workspace_path: String) -> Result<String, String> {
     let repo = Repository::open(&workspace_path).map_err(|e| e.to_string())?;
     let head = repo.head().map_err(|e| e.to_string())?;
     Ok(head.shorthand().unwrap_or("HEAD").to_string())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub async fn get_git_branch(_workspace_path: String) -> Result<String, String> {
+    Err("Git branch is not supported on mobile targets".to_string())
 }
 
 // ─── Chat / AI ───────────────────────────────────────────────────────────────
@@ -452,6 +558,7 @@ async fn run_inference(
         stream_tx:  Some(stream_tx),
         cancel_flag,
         resp_tx,
+        source:     "workspace",
     })?;
     let handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -1114,6 +1221,7 @@ pub async fn resume_tool_call(
                 "tool": tool,
             }),
         );
+        let _ = app_handle.emit("permission-resolved", json!({ "tool": tool, "granted": false }));
 
         return Ok(ChatResponse {
             content: tool_denied_message(&tool),
@@ -1132,6 +1240,7 @@ pub async fn resume_tool_call(
             "tool": tool,
         }),
     );
+    let _ = app_handle.emit("permission-resolved", json!({ "tool": tool, "granted": true }));
 
     let tool_output = execute_tool_call(app_handle.clone(), action.clone(), workspace_path.clone()).await?;
 
@@ -1167,6 +1276,19 @@ pub async fn resume_tool_call(
 #[tauri::command]
 pub async fn list_chat_sessions(state: State<'_, AppState>) -> Result<Value, String> {
     let sessions = state.chat_sessions.list_sessions().await.map_err(|e| e.to_string())?;
+    Ok(json!(sessions))
+}
+
+#[tauri::command]
+pub async fn list_chat_sessions_detailed(
+    state: State<'_, AppState>,
+    include_deleted: Option<bool>,
+) -> Result<Value, String> {
+    let sessions = state
+        .chat_sessions
+        .list_sessions_detailed(include_deleted.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(json!(sessions))
 }
 
@@ -1236,6 +1358,119 @@ pub async fn duplicate_chat_session(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "id": new_id }))
+}
+
+#[tauri::command]
+pub async fn update_chat_session_meta(
+    state: State<'_, AppState>,
+    session_id: String,
+    title: Option<String>,
+    tags: Option<Vec<String>>,
+    is_locked: Option<bool>,
+    is_favorite: Option<bool>,
+    is_deleted: Option<bool>,
+) -> Result<(), String> {
+    state
+        .chat_sessions
+        .update_session_meta(
+            &session_id,
+            title.as_deref(),
+            tags,
+            is_locked,
+            is_favorite,
+            is_deleted,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_chat_session_groups(
+    state: State<'_, AppState>,
+    include_deleted: Option<bool>,
+) -> Result<Value, String> {
+    let groups = state
+        .chat_sessions
+        .list_groups(include_deleted.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!(groups))
+}
+
+#[tauri::command]
+pub async fn create_chat_session_group(
+    state: State<'_, AppState>,
+    title: String,
+) -> Result<Value, String> {
+    let id = state
+        .chat_sessions
+        .create_group(&title)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "id": id }))
+}
+
+#[tauri::command]
+pub async fn update_chat_session_group_meta(
+    state: State<'_, AppState>,
+    group_id: String,
+    title: Option<String>,
+    tags: Option<Vec<String>>,
+    is_locked: Option<bool>,
+    is_favorite: Option<bool>,
+    is_deleted: Option<bool>,
+) -> Result<(), String> {
+    state
+        .chat_sessions
+        .update_group_meta(
+            &group_id,
+            title.as_deref(),
+            tags,
+            is_locked,
+            is_favorite,
+            is_deleted,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn link_chat_to_session_group(
+    state: State<'_, AppState>,
+    group_id: String,
+    chat_id: String,
+) -> Result<(), String> {
+    state
+        .chat_sessions
+        .link_chat_to_group(&chat_id, &group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unlink_chat_from_session_group(
+    state: State<'_, AppState>,
+    group_id: String,
+    chat_id: String,
+) -> Result<(), String> {
+    state
+        .chat_sessions
+        .unlink_chat_from_group(&chat_id, &group_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_group_chats(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> Result<Value, String> {
+    let chats = state
+        .chat_sessions
+        .list_group_chats(&group_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!(chats))
 }
 
 // ─── Voice transcription ─────────────────────────────────────────────────────
@@ -1368,6 +1603,7 @@ pub async fn ai_scaffold_project(
         stream_tx: None,
         cancel_flag: None,
         resp_tx,
+        source: "workspace",
     };
 
     state.orchestrator.infer(req)?;
@@ -1446,6 +1682,7 @@ pub async fn run_terminal_command(command: String, app_handle: AppHandle) -> Res
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn spawn_pty_terminal(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -1499,6 +1736,17 @@ pub async fn spawn_pty_terminal(
 }
 
 #[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn spawn_pty_terminal(
+    _app_handle: AppHandle,
+    _state: State<'_, AppState>,
+    _session_id: Option<String>,
+) -> Result<(), String> {
+    Err("PTY terminal is not supported on mobile targets".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn send_to_pty(input: String, state: State<'_, AppState>) -> Result<(), String> {
     use std::io::Write;
     let session_id = "default".to_string();
@@ -1515,6 +1763,13 @@ pub async fn send_to_pty(input: String, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn send_to_pty(_input: String, _state: State<'_, AppState>) -> Result<(), String> {
+    Err("PTY terminal is not supported on mobile targets".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn send_to_pty_session(
     session_id: String,
     input: String,
@@ -1534,6 +1789,17 @@ pub async fn send_to_pty_session(
 }
 
 #[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn send_to_pty_session(
+    _session_id: String,
+    _input: String,
+    _state: State<'_, AppState>,
+) -> Result<(), String> {
+    Err("PTY terminal is not supported on mobile targets".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Result<(), String> {
     use portable_pty::PtySize;
     let session_id = "default".to_string();
@@ -1549,6 +1815,13 @@ pub async fn resize_pty(rows: u16, cols: u16, state: State<'_, AppState>) -> Res
 }
 
 #[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn resize_pty(_rows: u16, _cols: u16, _state: State<'_, AppState>) -> Result<(), String> {
+    Err("PTY terminal is not supported on mobile targets".to_string())
+}
+
+#[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn resize_pty_session(
     session_id: String,
     rows: u16,
@@ -1565,6 +1838,17 @@ pub async fn resize_pty_session(
         .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn resize_pty_session(
+    _session_id: String,
+    _rows: u16,
+    _cols: u16,
+    _state: State<'_, AppState>,
+) -> Result<(), String> {
+    Err("PTY terminal is not supported on mobile targets".to_string())
 }
 
 #[tauri::command]
@@ -1722,6 +2006,86 @@ pub async fn get_orchestrator_status(
     Ok(serde_json::to_value(s).map_err(|e| e.to_string())?)
 }
 
+// ─── Cluster Orchestrator ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn cluster_list_nodes(state: State<'_, AppState>) -> Result<Vec<ClusterNode>, String> {
+    let cluster = state.cluster_orchestrator.lock().await;
+    Ok(cluster.list_nodes())
+}
+
+#[tauri::command]
+pub async fn cluster_upsert_node(
+    node: ClusterNode,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut cluster = state.cluster_orchestrator.lock().await;
+    cluster.upsert_node(node.clone());
+    Ok(serde_json::json!({
+        "ok": true,
+        "node_id": node.node_id,
+    }))
+}
+
+#[tauri::command]
+pub async fn cluster_remove_node(
+    node_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut cluster = state.cluster_orchestrator.lock().await;
+    let removed = cluster.remove_node(node_id.trim());
+    Ok(serde_json::json!({
+        "ok": removed,
+        "node_id": node_id,
+    }))
+}
+
+#[tauri::command]
+pub async fn cluster_update_node_metrics(
+    node_id: String,
+    metrics: NodeRuntimeMetrics,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+
+    let mut cluster = state.cluster_orchestrator.lock().await;
+    let updated = cluster.update_node_metrics(node_id.trim(), metrics, now_ms);
+    Ok(serde_json::json!({
+        "ok": updated,
+        "node_id": node_id,
+        "last_seen_ms": now_ms,
+    }))
+}
+
+#[tauri::command]
+pub async fn cluster_set_policy(
+    policy: ClusterPolicy,
+    state: State<'_, AppState>,
+) -> Result<ClusterPolicy, String> {
+    let mut cluster = state.cluster_orchestrator.lock().await;
+    cluster.set_policy(policy);
+    Ok(cluster.policy().clone())
+}
+
+#[tauri::command]
+pub async fn cluster_get_policy(state: State<'_, AppState>) -> Result<ClusterPolicy, String> {
+    let cluster = state.cluster_orchestrator.lock().await;
+    Ok(cluster.policy().clone())
+}
+
+#[tauri::command]
+pub async fn cluster_plan_workload(
+    workload: ClusterWorkload,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cluster = state.cluster_orchestrator.lock().await;
+    let plan = cluster.plan_workload(&workload);
+    Ok(serde_json::to_value(plan).map_err(|e| e.to_string())?)
+}
+
 struct GpuInfo {
     name:    String,
     backend: String,
@@ -1807,6 +2171,11 @@ pub async fn get_api_port(app_handle: AppHandle) -> Result<u16, String> {
 }
 
 #[tauri::command]
+pub async fn get_buddy_api_port(state: State<'_, AppState>) -> Result<u16, String> {
+    Ok(state.buddy_api_port)
+}
+
+#[tauri::command]
 pub async fn get_api_config(app_handle: AppHandle) -> Result<serde_json::Value, String> {
     let config = crate::config::load_config(&app_handle)?;
     Ok(serde_json::json!({
@@ -1832,14 +2201,14 @@ pub async fn set_api_config(
         running.stop().await;
     }
 
-    let started = api_server::start_with_fallback(
+    let started = api_server::start(
         state.orchestrator.clone(),
         remote_manager,
         state.ws_router.clone(),
         state.pair_token.clone(),
         api_host.clone(),
         api_port,
-        20,
+        app_handle.clone(),
     )
     .await;
 
@@ -1848,14 +2217,14 @@ pub async fn set_api_config(
         Err(e) => {
             // Try to restore previous config runtime so the app keeps working.
             let rollback_remote = app_handle.state::<Arc<RemoteManager>>().inner().clone();
-            if let Ok(restored) = api_server::start_with_fallback(
+            if let Ok(restored) = api_server::start(
                 state.orchestrator.clone(),
                 rollback_remote,
                 state.ws_router.clone(),
                 state.pair_token.clone(),
                 old_config.api_host.clone(),
                 old_config.api_port,
-                20,
+                app_handle.clone(),
             )
             .await
             {
@@ -2170,19 +2539,74 @@ fn resolve_adb_executable() -> (String, Vec<String>) {
     ("adb".to_string(), candidates)
 }
 
-fn adb_run(args: &[String]) -> Result<serde_json::Value, String> {
+const DEFAULT_ADB_TIMEOUT_MS: u64 = 120_000;
+const LONG_ADB_TIMEOUT_MS: u64 = 300_000;
+
+fn mobile_command_cancel_requested() -> &'static AtomicBool {
+    static CANCEL_REQUESTED: OnceLock<AtomicBool> = OnceLock::new();
+    CANCEL_REQUESTED.get_or_init(|| AtomicBool::new(false))
+}
+
+fn run_command_with_timeout(
+    mut cmd: Command,
+    timeout_ms: u64,
+    label: &str,
+) -> Result<std::process::Output, String> {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start {label}: {e}"))?;
+
+    let start = Instant::now();
+    let poll = Duration::from_millis(100);
+
+    loop {
+        if mobile_command_cancel_requested().load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{label} canceled by request."));
+        }
+
+        if let Some(_) = child.try_wait().map_err(|e| format!("Failed to poll {label}: {e}"))? {
+            return child
+                .wait_with_output()
+                .map_err(|e| format!("Failed to collect {label} output: {e}"));
+        }
+
+        if start.elapsed() >= Duration::from_millis(timeout_ms.max(1_000)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{label} timed out after {} ms. The process was terminated.",
+                timeout_ms.max(1_000)
+            ));
+        }
+
+        thread::sleep(poll);
+    }
+}
+
+fn adb_run_with_timeout(args: &[String], timeout_ms: u64) -> Result<serde_json::Value, String> {
+    mobile_command_cancel_requested().store(false, Ordering::Relaxed);
+
     let (adb_executable, candidates) = resolve_adb_executable();
-    let output = Command::new(&adb_executable)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            format!(
-                "Failed to execute adb via '{}'. Ensure Android Platform Tools are installed. Candidate locations checked: {}. {}",
-                adb_executable,
-                candidates.join(", "),
-                e
-            )
-        })?;
+    let mut cmd = Command::new(&adb_executable);
+    cmd.args(args);
+
+    let output = run_command_with_timeout(cmd, timeout_ms, "adb command").map_err(|e| {
+        if e.contains("canceled by request") || e.contains("timed out") {
+            return e;
+        }
+
+        format!(
+            "Failed to execute adb via '{}'. Ensure Android Platform Tools are installed. Candidate locations checked: {}. {}",
+            adb_executable,
+            candidates.join(", "),
+            e
+        )
+    })?;
 
     let status_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -2198,6 +2622,53 @@ fn adb_run(args: &[String]) -> Result<serde_json::Value, String> {
     }))
 }
 
+fn adb_run(args: &[String]) -> Result<serde_json::Value, String> {
+    adb_run_with_timeout(args, DEFAULT_ADB_TIMEOUT_MS)
+}
+
+fn resolve_executable_from_path(name: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let out = Command::new("where").arg(name).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let candidate = line.trim();
+            if candidate.is_empty() {
+                continue;
+            }
+            if std::path::Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = Command::new("which").arg(name).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+
+        let candidate = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if candidate.is_empty() {
+            None
+        } else {
+            Some(candidate)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn android_mobile_cancel_pending_operations() -> Result<serde_json::Value, String> {
+    mobile_command_cancel_requested().store(true, Ordering::Relaxed);
+    Ok(json!({ "ok": true, "message": "Cancel requested for pending mobile commands." }))
+}
+
 fn adb_assert_ok(result: &serde_json::Value, label: &str) -> Result<(), String> {
     let ok = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
     if ok {
@@ -2208,6 +2679,946 @@ fn adb_assert_ok(result: &serde_json::Value, label: &str) -> Result<(), String> 
     let stderr = result.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
     let stdout = result.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
     Err(format!("{label} failed (exit {status}). stderr: {stderr}. stdout: {stdout}"))
+}
+
+#[derive(Clone)]
+struct MobileRecordingSession {
+    pid: u32,
+    remote_path: String,
+}
+
+fn mobile_view_sessions() -> &'static StdMutex<HashMap<String, u32>> {
+    static SESSIONS: OnceLock<StdMutex<HashMap<String, u32>>> = OnceLock::new();
+    SESSIONS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn mobile_recording_sessions() -> &'static StdMutex<HashMap<String, MobileRecordingSession>> {
+    static RECORDINGS: OnceLock<StdMutex<HashMap<String, MobileRecordingSession>>> = OnceLock::new();
+    RECORDINGS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn kill_process_tree(pid: u32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let out = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .map_err(|e| format!("Failed to run taskkill: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            return Err(format!("taskkill failed for pid {pid}. stderr: {stderr}. stdout: {stdout}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
+            .map_err(|e| format!("Failed to run kill: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+
+        let out_force = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output()
+            .map_err(|e| format!("Failed to run kill -KILL: {e}"))?;
+        if !out_force.status.success() {
+            let stderr = String::from_utf8_lossy(&out_force.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out_force.stdout).trim().to_string();
+            return Err(format!("kill failed for pid {pid}. stderr: {stderr}. stdout: {stdout}"));
+        }
+        Ok(())
+    }
+}
+
+fn resolve_scrcpy_executable() -> (String, Vec<String>) {
+    let mut candidates = Vec::<String>::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            candidates.push(format!("{}\\Programs\\scrcpy\\scrcpy.exe", local_app_data));
+            candidates.push(format!("{}\\Programs\\scrcpy-win64\\scrcpy.exe", local_app_data));
+            candidates.push(format!("{}\\Microsoft\\WinGet\\Links\\scrcpy.exe", local_app_data));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(format!("{}\\scrcpy\\scrcpy.exe", program_files));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(format!("{}\\scrcpy\\scrcpy.exe", program_files_x86));
+        }
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            candidates.push(format!("{}\\chocolatey\\bin\\scrcpy.exe", program_data));
+        }
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            candidates.push(format!("{}\\scoop\\apps\\scrcpy\\current\\scrcpy.exe", user_profile));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push("/usr/bin/scrcpy".to_string());
+        candidates.push("/usr/local/bin/scrcpy".to_string());
+    }
+
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return (c.clone(), candidates);
+        }
+    }
+
+    if let Some(from_path) = resolve_executable_from_path("scrcpy") {
+        candidates.push(from_path.clone());
+        return (from_path, candidates);
+    }
+
+    ("scrcpy".to_string(), candidates)
+}
+
+fn ensure_mobile_artifact_dir(app_handle: &AppHandle, category: &str) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager as _;
+
+    let base = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = base.join("mobile-view").join(category);
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create artifact dir {}: {e}", dir.to_string_lossy()))?;
+    Ok(dir)
+}
+
+/// Inspect Mobile View runtime capabilities and active sessions.
+#[tauri::command]
+pub async fn android_mobile_view_status() -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let (adb_executable, adb_candidates) = resolve_adb_executable();
+        let (scrcpy_executable, scrcpy_candidates) = resolve_scrcpy_executable();
+        let scrcpy_exists = std::path::Path::new(&scrcpy_executable).exists();
+
+        let active_views = {
+            let sessions = mobile_view_sessions()
+                .lock()
+                .map_err(|_| "mobile view session lock poisoned".to_string())?;
+            sessions
+                .iter()
+                .map(|(serial, pid)| json!({ "serial": serial, "pid": pid }))
+                .collect::<Vec<Value>>()
+        };
+
+        let active_recordings = {
+            let sessions = mobile_recording_sessions()
+                .lock()
+                .map_err(|_| "mobile recording session lock poisoned".to_string())?;
+            sessions
+                .iter()
+                .map(|(serial, rec)| json!({ "serial": serial, "pid": rec.pid, "remote_path": rec.remote_path }))
+                .collect::<Vec<Value>>()
+        };
+
+        Ok(json!({
+            "adb_executable": adb_executable,
+            "adb_candidates": adb_candidates,
+            "scrcpy_executable": scrcpy_executable,
+            "scrcpy_candidates": scrcpy_candidates,
+            "scrcpy_available": scrcpy_exists,
+            "active_views": active_views,
+            "active_recordings": active_recordings,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Start a scrcpy live control session for the selected device.
+#[tauri::command]
+pub async fn android_mobile_view_start(
+    serial: String,
+    max_size: Option<u32>,
+    bitrate_mbps: Option<u32>,
+    fullscreen: Option<bool>,
+    stay_awake: Option<bool>,
+    turn_screen_off: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let (scrcpy_executable, candidates) = resolve_scrcpy_executable();
+
+        let mut cmd = Command::new(&scrcpy_executable);
+        cmd.args(["-s", &serial]);
+        cmd.arg("--window-title").arg(format!("Bonsai Mobile View - {serial}"));
+
+        if let Some(size) = max_size {
+            if size >= 240 {
+                cmd.arg("--max-size").arg(size.to_string());
+            }
+        }
+
+        if let Some(bitrate) = bitrate_mbps {
+            if bitrate > 0 {
+                cmd.arg("--video-bit-rate").arg(format!("{bitrate}M"));
+            }
+        }
+
+        if fullscreen.unwrap_or(false) {
+            cmd.arg("--fullscreen");
+        }
+        if stay_awake.unwrap_or(true) {
+            cmd.arg("--stay-awake");
+        }
+        if turn_screen_off.unwrap_or(false) {
+            cmd.arg("--turn-screen-off");
+        }
+
+        let child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to start scrcpy via '{}'. Ensure scrcpy is installed. Candidate locations checked: {}. {}",
+                scrcpy_executable,
+                candidates.join(", "),
+                e,
+            )
+        })?;
+
+        let pid = child.id();
+
+        let mut sessions = mobile_view_sessions()
+            .lock()
+            .map_err(|_| "mobile view session lock poisoned".to_string())?;
+
+        if let Some(old_pid) = sessions.insert(serial.clone(), pid) {
+            let _ = kill_process_tree(old_pid);
+        }
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "pid": pid,
+            "scrcpy_executable": scrcpy_executable,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stop a running scrcpy live control session.
+#[tauri::command]
+pub async fn android_mobile_view_stop(serial: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let pid = {
+            let mut sessions = mobile_view_sessions()
+                .lock()
+                .map_err(|_| "mobile view session lock poisoned".to_string())?;
+            sessions.remove(&serial)
+        };
+
+        let Some(pid) = pid else {
+            return Ok(json!({
+                "ok": true,
+                "serial": serial,
+                "stopped": false,
+                "message": "No running Mobile View session for this serial.",
+            }));
+        };
+
+        kill_process_tree(pid)?;
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "stopped": true,
+            "pid": pid,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Capture a screenshot from the connected Android device.
+#[tauri::command]
+pub async fn android_mobile_take_screenshot(
+    app_handle: AppHandle,
+    serial: String,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis();
+
+        let output_dir = ensure_mobile_artifact_dir(&app_handle, "screenshots")?;
+        let output_path = output_dir.join(format!("{serial}-{timestamp}.png"));
+
+        let (adb_executable, candidates) = resolve_adb_executable();
+        let out = Command::new(&adb_executable)
+            .args(["-s", &serial, "exec-out", "screencap", "-p"])
+            .output()
+            .map_err(|e| {
+                format!(
+                    "Failed to run adb screenshot via '{}'. Candidate locations checked: {}. {}",
+                    adb_executable,
+                    candidates.join(", "),
+                    e,
+                )
+            })?;
+
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            return Err(format!("adb exec-out screencap failed. stderr: {stderr}. stdout: {stdout}"));
+        }
+
+        fs::write(&output_path, &out.stdout)
+            .map_err(|e| format!("Failed writing screenshot {}: {e}", output_path.to_string_lossy()))?;
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "path": output_path.to_string_lossy().to_string(),
+            "size_bytes": out.stdout.len(),
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Start device-side screen recording (adb shell screenrecord).
+#[tauri::command]
+pub async fn android_mobile_start_recording(
+    serial: String,
+    bitrate_mbps: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        {
+            let sessions = mobile_recording_sessions()
+                .lock()
+                .map_err(|_| "mobile recording session lock poisoned".to_string())?;
+            if let Some(existing) = sessions.get(&serial) {
+                return Err(format!("Recording already active for {serial} (pid {}). Stop it first.", existing.pid));
+            }
+        }
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis();
+        let remote_path = format!("/sdcard/Movies/bonsai-recording-{timestamp}.mp4");
+
+        let (adb_executable, candidates) = resolve_adb_executable();
+        let mut cmd = Command::new(&adb_executable);
+        cmd.args(["-s", &serial, "shell", "screenrecord"]);
+
+        if let Some(rate) = bitrate_mbps {
+            if rate > 0 {
+                cmd.arg("--bit-rate").arg((rate * 1_000_000).to_string());
+            }
+        }
+
+        cmd.arg(&remote_path);
+
+        let child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to start adb screenrecord via '{}'. Candidate locations checked: {}. {}",
+                adb_executable,
+                candidates.join(", "),
+                e,
+            )
+        })?;
+        let pid = child.id();
+
+        let mut sessions = mobile_recording_sessions()
+            .lock()
+            .map_err(|_| "mobile recording session lock poisoned".to_string())?;
+        sessions.insert(
+            serial.clone(),
+            MobileRecordingSession {
+                pid,
+                remote_path: remote_path.clone(),
+            },
+        );
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "pid": pid,
+            "remote_path": remote_path,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stop recording, pull the video file to desktop, and clean up remote artifact.
+#[tauri::command]
+pub async fn android_mobile_stop_recording(
+    app_handle: AppHandle,
+    serial: String,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let rec = {
+            let mut sessions = mobile_recording_sessions()
+                .lock()
+                .map_err(|_| "mobile recording session lock poisoned".to_string())?;
+            sessions.remove(&serial)
+        };
+
+        let Some(rec) = rec else {
+            return Err(format!("No active recording found for {serial}"));
+        };
+
+        // Stop adb screenrecord process first.
+        let _ = kill_process_tree(rec.pid);
+
+        let output_dir = ensure_mobile_artifact_dir(&app_handle, "recordings")?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis();
+        let output_path = output_dir.join(format!("{serial}-{timestamp}.mp4"));
+
+        let pull_args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "pull".to_string(),
+            rec.remote_path.clone(),
+            output_path.to_string_lossy().to_string(),
+        ];
+        let pull = adb_run_with_timeout(&pull_args, LONG_ADB_TIMEOUT_MS)?;
+        adb_assert_ok(&pull, "adb pull screenrecord")?;
+
+        let _ = adb_run_with_timeout(&vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "rm".to_string(),
+            rec.remote_path.clone(),
+        ], LONG_ADB_TIMEOUT_MS);
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "path": output_path.to_string_lossy().to_string(),
+            "remote_path": rec.remote_path,
+            "pid": rec.pid,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Launch the default camera app in photo or video capture mode.
+#[tauri::command]
+pub async fn android_mobile_launch_camera(
+    serial: String,
+    video_mode: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let action = if video_mode.unwrap_or(false) {
+            "android.media.action.VIDEO_CAPTURE"
+        } else {
+            "android.media.action.IMAGE_CAPTURE"
+        };
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            "am".to_string(),
+            "start".to_string(),
+            "-a".to_string(),
+            action.to_string(),
+        ];
+        let out = adb_run(&args)?;
+        adb_assert_ok(&out, "adb launch camera")?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Send Android key events (home/back/recent/volume/power, etc.).
+#[tauri::command]
+pub async fn android_mobile_send_key(serial: String, key_code: i32) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if key_code <= 0 {
+            return Err("key_code must be > 0".to_string());
+        }
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            "input".to_string(),
+            "keyevent".to_string(),
+            key_code.to_string(),
+        ];
+
+        let out = adb_run(&args)?;
+        adb_assert_ok(&out, "adb input keyevent")?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Send text input to device.
+#[tauri::command]
+pub async fn android_mobile_send_text(serial: String, text: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        let text = text.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+        if text.is_empty() {
+            return Err("text cannot be empty".to_string());
+        }
+
+        let escaped = text
+            .replace(" ", "%s")
+            .replace("&", "\\&")
+            .replace("|", "\\|")
+            .replace("<", "\\<")
+            .replace(">", "\\>")
+            .replace(";", "\\;");
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            "input".to_string(),
+            "text".to_string(),
+            escaped,
+        ];
+
+        let out = adb_run(&args)?;
+        adb_assert_ok(&out, "adb input text")?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Send tap coordinates.
+#[tauri::command]
+pub async fn android_mobile_tap(serial: String, x: u32, y: u32) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            "input".to_string(),
+            "tap".to_string(),
+            x.to_string(),
+            y.to_string(),
+        ];
+
+        let out = adb_run(&args)?;
+        adb_assert_ok(&out, "adb input tap")?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Send swipe gesture coordinates.
+#[tauri::command]
+pub async fn android_mobile_swipe(
+    serial: String,
+    x1: u32,
+    y1: u32,
+    x2: u32,
+    y2: u32,
+    duration_ms: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let mut args = vec![
+            "-s".to_string(),
+            serial,
+            "shell".to_string(),
+            "input".to_string(),
+            "swipe".to_string(),
+            x1.to_string(),
+            y1.to_string(),
+            x2.to_string(),
+            y2.to_string(),
+        ];
+        if let Some(ms) = duration_ms {
+            args.push(ms.to_string());
+        }
+
+        let out = adb_run(&args)?;
+        adb_assert_ok(&out, "adb input swipe")?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Read display metrics from the selected Android device.
+#[tauri::command]
+pub async fn android_mobile_get_display_info(serial: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let size = adb_run(&vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "wm".to_string(),
+            "size".to_string(),
+        ])?;
+        adb_assert_ok(&size, "adb shell wm size")?;
+
+        let density = adb_run(&vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "wm".to_string(),
+            "density".to_string(),
+        ])?;
+        adb_assert_ok(&density, "adb shell wm density")?;
+
+        let input = adb_run(&vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "dumpsys".to_string(),
+            "input".to_string(),
+        ])?;
+        adb_assert_ok(&input, "adb shell dumpsys input")?;
+
+        let size_stdout = size.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+        let density_stdout = density.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+        let input_stdout = input.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut width: Option<u32> = None;
+        let mut height: Option<u32> = None;
+        for line in size_stdout.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("Physical size:") {
+                let parts: Vec<&str> = rest.trim().split('x').collect();
+                if parts.len() == 2 {
+                    width = parts[0].trim().parse::<u32>().ok();
+                    height = parts[1].trim().parse::<u32>().ok();
+                }
+            }
+        }
+
+        let mut dpi: Option<u32> = None;
+        for line in density_stdout.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("Physical density:") {
+                dpi = rest.trim().parse::<u32>().ok();
+            }
+        }
+
+        let mut surface_orientation: Option<u32> = None;
+        for line in input_stdout.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("SurfaceOrientation:") {
+                surface_orientation = rest.trim().parse::<u32>().ok();
+                break;
+            }
+        }
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "width": width,
+            "height": height,
+            "density_dpi": dpi,
+            "surface_orientation": surface_orientation,
+            "wm_size_raw": size_stdout,
+            "wm_density_raw": density_stdout,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Lock or unlock orientation for stable Mobile View sessions.
+/// Allowed modes: portrait, landscape, unlock.
+#[tauri::command]
+pub async fn android_mobile_set_orientation(
+    serial: String,
+    mode: String,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let mode = mode.trim().to_lowercase();
+        match mode.as_str() {
+            "portrait" => {
+                let rotate_off = adb_run(&vec![
+                    "-s".to_string(), serial.clone(), "shell".to_string(),
+                    "settings".to_string(), "put".to_string(), "system".to_string(),
+                    "accelerometer_rotation".to_string(), "0".to_string(),
+                ])?;
+                adb_assert_ok(&rotate_off, "adb settings put accelerometer_rotation 0")?;
+
+                let user_rotation = adb_run(&vec![
+                    "-s".to_string(), serial.clone(), "shell".to_string(),
+                    "settings".to_string(), "put".to_string(), "system".to_string(),
+                    "user_rotation".to_string(), "0".to_string(),
+                ])?;
+                adb_assert_ok(&user_rotation, "adb settings put user_rotation 0")?;
+            }
+            "landscape" => {
+                let rotate_off = adb_run(&vec![
+                    "-s".to_string(), serial.clone(), "shell".to_string(),
+                    "settings".to_string(), "put".to_string(), "system".to_string(),
+                    "accelerometer_rotation".to_string(), "0".to_string(),
+                ])?;
+                adb_assert_ok(&rotate_off, "adb settings put accelerometer_rotation 0")?;
+
+                let user_rotation = adb_run(&vec![
+                    "-s".to_string(), serial.clone(), "shell".to_string(),
+                    "settings".to_string(), "put".to_string(), "system".to_string(),
+                    "user_rotation".to_string(), "1".to_string(),
+                ])?;
+                adb_assert_ok(&user_rotation, "adb settings put user_rotation 1")?;
+            }
+            "unlock" => {
+                let rotate_on = adb_run(&vec![
+                    "-s".to_string(), serial.clone(), "shell".to_string(),
+                    "settings".to_string(), "put".to_string(), "system".to_string(),
+                    "accelerometer_rotation".to_string(), "1".to_string(),
+                ])?;
+                adb_assert_ok(&rotate_on, "adb settings put accelerometer_rotation 1")?;
+            }
+            _ => {
+                return Err("mode must be one of: portrait, landscape, unlock".to_string());
+            }
+        }
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "mode": mode,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Launch Bonsai Workspace on the selected Android device.
+#[tauri::command]
+pub async fn android_mobile_launch_bonsai(serial: String) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let start = adb_run(&vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "am".to_string(),
+            "start".to_string(),
+            "-W".to_string(),
+            "-n".to_string(),
+            "com.bonsai.workspace/.MainActivity".to_string(),
+        ])?;
+        adb_assert_ok(&start, "adb am start Bonsai")?;
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "activity": "com.bonsai.workspace/.MainActivity",
+            "result": start,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Prepare a uniform mobile runtime session (wake/unlock + reverse ports + launch app).
+#[tauri::command]
+pub async fn android_mobile_prepare_uniform_runtime(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    remote_manager: State<'_, Arc<RemoteManager>>,
+    serial: String,
+    api_port: Option<u16>,
+    ws_port: Option<u16>,
+    start_remote_surface: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let remote_surface = start_remote_surface.unwrap_or(true);
+
+    let pair_token = state.pair_token.clone();
+    let pair_token_for_launch = pair_token.clone();
+    let config = crate::config::load_config(&app_handle).unwrap_or_default();
+    let configured_api_host = config.api_host;
+    let configured_api_port = config.api_port;
+
+    let remote_session = if remote_surface {
+        Some(remote_manager.start_session().await?)
+    } else {
+        None
+    };
+
+    let remote_session_id = remote_session
+        .as_ref()
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
+
+    let out = tokio::task::spawn_blocking(move || {
+        let serial = serial.trim().to_string();
+        if serial.is_empty() {
+            return Err("serial cannot be empty".to_string());
+        }
+
+        let api = api_port.unwrap_or(11369);
+        let ws = ws_port.unwrap_or(11371);
+
+        let wake = adb_run(&vec![
+            "-s".to_string(), serial.clone(), "shell".to_string(),
+            "input".to_string(), "keyevent".to_string(), "224".to_string(),
+        ])?;
+        adb_assert_ok(&wake, "adb keyevent 224")?;
+
+        let unlock = adb_run(&vec![
+            "-s".to_string(), serial.clone(), "shell".to_string(),
+            "input".to_string(), "keyevent".to_string(), "82".to_string(),
+        ])?;
+        adb_assert_ok(&unlock, "adb keyevent 82")?;
+
+        let reverse_api = adb_run(&vec![
+            "-s".to_string(), serial.clone(), "reverse".to_string(),
+            format!("tcp:{api}"), format!("tcp:{api}"),
+        ])?;
+        adb_assert_ok(&reverse_api, "adb reverse api")?;
+
+        let reverse_ws = adb_run(&vec![
+            "-s".to_string(), serial.clone(), "reverse".to_string(),
+            format!("tcp:{ws}"), format!("tcp:{ws}"),
+        ])?;
+        adb_assert_ok(&reverse_ws, "adb reverse ws")?;
+
+        let launch = adb_run(&vec![
+            "-s".to_string(), serial.clone(), "shell".to_string(),
+            "am".to_string(), "start".to_string(), "-W".to_string(),
+            "-n".to_string(), "com.bonsai.workspace/.MainActivity".to_string(),
+        ])?;
+        adb_assert_ok(&launch, "adb launch bonsai")?;
+
+        let remote_launch = if remote_surface {
+            let launch_remote = adb_run(&vec![
+                "-s".to_string(), serial.clone(), "shell".to_string(),
+                "am".to_string(), "start".to_string(), "-W".to_string(),
+                "-n".to_string(), "com.bonsai.workspace/.RemoteSurfaceEntryActivity".to_string(),
+                "--es".to_string(), "desktop_host".to_string(), "127.0.0.1".to_string(),
+                "--ei".to_string(), "desktop_port".to_string(), api.to_string(),
+                "--es".to_string(), "pair_token".to_string(), pair_token_for_launch.clone(),
+                "--es".to_string(), "session_id".to_string(), remote_session_id.clone(),
+            ])?;
+            adb_assert_ok(&launch_remote, "adb launch remote surface activity")?;
+            Some(launch_remote)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "ok": true,
+            "serial": serial,
+            "api_port": api,
+            "ws_port": ws,
+            "remote_surface_enabled": remote_surface,
+            "steps": {
+                "wake": wake,
+                "unlock": unlock,
+                "reverse_api": reverse_api,
+                "reverse_ws": reverse_ws,
+                "launch": launch,
+                "launch_remote_surface": remote_launch,
+            }
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if !remote_surface {
+        return Ok(out);
+    }
+
+    let session_id = remote_session
+        .as_ref()
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
+    let api_base = format!("http://{}:{}", configured_api_host, configured_api_port);
+
+    Ok(json!({
+        "ok": out.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+        "serial": out.get("serial").cloned().unwrap_or(json!("")),
+        "api_port": out.get("api_port").cloned().unwrap_or(json!(configured_api_port)),
+        "ws_port": out.get("ws_port").cloned().unwrap_or(json!(configured_api_port)),
+        "remote_surface_enabled": true,
+        "remote_surface": {
+            "session_id": session_id,
+            "pair_token": pair_token,
+            "desktop_api_base": api_base,
+            "frame_url": format!("http://{}:{}/remote/surface/frame", configured_api_host, configured_api_port),
+            "input_url": format!("http://{}:{}/remote/surface/input", configured_api_host, configured_api_port),
+            "stop_url": format!("http://{}:{}/remote/surface/session/stop", configured_api_host, configured_api_port)
+        },
+        "steps": out.get("steps").cloned().unwrap_or(json!({}))
+    }))
 }
 
 /// List Android devices visible through ADB (USB or WiFi debugging).
@@ -3500,6 +4911,7 @@ pub struct AgentResourceCost {
 #[derive(serde::Serialize)]
 pub struct SwarmResourceEstimate {
     pub total_ram_required_mb: u64,
+    pub shared_ram_required_mb: u64,
     pub free_ram_mb:           u64,
     pub fits:                  bool,
     pub per_agent:             Vec<AgentResourceCost>,
@@ -3540,18 +4952,23 @@ pub async fn estimate_swarm_resources(state: State<'_, AppState>) -> Result<Swar
     let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
     let enabled: Vec<&ResolvedAgent> = resolved.iter().filter(|a| a.config.enabled).collect();
 
-    // Unique model RAM (same model loaded once, shared across slots)
+    // Shared-model baseline (same model ID counted once).
     let mut seen_models = std::collections::HashSet::new();
-    let mut unique_ram: u64 = 0;
+    let mut shared_ram: u64 = 0;
     for a in &enabled {
         if let Some(mid) = &a.effective_model_id {
             if seen_models.insert(mid.clone()) {
-                unique_ram += a.ram_required_mb;
+                shared_ram += a.ram_required_mb;
             }
         }
     }
+
+    // Per-agent configured RAM is what the UI presents as "RAM estimate".
+    // This avoids confusing drops when an agent switches to a larger model
+    // that is already used by another agent.
+    let per_agent_ram: u64 = enabled.iter().map(|a| a.ram_required_mb).sum();
     let kv_overhead: u64 = 256 * enabled.len() as u64;
-    let total = unique_ram + kv_overhead;
+    let total = per_agent_ram + kv_overhead;
 
     let mut sys = sysinfo::System::new_all();
     sys.refresh_memory();
@@ -3565,7 +4982,13 @@ pub async fn estimate_swarm_resources(state: State<'_, AppState>) -> Result<Swar
         ram_required_mb: a.ram_required_mb,
     }).collect();
 
-    Ok(SwarmResourceEstimate { total_ram_required_mb: total, free_ram_mb, fits, per_agent })
+    Ok(SwarmResourceEstimate {
+        total_ram_required_mb: total,
+        shared_ram_required_mb: shared_ram + kv_overhead,
+        free_ram_mb,
+        fits,
+        per_agent,
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -3589,7 +5012,21 @@ pub async fn submit_swarm_chat(
     swarm_settings: Option<SwarmRuntimeSettings>,
 ) -> Result<SwarmChatResponse, String> {
     let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
-    let enabled: Vec<ResolvedAgent> = resolved.into_iter().filter(|a| a.config.enabled).collect();
+    let leader = resolved
+        .iter()
+        .find(|a| a.config.slot_index == 0)
+        .cloned()
+        .ok_or_else(|| "Leader agent (slot 0) is missing".to_string())?;
+
+    let mut enabled_workers: Vec<ResolvedAgent> = resolved
+        .into_iter()
+        .filter(|a| a.config.slot_index != 0 && a.config.enabled)
+        .collect();
+    enabled_workers.sort_by_key(|a| a.config.slot_index);
+
+    let mut enabled: Vec<ResolvedAgent> = Vec::with_capacity(1 + enabled_workers.len());
+    enabled.push(leader);
+    enabled.extend(enabled_workers);
 
     if enabled.len() <= 1 {
         // Single-agent fallback: just call submit_chat logic
@@ -3693,6 +5130,293 @@ pub async fn cancel_agent(state: State<'_, AppState>, run_id: String, slot: usiz
     if let Some(flags) = cancels.get(&run_id) {
         if let Some(f) = flags.get(slot) { f.store(true, Ordering::Relaxed); }
     }
+    Ok(())
+}
+
+// ─── Messaging bot integration ───────────────────────────────────────────────
+
+const BOT_ADMIN_PORT: u16 = 11421;
+// bonsai-bot stores its admin token under its own keyring service, separate from
+// the workspace's "bonsai-assistant" service used by SecretsStore.
+const BOT_KEYRING_SERVICE: &str = "bonsai-bot";
+
+fn bot_admin_token() -> String {
+    keyring::Entry::new(BOT_KEYRING_SERVICE, "bot_admin_token")
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .unwrap_or_default()
+}
+
+async fn fetch_from_bot_path(path: &str, token: &str) -> Result<(Value, u16), String> {
+    let client = reqwest::Client::new();
+    // Prefer a persisted port file written by the bot when available.
+    fn read_persisted_bot_port() -> Option<u16> {
+        // First try the OS config dir: {config_dir}/bonsai/bonsai-bot-port.json
+        if let Some(cfg) = dirs::config_dir() {
+            let path = cfg.join("bonsai").join("bonsai-bot-port.json");
+            if path.exists() {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                        if let Some(p) = v.get("port").and_then(|n| n.as_u64()) {
+                            return Some(p as u16);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback to local workspace file if present
+        let local = std::path::Path::new("bonsai-bot-port.json");
+        if local.exists() {
+            if let Ok(s) = std::fs::read_to_string(local) {
+                if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                    if let Some(p) = v.get("port").and_then(|n| n.as_u64()) {
+                        return Some(p as u16);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    if let Some(persisted) = read_persisted_bot_port() {
+        let url = format!("http://127.0.0.1:{persisted}/{}", path.trim_start_matches('/'));
+        if let Ok(resp) = client
+            .get(&url)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(v) = resp.json::<Value>().await {
+                    return Ok((v, persisted));
+                }
+            }
+        }
+        // If persisted port failed, fall through to probing the default range.
+    }
+
+    for p in BOT_ADMIN_PORT..BOT_ADMIN_PORT.saturating_add(5) {
+        let url = format!("http://127.0.0.1:{p}/{}", path.trim_start_matches('/'));
+        match client
+            .get(&url)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    match resp.json::<Value>().await {
+                        Ok(v) => return Ok((v, p)),
+                        Err(e) => return Err(e.to_string()),
+                    }
+                } else {
+                    // try next port
+                    continue;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Err("Bot server not running".to_string())
+}
+
+fn bot_config_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("bonsai-bot-config.json"))
+}
+
+fn read_bot_cfg(path: &std::path::Path) -> Value {
+    if path.exists() {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(json!({}))
+    } else {
+        json!({})
+    }
+}
+
+fn write_bot_cfg(path: &std::path::Path, cfg: &Value) -> Result<(), String> {
+    fs::write(path, serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch live status from the bot admin API.
+/// Returns the raw JSON status object, or an error string if the bot is not running.
+#[tauri::command]
+pub async fn get_bot_server_status(_state: State<'_, AppState>) -> Result<Value, String> {
+    let token = bot_admin_token();
+    let (v, _p) = fetch_from_bot_path("status", &token).await?;
+    Ok(v)
+}
+
+/// Save Discord bot configuration: store token in keychain, persist non-secret settings to
+/// the bot config file, then signal a reload if the bot is running.
+#[tauri::command]
+pub async fn save_discord_bot_config(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    token: String,
+    allowed_guild_ids:   Vec<String>,
+    allowed_channel_ids: Vec<String>,
+    allowed_user_ids:    Vec<String>,
+) -> Result<(), String> {
+    if !token.is_empty() {
+        state.secrets_store.store("discord_token", &token)
+            .map_err(|e| e.to_string())?;
+    }
+    let path = bot_config_path(&app_handle)?;
+    let mut cfg = read_bot_cfg(&path);
+    cfg["discord"]["allowed_guild_ids"]   = json!(allowed_guild_ids);
+    cfg["discord"]["allowed_channel_ids"] = json!(allowed_channel_ids);
+    cfg["discord"]["allowed_user_ids"]    = json!(allowed_user_ids);
+    cfg["discord"]["enabled"] = json!(true);
+    write_bot_cfg(&path, &cfg)?;
+    let _ = bot_reload(&state).await;
+    Ok(())
+}
+
+/// Save Telegram bot configuration.
+#[tauri::command]
+pub async fn save_telegram_bot_config(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    token: String,
+    allowed_chat_ids: Vec<i64>,
+) -> Result<(), String> {
+    if !token.is_empty() {
+        state.secrets_store.store("telegram_token", &token)
+            .map_err(|e| e.to_string())?;
+    }
+    let path = bot_config_path(&app_handle)?;
+    let mut cfg = read_bot_cfg(&path);
+    cfg["telegram"]["allowed_chat_ids"] = json!(allowed_chat_ids);
+    cfg["telegram"]["enabled"] = json!(true);
+    write_bot_cfg(&path, &cfg)?;
+    let _ = bot_reload(&state).await;
+    Ok(())
+}
+
+/// Save Matrix bot configuration.
+#[tauri::command]
+pub async fn save_matrix_bot_config(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    password:       String,
+    homeserver_url: String,
+    username:       String,
+    allowed_rooms:  Vec<String>,
+    allowed_users:  Vec<String>,
+) -> Result<(), String> {
+    if !password.is_empty() {
+        state.secrets_store.store("matrix_password", &password)
+            .map_err(|e| e.to_string())?;
+    }
+    let path = bot_config_path(&app_handle)?;
+    let mut cfg = read_bot_cfg(&path);
+    cfg["matrix"]["homeserver_url"] = json!(homeserver_url);
+    cfg["matrix"]["username"]       = json!(username);
+    cfg["matrix"]["allowed_rooms"]  = json!(allowed_rooms);
+    cfg["matrix"]["allowed_users"]  = json!(allowed_users);
+    cfg["matrix"]["enabled"] = json!(true);
+    write_bot_cfg(&path, &cfg)?;
+    let _ = bot_reload(&state).await;
+    Ok(())
+}
+
+/// Save Email bot configuration.
+#[tauri::command]
+pub async fn save_email_bot_config(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    imap_password:      String,
+    smtp_password:      String,
+    imap_host:          String,
+    imap_port:          u16,
+    imap_username:      String,
+    smtp_host:          String,
+    smtp_username:      String,
+    smtp_from:          String,
+    subject_prefix:     String,
+    allowed_from_addrs: Vec<String>,
+) -> Result<(), String> {
+    if !imap_password.is_empty() {
+        state.secrets_store.store("email_imap_password", &imap_password)
+            .map_err(|e| e.to_string())?;
+    }
+    if !smtp_password.is_empty() {
+        state.secrets_store.store("email_smtp_password", &smtp_password)
+            .map_err(|e| e.to_string())?;
+    }
+    let path = bot_config_path(&app_handle)?;
+    let mut cfg = read_bot_cfg(&path);
+    cfg["email"]["imap_host"]          = json!(imap_host);
+    cfg["email"]["imap_port"]          = json!(imap_port);
+    cfg["email"]["imap_username"]      = json!(imap_username);
+    cfg["email"]["smtp_host"]          = json!(smtp_host);
+    cfg["email"]["smtp_username"]      = json!(smtp_username);
+    cfg["email"]["smtp_from"]          = json!(smtp_from);
+    cfg["email"]["subject_prefix"]     = json!(subject_prefix);
+    cfg["email"]["allowed_from_addrs"] = json!(allowed_from_addrs);
+    cfg["email"]["enabled"] = json!(true);
+    write_bot_cfg(&path, &cfg)?;
+    let _ = bot_reload(&state).await;
+    Ok(())
+}
+
+/// Test a platform's current connection state by querying the bot admin API status.
+#[tauri::command]
+pub async fn test_bot_platform(
+    state: State<'_, AppState>,
+    platform: String,
+) -> Result<Value, String> {
+    let status = get_bot_server_status(state).await?;
+    Ok(status.get("platforms")
+        .and_then(|p| p.get(&platform))
+        .cloned()
+        .unwrap_or(json!({"connected": false, "error": "Platform not found"})))
+}
+
+/// Reveal the Matrix key backup passphrase.
+/// Requires the caller to supply the current `bot_admin_token` as proof of authorization.
+/// Emits an audit event and returns the passphrase for one-time display.
+#[tauri::command]
+pub async fn get_matrix_key_backup_passphrase(
+    state: State<'_, AppState>,
+    admin_token_proof: String,
+) -> Result<Option<String>, String> {
+    let stored_token = bot_admin_token();
+    if stored_token.is_empty() || admin_token_proof != stored_token {
+        return Err("Unauthorized: invalid admin token proof".to_string());
+    }
+    state.audit_log.log(crate::assistant_audit_log::AuditEvent {
+        ts:           std::time::SystemTime::now()
+                          .duration_since(std::time::UNIX_EPOCH)
+                          .unwrap_or_default()
+                          .as_secs() as i64,
+        tool:         "matrix_key_backup_passphrase_reveal".to_string(),
+        decision:     "allowed".to_string(),
+        args_hash:    String::new(),
+        error:        None,
+        duration_ms:  None,
+        session_id:   None,
+        turn_id:      None,
+        tool_call_id: None,
+    });
+    let passphrase = keyring::Entry::new(BOT_KEYRING_SERVICE, "matrix_key_backup_pass")
+        .ok()
+        .and_then(|e| e.get_password().ok());
+    Ok(passphrase)
+}
+
+/// Internal helper: POST /config/reload to the bot admin API (best-effort).
+async fn bot_reload(_state: &State<'_, AppState>) -> Result<(), ()> {
+    let token = bot_admin_token();
+    let _ = fetch_from_bot_path("config/reload", &token).await;
     Ok(())
 }
 

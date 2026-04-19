@@ -1,4 +1,4 @@
-﻿# Bonsai Workspace: Android App + VSCode Runner/Streaming System
+# Bonsai Workspace: Android App + VSCode Runner/Streaming System
 
 ## Overview
 
@@ -441,6 +441,8 @@ Release evidence ledger:
 
 | 2026-04-16T14:37:37.840Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `0692E029FDF9298799FD2B5B0047D0282E3C6522050DC228F332E91C326E63FE` | `G8S1KT06151202JN` | PASS | api port 11369; non-strict; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
 
+| 2026-04-17T04:39:59.929Z | Local CLI (test:android-usb-regression) | local-shell | `tool_test/android-usb-regression/latest.json` | `D22298182F45F969A33CA2F780A00E0D91AE0A9A8130B6B8E55AA830D543D80D` | `G8S1KT06151202JN` | PASS | api port 11369; non-strict; Package com.bonsai.workspace is not installed; set BONSAI_REQUIRE_APP=1 to make this mandatory. |
+
 Ledger update rule:
 
 - Add one row for each manual CI hardware run and each local sign-off run.
@@ -461,6 +463,7 @@ Ledger update rule:
 2. Android real-device validation documented with command/log evidence.
 3. Pairing and reconnect succeed without manual workarounds.
 4. No known spec/runtime contract mismatches remain in this document.
+
 
 
 

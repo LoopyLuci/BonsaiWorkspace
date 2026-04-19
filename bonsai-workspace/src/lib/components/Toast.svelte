@@ -25,7 +25,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    z-index: 2000;
+    z-index: var(--z-toast, 2000);
     width: min(320px, calc(100% - 32px));
   }
 

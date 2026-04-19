@@ -1,5 +1,6 @@
 <script lang="ts">
   import { afterUpdate, onMount, onDestroy, createEventDispatcher } from 'svelte';
+  import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import DOMPurify from 'dompurify';
@@ -11,6 +12,8 @@
     clearCurrentSession, clearChat,
     askBonsaiRequest,
   } from '$lib/stores/chat';
+  import { latestVisionSnapshot, latestVisionFrame, visionStreamActive } from '$lib/stores/vision';
+  import { buildVisionContextMessage, isLikelyVisionCapableModel } from '$lib/utils/visionContext';
   import { addToast } from '$lib/stores/toast';
   import { activeEditorFile } from '$lib/stores/activeEditorFile';
   import { requestOpenFile } from '$lib/stores/openFile';
@@ -19,6 +22,7 @@
   import {
     swarmEnabled,
     agentStreams,
+    chatStreamEnabledByAgent,
     activeSwarmRunId,
     agentConfigs,
     loadAgentConfigs,
@@ -32,18 +36,27 @@
     dispatch('openSession');
   }
   import { currentWorkspace, fileTreeRefresh } from '$lib/stores/workspace';
-  import { modelSwitchStatus } from '$lib/stores/models';
+  import {
+    modelSwitchStatus,
+    activeModel,
+    activeModelId,
+    CUSTOM_SWARM_MODEL_ID,
+    orchestratorStatus,
+    refreshStatus,
+  } from '$lib/stores/models';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
 
   let input       = '';
   let isRecording = false;
   let errorMsg    = '';
   let scrollEl:   HTMLDivElement;
+  let userScrolled = false;
   let stopRequested = false;
   let voiceStopRequested = false;
   let isSpeechActive = false;
   let speechStatusTimer: ReturnType<typeof setInterval> | null = null;
   let showToolSkills = false;
+  let showNewMenu = false;
 
   type ToolInfo = {
     name: string;
@@ -106,10 +119,16 @@
 
   let unlistenEvents: Array<() => void> = [];
 
-  // Auto-scroll on new messages or streaming update
+  // Auto-scroll only when user hasn't scrolled up manually.
   afterUpdate(() => {
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    if (!userScrolled && scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
   });
+
+  function onChatScroll() {
+    if (!scrollEl) return;
+    const distanceFromBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    userScrolled = distanceFromBottom > 60;
+  }
 
   /** Parse rawBuffer into thinking vs response parts. */
   function parseBuffer() {
@@ -162,7 +181,26 @@
    * Registers a token-stream listener for the duration and tears it down after.
    * Trims to the last CONTEXT_LIMIT messages to avoid context-window overflow.
    */
-  async function runChat(extraMessages: Array<{ role: string; content: string }> = []) {
+  function mergeVisionContextIntoLatestUserMessage(
+    history: Array<{ role: string; content: string }>,
+    visionContext: string | null,
+  ): Array<{ role: string; content: string }> {
+    if (!visionContext) return history;
+    const merged = [...history];
+    for (let i = merged.length - 1; i >= 0; i -= 1) {
+      if (merged[i].role === 'user') {
+        merged[i] = {
+          ...merged[i],
+          content: `${merged[i].content}\n\n${visionContext}`,
+        };
+        return merged;
+      }
+    }
+    merged.push({ role: 'user', content: visionContext });
+    return merged;
+  }
+
+  async function runChat(visionContext: string | null = null) {
     const unlistenStream = await listen<string>('token-stream', (e) => {
       rawBuffer += e.payload;
       parseBuffer();
@@ -191,11 +229,12 @@
             ]
           : [];
 
-      return [
+      const baseHistory = [
         ...fileCtx,
         ...msgs.map((msg) => ({ role: msg.role, content: msg.content })),
-        ...extraMessages,
       ];
+
+      return mergeVisionContextIntoLatestUserMessage(baseHistory, visionContext);
     }
 
     try {
@@ -254,7 +293,7 @@
   };
 
   function normalizeAgentResultContent(agentOut: SwarmAgentResult): string {
-    const raw = stripThinkTags(agentOut.result ?? '').trim();
+    const raw = sanitizeModelText(agentOut.result ?? '').trim();
     if (raw) return raw;
     if ((agentOut.subtask ?? '').trim()) {
       return `No final output was generated for this subtask.\n\nSubtask:\n${agentOut.subtask}`;
@@ -263,6 +302,8 @@
   }
 
   async function sendText(text: string) {
+    const visionContext = buildVisionContext(text);
+
     const noWorkspace = !$currentWorkspace?.path;
     const looksLikeFileListingRequest = /(list|show|display|enumerate)\s+.*(files|directory|folder)|\b(list files|readme|read me|read file|read the file|show files)\b/i.test(text);
     if (noWorkspace && looksLikeFileListingRequest) {
@@ -272,7 +313,39 @@
       return;
     }
 
+    if (!$swarmEnabled) {
+      await refreshStatus();
+      const status = get(orchestratorStatus);
+      const requestedModelId = get(activeModelId);
+      const readySlots = status?.slots.filter((slot) => slot.state.state === 'ready') ?? [];
+      const readyForRequested = readySlots.some((slot) =>
+        requestedModelId ? slot.state.model_id === requestedModelId : true,
+      );
+
+      if (!readyForRequested) {
+        const loadingForRequested = status?.slots.some((slot) =>
+          slot.state.state === 'loading' && (requestedModelId ? slot.state.model_id === requestedModelId : true),
+        );
+        const crashedForRequested = status?.slots.find((slot) =>
+          slot.state.state === 'crashed' && (requestedModelId ? slot.state.model_id === requestedModelId : true),
+        );
+
+        if (loadingForRequested) {
+          modelSwitchStatus.set('Model is still loading. Wait for it to become ready, then send again.');
+          errorMsg = 'Model is still loading. Please wait until loading completes.';
+        } else if (crashedForRequested?.state.error) {
+          modelSwitchStatus.set(`Model crashed: ${crashedForRequested.state.error}`);
+          errorMsg = `Model crashed while loading: ${crashedForRequested.state.error}`;
+        } else {
+          modelSwitchStatus.set('No model is ready yet. Open Settings and switch to a model.');
+          errorMsg = 'No model is ready yet. Open Settings and switch to a model, then try again.';
+        }
+        return;
+      }
+    }
+
     stopRequested = false;
+    userScrolled = false;
     addUserMessage(text);
     input = '';
     errorMsg = '';
@@ -288,29 +361,72 @@
       let stats: any = undefined;
 
       if ($swarmEnabled) {
-        const history = $messages.map(m => ({ role: m.role, content: m.content }));
+        activeModelId.set(CUSTOM_SWARM_MODEL_ID);
+        let history: Array<{ role: string; content: string }> = [];
+
+        // Inject open-file context at the front so agents can see it
+        const FILE_CHAR_LIMIT = 1200;
+        if (includeFileContext && $activeEditorFile) {
+          history.push({
+            role: 'user',
+            content:
+              `[Open file: \`${$activeEditorFile.path}\`]\n` +
+              '```\n' +
+              $activeEditorFile.content.slice(0, FILE_CHAR_LIMIT) +
+              ($activeEditorFile.content.length > FILE_CHAR_LIMIT ? '\n… (truncated)' : '') +
+              '\n```',
+          });
+          history.push({ role: 'assistant', content: 'I can see the open file. Ready to help.' });
+        }
+
+        history.push(...$messages.map(m => ({ role: m.role, content: m.content })));
+        history = mergeVisionContextIntoLatestUserMessage(history, visionContext);
         activeSwarmRunId.set('pending');
-        const result = await invoke<{
+        const submitSwarm = (msgs: Array<{ role: string; content: string }>) => invoke<{
           run_id: string; final_content: string; leader_plan: any;
           agent_results: any[]; stats: any; action_handled: boolean; tools_used: string[];
         }>('submit_swarm_chat', {
-          messages:      history,
+          messages:      msgs,
           workspacePath: $currentWorkspace?.path,
           enabledTools:  getEnabledToolNames(),
           swarmSettings: $swarmRuntimeSettings,
         });
+
+        let result;
+        try {
+          result = await submitSwarm(history);
+        } catch (e) {
+          const msg = String(e);
+          if (msg.includes('HTTP 400')) {
+            const fallbackHistory = mergeVisionContextIntoLatestUserMessage(
+              $messages
+              .slice(-4)
+              .map((m) => ({ role: m.role, content: m.content })),
+              visionContext,
+            );
+            result = await submitSwarm(fallbackHistory);
+          } else {
+            throw e;
+          }
+        }
         const byId = new Map($agentConfigs.map((a) => [a.config.id, a]));
         const bySlot = new Map($agentConfigs.map((a) => [a.config.slot_index, a]));
 
-        const workerResults = ((result.agent_results ?? []) as SwarmAgentResult[])
-          .slice()
-          .sort((a, b) => a.slot_index - b.slot_index);
-
-        for (const agentOut of workerResults) {
+        const latestBySlot = new Map<number, SwarmAgentResult>();
+        for (const agentOut of ((result.agent_results ?? []) as SwarmAgentResult[])) {
           if (agentOut.slot_index === 0) {
             // Slot 0 is the leader synthesis lane and is rendered separately below.
             continue;
           }
+          // Keep the latest output for each slot so retries/delegation do not create
+          // duplicate assistant bubbles that appear out of expected worker order.
+          latestBySlot.set(agentOut.slot_index, agentOut);
+        }
+
+        const workerResults = [...latestBySlot.values()]
+          .sort((a, b) => a.slot_index - b.slot_index);
+
+        for (const agentOut of workerResults) {
           const cfg = byId.get(agentOut.agent_id) ?? bySlot.get(agentOut.slot_index);
           const label = cfg?.config?.label ?? `Worker ${agentOut.slot_index}`;
           const color = cfg?.config?.color ?? '#4a9eff';
@@ -323,12 +439,13 @@
               agent_id: agentOut.agent_id,
               agent_label: label,
               agent_color: color,
+              agent_icon: cfg?.config?.icon_emoji ?? '🤖',
               agent_slot: agentOut.slot_index,
             },
           );
         }
 
-        clean        = stripThinkTags(result.final_content ?? rawBuffer);
+        clean        = sanitizeModelText(result.final_content ?? rawBuffer);
         actionHandled = result.action_handled;
         toolsUsed    = result.tools_used ?? [];
         stats        = result.stats;
@@ -339,14 +456,15 @@
             agent_id: leaderCfg?.config?.id,
             agent_label: leaderCfg?.config?.label ?? 'Leader',
             agent_color: leaderCfg?.config?.color ?? '#f5a623',
+            agent_icon: leaderCfg?.config?.icon_emoji ?? '👑',
             agent_slot: 0,
           });
           debouncedAutoSave();
           clean = '';
         }
       } else {
-        const result = await runChat();
-        clean        = stripThinkTags(result.content ?? rawBuffer);
+        const result = await runChat(visionContext);
+        clean        = sanitizeModelText(result.content ?? rawBuffer);
         actionHandled = result.action_handled;
         toolsUsed    = result.tools_used ?? [];
         stats        = result.stats;
@@ -378,7 +496,18 @@
   }
 
   async function autoSaveSession() {
-    const history = $messages.map((msg) => ({ role: msg.role, content: msg.content }));
+    const history = $messages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+      stats: msg.stats,
+      tools_used: msg.tools_used,
+      agent_id: msg.agent_id,
+      agent_label: msg.agent_label,
+      agent_color: msg.agent_color,
+      agent_icon: msg.agent_icon,
+      agent_slot: msg.agent_slot,
+      created_at: msg.timestamp?.getTime?.() ?? Date.now(),
+    }));
     const firstUserMsg = history.find((m) => m.role === 'user')?.content ?? '';
     const title = $currentSessionTitle?.trim()
       || firstUserMsg.slice(0, 60).trim()
@@ -422,6 +551,29 @@
     errorMsg = '';
   }
 
+  function startNewChatFromMenu() {
+    newChat();
+    showNewMenu = false;
+  }
+
+  async function startNewSession() {
+    newChat();
+    try {
+      const title = `Session ${new Date().toLocaleString()}`;
+      await invoke('create_chat_session_group', { title });
+    } catch (e) {
+      console.warn('Failed to pre-create session group:', e);
+    }
+    openSessionPanel();
+    addToast('Started a new session container. Use Manage Chats/Sessions to organize linked chats.', 'info');
+    showNewMenu = false;
+  }
+
+  function openChatSessionManager() {
+    openSessionPanel();
+    showNewMenu = false;
+  }
+
   /** Strip <think>...</think> block (and optional leading newlines after it). */
   function stripThinkTags(text: string): string {
     return text.replace(/^<think>[\s\S]*?<\/think>\n*/,'').trim();
@@ -431,6 +583,39 @@
   function stripToolCallBlocks(text: string): string {
     const complete = text.replace(/<\s*tool_call\s*>[\s\S]*?<\s*\/\s*tool_call\s*>/gi, '');
     return complete.replace(/<\s*tool_call\s*>[\s\S]*$/i, '').trimEnd();
+  }
+
+  /** Drop inline JSON tool-call payload lines that can leak into visible chat text. */
+  function stripInlineToolJson(text: string): string {
+    const lines = text.split(/\r?\n/);
+    const kept = lines.filter((line) => {
+      const trimmed = line.trim().toLowerCase();
+      if (!trimmed) return true;
+      return !(
+        trimmed.startsWith('{"tool"')
+        || trimmed.startsWith("{'tool'")
+        || trimmed.startsWith('"tool":')
+      );
+    });
+    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function sanitizeModelText(text: string): string {
+    return stripInlineToolJson(stripToolCallBlocks(stripThinkTags(text))).trim();
+  }
+
+  function sortedAgentStreamEntries(): Array<[string, string]> {
+    const entries = [...$agentStreams.entries()]
+      .filter(([agentId]) => $chatStreamEnabledByAgent[agentId] !== false);
+    entries.sort((a, b) => {
+      const aCfg = $agentConfigs.find((cfg) => cfg.config.id === a[0]);
+      const bCfg = $agentConfigs.find((cfg) => cfg.config.id === b[0]);
+      const aSlot = aCfg?.config.slot_index ?? Number.MAX_SAFE_INTEGER;
+      const bSlot = bCfg?.config.slot_index ?? Number.MAX_SAFE_INTEGER;
+      if (aSlot !== bSlot) return aSlot - bSlot;
+      return a[0].localeCompare(b[0]);
+    });
+    return entries;
   }
 
   async function startVoice() {
@@ -499,6 +684,30 @@
     return availableTools
       .filter((tool) => toolEnabled[tool.name] !== false)
       .map((tool) => tool.name);
+  }
+
+  function buildVisionContext(userText: string): string | null {
+    const seeded = typeof window !== 'undefined'
+      ? (window as Window & {
+          __BONSAI_TEST_VISION_CONTEXT?: {
+            active?: boolean;
+            snapshot?: any;
+          };
+        }).__BONSAI_TEST_VISION_CONTEXT
+      : undefined;
+
+    const streamActive = seeded?.active ?? $visionStreamActive;
+    const snapshot = seeded?.snapshot ?? $latestVisionSnapshot;
+    const modelHint = `${$activeModel?.id ?? ''} ${$activeModel?.name ?? ''} ${$activeModelId ?? ''}`.trim();
+    const visionAttachmentReady = isLikelyVisionCapableModel(modelHint);
+
+    return buildVisionContextMessage({
+      userText,
+      streamActive,
+      snapshot,
+      frameCaptured: Boolean($latestVisionFrame?.dataUrl),
+      visionAttachmentReady,
+    });
   }
 
   function persistToolPrefs() {
@@ -575,6 +784,10 @@
 
     const handleGlobalClick = (event: MouseEvent) => {
       void handleCodeBlockActions(event);
+      const target = event.target as HTMLElement | null;
+      if (showNewMenu && target && !target.closest('.new-split-wrap')) {
+        showNewMenu = false;
+      }
     };
     document.addEventListener('click', handleGlobalClick);
 
@@ -645,6 +858,9 @@
     });
 
     const unlistenAgentStream = await listen<{ agent_id: string; slot: number; token: string }>('agent-token-stream', (e) => {
+      if ($chatStreamEnabledByAgent[e.payload.agent_id] === false) {
+        return;
+      }
       agentStreams.update(m => {
         const next = new Map(m);
         next.set(e.payload.agent_id, (next.get(e.payload.agent_id) ?? '') + e.payload.token);
@@ -851,7 +1067,7 @@
         enabledTools:  getEnabledToolNames(),
       });
 
-      const clean = stripThinkTags(result.content ?? rawBuffer).trim();
+      const clean = sanitizeModelText(result.content ?? rawBuffer).trim();
       if (clean) addAssistantMessage(clean, result.stats ?? undefined, result.tools_used ?? []);
       debouncedAutoSave();
       // If action_handled again, another permission card will appear via the event.
@@ -892,9 +1108,6 @@
   <div class="chat-header">
     <div class="chat-header-left">
       <span class="chat-title">Chat</span>
-      {#if $currentSessionTitle}
-        <span class="chat-session-tag">{$currentSessionTitle}</span>
-      {/if}
       {#if $activeEditorFile}
         <button
           class="file-ctx-badge"
@@ -907,14 +1120,40 @@
       {/if}
     </div>
     <div class="chat-header-actions">
-      <button class="btn-new-chat" on:click={newChat} title="New chat (clears current conversation)">＋ New</button>
-      <button class="btn-tools" on:click={() => (showToolSkills = true)} aria-label="Open tools and skills">
-        Tools/Skills
-      </button>
-      <button class="btn-session" on:click={openSessionPanel} aria-label="Open session manager">Sessions</button>
+      {#if $currentSessionTitle}
+        <div class="chat-session-row">
+          <button class="chat-session-tag" on:click={openSessionPanel} title="Open session manager" type="button">
+            Session: {$currentSessionTitle}
+          </button>
+          <button class="chat-session-clear" on:click|stopPropagation={clearCurrentSession} aria-label="Clear current session" type="button">×</button>
+        </div>
+      {/if}
+      <div class="chat-action-row">
+        <div class="new-split-wrap">
+          <button class="btn-new-chat" on:click={startNewChatFromMenu} title="New chat (clears current conversation)">＋ New</button>
+          <button
+            class="btn-new-caret"
+            on:click|stopPropagation={() => (showNewMenu = !showNewMenu)}
+            aria-haspopup="menu"
+            aria-expanded={showNewMenu}
+            title="New actions"
+            type="button"
+          >▾</button>
+          {#if showNewMenu}
+            <div class="new-menu" role="menu" aria-label="New actions">
+              <button class="new-menu-item" role="menuitem" type="button" on:click={startNewChatFromMenu}>New Chat</button>
+              <button class="new-menu-item" role="menuitem" type="button" on:click={startNewSession}>New Session</button>
+              <button class="new-menu-item" role="menuitem" type="button" on:click={openChatSessionManager}>Manage Chats/Sessions</button>
+            </div>
+          {/if}
+        </div>
+        <button class="btn-tools" on:click={() => (showToolSkills = true)} aria-label="Open tools and skills">
+          Tools/Skills
+        </button>
+      </div>
     </div>
   </div>
-  <div class="messages" bind:this={scrollEl} aria-live="polite" aria-label="Chat messages">
+  <div class="messages" bind:this={scrollEl} on:scroll={onChatScroll} aria-live="polite" aria-label="Chat messages">
     {#if $messages.length === 0 && !$isThinking}
       <div class="empty-chat">
         <div class="empty-icon">💬</div>
@@ -923,16 +1162,19 @@
       </div>
     {:else}
       {#each $messages as msg (msg.id)}
+        {@const cfg = $agentConfigs.find((a) => (msg.agent_id && a.config.id === msg.agent_id) || (msg.agent_slot !== undefined && a.config.slot_index === msg.agent_slot))}
+        {@const label = msg.agent_label ?? cfg?.config?.label ?? (msg.agent_slot === 0 ? 'Leader' : `Agent ${msg.agent_slot ?? ''}`.trim())}
+        {@const icon = msg.agent_icon ?? cfg?.config?.icon_emoji ?? (msg.agent_slot === 0 ? '👑' : '🤖')}
         <div
           class="msg-row {msg.role}"
           class:agent-msg={msg.agent_slot !== undefined}
           class:is-leader={msg.agent_slot === 0}
-          style:--agent-color={msg.agent_color ?? '#4a9eff'}
+          style:--agent-color={msg.agent_color ?? cfg?.config?.color ?? '#4a9eff'}
         >
-          {#if msg.agent_slot !== undefined}
+          {#if msg.role === 'assistant' && msg.agent_slot !== undefined}
             <div class="agent-badge" class:is-leader={msg.agent_slot === 0}>
-              <span class="agent-emoji">{msg.agent_slot === 0 ? '👑' : (msg.agent_label?.[0] ?? '🤖')}</span>
-              <span class="agent-label">{msg.agent_label ?? (msg.agent_slot === 0 ? 'Leader' : `Worker ${msg.agent_slot}`)}</span>
+              <span class="agent-emoji">{icon}</span>
+              <span class="agent-label">{msg.agent_slot === 0 ? `Leader · ${label}` : `Agent · ${label}`}</span>
             </div>
           {/if}
           <div class="msg-bubble">
@@ -973,19 +1215,19 @@
         </div>
       {/each}
 
-      {#if $activeSwarmRunId && $agentStreams.size > 0}
-        {#each [...$agentStreams.entries()] as [agentId, tokens]}
+      {#if $activeSwarmRunId && sortedAgentStreamEntries().length > 0}
+        {#each sortedAgentStreamEntries() as [agentId, tokens]}
           {@const cfg = $agentConfigs.find((a) => a.config.id === agentId)}
           <div class="msg-row assistant agent-msg" style:--agent-color={cfg?.config?.color ?? '#4a9eff'}>
             <div class="agent-badge">
               <span class="agent-emoji">{cfg?.config?.icon_emoji ?? '🤖'}</span>
-              <span class="agent-label">{cfg?.config?.label ?? `Agent ${agentId.slice(0, 6)}…`}</span>
+              <span class="agent-label">{cfg?.config?.label ?? `Agent ${agentId.slice(0, 6)}...`}</span>
               <span class="swarm-pulse"></span>
             </div>
             <div class="msg-bubble">
               {#if tokens}
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                {@html renderMarkdown(tokens)}
+                {@html renderMarkdown(sanitizeModelText(tokens))}
               {:else}
                 <span class="dot"></span><span class="dot"></span><span class="dot"></span>
               {/if}
@@ -1244,20 +1486,61 @@
     color: var(--text);
     padding: 5px 10px;
     font-size: 12px;
+    cursor: pointer;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  .chat-session-tag:hover { background: rgba(34, 197, 94, 0.2); }
 
   .chat-header-actions {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: flex-start;
     gap: 6px;
     flex-shrink: 0;
+  }
+
+  .chat-session-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .chat-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  .new-split-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .chat-session-clear {
+    border: none;
+    background: rgba(255,255,255,0.12);
+    color: var(--text-dim);
+    border-radius: 999px;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+  }
+  .chat-session-clear:hover {
+    background: rgba(255,255,255,0.2);
+    color: var(--text);
   }
 
   .btn-new-chat {
     background: transparent;
     border: 1px solid var(--border);
+    border-right: none;
     color: var(--text-dim);
-    border-radius: 999px;
+    border-radius: 999px 0 0 999px;
     padding: 6px 12px;
     cursor: pointer;
     font-size: 12px;
@@ -1266,19 +1549,50 @@
   }
   .btn-new-chat:hover { background: var(--bg-hover); color: var(--text); }
 
-  .btn-session {
-    background: var(--bg);
+  .btn-new-caret {
+    background: transparent;
     color: var(--text-dim);
     border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 8px 14px;
+    border-radius: 0 999px 999px 0;
+    padding: 6px 9px;
     cursor: pointer;
     font-size: 12px;
-    white-space: nowrap;
+    line-height: 1;
   }
-  .btn-session:hover:not(:disabled) {
+  .btn-new-caret:hover {
     background: var(--bg-hover);
     color: var(--text);
+  }
+
+  .new-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 190px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 6px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+  }
+
+  .new-menu-item {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    text-align: left;
+    font-size: 12px;
+    padding: 7px 8px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+
+  .new-menu-item:hover {
+    background: var(--bg-hover);
   }
 
   .btn-tools {
@@ -1292,6 +1606,20 @@
     white-space: nowrap;
   }
   .btn-tools:hover { background: var(--bg-hover); color: var(--text); }
+
+  @media (max-width: 760px) {
+    .chat-header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .chat-header-actions {
+      align-items: flex-start;
+    }
+    .chat-action-row {
+      flex-wrap: wrap;
+    }
+  }
 
   /* Active file context badge — toggleable */
   .file-ctx-badge {

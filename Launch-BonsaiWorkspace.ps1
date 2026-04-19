@@ -12,6 +12,8 @@ param(
   [switch]$AllowPortInUse,
   [switch]$NoAttachExisting,
   [switch]$NoInstall,
+  [switch]$Fast,
+  [switch]$RemoteSurfaceSmoke,
   [string]$ReportPath
 )
 
@@ -28,7 +30,13 @@ if (-not (Test-Path $srcDir)) {
 
 Push-Location $srcDir
 try {
-  $launchArgs = @('run', 'launch:all', '--', '--mode', $Mode)
+  $effectiveReportPathOverride = $null
+  $launchScript = Join-Path $srcDir 'launch-all.mjs'
+  if (-not (Test-Path $launchScript)) {
+    throw "Could not find launcher script: $launchScript"
+  }
+
+  $launchArgs = @($launchScript, '--mode', $Mode)
 
   if ($PreflightOnly) { $launchArgs += '--preflight-only' }
   if ($StrictApp) { $launchArgs += '--strict-app' }
@@ -41,23 +49,33 @@ try {
   if ($AllowPortInUse) { $launchArgs += '--allow-port-in-use' }
   if ($NoAttachExisting) { $launchArgs += '--no-attach-existing' }
   if ($NoInstall) { $launchArgs += '--no-install' }
-  if ($ReportPath) { $launchArgs += @('--report-path', $ReportPath) }
+  if ($Fast) { $launchArgs += '--fast' }
+  if ($RemoteSurfaceSmoke) { $launchArgs += '--remote-surface-smoke' }
+  if ($ReportPath) {
+    $resolvedReportPath = if ([System.IO.Path]::IsPathRooted($ReportPath)) {
+      $ReportPath
+    } else {
+      Join-Path $workspaceRoot $ReportPath
+    }
+    $effectiveReportPathOverride = $resolvedReportPath
+    $launchArgs += @('--report-path', $resolvedReportPath)
+  }
 
   Write-Host "[one-click] Launching Bonsai Workspace from $srcDir" -ForegroundColor Cyan
-  Write-Host "[one-click] npm $($launchArgs -join ' ')" -ForegroundColor DarkGray
+  Write-Host "[one-click] node $($launchArgs -join ' ')" -ForegroundColor DarkGray
 
-  & npm @launchArgs
-  $npmExit = $LASTEXITCODE
+  & node @launchArgs
+  $nodeExit = $LASTEXITCODE
 
   # launch-all writes a structured report; prefer that truth source when npm exits
   # nonzero despite a healthy/complete launch sequence.
-  $effectiveReportPath = if ($ReportPath) {
-    if ([System.IO.Path]::IsPathRooted($ReportPath)) { $ReportPath } else { Join-Path $srcDir $ReportPath }
+  $effectiveReportPath = if ($effectiveReportPathOverride) {
+    $effectiveReportPathOverride
   } else {
     $defaultReportPath
   }
 
-  if ($npmExit -ne 0 -and (Test-Path $effectiveReportPath)) {
+  if ($nodeExit -ne 0 -and (Test-Path $effectiveReportPath)) {
     try {
       $report = Get-Content -Raw -Path $effectiveReportPath | ConvertFrom-Json
       if ($null -ne $report -and $report.ok -eq $true) {
@@ -66,11 +84,11 @@ try {
       }
     }
     catch {
-      # If report parsing fails, keep original npm exit code.
+      # If report parsing fails, keep original node exit code.
     }
   }
 
-  exit $npmExit
+  exit $nodeExit
 }
 finally {
   Pop-Location

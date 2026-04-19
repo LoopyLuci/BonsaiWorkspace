@@ -1,12 +1,57 @@
 import * as monaco from 'monaco-editor';
 import { detectFileType } from '$lib/utils/filetypes';
 
+type EditorScope = 'global' | 'canvas';
+
+interface EditorEntry {
+  editor: monaco.editor.IStandaloneCodeEditor;
+  scope: EditorScope;
+  mountedAt: number;
+}
+
+const MAX_EDITORS_BY_SCOPE: Record<EditorScope, number> = {
+  global: 14,
+  canvas: 6,
+};
+
+const activeEditors = new Set<EditorEntry>();
+
+function enforceEditorBudget(scope: EditorScope) {
+  const limit = MAX_EDITORS_BY_SCOPE[scope];
+  const scoped = [...activeEditors]
+    .filter((entry) => entry.scope === scope)
+    .sort((a, b) => a.mountedAt - b.mountedAt);
+
+  while (scoped.length >= limit) {
+    const oldest = scoped.shift();
+    if (!oldest) break;
+    activeEditors.delete(oldest);
+    oldest.editor.dispose();
+  }
+}
+
+function trackEditor(editor: monaco.editor.IStandaloneCodeEditor, scope: EditorScope) {
+  const entry: EditorEntry = {
+    editor,
+    scope,
+    mountedAt: Date.now(),
+  };
+  activeEditors.add(entry);
+  editor.onDidDispose(() => {
+    activeEditors.delete(entry);
+  });
+}
+
 export function createEditor(
   container: HTMLElement,
   initialValue = '',
   theme: 'vs-dark' | 'vs' | 'hc-black' = 'vs-dark',
+  options: { scope?: EditorScope } = {},
 ): monaco.editor.IStandaloneCodeEditor {
-  return monaco.editor.create(container, {
+  const scope = options.scope ?? 'global';
+  enforceEditorBudget(scope);
+
+  const editor = monaco.editor.create(container, {
     value:             initialValue,
     language:          'plaintext',
     theme,
@@ -36,6 +81,9 @@ export function createEditor(
       showFunctions:  true,
     },
   });
+
+  trackEditor(editor, scope);
+  return editor;
 }
 
 export function setLanguageFromPath(

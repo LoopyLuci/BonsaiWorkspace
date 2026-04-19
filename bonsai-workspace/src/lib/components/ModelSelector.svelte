@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import {
     BONSAI_CATALOG,
     autoMode,
@@ -11,12 +12,23 @@
     switchToCatalogModel,
     triggerAutoSelect,
   } from '$lib/stores/catalog';
-  import { availableModels, activeModel, orchestratorStatus } from '$lib/stores/models';
+  import { swarmEnabled } from '$lib/stores/agents';
+  import {
+    availableModels,
+    activeModel,
+    activeModelId,
+    orchestratorStatus,
+    modelSwitchStatus,
+    CUSTOM_SWARM_MODEL_ID,
+  } from '$lib/stores/models';
+  import type { ModelInfo } from '$lib/stores/models';
 
   export let inline = false;
 
   let open = false;
   let selectorEl: HTMLDivElement;
+  let dropdownEl: HTMLDivElement | null = null;
+  let dropdownStyle = '';
 
   function toggle() { open = !open; }
 
@@ -24,18 +36,112 @@
     if (selectorEl && !selectorEl.contains(e.target as Node)) open = false;
   }
 
-  onMount(() => window.addEventListener('click', close, true));
-  onDestroy(() => window.removeEventListener('click', close, true));
+  function clearDropdownStyle() {
+    dropdownStyle = '';
+  }
+
+  function recomputeDropdownLayout() {
+    if (!open || !selectorEl) return;
+
+    const rect = selectorEl.getBoundingClientRect();
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+    const margin = 8;
+    const gap = 6;
+
+    // Scale width with viewport while keeping a comfortable desktop default.
+    const maxWidth = Math.max(280, Math.min(560, viewportW - margin * 2));
+    const preferredWidth = inline ? 420 : 380;
+    const minWidth = Math.min(300, maxWidth);
+    const width = Math.max(minWidth, Math.min(preferredWidth, maxWidth));
+
+    let left = rect.right - width;
+    if (left < margin) left = margin;
+    if (left + width > viewportW - margin) left = viewportW - margin - width;
+
+    const availableAbove = Math.max(0, rect.top - margin - gap);
+    const availableBelow = Math.max(0, viewportH - rect.bottom - margin - gap);
+    const placeAbove = availableAbove >= availableBelow;
+    const preferredMaxHeight = inline ? 560 : 520;
+    const chosenSpace = placeAbove ? availableAbove : availableBelow;
+    const maxHeight = Math.max(180, Math.min(preferredMaxHeight, chosenSpace));
+
+    if (placeAbove) {
+      const bottom = Math.max(margin, viewportH - rect.top + gap);
+      dropdownStyle = `position: fixed; left: ${left}px; width: ${width}px; max-height: ${maxHeight}px; bottom: ${bottom}px;`;
+      return;
+    }
+
+    const top = Math.min(viewportH - margin - 180, rect.bottom + gap);
+    dropdownStyle = `position: fixed; left: ${left}px; width: ${width}px; max-height: ${maxHeight}px; top: ${top}px;`;
+  }
+
+  async function openWithLayout() {
+    open = !open;
+    if (!open) {
+      clearDropdownStyle();
+      return;
+    }
+
+    await tick();
+    recomputeDropdownLayout();
+  }
+
+  function openAgentsPanel() {
+    window.dispatchEvent(new CustomEvent('open-agents'));
+    open = false;
+    clearDropdownStyle();
+  }
+
+  function handleViewportChange() {
+    recomputeDropdownLayout();
+  }
+
+  onMount(() => {
+    window.addEventListener('click', close, true);
+    window.addEventListener('resize', handleViewportChange);
+    // Capture scroll events from nested containers as well.
+    window.addEventListener('scroll', handleViewportChange, true);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener('click', close, true);
+    window.removeEventListener('resize', handleViewportChange);
+    window.removeEventListener('scroll', handleViewportChange, true);
+  });
 
   async function pickModel(entry: typeof BONSAI_CATALOG[number]) {
     open = false;
+    clearDropdownStyle();
     await switchToCatalogModel(entry);
+  }
+
+  async function pickInstalledModel(model: ModelInfo) {
+    open = false;
+    clearDropdownStyle();
+    autoMode.set(false);
+    activeModelId.set(model.id);
+    modelSwitchStatus.set(`Switching to ${model.name}...`);
+    try {
+      const msg = await invoke<string>('switch_model', { modelId: model.id });
+      modelSwitchStatus.set(msg);
+    } catch (e) {
+      modelSwitchStatus.set(`Switch failed: ${e}`);
+    }
   }
 
   async function pickAuto() {
     open = false;
+    clearDropdownStyle();
     autoMode.set(true);
     await triggerAutoSelect();
+  }
+
+  function pickCustomSwarm() {
+    open = false;
+    clearDropdownStyle();
+    autoMode.set(false);
+    activeModelId.set(CUSTOM_SWARM_MODEL_ID);
   }
 
   async function download(e: MouseEvent, entry: typeof BONSAI_CATALOG[number]) {
@@ -43,13 +149,25 @@
     await downloadCatalogModel(entry);
   }
 
-  $: label = $autoMode
-    ? `Auto · ${$activeModel?.name ?? 'selecting…'}`
-    : ($activeModel?.name ?? 'No Model Selected');
+  $: isCustomSwarmActive = $swarmEnabled || $activeModelId === CUSTOM_SWARM_MODEL_ID;
+
+  $: label = isCustomSwarmActive
+    ? 'Custom Swarm'
+    : $autoMode
+      ? `Auto · ${$activeModel?.name ?? 'selecting…'}`
+      : ($activeModel?.name ?? 'No Model Selected');
 
   $: freeGb = $orchestratorStatus
     ? Math.round($orchestratorStatus.free_ram_mb / 1024 * 10) / 10
     : null;
+
+  $: catalogRegistryIds = new Set(
+    BONSAI_CATALOG
+      .map((entry) => findRegistryModel(entry, $availableModels)?.id)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  $: extraInstalledModels = $availableModels.filter((model) => !catalogRegistryIds.has(model.id));
 </script>
 
 <div class="model-selector-bar" class:inline>
@@ -59,18 +177,29 @@
       class="selector-trigger"
       class:has-model={!!$activeModel}
       class:auto-active={$autoMode}
-      on:click={toggle}
+      on:click={openWithLayout}
       aria-haspopup="listbox"
       aria-expanded={open}
     >
       <span class="trigger-dot" class:active={!!$activeModel} class:auto={$autoMode}></span>
       <span class="trigger-label">{label}</span>
+      {#if isCustomSwarmActive}
+        <button
+          type="button"
+          class="trigger-chip"
+          on:click|stopPropagation={openAgentsPanel}
+          title="Open Agents panel"
+          aria-label="Open Agents panel"
+        >
+          Swarm Active
+        </button>
+      {/if}
       <span class="trigger-chevron" class:open>{open ? '▲' : '▼'}</span>
     </button>
 
     <!-- Dropdown -->
     {#if open}
-      <div class="dropdown" role="listbox" aria-label="Select model">
+      <div class="dropdown" bind:this={dropdownEl} style={dropdownStyle} role="listbox" aria-label="Select model">
 
     {#if $downloadError && !inline}
     <span class="dl-error" title={$downloadError}>⚠ {$downloadError}</span>
@@ -80,6 +209,25 @@
     {#if $downloadingId && !inline}
     <span class="dl-progress">⬇ {$downloadPct}%</span>
   {/if}
+
+        <div
+          class="option option-custom"
+          class:selected={isCustomSwarmActive}
+          role="option"
+          aria-selected={isCustomSwarmActive}
+          tabindex="0"
+          on:click={pickCustomSwarm}
+          on:keydown={(e) => e.key === 'Enter' && pickCustomSwarm()}
+        >
+          <span class="opt-icon">🧩</span>
+          <div class="opt-body">
+            <span class="opt-name">Custom Swarm</span>
+            <span class="opt-desc">Use multi-agent orchestration with configured leader and workers</span>
+          </div>
+          {#if isCustomSwarmActive}<span class="opt-badge active">Active</span>{/if}
+        </div>
+
+        <div class="divider"></div>
 
         <div
           class="option option-auto"
@@ -147,6 +295,39 @@
           </div>
         {/each}
 
+        {#if extraInstalledModels.length > 0}
+          <div class="divider"></div>
+          <div class="section-label">Installed models</div>
+          {#each extraInstalledModels as model (model.id)}
+            {@const isInstalledActive = $activeModel?.id === model.id}
+            <div
+              class="option"
+              class:selected={isInstalledActive}
+              role="option"
+              aria-selected={isInstalledActive}
+              tabindex="0"
+              on:click={() => pickInstalledModel(model)}
+              on:keydown={(e) => e.key === 'Enter' && pickInstalledModel(model)}
+            >
+              <span class="opt-icon">🧠</span>
+              <div class="opt-body">
+                <div class="opt-name-row">
+                  <span class="opt-name">{model.name}</span>
+                  <span class="opt-quant">{model.quant}</span>
+                </div>
+                <span class="opt-desc">Local model · {Math.round((model.ram_required_mb / 1024) * 10) / 10} GB</span>
+              </div>
+              <div class="opt-actions">
+                {#if isInstalledActive}
+                  <span class="opt-badge active">Active</span>
+                {:else}
+                  <span class="opt-badge local">Use</span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        {/if}
+
       </div>
     {/if}
   </div>
@@ -208,7 +389,7 @@
     padding: 6px 10px;
     background: var(--bg);
     color: var(--text);
-    max-width: 220px;
+    max-width: var(--model-inline-trigger-max, 220px);
   }
 
   .model-selector-bar.inline .trigger-label {
@@ -251,6 +432,31 @@
     flex-shrink: 0;
   }
 
+  .trigger-chip {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    background: rgba(22, 163, 74, 0.2);
+    color: #dcfce7;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 1;
+    padding: 3px 7px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .trigger-chip:hover {
+    filter: brightness(1.08);
+  }
+
+  .model-selector-bar.inline .trigger-chip {
+    border-color: rgba(34, 197, 94, 0.3);
+    background: rgba(22, 163, 74, 0.15);
+    color: #86efac;
+  }
+
   .dl-progress {
     font-size: 11px;
     color: #fde68a;
@@ -279,22 +485,37 @@
     position: absolute;
     bottom: calc(100% + 4px);
     right: 0;
-    width: 360px;
+    width: min(380px, calc(100vw - 16px));
     background: #1c1c1f;
     border: 1px solid #b45309;
     border-radius: 10px;
     box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
-    overflow: hidden;
+    max-height: min(520px, calc(100vh - 16px));
+    overflow: auto;
+    overscroll-behavior: contain;
     z-index: 1300;
   }
 
   .model-selector-bar.inline .dropdown {
-    right: calc(100% + 8px);
+    right: 0;
     left: auto;
     bottom: calc(100% + 6px);
-    width: min(360px, calc(100vw - 40px));
-    max-height: min(420px, calc(100vh - 140px));
-    overflow-y: auto;
+    width: min(420px, calc(100vw - 16px));
+    max-height: min(560px, calc(100vh - 16px));
+  }
+
+  @media (max-width: 900px) {
+    .dropdown {
+      width: min(96vw, 440px);
+    }
+  }
+
+  .section-label {
+    padding: 6px 12px 4px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #a1a1aa;
   }
 
   .divider {

@@ -15,7 +15,7 @@ export default defineConfig({
     // vitePreprocess enables TypeScript, PostCSS, etc. in <script lang="ts">
     svelte({ preprocess: vitePreprocess() }),
     monacoEditorPlugin({
-      languageWorkers: ['editorWorkerService', 'typescript', 'json', 'css', 'html'],
+      languageWorkers: ['editorWorkerService', 'typescript', 'json'],
     }),
   ],
 
@@ -39,12 +39,25 @@ export default defineConfig({
 
   // Prevent Vite from obscuring Rust compiler errors
   build: {
-    // Output to bonsai-workspace/dist/ so tauri.conf.json's "../dist" is correct
     outDir: '../dist',
     emptyOutDir: true,
     target: ['es2021', 'chrome100', 'safari13'],
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
+    rollupOptions: {
+      input: {
+        main:      resolve(__dirname, 'index.html'),
+        assistant: resolve(__dirname, 'assistant.html'),
+      },
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('monaco-editor')) return 'vendor-monaco';
+          if (id.includes('xterm')) return 'vendor-xterm';
+          return 'vendor';
+        },
+      },
+    },
   },
 
   envPrefix: ['VITE_', 'TAURI_'],

@@ -1,11 +1,22 @@
 <script lang="ts">
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import { invoke } from '@tauri-apps/api/core';
   import { scan } from '@tauri-apps/plugin-barcode-scanner';
   import { addAssistantMessage } from '$lib/stores/chat';
+  import ClusterControlPanel from '$lib/components/ClusterControlPanel.svelte';
   import { DEFAULT_API_PORT } from '$lib/constants/network';
   import { availableModels, activeModel, activeModelId, orchestratorStatus, refreshStatus, refreshModels, modelSwitchStatus } from '$lib/stores/models';
   import { apiHost, apiPort, apiBaseUrl, loadApiSettings, saveApiSettings } from '$lib/stores/settings';
+  import {
+    applyAutoDetectedMobileDisplaySettings,
+    applyMobileDisplayPreview,
+    confirmMobileDisplaySettings,
+    mobileDisplayPending,
+    mobileDisplaySettings,
+    resetMobileDisplaySettings,
+    revertUnconfirmedMobileDisplaySettings,
+  } from '$lib/stores/mobileDisplay';
   import {
     BONSAI_CATALOG, findRegistryModel,
     downloadCatalogModel, downloadingId, downloadPct, downloadError,
@@ -18,6 +29,7 @@
   let errorMsg         = '';
   let switchDetails    = '';
   let apiTestResult    = '';
+  let displaySettingsStatus = '';
   let apiTestLoading   = false;
   let saveApiLoading   = false;
 
@@ -40,7 +52,44 @@
     try { hwInfo = await invoke<Record<string,unknown>>('get_hardware_info'); } catch {}
     try { await loadApiSettings(); } catch (e) { console.warn('Failed to load API settings', e); }
     try { await refreshAndroidUsbDevices(); } catch {}
+    refreshBotStatus();
+    botStatusInterval = setInterval(refreshBotStatus, 30_000);
   });
+
+  function sliderValue(event: Event): number {
+    const target = event.currentTarget as HTMLInputElement | null;
+    return Number(target?.value ?? 0);
+  }
+
+  function previewDisplayPatch(patch: {
+    topOffsetPx?: number;
+    bottomOffsetPx?: number;
+    leftOffsetPx?: number;
+    rightOffsetPx?: number;
+  }) {
+    applyMobileDisplayPreview(patch, { source: 'manual' });
+    displaySettingsStatus = 'Screen adjustment preview started. Confirm within 30 seconds to keep.';
+  }
+
+  function autoDetectScreenSize() {
+    const detected = applyAutoDetectedMobileDisplaySettings();
+    displaySettingsStatus = `Auto-detected insets: top ${detected.topOffsetPx}px, bottom ${detected.bottomOffsetPx}px, left ${detected.leftOffsetPx}px, right ${detected.rightOffsetPx}px.`;
+  }
+
+  function keepScreenChanges() {
+    confirmMobileDisplaySettings();
+    displaySettingsStatus = 'Screen adjustment confirmed and saved.';
+  }
+
+  function revertScreenChanges() {
+    revertUnconfirmedMobileDisplaySettings();
+    displaySettingsStatus = 'Unconfirmed screen changes reverted to the last confirmed layout.';
+  }
+
+  function resetDisplayDefaults() {
+    resetMobileDisplaySettings();
+    displaySettingsStatus = 'Display offsets reset to defaults.';
+  }
 
   async function switchModel(modelId: string, name: string) {
     activeModelId.set(modelId);
@@ -57,6 +106,26 @@
       addAssistantMessage(msg);
     } catch (e) {
       errorMsg = String(e);
+      if (/model load timeout/i.test(errorMsg)) {
+        switchDetails = `Switch timed out. Waiting for ${name} to become ready...`;
+        modelSwitchStatus.set(switchDetails);
+        const deadline = Date.now() + 180000;
+        while (Date.now() < deadline) {
+          await refreshStatus();
+          const status = get(orchestratorStatus);
+          const isReady = status?.slots.some((slot) =>
+            slot.state.state === 'ready' && slot.state.model_id === modelId,
+          );
+          if (isReady) {
+            await refreshModels();
+            switchDetails = `${name} became ready after timeout grace window.`;
+            modelSwitchStatus.set(switchDetails);
+            errorMsg = '';
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
       switchDetails = `Model switch failed: ${errorMsg}`;
       modelSwitchStatus.set(switchDetails);
     } finally { loadingOp = ''; }
@@ -213,6 +282,7 @@
 
   onDestroy(() => {
     disconnectRemotePreview();
+    if (botStatusInterval) clearInterval(botStatusInterval);
   });
 
   async function downloadWhisper() {
@@ -554,6 +624,20 @@
     usbResult = usbResult ? `${line}\n${usbResult}` : line;
   }
 
+  async function withInvokeTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   function getSelectedUsbSerial(): string {
     const serial = usbSelectedSerial.trim();
     if (!serial) {
@@ -566,11 +650,19 @@
     usbBusy = true;
     usbError = '';
     try {
-      const adbInfo = await invoke<{ adb_executable?: string; candidates?: string[] }>('android_usb_get_adb_info');
+      const adbInfo = await withInvokeTimeout(
+        invoke<{ adb_executable?: string; candidates?: string[] }>('android_usb_get_adb_info'),
+        12000,
+        'ADB info lookup',
+      );
       usbAdbExecutable = String(adbInfo?.adb_executable || 'adb');
       usbAdbCandidates = Array.isArray(adbInfo?.candidates) ? adbInfo.candidates : [];
 
-      const res = await invoke<{ devices?: AndroidUsbDevice[] }>('android_usb_list_devices');
+      const res = await withInvokeTimeout(
+        invoke<{ devices?: AndroidUsbDevice[] }>('android_usb_list_devices'),
+        20000,
+        'ADB device refresh',
+      );
       usbDevices = Array.isArray(res?.devices) ? res.devices : [];
       if (usbDevices.length > 0) {
         const current = usbSelectedSerial.trim();
@@ -592,10 +684,14 @@
     usbBusy = true;
     usbError = '';
     try {
-      const r = await invoke<UsbReadiness>('android_usb_get_device_readiness', {
-        serial,
-        apiPort: Number($apiPort || DEFAULT_API_PORT),
-      });
+      const r = await withInvokeTimeout(
+        invoke<UsbReadiness>('android_usb_get_device_readiness', {
+          serial,
+          apiPort: Number($apiPort || DEFAULT_API_PORT),
+        }),
+        20000,
+        'Device readiness check',
+      );
       usbReadiness = r;
       appendUsbResult('Device readiness check', r);
     } catch (e) {
@@ -688,7 +784,7 @@
     usbBusy = true;
     usbError = '';
     try {
-      const out = await runner();
+      const out = await withInvokeTimeout(runner(), 25000, title);
       appendUsbResult(title, out);
       return out;
     } catch (e) {
@@ -747,6 +843,109 @@
         shellCommand: usbShellCommand.trim(),
       }),
     );
+  }
+
+  // ── Messaging Bots ──────────────────────────────────────────────────────────
+
+  type BotPlatformStatus = { connected: boolean; error?: string };
+  type BotStatus = { running: boolean; platforms: Record<string, BotPlatformStatus> };
+
+  let botStatus: BotStatus = { running: false, platforms: {} };
+  let botStatusInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Discord form state
+  let discordToken = '';
+  let discordGuildIds = '';
+  let discordChannelIds = '';
+  let discordUserIds = '';
+
+  // Telegram form state
+  let telegramToken = '';
+  let telegramChatIds = '';
+
+  // Email form state
+  let emailImapPassword = '';
+  let emailSmtpPassword = '';
+  let emailImapHost = '';
+  let emailImapPort = 993;
+  let emailImapUsername = '';
+  let emailSmtpHost = '';
+  let emailSmtpUsername = '';
+  let emailSmtpFrom = '';
+  let emailSubjectPrefix = '[BONSAI]';
+  let emailAllowedFrom = '';
+
+  let botSaveMsg = '';
+
+  async function refreshBotStatus() {
+    try {
+      const s = await invoke<Record<string, unknown>>('get_bot_server_status');
+      const raw = (s['platforms'] as Record<string, unknown>) || {};
+      const platforms: Record<string, BotPlatformStatus> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        const vs = typeof v === 'string' ? v : String(v);
+        platforms[k] = { connected: vs === 'connected', error: vs === 'connected' ? undefined : vs };
+      }
+      botStatus = { running: true, platforms };
+    } catch {
+      botStatus = { running: false, platforms: {} };
+    }
+  }
+
+  function parseCsvList(s: string): string[] {
+    return s.split(',').map(x => x.trim()).filter(Boolean);
+  }
+
+  async function saveDiscordConfig() {
+    botSaveMsg = '';
+    try {
+      await invoke('save_discord_bot_config', {
+        token: discordToken,
+        allowedGuildIds:   parseCsvList(discordGuildIds),
+        allowedChannelIds: parseCsvList(discordChannelIds),
+        allowedUserIds:    parseCsvList(discordUserIds),
+      });
+      botSaveMsg = 'Discord settings saved.';
+      await refreshBotStatus();
+    } catch (e) {
+      botSaveMsg = `Error: ${e}`;
+    }
+  }
+
+  async function saveTelegramConfig() {
+    botSaveMsg = '';
+    try {
+      await invoke('save_telegram_bot_config', {
+        token: telegramToken,
+        allowedChatIds: parseCsvList(telegramChatIds).map(Number),
+      });
+      botSaveMsg = 'Telegram settings saved.';
+      await refreshBotStatus();
+    } catch (e) {
+      botSaveMsg = `Error: ${e}`;
+    }
+  }
+
+  async function saveEmailConfig() {
+    botSaveMsg = '';
+    try {
+      await invoke('save_email_bot_config', {
+        imapPassword:      emailImapPassword,
+        smtpPassword:      emailSmtpPassword,
+        imapHost:          emailImapHost,
+        imapPort:          Number(emailImapPort),
+        imapUsername:      emailImapUsername,
+        smtpHost:          emailSmtpHost,
+        smtpUsername:      emailSmtpUsername,
+        smtpFrom:          emailSmtpFrom,
+        subjectPrefix:     emailSubjectPrefix,
+        allowedFromAddrs:  parseCsvList(emailAllowedFrom),
+      });
+      botSaveMsg = 'Email settings saved.';
+      await refreshBotStatus();
+    } catch (e) {
+      botSaveMsg = `Error: ${e}`;
+    }
   }
 
   async function runUsbRegressionSuite() {
@@ -831,6 +1030,11 @@
       </section>
     {/if}
 
+    <section class="section">
+      <h3 class="section-title">Cluster Control</h3>
+      <ClusterControlPanel />
+    </section>
+
     <section class="section api-settings">
       <h3 class="section-title">API Settings</h3>
       <div class="form-group">
@@ -859,6 +1063,77 @@
         <div class="api-test-result">{apiTestResult}</div>
       {/if}
       <div class="api-endpoint">Current endpoint: <code>{$apiBaseUrl}</code></div>
+    </section>
+
+    <section class="section mobile-display-settings">
+      <h3 class="section-title">Mobile Screen Adjustment</h3>
+      <div class="form-note">
+        Auto-detect viewport insets, then fine-tune offsets safely with a 30-second confirmation rollback.
+      </div>
+
+      <div class="action-grid">
+        <button class="action-btn" type="button" on:click={autoDetectScreenSize}>Auto detect screen size</button>
+        <button class="action-btn green" type="button" on:click={keepScreenChanges} disabled={!$mobileDisplayPending.isPending}>Keep screen changes</button>
+        <button class="action-btn red" type="button" on:click={revertScreenChanges} disabled={!$mobileDisplayPending.isPending}>Revert now</button>
+        <button class="action-btn" type="button" on:click={resetDisplayDefaults}>Reset display offsets</button>
+      </div>
+
+      {#if $mobileDisplayPending.isPending}
+        <div class="display-warning">
+          Preview active ({$mobileDisplayPending.source}). Reverting in {$mobileDisplayPending.secondsLeft}s unless confirmed.
+        </div>
+      {/if}
+
+      {#if displaySettingsStatus}
+        <div class="display-status">{displaySettingsStatus}</div>
+      {/if}
+
+      <div class="range-grid">
+        <label>
+          Top offset ({$mobileDisplaySettings.topOffsetPx}px)
+          <input
+            type="range"
+            min="-24"
+            max="72"
+            step="1"
+            value={$mobileDisplaySettings.topOffsetPx}
+            on:input={(e) => previewDisplayPatch({ topOffsetPx: sliderValue(e) })}
+          />
+        </label>
+        <label>
+          Bottom offset ({$mobileDisplaySettings.bottomOffsetPx}px)
+          <input
+            type="range"
+            min="-24"
+            max="96"
+            step="1"
+            value={$mobileDisplaySettings.bottomOffsetPx}
+            on:input={(e) => previewDisplayPatch({ bottomOffsetPx: sliderValue(e) })}
+          />
+        </label>
+        <label>
+          Left offset ({$mobileDisplaySettings.leftOffsetPx}px)
+          <input
+            type="range"
+            min="-24"
+            max="48"
+            step="1"
+            value={$mobileDisplaySettings.leftOffsetPx}
+            on:input={(e) => previewDisplayPatch({ leftOffsetPx: sliderValue(e) })}
+          />
+        </label>
+        <label>
+          Right offset ({$mobileDisplaySettings.rightOffsetPx}px)
+          <input
+            type="range"
+            min="-24"
+            max="48"
+            step="1"
+            value={$mobileDisplaySettings.rightOffsetPx}
+            on:input={(e) => previewDisplayPatch({ rightOffsetPx: sliderValue(e) })}
+          />
+        </label>
+      </div>
     </section>
 
     <section class="section remote-control">
@@ -1052,177 +1327,122 @@
 
     <section class="section usb-lab-section">
       <h3 class="section-title">Android USB Lab</h3>
-      <p class="section-desc">
-        Plug in an Android tablet, click <strong>Refresh Devices</strong>, then follow the guided flow:
-        Readiness → Install &amp; Launch → Bootstrap Connection → Run Full Validation.
-      </p>
-
-      <!-- ── Device picker + readiness card ── -->
+      <p class="section-desc">Android USB Lab is now a standalone window. Open the lab to run device readiness, install, bootstrap, and validation flows.</p>
       <div class="action-grid">
-        <button class="action-btn" on:click={refreshAndroidUsbDevices} disabled={usbBusy}>
-          {usbBusy ? 'Refreshing…' : 'Refresh Devices'}
+        <button class="action-btn" on:click={() => dispatch('openAndroidUsbLab')}>
+          Open Android USB Lab
         </button>
-        <button class="action-btn" on:click={checkDeviceReadiness} disabled={usbBusy || !usbSelectedSerial}>
-          Check Readiness
-        </button>
+        <button class="action-btn" on:click={() => dispatch('openAndroidUsbLab')}>Open Lab (alt)</button>
       </div>
+    </section>
 
-      <div class="form-group usb-form-group">
-        <label for="usb-device">Device (adb serial)</label>
-        <select id="usb-device" bind:value={usbSelectedSerial}>
-          <option value="">Select device</option>
-          {#each usbDevices as d}
-            <option value={d.serial}>{d.serial} ({d.state}{d.model ? ` · ${d.model}` : ''})</option>
-          {/each}
-        </select>
-      </div>
+    <!-- ── Messaging Bots ─────────────────────────────────────────────────── -->
+    <section class="section bots-section">
+      <h3 class="section-title">
+        Messaging Bots
+        <span class="bot-status-badge" class:connected={botStatus.running}>
+          {botStatus.running ? '● running' : '○ not running'}
+        </span>
+        <button class="refresh-bot" on:click={refreshBotStatus} title="Refresh bot status">↺</button>
+      </h3>
+      <p class="section-desc">Connect Bonsai to Discord, Telegram, and Email. Tokens are stored in the OS keychain.</p>
 
-      {#if usbReadiness}
-        <div class="usb-readiness-card status-{usbReadiness.status}">
-          <div class="readiness-badge">{usbReadiness.status.toUpperCase()}</div>
-          <div class="readiness-detail">
-            {#if usbReadiness.model}<div><strong>Model:</strong> {usbReadiness.model}</div>{/if}
-            <div><strong>ADB:</strong> <code>{usbReadiness.adb_executable}</code></div>
-            <div><strong>Reverse active:</strong> {usbReadiness.reverse_api_active ? '✓ yes' : '✗ no'} (port {usbReadiness.api_port})</div>
-          </div>
-          {#if usbReadiness.status !== 'ready'}
-            <div class="readiness-next-action">→ {usbReadiness.next_action}</div>
+      {#if botSaveMsg}
+        <div class="bot-save-msg">{botSaveMsg}</div>
+      {/if}
+
+      <!-- Discord -->
+      <details class="bot-platform-details">
+        <summary>
+          Discord
+          {#if botStatus.platforms['discord']?.connected}
+            <span class="platform-badge ok">● Connected</span>
+          {:else if botStatus.running}
+            <span class="platform-badge err">○ Disconnected</span>
           {/if}
-        </div>
-      {/if}
-
-      <!-- ── APK + package config ── -->
-      <div class="form-group usb-form-group">
-        <label for="apk-path">APK Path</label>
-        <div class="input-with-btn">
-          <input id="apk-path" type="text" bind:value={usbApkPath} placeholder="C:/path/to/app.apk or leave blank to auto-resolve" />
-          <button class="action-btn" on:click={resolveApk} disabled={usbBusy}>Resolve</button>
-        </div>
-        {#if usbResolvedApk}
-          <div class="apk-meta">
-            {#if usbResolvedApk.package}<span>pkg: <code>{usbResolvedApk.package}</code></span>{/if}
-            {#if usbResolvedApk.version_name}<span>v{usbResolvedApk.version_name}</span>{/if}
-            <span>{Math.round(usbResolvedApk.size_bytes / 1024)} KB</span>
-          </div>
-        {/if}
-      </div>
-
-      <div class="form-group usb-form-group">
-        <label for="pkg-name">Package Name</label>
-        <input id="pkg-name" type="text" bind:value={usbPackageName} placeholder="com.bonsai.workspace" />
-      </div>
-
-      <div class="form-group usb-form-group">
-        <label for="activity-name">Launch Activity (optional)</label>
-        <input id="activity-name" type="text" bind:value={usbActivity} placeholder=".MainActivity" />
-      </div>
-
-      <div class="usb-toggle-row">
-        <label class="toggle-label">
-          <input type="checkbox" bind:checked={usbStrictMode} />
-          Strict mode <span class="toggle-hint">(fail if app not installed or launch fails)</span>
-        </label>
-      </div>
-
-      <!-- ── One-click flow buttons ── -->
-      <div class="action-grid usb-flow-grid">
-        <button class="action-btn green" on:click={installAndLaunch} disabled={usbBusy || !usbSelectedSerial}>
-          Install &amp; Launch
-        </button>
-        <button class="action-btn blue" on:click={bootstrapConnection} disabled={usbBusy || !usbSelectedSerial}>
-          Bootstrap Connection
-        </button>
-        <button class="action-btn green full-width" on:click={runUsbRegressionSuite} disabled={usbBusy || !usbSelectedSerial}>
-          Run Full Validation
-        </button>
-      </div>
-
-      <!-- ── Per-step result table ── -->
-      {#if usbLastSteps.length > 0}
-        <table class="usb-steps-table">
-          <thead><tr><th>Step</th><th>Result</th><th>ms</th><th>Detail</th></tr></thead>
-          <tbody>
-            {#each usbLastSteps as s}
-              <tr class={s.skipped ? 'step-skip' : s.ok ? 'step-ok' : 'step-fail'}>
-                <td>{s.label}</td>
-                <td>{s.skipped ? 'SKIP' : s.ok ? 'PASS' : 'FAIL'}</td>
-                <td>{s.duration_ms ?? '—'}</td>
-                <td class="step-detail">{s.hint || s.stderr || s.stdout || ''}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-
-      <!-- ── WiFi bridge config ── -->
-      <details class="usb-advanced">
-        <summary>WiFi Bridge &amp; Advanced</summary>
-
-        <div class="usb-toggle-row">
-          <label class="toggle-label">
-            <input type="checkbox" bind:checked={usbEnableWifiBridge} />
-            Enable WiFi bridge in Bootstrap Connection
+        </summary>
+        <div class="bot-form">
+          <label class="bot-label">Bot Token <span class="secret-hint">(write-only)</span>
+            <input class="bot-input" type="password" placeholder="Paste new token to update" bind:value={discordToken} autocomplete="off"/>
           </label>
+          <label class="bot-label">Guild IDs (comma-separated, empty = any)
+            <input class="bot-input" type="text" placeholder="123456789012345678, ..." bind:value={discordGuildIds}/>
+          </label>
+          <label class="bot-label">Channel IDs (comma-separated, empty = any)
+            <input class="bot-input" type="text" placeholder="optional" bind:value={discordChannelIds}/>
+          </label>
+          <label class="bot-label">User IDs (comma-separated, empty = any)
+            <input class="bot-input" type="text" placeholder="optional" bind:value={discordUserIds}/>
+          </label>
+          <button class="save-btn" on:click={saveDiscordConfig}>Save Discord</button>
         </div>
-
-        <div class="usb-wifi-grid">
-          <div class="form-group usb-form-group">
-            <label for="wifi-host">Device WiFi Host/IP</label>
-            <input id="wifi-host" type="text" bind:value={usbWifiHost} placeholder="192.168.1.120" />
-          </div>
-          <div class="form-group usb-form-group">
-            <label for="wifi-port">WiFi Debug Port</label>
-            <input id="wifi-port" type="number" min="1" max="65535" bind:value={usbWifiPort} />
-          </div>
-        </div>
-
-        <div class="action-grid">
-          <button class="action-btn" on:click={enableUsbWifiDebug} disabled={usbBusy}>Enable tcpip over USB</button>
-          <button class="action-btn" on:click={connectUsbWifiDebug} disabled={usbBusy}>Connect WiFi Debug</button>
-        </div>
-        <div class="action-grid">
-          <button class="action-btn" on:click={disconnectUsbWifiDebug} disabled={usbBusy}>Disconnect WiFi Debug</button>
-          <button class="action-btn" on:click={clearUsbReverse} disabled={usbBusy}>Clear adb reverse</button>
-        </div>
-
-        <div class="form-group usb-form-group">
-          <label for="usb-shell">ADB Shell Command</label>
-          <input id="usb-shell" type="text" bind:value={usbShellCommand} placeholder="getprop ro.product.model" />
-        </div>
-        <div class="action-grid">
-          <button class="action-btn blue" on:click={runUsbShellCommand} disabled={usbBusy}>Run Shell Command</button>
-        </div>
-
-        <div class="pair-field">
-          <span class="pair-label">ADB executable</span>
-          <code class="pair-token">{usbAdbExecutable || 'adb'}</code>
-        </div>
-        {#if usbAdbCandidates.length > 0}
-          <div class="pair-field">
-            <span class="pair-label">ADB candidates</span>
-            <code class="pair-token">{usbAdbCandidates.join(' | ')}</code>
-          </div>
-        {/if}
       </details>
 
-      {#if usbError}
-        <div class="pair-error">{usbError}</div>
-      {/if}
-      {#if usbRegressionEvidencePath}
-        <div class="pair-field">
-          <span class="pair-label">Evidence file</span>
-          <code class="pair-token">{usbRegressionEvidencePath}</code>
+      <!-- Telegram -->
+      <details class="bot-platform-details">
+        <summary>
+          Telegram
+          {#if botStatus.platforms['telegram']?.connected}
+            <span class="platform-badge ok">● Connected</span>
+          {:else if botStatus.running}
+            <span class="platform-badge err">○ Disconnected</span>
+          {/if}
+        </summary>
+        <div class="bot-form">
+          <label class="bot-label">Bot Token <span class="secret-hint">(write-only)</span>
+            <input class="bot-input" type="password" placeholder="Paste new token to update" bind:value={telegramToken} autocomplete="off"/>
+          </label>
+          <label class="bot-label">Allowed Chat IDs (comma-separated)
+            <input class="bot-input" type="text" placeholder="-100123456789, ..." bind:value={telegramChatIds}/>
+          </label>
+          <button class="save-btn" on:click={saveTelegramConfig}>Save Telegram</button>
         </div>
-      {/if}
-      {#if usbRegressionLast}
-        <div class="pair-field">
-          <span class="pair-label">Last regression: {usbRegressionLast.ok ? '✓ PASS' : '✗ FAIL'}</span>
-          <code class="pair-token">serial: {usbRegressionLast.serial} · strict: {String(usbRegressionLast.strict_require_app)}</code>
+      </details>
+
+      <!-- Email -->
+      <details class="bot-platform-details">
+        <summary>
+          Email (IMAP + SMTP)
+          {#if botStatus.platforms['email']?.connected}
+            <span class="platform-badge ok">● Connected</span>
+          {:else if botStatus.running}
+            <span class="platform-badge err">○ Disconnected</span>
+          {/if}
+        </summary>
+        <div class="bot-form">
+          <label class="bot-label">IMAP Host
+            <input class="bot-input" type="text" placeholder="imap.gmail.com" bind:value={emailImapHost}/>
+          </label>
+          <label class="bot-label">IMAP Port
+            <input class="bot-input" type="number" placeholder="993" bind:value={emailImapPort}/>
+          </label>
+          <label class="bot-label">IMAP Username
+            <input class="bot-input" type="text" placeholder="you@gmail.com" bind:value={emailImapUsername}/>
+          </label>
+          <label class="bot-label">IMAP Password <span class="secret-hint">(write-only)</span>
+            <input class="bot-input" type="password" placeholder="Paste new password to update" bind:value={emailImapPassword} autocomplete="off"/>
+          </label>
+          <label class="bot-label">SMTP Host
+            <input class="bot-input" type="text" placeholder="smtp.gmail.com" bind:value={emailSmtpHost}/>
+          </label>
+          <label class="bot-label">SMTP Username
+            <input class="bot-input" type="text" placeholder="you@gmail.com" bind:value={emailSmtpUsername}/>
+          </label>
+          <label class="bot-label">SMTP From
+            <input class="bot-input" type="text" placeholder="Bonsai &lt;you@gmail.com&gt;" bind:value={emailSmtpFrom}/>
+          </label>
+          <label class="bot-label">SMTP Password <span class="secret-hint">(write-only)</span>
+            <input class="bot-input" type="password" placeholder="Paste new password to update" bind:value={emailSmtpPassword} autocomplete="off"/>
+          </label>
+          <label class="bot-label">Subject Prefix
+            <input class="bot-input" type="text" placeholder="[BONSAI]" bind:value={emailSubjectPrefix}/>
+          </label>
+          <label class="bot-label">Allowed From Addresses (comma-separated)
+            <input class="bot-input" type="text" placeholder="alice@example.com, bob@example.com" bind:value={emailAllowedFrom}/>
+          </label>
+          <button class="save-btn" on:click={saveEmailConfig}>Save Email</button>
         </div>
-      {/if}
-      {#if usbResult}
-        <pre class="usb-result">{usbResult}</pre>
-      {/if}
+      </details>
     </section>
 
   </div>
@@ -1233,7 +1453,7 @@
     position: fixed;
     inset: 0;
     background: rgba(0,0,0,0.6);
-    z-index: 400;
+    z-index: var(--z-overlay, 500);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1522,6 +1742,49 @@
     margin-top: -6px;
     margin-bottom: 12px;
   }
+
+  .mobile-display-settings .form-note {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-bottom: 10px;
+  }
+
+  .mobile-display-settings .range-grid {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .mobile-display-settings label {
+    display: grid;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .mobile-display-settings input[type='range'] {
+    width: 100%;
+  }
+
+  .display-warning {
+    margin-top: 8px;
+    border: 1px solid var(--yellow);
+    color: var(--yellow);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  }
+
+  .display-status {
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--bg2);
+  }
   .api-test-result {
     margin-top: 10px;
     padding: 10px 12px;
@@ -1767,5 +2030,80 @@
   .pair-error {
     color: var(--red);
     font-size: 12px;
+  }
+
+  /* ── Messaging bots ─────────────────────────────────────────────────────── */
+  .bots-section { padding: 12px 16px; }
+
+  .bot-status-badge {
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-muted, #888);
+  }
+  .bot-status-badge.connected { color: var(--green, #4caf50); }
+
+  .refresh-bot {
+    margin-left: 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .refresh-bot:hover { background: var(--bg-hover); color: var(--text); }
+
+  .bot-platform-details {
+    border: 1px solid var(--border, #333);
+    border-radius: 6px;
+    margin-top: 8px;
+    padding: 0 12px;
+  }
+  .bot-platform-details > summary {
+    cursor: pointer;
+    padding: 8px 0;
+    font-size: 13px;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .platform-badge {
+    font-size: 11px;
+    font-weight: 400;
+  }
+  .platform-badge.ok  { color: var(--green, #4caf50); }
+  .platform-badge.err { color: var(--text-muted, #888); }
+
+  .bot-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0 12px;
+  }
+  .bot-label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+  }
+  .bot-input {
+    background: var(--bg-input, #1a1a1a);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    color: var(--text, #eee);
+    font-size: 13px;
+    padding: 5px 8px;
+  }
+  .secret-hint { font-size: 10px; color: var(--text-muted, #888); }
+
+  .bot-save-msg {
+    font-size: 12px;
+    color: var(--green, #4caf50);
+    padding: 4px 0;
   }
 </style>

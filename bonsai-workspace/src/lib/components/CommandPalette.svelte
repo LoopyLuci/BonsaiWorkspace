@@ -4,6 +4,7 @@
   import { toggleTerminal }    from '$lib/stores/terminal';
   import { requestOpenFile }   from '$lib/stores/openFile';
   import { addAssistantMessage } from '$lib/stores/chat';
+  import { setWorkspace } from '$lib/stores/workspace';
 
   let isOpen   = false;
   let query    = '';
@@ -25,7 +26,6 @@
         try {
           const path = await invoke<string>('open_workspace');
           if (path) {
-            const { setWorkspace } = await import('$lib/stores/workspace');
             let branch = 'main';
             try { branch = await invoke<string>('get_git_branch', { workspacePath: path }); } catch {}
             setWorkspace(path, branch);
@@ -109,11 +109,25 @@
   }
 
   function globalKey(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); open(); }
+    if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || e.key === 'F1') {
+      e.preventDefault();
+      open();
+    }
   }
 
-  onMount(()  => window.addEventListener('keydown', globalKey));
-  onDestroy(() => window.removeEventListener('keydown', globalKey));
+  function openFromEvent() {
+    void open();
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', globalKey, true);
+    window.addEventListener('open-command-palette', openFromEvent);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener('keydown', globalKey, true);
+    window.removeEventListener('open-command-palette', openFromEvent);
+  });
 </script>
 
 {#if isOpen}
@@ -152,6 +166,7 @@
         <span>↑↓ navigate</span>
         <span>⏎ execute</span>
         <span>Esc close</span>
+        <span class="palette-hint">Ctrl+K · F1</span>
       </div>
     </div>
   </div>
@@ -162,7 +177,7 @@
     position: fixed;
     inset: 0;
     background: rgba(0,0,0,0.6);
-    z-index: 500;
+    z-index: var(--z-overlay, 500);
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -226,5 +241,9 @@
     gap: 16px;
     font-size: 11px;
     color: var(--text-dim);
+  }
+  .palette-hint {
+    margin-left: auto;
+    opacity: 0.6;
   }
 </style>

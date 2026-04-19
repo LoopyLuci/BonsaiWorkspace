@@ -1,6 +1,5 @@
 <script lang="ts">
   import FileTree        from '$lib/components/FileTree.svelte';
-  import MonacoEditor    from '$lib/components/MonacoEditor.svelte';
   import ChatPanel       from '$lib/components/ChatPanel.svelte';
   import StatusBar       from '$lib/components/StatusBar.svelte';
   import CommandPalette  from '$lib/components/CommandPalette.svelte';
@@ -8,15 +7,19 @@
   import SessionPanel    from '$lib/components/SessionPanel.svelte';
   import AgentConnectPanel from '$lib/components/AgentConnectPanel.svelte';
   import AgentsPanel       from '$lib/components/AgentsPanel.svelte';
+  import ResourcesPanel    from '$lib/components/ResourcesPanel.svelte';
   import TerminalPanel   from '$lib/components/TerminalPanel.svelte';
   import VscodeViewer    from '$lib/components/VscodeViewer.svelte';
-  import MobileLayout    from '$lib/components/MobileLayout.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import BootstrapScreen from '$lib/components/BootstrapScreen.svelte';
+  import CodeCanvas from '$lib/components/CodeCanvas.svelte';
+  import MobileViewPanel from '$lib/components/MobileViewPanel.svelte';
+  import MobileLayout from '$lib/components/MobileLayout.svelte';
+  import AndroidUsbLab from '$lib/components/AndroidUsbLab.svelte';
 
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
-  import { currentSessionTitle, clearCurrentSession, restorePersistentSession } from '$lib/stores/chat';
+  import { restorePersistentSession } from '$lib/stores/chat';
   import { loadAgentConfigs, loadPersonas } from '$lib/stores/agents';
   import Toasts from '$lib/components/Toast.svelte';
 
@@ -27,31 +30,51 @@
   let showSession   = false;
   let showAgentConnect = false;
   let showAgents       = false;
+  let showResources    = false;
+  let showAgentVision  = false;
+  let showCanvas       = false;
+  let showMobileView   = false;
+  let showTools = false;
+  let showAndroidUsbModal = false;
   let showVscode    = false;
   let sidebarWidth  = 280;
   let chatWidth     = 360;
   let resizingPane: 'sidebar' | 'chat' | null = null;
   let pointerStartX = 0;
   let pointerStartWidth = 0;
+  let monacoEditorComponent: any = null;
+  let monacoLoadError = '';
+  let monacoLoadQueued = false;
+  let agentVisionPanelComponent: any = null;
+  let agentVisionLoadError = '';
 
   const MIN_PANE_WIDTH = 120;
   const MIN_EDITOR_WIDTH = 260;
   const RESIZER_WIDTH = 10;
 
+  function hasRightPane() {
+    return showChat || showVscode;
+  }
+
+  function visiblePaneCount() {
+    // Editor is always present.
+    return 1 + (showFileTree ? 1 : 0) + (hasRightPane() ? 1 : 0);
+  }
+
   function visibleResizerCount() {
     let count = 0;
     if (showFileTree) count += 1;
-    if (showChat) count += 1;
+    if (hasRightPane()) count += 1;
     return count;
   }
 
   function paneMaxWidth(pane: 'sidebar' | 'chat') {
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
-    const sidePaneCount = (showFileTree ? 1 : 0) + (showChat ? 1 : 0);
-    const shareLimit = sidePaneCount >= 2 ? 0.5 : 0.75;
+    const paneCount = visiblePaneCount();
+    const shareLimit = paneCount >= 3 ? 0.75 : paneCount === 2 ? 0.9 : 1.0;
     const maxByShare = Math.floor(viewportWidth * shareLimit);
     const otherPaneWidth = pane === 'sidebar'
-      ? (showChat ? chatWidth : 0)
+      ? (hasRightPane() ? chatWidth : 0)
       : (showFileTree ? sidebarWidth : 0);
     const maxByEditor = Math.max(
       MIN_PANE_WIDTH,
@@ -94,6 +117,43 @@
     window.removeEventListener('pointerup', stopResizing);
   }
 
+  async function loadMonacoEditorComponent() {
+    if (monacoEditorComponent) return;
+    try {
+      const mod = await import('$lib/components/MonacoEditor.svelte');
+      monacoEditorComponent = mod.default;
+      monacoLoadError = '';
+    } catch (error) {
+      monacoLoadError = String(error);
+    }
+  }
+
+  function queueMonacoEditorLoad() {
+    if (monacoLoadQueued) return;
+    monacoLoadQueued = true;
+    window.setTimeout(() => {
+      void loadMonacoEditorComponent();
+    }, 0);
+  }
+
+  async function loadAgentVisionPanelComponent() {
+    if (agentVisionPanelComponent) return;
+    try {
+      const mod = await import('$lib/components/AgentVisionPanel.svelte');
+      agentVisionPanelComponent = mod.default;
+      agentVisionLoadError = '';
+    } catch (error) {
+      agentVisionLoadError = String(error);
+    }
+  }
+
+  function toggleAgentVisionPanel() {
+    showAgentVision = !showAgentVision;
+    if (showAgentVision) {
+      void loadAgentVisionPanelComponent();
+    }
+  }
+
   // ── Theme ─────────────────────────────────────────────────────────────────
   type Theme = 'dark' | 'light' | 'high-contrast';
   let theme: Theme = 'dark';
@@ -109,17 +169,32 @@
   let isMobile = false;
 
   // Sync theme on mount; initialise model/bootstrap listeners
+  import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
 
   function globalKey(e: KeyboardEvent) {
+    if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || e.key === 'F1') {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       showSession = true;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      invoke('toggle_assistant_window');
     }
   }
 
   function openSessionEvent() {
     showSession = true;
+  }
+
+  function openAgentsEvent() {
+    showAgents = true;
   }
 
   onMount(() => {
@@ -128,15 +203,25 @@
     void restorePersistentSession();
     void loadAgentConfigs();
     void loadPersonas();
-    window.addEventListener('keydown', globalKey);
+    window.addEventListener('keydown', globalKey, true);
     window.addEventListener('open-session', openSessionEvent);
+    window.addEventListener('open-agents', openAgentsEvent);
     // Detect Android — works both in Tauri mobile and browser dev preview.
     isMobile = /android/i.test(navigator.userAgent);
+    if (isMobile) {
+      // Keep the desktop shell on mobile, but start with a cleaner viewport.
+      showFileTree = false;
+      showVscode = false;
+      showChat = true;
+      chatWidth = Math.min(chatWidth, Math.max(240, Math.floor(window.innerWidth * 0.92)));
+    }
+    queueMonacoEditorLoad();
   });
 
   onDestroy(() => {
-    window.removeEventListener('keydown', globalKey);
+    window.removeEventListener('keydown', globalKey, true);
     window.removeEventListener('open-session', openSessionEvent);
+    window.removeEventListener('open-agents', openAgentsEvent);
   });
 
   $: if (showFileTree) {
@@ -148,40 +233,59 @@
   }
 </script>
 
-<!-- Android: render the mobile tab-bar layout instead of the desktop shell -->
-{#if isMobile}
-  <MobileLayout />
-{:else}
-
 <!-- Root shell -->
-<div class="root">
+<div class="root" class:mobile-shell={isMobile}>
+
+  {#if isMobile}
+    <MobileLayout />
+    <Toasts />
+    <DownloadProgress />
+    {#if $isBootstrapping}<BootstrapScreen />{/if}
+  {:else}
 
   <!-- Top toolbar -->
   <header class="toolbar">
-    <span class="logo">🌿 Bonsai</span>
-    {#if $currentSessionTitle}
-      <div class="toolbar-session">
-        <button class="toolbar-session-open" on:click={() => (showSession = true)} title="Open session manager" type="button">
-          Session: {$currentSessionTitle}
-        </button>
-        <button class="toolbar-session-clear" on:click|stopPropagation={clearCurrentSession} aria-label="Clear current session" type="button">×</button>
-      </div>
-    {/if}
+    <span class="logo">🌿</span>
     <div class="toolbar-actions">
       <button class="btn-icon" title="Toggle File Tree (Ctrl+B)"
         on:click={() => (showFileTree = !showFileTree)}>
         {showFileTree ? '◀ Tree' : '▶ Tree'}
       </button>
-      <button class="btn-icon" class:active={showAgents} title="Open Agents"
-        on:click={() => (showAgents = true)}>⚡ Agents</button>
       <button class="btn-icon" title="Toggle Terminal (Ctrl+`)"
         on:click={toggleTerminal}>Terminal</button>
       <button class="btn-icon" title="Toggle Chat"
         on:click={() => (showChat = !showChat)}>Chat</button>
+      <button class="btn-icon" class:active={showCanvas} title="Spatial Code Canvas"
+        on:click={() => (showCanvas = !showCanvas)}>Canvas</button>
+      <button class="btn-icon" class:active={showAgents} title="Open Agents"
+        on:click={() => (showAgents = true)}>⚡ Agents</button>
+      <button class="btn-icon" class:active={showResources} title="Open Resources"
+        on:click={() => (showResources = true)}>Resources</button>
       <button class="btn-icon" title="Settings"
         on:click={() => (showSettings = !showSettings)}>⚙</button>
-      <button class="btn-icon" title="Agent Connect"
-        on:click={() => (showAgentConnect = true)}>Agent Connect</button>
+
+      <!-- Tools dropdown -->
+      <div class="tools-dropdown" on:mouseleave={() => (showTools = false)}>
+        <button class="btn-icon" title="Tools" on:click={() => (showTools = !showTools)}>Tools ▾</button>
+        {#if showTools}
+          <div class="tools-menu" role="menu">
+            <button class="tools-item" title="Bonsai Buddy Assistant (Ctrl+Shift+B)" on:click={() => { invoke('toggle_assistant_window'); showTools=false; }}>
+              🌿 Bonsai Buddy Assistant
+            </button>
+            <button class="tools-item" on:click={() => { toggleAgentVisionPanel(); showTools=false; }}>
+              ⚡ Agent Vision
+            </button>
+            <button class="tools-item" on:click={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } showTools=false; }}>
+              📱 Android USB Lab
+            </button>
+            <button class="tools-item" on:click={() => { showAgentConnect = true; showTools=false; }}>
+              🔗 Agent Connect
+            </button>
+          </div>
+        {/if}
+      </div>
+      <button class="btn-icon" class:active={showMobileView} title="Mobile Viewer"
+        on:click={() => (showMobileView = !showMobileView)}>Mobile Viewer</button>
       <button class="btn-icon" title="Toggle VSCode Viewer"
         on:click={() => (showVscode = !showVscode)}>VSCode</button>
       <button class="btn-icon" title="Cycle Theme"
@@ -210,7 +314,13 @@
       {/if}
 
       <div class="pane editor-pane">
-        <MonacoEditor {theme} />
+        {#if monacoEditorComponent}
+          <svelte:component this={monacoEditorComponent} {theme} />
+        {:else if monacoLoadError}
+          <div class="pane-state pane-state-error">Editor failed to load: {monacoLoadError}</div>
+        {:else}
+          <div class="pane-state">Loading editor...</div>
+        {/if}
       </div>
 
       {#if showVscode}
@@ -244,11 +354,9 @@
   </main>
 
   <!-- Terminal drawer -->
-  {#if $showTerminal}
-    <div class="terminal-drawer">
-      <TerminalPanel />
-    </div>
-  {/if}
+  <div class="terminal-drawer" class:terminal-hidden={!$showTerminal}>
+    <TerminalPanel />
+  </div>
 
   <Toasts />
 
@@ -257,19 +365,59 @@
 
   <!-- Overlays -->
   <CommandPalette />
-  {#if showSettings}<SettingsPanel on:close={() => (showSettings = false)} />{/if}
+  {#if showSettings}<SettingsPanel on:close={() => (showSettings = false)} on:openAndroidUsbLab={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } }} />{/if}
   {#if showSession}<SessionPanel on:close={() => (showSession = false)} />{/if}
   {#if showAgentConnect}<AgentConnectPanel on:close={() => (showAgentConnect = false)} />{/if}
   {#if showAgents}<AgentsPanel on:close={() => (showAgents = false)} />{/if}
+  {#if showResources}<ResourcesPanel on:close={() => (showResources = false)} />{/if}
+  {#if showAgentVision}
+    {#if agentVisionPanelComponent}
+      <svelte:component
+        this={agentVisionPanelComponent}
+        on:close={() => (showAgentVision = false)}
+        on:openChat={() => {
+          showChat = true;
+          showVscode = false;
+        }}
+      />
+    {:else if agentVisionLoadError}
+      <div class="overlay-error" role="alert">
+        <div>Agent Vision failed to load: {agentVisionLoadError}</div>
+        <button class="btn-icon" type="button" on:click={() => (showAgentVision = false)}>Close</button>
+      </div>
+    {:else}
+      <div class="overlay-loading" role="status">Loading Agent Vision...</div>
+    {/if}
+  {/if}
+  {#if showCanvas}
+    <CodeCanvas onClose={() => (showCanvas = false)} />
+  {/if}
+  {#if showMobileView}
+    <MobileViewPanel on:close={() => (showMobileView = false)} />
+  {/if}
+  {#if showAndroidUsbModal}
+    <AndroidUsbLab on:close={() => (showAndroidUsbModal = false)} />
+  {/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
 
-</div>
+  {/if}
 
-{/if}
+</div>
 
 <style>
   /* ── CSS custom properties ── */
+  :global(:root) {
+    --z-canvas:   10;
+    --z-inline:   20;
+    --z-panel:   100;
+    --z-dropdown: 300;
+    --z-overlay:  500;
+    --z-modal:    800;
+    --z-context: 1000;
+    --z-toast:   2000;
+    --z-critical: 9999;
+  }
   :global([data-theme='dark']) {
     --bg:        #18181b;
     --bg2:       #1c1c1f;
@@ -320,7 +468,8 @@
     background: var(--bg);
     color: var(--text);
     overflow: hidden;
-    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
     width: 100vw;
   }
 
@@ -343,7 +492,8 @@
   .root {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
     background: var(--bg);
     color: var(--text);
   }
@@ -377,6 +527,14 @@
     gap: 4px;
     margin-left: auto;
     align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .toolbar-actions::-webkit-scrollbar {
+    display: none;
   }
 
   .btn-icon {
@@ -399,56 +557,6 @@
     color: var(--accent-hl);
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 15%, transparent);
-  }
-
-  .toolbar-session {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(34, 197, 94, 0.14);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    border-radius: 999px;
-    color: var(--text);
-    padding: 6px 8px;
-    font-size: 12px;
-  }
-
-  .toolbar-session-open,
-  .toolbar-session-clear {
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font: inherit;
-    padding: 0;
-  }
-
-  .toolbar-session-open {
-    display: inline-flex;
-    align-items: center;
-    border-radius: 999px;
-    padding: 6px 10px;
-    transition: background 0.1s, border-color 0.1s;
-  }
-
-  .toolbar-session-open:hover {
-    background: rgba(34, 197, 94, 0.18);
-  }
-
-  .toolbar-session-clear {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.12);
-    font-size: 12px;
-    transition: background 0.1s;
-  }
-
-  .toolbar-session-clear:hover {
-    background: rgba(255,255,255,0.2);
   }
 
   .work-area {
@@ -493,6 +601,37 @@
     flex-direction: column;
   }
 
+  .pane-state {
+    height: 100%;
+    display: grid;
+    place-items: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    background: color-mix(in srgb, var(--bg2) 80%, transparent);
+  }
+
+  .pane-state-error {
+    color: #fecaca;
+  }
+
+  .overlay-loading,
+  .overlay-error {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 170;
+    max-width: min(420px, calc(100vw - 40px));
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text);
+    padding: 10px 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
   .sidebar-pane {
     width: 280px;
     min-width: 120px;
@@ -518,5 +657,81 @@
     border-top: 1px solid var(--border);
     flex-shrink: 0;
     background: var(--bg);
+    overflow: hidden;
+    transition: height 0.16s ease;
   }
+
+  .terminal-drawer.terminal-hidden {
+    height: 0;
+    border-top: 0;
+  }
+
+  .mobile-shell .toolbar {
+    height: auto;
+    min-height: 44px;
+    padding: 6px 8px;
+    gap: 6px;
+  }
+
+  .mobile-shell .logo {
+    font-size: 13px;
+    margin-right: 4px;
+    white-space: nowrap;
+  }
+
+  .mobile-shell .toolbar-actions {
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+
+  .mobile-shell .btn-icon {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+
+  .mobile-shell .sidebar-pane {
+    width: min(76vw, 320px);
+  }
+
+  .mobile-shell .chat-pane {
+    width: min(92vw, 430px);
+  }
+
+  @media (max-width: 900px) {
+    .split-resizer {
+      width: 12px;
+    }
+
+    .terminal-drawer {
+      height: 220px;
+    }
+  }
+
+  /* Tools dropdown */
+  .tools-dropdown { position: relative; }
+  .tools-menu {
+    position: absolute;
+    right: 0;
+    top: 36px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    padding: 6px;
+  }
+  .tools-item {
+    background: transparent;
+    border: none;
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .tools-item:hover { background: var(--bg-hover); }
 </style>

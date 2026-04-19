@@ -1,11 +1,19 @@
 use std::sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::thread::sleep;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::io;
 use tauri::AppHandle;
 use serde::Serialize;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use scrap::{Capturer, Display};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use image::{codecs::png::PngEncoder, ColorType, ImageBuffer, ImageEncoder, RgbaImage};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use enigo::{Enigo, KeyboardControllable, Key, MouseButton, MouseControllable};
 
 use crate::remote_input::RemoteInputEvent;
@@ -51,6 +59,7 @@ impl RemoteManager {
         Ok(())
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub async fn submit_input(&self, event: RemoteInputEvent) -> Result<(), String> {
         if !self.is_live.load(Ordering::SeqCst) {
             return Err("No active remote session".into());
@@ -149,6 +158,12 @@ impl RemoteManager {
         }
     }
 
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub async fn submit_input(&self, _event: RemoteInputEvent) -> Result<(), String> {
+        Err("Remote input injection is not supported on mobile targets".into())
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn perform_key_event(enigo: &mut Enigo, key: &str, modifiers: Option<&[String]>, text: Option<&str>) -> Result<(), String> {
         if let Some(mods) = modifiers {
             for modifier in mods {
@@ -182,6 +197,7 @@ impl RemoteManager {
         Ok(())
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn map_key(key: &str) -> Result<Key, String> {
         let normalized = key.to_lowercase();
         let mapped = match normalized.as_str() {
@@ -226,6 +242,7 @@ impl RemoteManager {
         self.active_session.lock().ok().and_then(|session| session.clone())
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn capture_png(&self) -> Result<Vec<u8>, String> {
         if !self.is_live.load(Ordering::SeqCst) {
             return Err("No active remote session".into());
@@ -271,5 +288,10 @@ impl RemoteManager {
             .map_err(|e| e.to_string())?;
 
         Ok(encoded)
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub fn capture_png(&self) -> Result<Vec<u8>, String> {
+        Err("Remote screen capture is not supported on mobile targets".into())
     }
 }

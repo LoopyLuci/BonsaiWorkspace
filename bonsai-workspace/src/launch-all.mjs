@@ -10,23 +10,15 @@ const ROOT_DIR = path.resolve(SRC_DIR, '..', '..');
 const TAURI_DIR = path.join(ROOT_DIR, 'bonsai-workspace', 'src-tauri');
 const LAUNCHER_ARTIFACT_DIR = path.join(ROOT_DIR, 'tool_test', 'launcher');
 const LAUNCHER_ARTIFACT_FILE = path.join(LAUNCHER_ARTIFACT_DIR, 'latest.json');
+const PREFLIGHT_CACHE_FILE = path.join(LAUNCHER_ARTIFACT_DIR, 'preflight-cache.json');
 const DEFAULT_API_PORT = 11369;
 const DEFAULT_DEV_UI_PORT = 1420;
+const DEFAULT_PREFLIGHT_CACHE_TTL_MS = 10 * 60 * 1000;
 
 function readConfiguredApiPort() {
-  try {
-    const appData = process.env.APPDATA || '';
-    if (!appData) return DEFAULT_API_PORT;
-    const cfgPath = path.join(appData, 'com.bonsai.workspace', 'bonsai-config.json');
-    if (!fs.existsSync(cfgPath)) return DEFAULT_API_PORT;
-    const raw = fs.readFileSync(cfgPath, 'utf8');
-    const cfg = JSON.parse(raw);
-    const p = Number(cfg?.api_port);
-    if (Number.isFinite(p) && p > 0 && p <= 65535) {
-      return p;
-    }
-  } catch {
-    // fall back to default
+  const envPort = Number(process.env.BONSAI_API_PORT);
+  if (Number.isFinite(envPort) && envPort > 0 && envPort <= 65535) {
+    return envPort;
   }
   return DEFAULT_API_PORT;
 }
@@ -43,6 +35,10 @@ const DEFAULTS = {
   attachExisting: true,
   reportPath: LAUNCHER_ARTIFACT_FILE,
   apiPort: readConfiguredApiPort(),
+  preflightCache: true,
+  preflightCacheTtlMs: DEFAULT_PREFLIGHT_CACHE_TTL_MS,
+  fast: false,
+  remoteSurfaceSmoke: false,
 };
 
 function log(msg) {
@@ -74,8 +70,17 @@ function parseArgs(argv) {
     else if (a === '--no-attach-existing') cfg.attachExisting = false;
     else if (a === '--report-path') cfg.reportPath = String(argv[++i] || '').trim() || cfg.reportPath;
     else if (a === '--api-port') cfg.apiPort = Number(argv[++i] || cfg.apiPort);
+    else if (a === '--no-preflight-cache') cfg.preflightCache = false;
+    else if (a === '--preflight-cache-ttl-ms') cfg.preflightCacheTtlMs = Number(argv[++i] || cfg.preflightCacheTtlMs);
+    else if (a === '--fast') cfg.fast = true;
+    else if (a === '--remote-surface-smoke') cfg.remoteSurfaceSmoke = true;
     else if (a === '--help' || a === '-h') cfg.help = true;
   }
+
+  if (cfg.fast) {
+    cfg.noInstall = true;
+  }
+
   return cfg;
 }
 
@@ -99,6 +104,10 @@ function printHelp() {
   log('  --report-path <path>         Write launcher phase report JSON to this path');
   log('  --api-port <port>            API port to check/await (default: from app config or 11369)');
   log('  --no-install                 Skip npm install check/fix');
+  log('  --no-preflight-cache         Always run tool version checks (no cache)');
+  log(`  --preflight-cache-ttl-ms <ms>  Preflight cache TTL (default: ${DEFAULT_PREFLIGHT_CACHE_TTL_MS})`);
+  log('  --fast                       Fast repeat-launch mode (implies --no-install)');
+  log('  --remote-surface-smoke       Run Android fallback->trampoline smoke script (desktop+usb mode)');
 }
 
 function nowIso() {
@@ -138,8 +147,8 @@ function writeReport(reportPath, report) {
 
 function runVersionCheck(command, args = ['--version']) {
   let out;
-  if (command === 'npm' && process.env.npm_execpath && fs.existsSync(process.env.npm_execpath)) {
-    out = spawnSync(process.execPath, [process.env.npm_execpath, ...args], { encoding: 'utf8' });
+  if (command === 'npm') {
+    out = runNpmCommandSync(args, { encoding: 'utf8' });
   } else {
     out = spawnSync(toolCmd(command), args, { encoding: 'utf8' });
   }
@@ -151,6 +160,112 @@ function runVersionCheck(command, args = ['--version']) {
     throw new Error(`${command} check failed: ${(out.stderr || out.stdout || '').trim()}`);
   }
   return (out.stdout || out.stderr || '').trim();
+}
+
+function runNpmCommandSync(args, options = {}) {
+  if (process.env.npm_execpath && fs.existsSync(process.env.npm_execpath)) {
+    return spawnSync(process.execPath, [process.env.npm_execpath, ...args], options);
+  }
+  if (process.platform === 'win32') {
+    const cmd = `npm ${args.map((a) => String(a)).join(' ')}`;
+    return spawnSync('cmd.exe', ['/d', '/s', '/c', cmd], options);
+  }
+  return spawnSync('npm', args, options);
+}
+
+function runVersionCheckAsync(command, args = ['--version']) {
+  return new Promise((resolve, reject) => {
+    let proc;
+    if (command === 'npm' && process.env.npm_execpath && fs.existsSync(process.env.npm_execpath)) {
+      proc = spawn(process.execPath, [process.env.npm_execpath, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } else if (command === 'npm' && process.platform === 'win32') {
+      const cmd = `npm ${args.map((a) => String(a)).join(' ')}`;
+      proc = spawn('cmd.exe', ['/d', '/s', '/c', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } else {
+      proc = spawn(toolCmd(command), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+
+    let out = '';
+    let err = '';
+    proc.stdout.on('data', (d) => { out += String(d); });
+    proc.stderr.on('data', (d) => { err += String(d); });
+    proc.on('error', (e) => reject(new Error(`${command} check failed: ${e.message}`)));
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`${command} check failed: ${(err || out || '').trim()}`));
+        return;
+      }
+      resolve((out || err || '').trim());
+    });
+  });
+}
+
+function loadPreflightCache() {
+  try {
+    if (!fs.existsSync(PREFLIGHT_CACHE_FILE)) return null;
+    const raw = fs.readFileSync(PREFLIGHT_CACHE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePreflightCache(versions) {
+  try {
+    fs.mkdirSync(path.dirname(PREFLIGHT_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(PREFLIGHT_CACHE_FILE, JSON.stringify({
+      ts: Date.now(),
+      node_exec: process.execPath,
+      npm_execpath: process.env.npm_execpath || '',
+      versions,
+    }, null, 2), 'utf8');
+  } catch {
+    // cache writes are best-effort only
+  }
+}
+
+function shouldUsePreflightCache(cache, cfg) {
+  if (!cfg.preflightCache || !cache) return false;
+  if (!Number.isFinite(cfg.preflightCacheTtlMs) || cfg.preflightCacheTtlMs < 0) return false;
+  if (!cache.ts || !cache.versions) return false;
+  if (cache.node_exec !== process.execPath) return false;
+  if ((cache.npm_execpath || '') !== (process.env.npm_execpath || '')) return false;
+  const ageMs = Date.now() - Number(cache.ts);
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= cfg.preflightCacheTtlMs;
+}
+
+async function collectToolVersions(cfg) {
+  const cache = loadPreflightCache();
+  if (shouldUsePreflightCache(cache, cfg)) {
+    return { versions: cache.versions, source: 'cache' };
+  }
+
+  let versions;
+  let source = 'fresh';
+  try {
+    const [node, npm, cargo, tauri] = await Promise.all([
+      runVersionCheckAsync('node'),
+      runVersionCheckAsync('npm'),
+      runVersionCheckAsync('cargo'),
+      runVersionCheckAsync('cargo', ['tauri', '--version']),
+    ]);
+    versions = { node, npm, cargo, tauri };
+  } catch {
+    // Windows can reject async spawn for some tool-path combinations.
+    // Fall back to the prior synchronous behavior for reliability.
+    versions = {
+      node: runVersionCheck('node'),
+      npm: runVersionCheck('npm'),
+      cargo: runVersionCheck('cargo'),
+      tauri: runVersionCheck('cargo', ['tauri', '--version']),
+    };
+    source = 'fresh-sync';
+  }
+
+  if (cfg.preflightCache) savePreflightCache(versions);
+  return { versions, source };
 }
 
 function isPortActivelyListening(port) {
@@ -290,7 +405,7 @@ function ensureFrontendDeps(cfg) {
     return;
   }
   log('[preflight] node_modules missing; running npm install...');
-  const out = spawnSync(toolCmd('npm'), ['install'], { cwd: SRC_DIR, stdio: 'inherit' });
+  const out = runNpmCommandSync(['install'], { cwd: SRC_DIR, stdio: 'inherit' });
   if (out.status !== 0) {
     throw new Error('npm install failed');
   }
@@ -415,13 +530,66 @@ function runUsbRegression(cfg) {
     return { ok: false };
   }
 
+  log('[usb] running android orientation UX regression...');
+  const orientationEnv = { ...env, ANDROID_ORIENTATION_ALLOW_LOCKED: '1' };
+  const orientation = spawnSync('node', ['./android-orientation-ux-regression.mjs'], {
+    cwd: SRC_DIR,
+    env: orientationEnv,
+    encoding: 'utf8',
+  });
+  const orientationOut = `${orientation.stdout || ''}\n${orientation.stderr || ''}`;
+  process.stdout.write(orientation.stdout || '');
+  process.stderr.write(orientation.stderr || '');
+
+  const orientationArtifact = (() => {
+    const m = orientationOut.match(/ANDROID_ORIENTATION_UX_ARTIFACT=(.+)/);
+    return m ? m[1].trim() : null;
+  })();
+  const orientationLocked = /ANDROID_ORIENTATION_UX_LOCKED=1/.test(orientationOut);
+  const orientationOk = orientation.status === 0;
+
+  if (!orientationOk && !orientationLocked) {
+    return {
+      ok: false,
+      orientation_ok: false,
+      orientation_locked: false,
+      orientation_artifact: orientationArtifact,
+      error: 'orientation regression failed',
+    };
+  }
+
   log('[usb] appending evidence ledger...');
   const evidence = spawnSync(toolCmd('pwsh'), ['-File', './append-usb-evidence-ledger.ps1'], {
     cwd: SRC_DIR,
     env,
     stdio: 'inherit',
   });
-  return { ok: evidence.status === 0 };
+  return {
+    ok: evidence.status === 0,
+    orientation_ok: orientationOk,
+    orientation_locked: orientationLocked,
+    orientation_artifact: orientationArtifact,
+  };
+}
+
+function runRemoteSurfaceSmoke(cfg) {
+  const env = { ...process.env };
+  const args = ['-File', './android-remote-surface-e2e-smoke.ps1'];
+  if (cfg.serial) {
+    args.push('-Serial', cfg.serial);
+  }
+
+  log('[usb] running remote-surface fallback/trampoline smoke...');
+  const smoke = spawnSync(toolCmd('pwsh'), args, {
+    cwd: SRC_DIR,
+    env,
+    stdio: 'inherit',
+  });
+
+  return {
+    ok: smoke.status === 0,
+    exit_code: smoke.status,
+  };
 }
 
 async function run() {
@@ -448,6 +616,8 @@ async function run() {
     api_healthy: false,
     usb_validation_ran: false,
     usb_validation_ok: null,
+    remote_surface_smoke_ran: false,
+    remote_surface_smoke_ok: null,
     api_port: cfg.apiPort,
     report_path: cfg.reportPath,
     phases: [],
@@ -461,16 +631,14 @@ async function run() {
     ensurePathExists(path.join(TAURI_DIR, 'Cargo.toml'), 'Tauri Cargo.toml');
     ensurePathExists(path.join(TAURI_DIR, 'tauri.conf.json'), 'Tauri config');
 
-    const versions = {
-      node: runVersionCheck('node'),
-      npm: runVersionCheck('npm'),
-      cargo: runVersionCheck('cargo'),
-      tauri: runVersionCheck('cargo', ['tauri', '--version']),
-    };
+    const { versions, source: versionsSource } = await collectToolVersions(cfg);
     log(`[preflight] node: ${versions.node}`);
     log(`[preflight] npm: ${versions.npm}`);
     log(`[preflight] cargo: ${versions.cargo}`);
     log(`[preflight] tauri: ${versions.tauri}`);
+    if (versionsSource === 'cache') {
+      log('[preflight] tool versions source: cache');
+    }
 
     ensureFrontendDeps(cfg);
 
@@ -544,7 +712,7 @@ async function run() {
       report.attached_existing_runtime = true;
     }
 
-    endPhase(preflight, true, { versions, api_port_free: apiFree, api_healthy: report.api_healthy });
+    endPhase(preflight, true, { versions, versions_source: versionsSource, api_port_free: apiFree, api_healthy: report.api_healthy });
 
     if (cfg.preflightOnly) {
       report.ok = true;
@@ -568,9 +736,37 @@ async function run() {
       endPhase(launchPhase, true);
     }
 
+    // Spawn bonsai-bot sidecar if the release binary exists and nothing is already listening.
+    // If port 11421 already responds to /health, assume a prior bot instance is running and skip.
+    let botProc = null;
+    {
+      const botBin = path.join(ROOT_DIR, 'bonsai-bot', 'target', 'release',
+        'bonsai-bot' + (process.platform === 'win32' ? '.exe' : ''));
+      if (!fs.existsSync(botBin)) {
+        log('[bot] bonsai-bot binary not found — messaging bots disabled');
+      } else {
+        let botAlreadyRunning = false;
+        try {
+          const botHealth = await fetch('http://127.0.0.1:11421/health', { signal: AbortSignal.timeout(500) });
+          botAlreadyRunning = botHealth.ok;
+        } catch { /* not running */ }
+
+        if (botAlreadyRunning) {
+          log('[bot] bonsai-bot already running on port 11421 — skipping spawn');
+        } else {
+          botProc = spawn(botBin, [], { stdio: 'pipe', detached: false });
+          botProc.stdout.on('data', d => process.stdout.write('[bot] ' + d));
+          botProc.stderr.on('data', d => process.stderr.write('[bot] ' + d));
+          botProc.on('exit', code => log(`[bot] exited (code ${code})`));
+          log(`[bot] started bonsai-bot (pid ${botProc.pid})`);
+        }
+      }
+    }
+
     const shutdown = () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      if (botProc) { try { botProc.kill(); } catch { /* ignore */ } }
       if (!tauri) return;
       try {
         tauri.kill('SIGINT');
@@ -604,12 +800,38 @@ async function run() {
       const usb = runUsbRegression(cfg);
       report.usb_validation_ok = usb.ok;
       if (!usb.ok) {
-        endPhase(usbPhase, false, {}, 'USB regression failed');
+        endPhase(usbPhase, false, {
+          orientation_ok: usb.orientation_ok ?? null,
+          orientation_locked: usb.orientation_locked ?? null,
+          orientation_artifact: usb.orientation_artifact ?? null,
+        }, usb.error || 'USB regression failed');
         log('[launcher] USB regression failed. Tauri app is still running for investigation.');
         process.exitCode = 1;
       } else {
-        endPhase(usbPhase, true);
+        endPhase(usbPhase, true, {
+          orientation_ok: usb.orientation_ok ?? null,
+          orientation_locked: usb.orientation_locked ?? null,
+          orientation_artifact: usb.orientation_artifact ?? null,
+        });
+        if (usb.orientation_locked) {
+          log('[launcher] orientation regression indicates device/app rotation lock; portrait/landscape comparison captured but not fully verifiable.');
+        }
         log('[launcher] USB regression and evidence append completed successfully.');
+      }
+    }
+
+    if (cfg.mode === 'desktop+usb' && cfg.remoteSurfaceSmoke) {
+      const smokePhase = beginPhase(report, 'remote_surface_smoke');
+      report.remote_surface_smoke_ran = true;
+      const smoke = runRemoteSurfaceSmoke(cfg);
+      report.remote_surface_smoke_ok = smoke.ok;
+      if (!smoke.ok) {
+        endPhase(smokePhase, false, { exit_code: smoke.exit_code }, 'Remote surface smoke failed');
+        log('[launcher] remote-surface smoke failed. App remains running for investigation.');
+        process.exitCode = 1;
+      } else {
+        endPhase(smokePhase, true, { exit_code: smoke.exit_code });
+        log('[launcher] remote-surface smoke completed successfully.');
       }
     }
 

@@ -475,6 +475,43 @@ fn extract_json_objects(text: &str) -> Vec<String> {
     out
 }
 
+fn strip_inline_json_tool_calls(text: &str) -> String {
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            kept.push(String::new());
+            continue;
+        }
+
+        // Fast-path: drop obvious JSON tool-call emission lines, including truncated ones.
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("{\"tool\"") || lower.starts_with("{'tool'") {
+            continue;
+        }
+
+        // Also drop well-formed JSON objects that parse as tool calls.
+        if looks_like_json_object(trimmed) && parse_json_tool_call(trimmed).is_some() {
+            continue;
+        }
+
+        kept.push(line.to_string());
+    }
+
+    // Collapse excessive blank lines introduced by removals.
+    let mut compact = Vec::new();
+    let mut prev_blank = false;
+    for line in kept {
+        let is_blank = line.trim().is_empty();
+        if is_blank && prev_blank {
+            continue;
+        }
+        prev_blank = is_blank;
+        compact.push(line);
+    }
+    compact.join("\n").trim().to_string()
+}
+
 /// Parse all `<tool_call>...</tool_call>` blocks in a model response.
 pub fn parse_tool_calls(response: &str) -> ParsedToolCalls {
     let cleaned = normalize_tool_call_tags(&strip_markdown_fences(response));
@@ -556,7 +593,7 @@ pub fn strip_tool_calls(response: &str) -> String {
     }
 
     result.push_str(&cleaned[search..]);
-    result.trim().to_string()
+    strip_inline_json_tool_calls(result.trim())
 }
 
 // ── Tool execution ────────────────────────────────────────────────────────────

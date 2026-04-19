@@ -105,7 +105,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 9999;
+    z-index: var(--z-critical, 9999);
     backdrop-filter: blur(6px);
   }
 

@@ -28,6 +28,7 @@ Common examples:
 ```powershell
 .\Launch-BonsaiWorkspace.cmd -PreflightOnly
 .\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -StrictApp -ApkPath "C:\path\to\app.apk" -Serial "DEVICE_SERIAL"
+.\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -RemoteSurfaceSmoke -Serial "DEVICE_SERIAL"
 ```
 
 ### Recommended launcher from src
@@ -38,6 +39,8 @@ From bonsai-workspace/src:
 npm run launch:preflight
 npm run launch:desktop
 npm run launch:desktop+usb
+npm run launch:desktop+usb:remote-smoke
+npm run launch:desktop+usb:remote-smoke:preflight
 ```
 
 ### Phase 1 Babashka tasks from workspace root

@@ -49,6 +49,7 @@
   };
 
   const HISTORY_KEY = 'bonsai-terminal-history-v1';
+  const RUN_START_FILTER_KEY = 'bonsai-terminal-run-start-filter-v1';
 
   let container: HTMLDivElement;
   let activityScrollEl: HTMLDivElement;
@@ -58,13 +59,19 @@
   let unlistenToolTerminal: (() => void) | null = null;
   let unlistenToolUsed: (() => void) | null = null;
   let unlistenPermission: (() => void) | null = null;
+  let unlistenSwarmDebug: (() => void) | null = null;
   let unlistenSwarmError: (() => void) | null = null;
   let unlistenSwarmPlan: (() => void) | null = null;
   let unlistenSwarmComplete: (() => void) | null = null;
   let unlistenAgentConnect: (() => void) | null = null;
+  let unlistenBootstrapProgress: (() => void) | null = null;
+  let unlistenProxyRecovery: (() => void) | null = null;
+  let unlistenPermissionResolved: (() => void) | null = null;
+  let unlistenGenericEventFns: Array<() => void> = [];
   let resizer: ReturnType<typeof setTimeout> | null = null;
   let showLogSettings = false;
   let logSearch = '';
+  let runStartBadgeFilter: '' | 'clean' | 'inv' | 'self' | 'oor' | 'dis' | 'heavy_off' = '';
   let activitySettings: ActivityLogSettings = {
     autoScroll: true,
     dedupe: true,
@@ -81,6 +88,14 @@
     compactRows: false,
   };
   let activityLog: ActivityLogEntry[] = [];
+  let runStartIssueTotals = {
+    clean: 0,
+    inv: 0,
+    self: 0,
+    oor: 0,
+    dis: 0,
+    heavy_off: 0,
+  };
 
   let tabs: TerminalTab[] = [];
   let activeTabId = 'activity';
@@ -168,6 +183,22 @@
     }
   }
 
+  function restoreRunStartBadgeFilter() {
+    try {
+      const raw = localStorage.getItem(RUN_START_FILTER_KEY);
+      if (!raw) return;
+      if (raw === 'clean' || raw === 'inv' || raw === 'self' || raw === 'oor' || raw === 'dis' || raw === 'heavy_off') {
+        runStartBadgeFilter = raw;
+      }
+    } catch {
+      // Ignore corrupt local storage.
+    }
+  }
+
+  function persistRunStartBadgeFilter() {
+    localStorage.setItem(RUN_START_FILTER_KEY, runStartBadgeFilter);
+  }
+
   function persistActivitySettings() {
     localStorage.setItem(LOG_SETTINGS_KEY, JSON.stringify(activitySettings));
   }
@@ -232,6 +263,122 @@
     });
   }
 
+  function swarmDebugSummary(payload: any): string {
+    const phase = payload?.phase ?? 'unknown';
+    if (phase === 'run.start') {
+      const strategy = payload?.chain_strategy ?? 'unknown';
+      const delegateMode = payload?.heavy_work_delegate_mode ?? 'unknown';
+      const enabledSlots = Array.isArray(payload?.enabled_slots) ? payload.enabled_slots.join(',') : 'n/a';
+      const health = Array.isArray(payload?.delegate_policy_health) ? payload.delegate_policy_health : [];
+      const invalid = health.reduce((sum: number, item: any) => sum + Number(item?.invalid_count ?? 0), 0);
+      const reasonCounts: Record<string, number> = {
+        self: 0,
+        out_of_range: 0,
+        disabled: 0,
+        heavy_off: 0,
+      };
+      for (const policy of health) {
+        const checks = Array.isArray(policy?.checks) ? policy.checks : [];
+        for (const check of checks) {
+          const status = String(check?.status ?? 'unknown');
+          if (status in reasonCounts) {
+            reasonCounts[status] += 1;
+          }
+        }
+      }
+      const breakdown = `self=${reasonCounts.self}|oor=${reasonCounts.out_of_range}|dis=${reasonCounts.disabled}|heavy_off=${reasonCounts.heavy_off}`;
+      return `Swarm started: strategy=${strategy}, delegate=${delegateMode}, enabled_slots=[${enabledSlots}], delegate_invalid_links=${invalid}, invalid_breakdown=[${breakdown}]`;
+    }
+    if (phase === 'delegate.fallback_applied') {
+      return `Delegate fallback applied: ${payload?.from_slot ?? '?'} -> ${payload?.to_slot ?? '?'}`;
+    }
+    if (phase === 'delegate.skip_candidate') {
+      return `Delegate candidate skipped: slot=${payload?.candidate_slot ?? '?'}, reason=${payload?.reason ?? 'unknown'}`;
+    }
+    if (phase === 'delegate.skipped') {
+      return `Delegation skipped: target=${payload?.target_slot ?? '?'}, reason=${payload?.reason ?? 'unknown'}`;
+    }
+    return `Swarm debug: ${phase}`;
+  }
+
+  function swarmDebugLevel(payload: any): LogLevel {
+    const phase = payload?.phase ?? 'unknown';
+    if (phase === 'run.start') {
+      const health = Array.isArray(payload?.delegate_policy_health) ? payload.delegate_policy_health : [];
+      const invalid = health.reduce((sum: number, item: any) => sum + Number(item?.invalid_count ?? 0), 0);
+      return invalid > 0 ? 'warn' : 'debug';
+    }
+
+    if (phase === 'delegate.fallback_applied') {
+      return 'warn';
+    }
+
+    if (phase === 'delegate.skip_candidate' || phase === 'delegate.skipped') {
+      const reason = String(payload?.reason ?? 'unknown');
+      if (reason.includes('out_of_range') || reason.includes('disabled')) return 'warn';
+      return 'debug';
+    }
+
+    return 'debug';
+  }
+
+  function classifyGenericEvent(eventName: string): { level: LogLevel; category: LogCategory } {
+    if (eventName.includes('error') || eventName.includes('rejected')) {
+      return { level: 'error', category: 'system' };
+    }
+    if (eventName.startsWith('swarm-')) {
+      return { level: eventName.includes('complete') ? 'info' : 'debug', category: 'swarm' };
+    }
+    if (eventName.includes('token') || eventName.includes('model') || eventName.includes('orchestrator')) {
+      return { level: 'debug', category: 'system' };
+    }
+    if (eventName.includes('terminal') || eventName.includes('pty')) {
+      return { level: 'info', category: 'terminal' };
+    }
+    if (eventName.includes('tool') || eventName.includes('permission')) {
+      return { level: 'info', category: 'tool' };
+    }
+    return { level: 'info', category: 'chat' };
+  }
+
+  function summarizeGenericEvent(eventName: string, payload: any): string {
+    if (eventName === 'bootstrap-error') {
+      return `Bootstrap failed: ${String(payload ?? 'unknown error')}`;
+    }
+    if (eventName === 'bootstrap-complete') {
+      return 'Bootstrap completed';
+    }
+    if (eventName === 'bootstrap-needed') {
+      return 'Bootstrap required before runtime can start';
+    }
+    if (eventName === 'model-ready') {
+      return `Model ready on slot ${String(payload?.slot ?? '?')}: ${String(payload?.model_id ?? 'unknown')}`;
+    }
+    if (eventName === 'registry-updated') {
+      return 'Model registry refreshed';
+    }
+    if (eventName === 'token-speed') {
+      return `Token speed update: ${String(payload ?? 0)} tok/s`;
+    }
+    if (eventName === 'show-terminal') {
+      return `Terminal requested by ${String(payload?.source ?? 'unknown source')}`;
+    }
+    if (eventName === 'agent-thinking-start') {
+      return `Agent thinking started: ${String(payload?.agent ?? payload?.slot ?? 'unknown')}`;
+    }
+    if (eventName === 'swarm-agent-complete') {
+      return `Swarm agent completed: ${String(payload?.agent ?? payload?.slot ?? 'unknown')}`;
+    }
+    if (eventName === 'whisper-ready') {
+      return 'Whisper runtime is ready';
+    }
+    if (eventName === 'orchestrator-status') {
+      const slots = Array.isArray(payload?.slots) ? payload.slots.length : 0;
+      return `Orchestrator status updated: slots=${slots}, queue=${String(payload?.queue_depth ?? 0)}`;
+    }
+    return `Event received: ${eventName}`;
+  }
+
   function saveActivityLog() {
     const blob = new Blob([
       JSON.stringify({
@@ -267,6 +414,17 @@
   }
 
   $: filteredActivityLog = activityLog.filter((entry) => {
+    if (runStartBadgeFilter) {
+      const counts = swarmRunStartInvalidCounts(entry);
+      if (!counts) return false;
+      if (runStartBadgeFilter === 'clean' && counts.total > 0) return false;
+      if (runStartBadgeFilter === 'inv' && counts.total <= 0) return false;
+      if (runStartBadgeFilter === 'self' && counts.self <= 0) return false;
+      if (runStartBadgeFilter === 'oor' && counts.out_of_range <= 0) return false;
+      if (runStartBadgeFilter === 'dis' && counts.disabled <= 0) return false;
+      if (runStartBadgeFilter === 'heavy_off' && counts.heavy_off <= 0) return false;
+    }
+
     if (!activitySettings.showDebug && entry.level === 'debug') return false;
     if (!activitySettings.showInfo && entry.level === 'info') return false;
     if (!activitySettings.showWarn && entry.level === 'warn') return false;
@@ -282,6 +440,43 @@
     const needle = logSearch.trim().toLowerCase();
     const blob = `${entry.source} ${entry.summary} ${JSON.stringify(entry.details ?? '').toLowerCase()}`.toLowerCase();
     return blob.includes(needle);
+  });
+
+  $: runStartIssueTotals = activityLog.reduce((acc, entry) => {
+    if (!activitySettings.showDebug && entry.level === 'debug') return acc;
+    if (!activitySettings.showInfo && entry.level === 'info') return acc;
+    if (!activitySettings.showWarn && entry.level === 'warn') return acc;
+    if (!activitySettings.showError && entry.level === 'error') return acc;
+
+    if (!activitySettings.showTool && entry.category === 'tool') return acc;
+    if (!activitySettings.showSwarm && entry.category === 'swarm') return acc;
+    if (!activitySettings.showChat && entry.category === 'chat') return acc;
+    if (!activitySettings.showSystem && entry.category === 'system') return acc;
+    if (!activitySettings.showTerminal && entry.category === 'terminal') return acc;
+
+    if (logSearch.trim()) {
+      const needle = logSearch.trim().toLowerCase();
+      const blob = `${entry.source} ${entry.summary} ${JSON.stringify(entry.details ?? '').toLowerCase()}`.toLowerCase();
+      if (!blob.includes(needle)) return acc;
+    }
+
+    const counts = swarmRunStartInvalidCounts(entry);
+    if (!counts) return acc;
+
+    acc.clean += counts.total === 0 ? 1 : 0;
+    acc.inv += counts.total > 0 ? 1 : 0;
+    acc.self += counts.self > 0 ? 1 : 0;
+    acc.oor += counts.out_of_range > 0 ? 1 : 0;
+    acc.dis += counts.disabled > 0 ? 1 : 0;
+    acc.heavy_off += counts.heavy_off > 0 ? 1 : 0;
+    return acc;
+  }, {
+    clean: 0,
+    inv: 0,
+    self: 0,
+    oor: 0,
+    dis: 0,
+    heavy_off: 0,
   });
 
   async function spawnTabSession(tabId: string) {
@@ -333,6 +528,7 @@
   onMount(async () => {
     restoreActivitySettings();
     restoreActivityLog();
+    restoreRunStartBadgeFilter();
 
     const defaultTab = createTab('default', 'Shell 1');
     tabs = [defaultTab];
@@ -387,6 +583,10 @@
       pushLog('warn', 'tool', 'permission-request', `Approval needed for ${e.payload?.tool ?? 'unknown tool'}`, e.payload);
     });
 
+    unlistenSwarmDebug = await listen<any>('swarm-debug', (e) => {
+      pushLog(swarmDebugLevel(e.payload), 'swarm', 'swarm-debug', swarmDebugSummary(e.payload), e.payload);
+    });
+
     unlistenSwarmError = await listen<any>('swarm-error', (e) => {
       pushLog('error', 'swarm', 'swarm-error', 'Swarm worker error', e.payload);
     });
@@ -402,6 +602,43 @@
     unlistenAgentConnect = await listen<any>('agent-connect-event', (e) => {
       pushLog('debug', 'chat', 'agent-connect-event', e.payload?.summary ?? 'Agent event', e.payload);
     });
+
+    unlistenBootstrapProgress = await listen<any>('bootstrap-progress', (e) => {
+      pushLog('debug', 'system', 'bootstrap-progress', `Bootstrap: ${e.payload?.step ?? 'step'}`, e.payload);
+    });
+
+    unlistenProxyRecovery = await listen<any>('proxy-recovery-attempted', (e) => {
+      pushLog('warn', 'system', 'proxy-recovery', 'Proxy 502 — recovery retry in progress', e.payload);
+    });
+
+    unlistenPermissionResolved = await listen<any>('permission-resolved', (e) => {
+      const granted: boolean = e.payload?.granted ?? false;
+      pushLog(granted ? 'info' : 'warn', 'tool', 'permission-resolved',
+        `Permission ${granted ? 'granted' : 'denied'}: ${e.payload?.tool ?? 'unknown'}`, e.payload);
+    });
+
+    const genericEvents = [
+      'bootstrap-needed',
+      'bootstrap-complete',
+      'bootstrap-error',
+      'registry-updated',
+      'model-ready',
+      'orchestrator-status',
+      'show-terminal',
+      'diff-hunk-rejected',
+      'whisper-ready',
+      'agent-thinking-start',
+      'swarm-agent-complete',
+    ] as const;
+
+    for (const eventName of genericEvents) {
+      const unlisten = await listen<any>(eventName, (e) => {
+        const meta = classifyGenericEvent(eventName);
+        const summary = summarizeGenericEvent(eventName, e.payload);
+        pushLog(meta.level, meta.category, eventName, summary, e.payload);
+      });
+      unlistenGenericEventFns.push(unlisten);
+    }
 
     window.addEventListener('error', onWindowError);
     window.addEventListener('unhandledrejection', onUnhandledRejection);
@@ -432,10 +669,16 @@
     unlistenToolTerminal?.();
     unlistenToolUsed?.();
     unlistenPermission?.();
+    unlistenSwarmDebug?.();
     unlistenSwarmError?.();
     unlistenSwarmPlan?.();
     unlistenSwarmComplete?.();
     unlistenAgentConnect?.();
+    unlistenBootstrapProgress?.();
+    unlistenProxyRecovery?.();
+    unlistenPermissionResolved?.();
+    for (const fn of unlistenGenericEventFns) fn();
+    unlistenGenericEventFns = [];
     window.removeEventListener('error', onWindowError);
     window.removeEventListener('unhandledrejection', onUnhandledRejection);
     for (const tab of tabs) {
@@ -539,6 +782,79 @@
   function value(e: Event): string {
     return (e.currentTarget as HTMLInputElement).value;
   }
+
+  type RunStartInvalidCounts = {
+    self: number;
+    out_of_range: number;
+    disabled: number;
+    heavy_off: number;
+    total: number;
+  };
+
+  type RunStartBadge = {
+    key: 'clean' | 'inv' | 'self' | 'oor' | 'dis' | 'heavy_off';
+    label: string;
+  };
+
+  function swarmRunStartInvalidCounts(item: ActivityLogEntry): RunStartInvalidCounts | null {
+    if (item.source !== 'swarm-debug' || !item.details || typeof item.details !== 'object') return null;
+
+    const payload = item.details as any;
+    if (payload?.phase !== 'run.start') return null;
+
+    const health = Array.isArray(payload?.delegate_policy_health) ? payload.delegate_policy_health : [];
+    const reasonCounts: Record<string, number> = {
+      self: 0,
+      out_of_range: 0,
+      disabled: 0,
+      heavy_off: 0,
+    };
+
+    for (const policy of health) {
+      const checks = Array.isArray(policy?.checks) ? policy.checks : [];
+      for (const check of checks) {
+        const status = String(check?.status ?? 'unknown');
+        if (status in reasonCounts) {
+          reasonCounts[status] += 1;
+        }
+      }
+    }
+
+    const invalidTotal =
+      reasonCounts.self +
+      reasonCounts.out_of_range +
+      reasonCounts.disabled +
+      reasonCounts.heavy_off;
+
+    return {
+      self: reasonCounts.self,
+      out_of_range: reasonCounts.out_of_range,
+      disabled: reasonCounts.disabled,
+      heavy_off: reasonCounts.heavy_off,
+      total: invalidTotal,
+    };
+  }
+
+  function swarmRunStartBadges(item: ActivityLogEntry): RunStartBadge[] {
+    const counts = swarmRunStartInvalidCounts(item);
+    if (!counts) return [];
+
+    if (counts.total === 0) {
+      return [{ key: 'clean', label: 'clean:1' }];
+    }
+
+    const badges: RunStartBadge[] = [{ key: 'inv', label: `inv:${counts.total}` }];
+    if (counts.self > 0) badges.push({ key: 'self', label: `self:${counts.self}` });
+    if (counts.out_of_range > 0) badges.push({ key: 'oor', label: `oor:${counts.out_of_range}` });
+    if (counts.disabled > 0) badges.push({ key: 'dis', label: `dis:${counts.disabled}` });
+    if (counts.heavy_off > 0) badges.push({ key: 'heavy_off', label: `heavy_off:${counts.heavy_off}` });
+    return badges;
+  }
+
+  function toggleRunStartBadgeFilter(key: RunStartBadge['key']) {
+    runStartBadgeFilter = runStartBadgeFilter === key ? '' : key;
+    persistRunStartBadgeFilter();
+  }
 </script>
 
 <div class="terminal-panel">
@@ -582,9 +898,63 @@
         bind:value={logSearch}
         aria-label="Search activity log"
       />
+      <div class="toolbar-badges">
+        <button
+          class="toolbar-badge {runStartBadgeFilter === 'clean' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('clean')}
+          title="Run-start entries with no invalid delegate links"
+        >
+          clean {runStartIssueTotals.clean}
+        </button>
+        <button
+          class="toolbar-badge {runStartIssueTotals.inv > 0 ? 'has-issues' : ''} {runStartBadgeFilter === 'inv' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('inv')}
+          title="Run-start entries with any invalid delegate links"
+        >
+          inv {runStartIssueTotals.inv}
+        </button>
+        <button
+          class="toolbar-badge {runStartIssueTotals.self > 0 ? 'has-issues' : ''} {runStartBadgeFilter === 'self' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('self')}
+          title="Run-start entries containing self delegation links"
+        >
+          self {runStartIssueTotals.self}
+        </button>
+        <button
+          class="toolbar-badge {runStartIssueTotals.oor > 0 ? 'has-issues' : ''} {runStartBadgeFilter === 'oor' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('oor')}
+          title="Run-start entries containing out-of-range delegation links"
+        >
+          oor {runStartIssueTotals.oor}
+        </button>
+        <button
+          class="toolbar-badge {runStartIssueTotals.dis > 0 ? 'has-issues' : ''} {runStartBadgeFilter === 'dis' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('dis')}
+          title="Run-start entries containing disabled delegation targets"
+        >
+          dis {runStartIssueTotals.dis}
+        </button>
+        <button
+          class="toolbar-badge {runStartIssueTotals.heavy_off > 0 ? 'has-issues' : ''} {runStartBadgeFilter === 'heavy_off' ? 'active' : ''}"
+          type="button"
+          on:click={() => toggleRunStartBadgeFilter('heavy_off')}
+          title="Run-start entries containing heavy-work disabled targets"
+        >
+          heavy_off {runStartIssueTotals.heavy_off}
+        </button>
+      </div>
       <button class="tool-btn" on:click={() => (showLogSettings = !showLogSettings)}>{showLogSettings ? 'Hide Settings' : 'Settings'}</button>
       <button class="tool-btn" on:click={copyActivityLog}>Copy</button>
       <button class="tool-btn" on:click={saveActivityLog}>Save</button>
+      {#if runStartBadgeFilter}
+        <span class="activity-filter-indicator">Run filter: {runStartBadgeFilter}</span>
+        <button class="tool-btn" on:click={() => { runStartBadgeFilter = ''; persistRunStartBadgeFilter(); }}>Clear Run Filter</button>
+      {/if}
       <button class="tool-btn danger" on:click={clearActivityLog}>Clear</button>
     </div>
 
@@ -614,12 +984,26 @@
         <div class="activity-empty">No activity matches current filters.</div>
       {:else}
         {#each filteredActivityLog as item (item.id)}
+          {@const badges = swarmRunStartBadges(item)}
           <div class="activity-row {item.level} {activitySettings.compactRows ? 'compact' : ''}">
             <div class="activity-head">
               <span class="activity-time">{formatLogTime(item.ts)}</span>
               <span class="activity-level">{item.level.toUpperCase()}</span>
               <span class="activity-cat">{item.category}</span>
               <span class="activity-src">{item.source}</span>
+              {#if badges.length > 0}
+                <span class="activity-badges">
+                  {#each badges as badge}
+                    <button
+                      class="activity-badge {badge.key !== 'clean' ? 'has-issues' : ''} {runStartBadgeFilter === badge.key ? 'active' : ''}"
+                      type="button"
+                      on:click={() => toggleRunStartBadgeFilter(badge.key)}
+                    >
+                      {badge.label}
+                    </button>
+                  {/each}
+                </span>
+              {/if}
             </div>
             <div class="activity-summary">{item.summary}</div>
             {#if item.details && !activitySettings.compactRows}
@@ -754,6 +1138,37 @@
     font-size: 12px;
   }
 
+  .toolbar-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+
+  .toolbar-badge {
+    border: 1px solid #4b5563;
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: #111827;
+    color: #cbd5e1;
+    font-size: 11px;
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .toolbar-badge.has-issues {
+    border-color: #a16207;
+    color: #fcd34d;
+    background: #1f1707;
+  }
+
+  .toolbar-badge.active {
+    border-color: #3b82f6;
+    color: #bfdbfe;
+    background: #172554;
+  }
+
   .tool-btn {
     border: 1px solid #3f3f46;
     background: #1f1f24;
@@ -841,6 +1256,54 @@
   .activity-level {
     font-weight: 700;
     letter-spacing: 0.02em;
+  }
+
+  .activity-filter-indicator {
+    border: 1px solid #475569;
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: #17202b;
+    color: #cbd5e1;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .activity-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 2px;
+    flex-wrap: wrap;
+  }
+
+  .activity-badge {
+    border: 1px solid #4b5563;
+    border-radius: 999px;
+    padding: 1px 6px;
+    background: #111827;
+    color: #cbd5e1;
+    font-size: 10px;
+    line-height: 1.4;
+    cursor: pointer;
+  }
+
+  .activity-badge.has-issues {
+    border-color: #a16207;
+    color: #fcd34d;
+    background: #1f1707;
+  }
+
+  .activity-badge.active {
+    border-color: #3b82f6;
+    color: #bfdbfe;
+    background: #172554;
+  }
+
+  .activity-row.warn .activity-badge,
+  .activity-row.error .activity-badge {
+    border-color: #a16207;
+    color: #fcd34d;
+    background: #1f1707;
   }
 
   .activity-summary {

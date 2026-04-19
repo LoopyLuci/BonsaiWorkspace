@@ -324,6 +324,25 @@
     });
   }
 
+  function setupToolingContextActions() {
+    const actions: Array<{ kind: ToolingCommandKind; label: string; order: number }> = [
+      { kind: 'load', label: 'Bonsai: Load Tools For File', order: 2.1 },
+      { kind: 'lint', label: 'Bonsai: Lint Current File', order: 2.2 },
+      { kind: 'format', label: 'Bonsai: Format Current File', order: 2.3 },
+      { kind: 'test', label: 'Bonsai: Run Tests For Profile', order: 2.4 },
+    ];
+
+    for (const action of actions) {
+      editor.addAction({
+        id: `bonsai.tooling.${action.kind}`,
+        label: action.label,
+        contextMenuGroupId: '2_bonsai',
+        contextMenuOrder: action.order,
+        run: () => runFileTool(action.kind),
+      });
+    }
+  }
+
   function setupInlineCompletions() {
     const provider: monaco.languages.InlineCompletionsProvider = {
       provideInlineCompletions: async (model, position, _context, token) => {
@@ -401,6 +420,7 @@
     editor = createEditor(container, '', theme === 'dark' ? 'vs-dark' : theme === 'light' ? 'vs' : 'hc-black');
     setupAutoSave();
     setupAskBonsaiActions();
+    setupToolingContextActions();
     setupInlineCompletions();
 
     // The openFileRequest subscription fires immediately on setup, before the
@@ -428,27 +448,26 @@
     </div>
   {/if}
 
+  <!-- In-flow editor toolbar — never overlaps Monaco content -->
   {#if currentFilePath}
-    <div class="file-pill">
-      <span class="file-pill-icon">{currentType.icon}</span>
-      <span>{currentFilePath.split(/[/\\]/).pop()}</span>
-      <span class="file-pill-lang">{currentType.label}</span>
-      {#if isDirty}<span class="dirty-dot" title="Unsaved changes">●</span>{/if}
-    </div>
-
-    <div class="tooling-pill">
-      <button on:click={() => runFileTool('load')} title="Install/load language tools">Load Tools</button>
-      <button on:click={() => runFileTool('lint')} title="Run linter for current file">Lint</button>
-      <button on:click={() => runFileTool('format')} title="Run formatter for current file">Format</button>
-      <button on:click={() => runFileTool('test')} title="Run tests command">Test</button>
-      <button class="tools-config" on:click={() => (showToolingPanel = !showToolingPanel)} title="Edit tooling profile">Tools</button>
+    <div class="editor-toolbar">
+      <div class="editor-toolbar-left">
+        <button class="tools-config" on:click={() => (showToolingPanel = !showToolingPanel)} title="Edit tooling profile">Tools</button>
+      </div>
+      <div class="editor-toolbar-center">
+        <span class="file-pill-icon">{currentType.icon}</span>
+        <span class="file-pill-name">{currentFilePath.split(/[/\\]/).pop()}</span>
+        <span class="file-pill-lang">{currentType.label}</span>
+        {#if isDirty}<span class="dirty-dot" title="Unsaved changes">●</span>{/if}
+      </div>
+      <div class="editor-toolbar-right"><span class="kbd-hint">Ctrl+K</span></div>
     </div>
 
     {#if showToolingPanel && currentProfile}
       <div class="tooling-panel">
         <div class="tooling-head">
           <strong>{currentProfile.title} Profile</strong>
-          <button class="close-tooling" on:click={() => (showToolingPanel = false)}>x</button>
+          <button class="close-tooling" on:click={() => (showToolingPanel = false)}>✕</button>
         </div>
 
         <label>
@@ -526,7 +545,7 @@
       <div class="empty-icon">🌿</div>
       <div class="empty-title">Bonsai Workspace</div>
       <div class="empty-sub">Open a folder and select a file to start editing</div>
-      <div class="empty-hint">Ctrl+K — Command Palette</div>
+      <div class="empty-hint">Ctrl+K / F1 - Command Palette</div>
     </div>
   {/if}
 </div>
@@ -566,60 +585,72 @@
     padding: 0 4px;
   }
 
-  .file-pill {
-    position: absolute;
-    top: 8px;
-    right: 16px;
-    z-index: 10;
+  /* ── In-flow editor toolbar (replaces absolute-positioned pills) ── */
+  .editor-toolbar {
+    display: flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 10px;
     background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    font-size: 11px;
-    padding: 2px 10px;
-    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 8px;
+    user-select: none;
+  }
+  .editor-toolbar-left, .editor-toolbar-right {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+  .editor-toolbar-right { min-width: 60px; display: flex; justify-content: flex-end; }
+  .kbd-hint {
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.6;
+    user-select: none;
+  }
+  .editor-toolbar-center {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    overflow: hidden;
+    font-size: 11px;
+    color: var(--text-dim);
     pointer-events: none;
   }
   .file-pill-icon { font-size: 13px; }
+  .file-pill-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+  }
   .file-pill-lang {
     font-size: 10px;
     color: var(--accent-hl);
     border: 1px solid var(--border);
     padding: 1px 6px;
     border-radius: 999px;
+    flex-shrink: 0;
   }
-
-  .tooling-pill {
-    position: absolute;
-    top: 8px;
-    left: 16px;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .tooling-pill button {
+  .tools-config {
     background: var(--bg2);
-    color: var(--text-dim);
+    color: var(--accent-hl);
     border: 1px solid var(--border);
     border-radius: 999px;
     font-size: 11px;
     padding: 3px 10px;
     cursor: pointer;
+    pointer-events: all;
   }
-  .tooling-pill button:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
-  .tooling-pill .tools-config {
-    color: var(--accent-hl);
-  }
+  .tools-config:hover { color: var(--text); border-color: var(--accent); }
 
   .tooling-panel {
     position: absolute;
-    top: 42px;
+    top: 38px;
     left: 16px;
     z-index: 12;
     width: min(560px, calc(100% - 32px));

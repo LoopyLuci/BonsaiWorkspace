@@ -40,6 +40,9 @@ Examples:
 
 # Desktop + USB strict validation
 .\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -StrictApp -ApkPath "C:\path\to\app.apk" -Serial "DEVICE_SERIAL"
+
+# Desktop + USB with remote-surface fallback/trampoline smoke
+.\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -RemoteSurfaceSmoke -Serial "DEVICE_SERIAL"
 ```
 
 This wrapper automatically switches into `bonsai-workspace/src` and runs the unified launcher.
@@ -60,6 +63,12 @@ npm run launch:desktop
 
 # Launch desktop app + run USB regression + append ledger evidence
 npm run launch:desktop+usb
+
+# Launch desktop app + USB regression + remote-surface fallback/trampoline smoke
+npm run launch:desktop+usb:remote-smoke
+
+# Preflight-only check path for smoke-enabled mode
+npm run launch:desktop+usb:remote-smoke:preflight
 ```
 
 Advanced launcher example:
@@ -73,6 +82,7 @@ Launcher notes:
 1. If port `11369` is already used by a healthy Bonsai runtime, launcher will attach to the existing runtime rather than start a duplicate.
 2. Every launcher run writes a JSON report to `tool_test/launcher/latest.json` (or custom `--report-path`).
 3. On launcher failure, the JSON report is still written and includes the error text.
+4. When `-RemoteSurfaceSmoke` / `--remote-surface-smoke` is enabled in `desktop+usb` mode, report output includes `remote_surface_smoke_ran`, `remote_surface_smoke_ok`, and a `remote_surface_smoke` phase.
 
 ## 2.2) Exit Code and Report Triage (Important)
 

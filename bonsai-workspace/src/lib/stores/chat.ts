@@ -23,6 +23,7 @@ export interface ChatMessage {
   agent_id?:    string;
   agent_label?: string;
   agent_color?: string;
+  agent_icon?:  string;
   agent_slot?:  number;
 }
 
@@ -30,6 +31,7 @@ export interface AssistantMessageMeta {
   agent_id?: string;
   agent_label?: string;
   agent_color?: string;
+  agent_icon?: string;
   agent_slot?: number;
 }
 
@@ -144,7 +146,17 @@ export async function restorePersistentSession() {
       id: crypto.randomUUID(),
       role: msg.role,
       content: msg.content,
-      timestamp: new Date(),
+      timestamp: new Date(msg.created_at ?? Date.now()),
+      stats: msg.stats ?? undefined,
+      tools_used: Array.isArray(msg.tools_used) ? msg.tools_used : undefined,
+      agent_id: typeof msg.agent_id === 'string' ? msg.agent_id : undefined,
+      agent_label: typeof msg.agent_label === 'string' ? msg.agent_label : undefined,
+      agent_color: typeof msg.agent_color === 'string' ? msg.agent_color : undefined,
+      agent_icon: typeof msg.agent_icon === 'string' ? msg.agent_icon : undefined,
+      // Avoid coercing null -> 0, which incorrectly labels messages as Leader.
+      agent_slot: typeof msg.agent_slot === 'number' && Number.isFinite(msg.agent_slot)
+        ? msg.agent_slot
+        : undefined,
     }));
 
     if (typeof result.workspace_path === 'string' && result.workspace_path.trim()) {

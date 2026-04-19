@@ -9,7 +9,7 @@ import fs from 'node:fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAURI_DIR = resolve(__dirname, '../src-tauri');
-const APP_WINDOW_API_PORT = Number(process.env.BONSAI_APP_WINDOW_API_PORT || 11469);
+const APP_WINDOW_API_PORT = Number(process.env.BONSAI_APP_WINDOW_API_PORT || 11369);
 
 function log(msg) {
   process.stdout.write(`${msg}\n`);

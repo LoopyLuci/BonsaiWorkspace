@@ -41,6 +41,13 @@ function run(adb, args) {
   };
 }
 
+function sleep(ms) {
+  const clamped = Math.max(0, Number(ms) || 0);
+  if (clamped === 0) return;
+  const shared = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(shared, 0, 0, clamped);
+}
+
 function parseDevices(output) {
   const lines = output.split(/\r?\n/).slice(1).map((x) => x.trim()).filter(Boolean);
   const devices = [];
@@ -78,6 +85,8 @@ function main() {
   const activity = (process.env.ANDROID_ACTIVITY || '').trim();
   const explicitSerial = (process.env.ANDROID_SERIAL || '').trim();
   const requireApp = process.env.BONSAI_REQUIRE_APP === '1';
+  const processVerifyAttempts = Math.max(1, Number(process.env.ANDROID_PROCESS_VERIFY_ATTEMPTS || '5'));
+  const processVerifyDelayMs = Math.max(0, Number(process.env.ANDROID_PROCESS_VERIFY_DELAY_MS || '900'));
   const enableBootstrap = process.env.ANDROID_ENABLE_BOOTSTRAP === '1';
   const explicitApkPath = (process.env.ANDROID_APK_PATH || '').trim() || null;
 
@@ -162,13 +171,24 @@ function main() {
     steps.push({ label: 'launch app', ...launch });
 
     // Verify process started.
-    const pidRes = run(adb, ['-s', serial, 'shell', 'pidof', packageName]);
-    const pidOk = pidRes.ok && pidRes.stdout.trim().length > 0;
+    let pidRes = run(adb, ['-s', serial, 'shell', 'pidof', packageName]);
+    let pidOk = pidRes.ok && pidRes.stdout.trim().length > 0;
+    let pidAttempt = 1;
+    while (!pidOk && pidAttempt < processVerifyAttempts) {
+      sleep(processVerifyDelayMs);
+      pidAttempt += 1;
+      pidRes = run(adb, ['-s', serial, 'shell', 'pidof', packageName]);
+      pidOk = pidRes.ok && pidRes.stdout.trim().length > 0;
+    }
     steps.push({
       label: 'verify process running',
       ...pidRes,
       ok: pidOk || !requireApp,
-      hint: pidOk ? `pid: ${pidRes.stdout.trim()}` : 'Process not found after launch.',
+      attempts: pidAttempt,
+      retry_delay_ms: processVerifyDelayMs,
+      hint: pidOk
+        ? `pid: ${pidRes.stdout.trim()}`
+        : `Process not found after launch (attempts=${pidAttempt}/${processVerifyAttempts}).`,
     });
   } else {
     steps.push({

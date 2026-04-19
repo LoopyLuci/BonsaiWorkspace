@@ -122,7 +122,25 @@ export async function switchToCatalogModel(entry: CatalogEntry): Promise<void> {
     const msg = await invoke<string>('switch_model', { modelId: reg.id });
     modelSwitchStatus.set(msg);
   } catch (e) {
-    modelSwitchStatus.set(`Switch failed: ${e}`);
+    const errorMsg = String(e);
+    if (/model load timeout/i.test(errorMsg)) {
+      modelSwitchStatus.set(`Switch timed out; waiting for ${entry.name} to become ready...`);
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        await refreshStatus();
+        const status = get(orchestratorStatus);
+        const isReady = status?.slots.some((slot) =>
+          slot.state.state === 'ready' && slot.state.model_id === reg.id,
+        );
+        if (isReady) {
+          modelSwitchStatus.set(`${entry.name} became ready after timeout grace window.`);
+          await refreshModels();
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+    modelSwitchStatus.set(`Switch failed: ${errorMsg}`);
   }
 }
 
