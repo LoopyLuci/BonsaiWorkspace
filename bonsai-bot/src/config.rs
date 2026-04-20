@@ -29,7 +29,7 @@ pub struct BotConfig {
 
 fn default_schema_version() -> u8 { 1 }
 fn default_buddy_api_url() -> String { "http://127.0.0.1:11420".to_string() }
-fn default_admin_port() -> u16 { 11421 }
+fn default_admin_port() -> u16 { 11666 }
 
 impl Default for BotConfig {
     fn default() -> Self {
@@ -39,7 +39,7 @@ impl Default for BotConfig {
         Self {
             schema_version: 1,
             buddy_api_url:  "http://127.0.0.1:11420".to_string(),
-            admin_port:     11421,
+            admin_port:     11666,
             db_path,
             discord:         PlatformSlot::default(),
             telegram:        PlatformSlot::default(),

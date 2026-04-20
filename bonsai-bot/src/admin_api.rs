@@ -9,6 +9,8 @@ use axum::{
 use dashmap::DashMap;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
+use std::process::Command;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -66,16 +68,69 @@ pub async fn start(
     broadcast_tx:    mpsc::Sender<BroadcastRequest>,
     admin_token:     String,
 ) -> Result<AdminHandle, String> {
-    let mut bound = None;
-    for delta in 0u16..5 {
-        let p = preferred_port.saturating_add(delta);
-        if let Ok(l) = tokio::net::TcpListener::bind(format!("127.0.0.1:{p}")).await {
-            bound = Some((p, l));
-            break;
+    // If a persisted port file exists but points to an unhealthy API, remove it
+    if let Some(dir) = crate::config::config_dir() {
+        let path = dir.join("bonsai-bot-port.json");
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if let Some(p) = val.get("port").and_then(|v| v.as_u64()) {
+                        let p = p as u16;
+                        if !is_api_healthy("127.0.0.1", p).await {
+                            let _ = std::fs::remove_file(&path);
+                            tracing::info!("[admin-api] removed stale port file {path:?} (port={p})");
+                        }
+                    }
+                }
+            }
+        }
+    } else if std::path::Path::new("bonsai-bot-port.json").exists() {
+        if let Ok(contents) = std::fs::read_to_string("bonsai-bot-port.json") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(p) = val.get("port").and_then(|v| v.as_u64()) {
+                    let p = p as u16;
+                    if !is_api_healthy("127.0.0.1", p).await {
+                        let _ = std::fs::remove_file("bonsai-bot-port.json");
+                        tracing::info!("[admin-api] removed stale local port file bonsai-bot-port.json (port={p})");
+                    }
+                }
+            }
         }
     }
 
-    let (port, listener) = bound.ok_or("no admin port available near 11421")?;
+    let mut bound = None;
+    for delta in 0u16..5 {
+        let p = preferred_port.saturating_add(delta);
+        match tokio::net::TcpListener::bind(format!("127.0.0.1:{p}")).await {
+            Ok(l) => {
+                bound = Some((p, l));
+                break;
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    // If a healthy API is already bound here, skip this port.
+                    if is_api_healthy("127.0.0.1", p).await {
+                        tracing::info!("[admin-api] Port {p} in use by healthy API; skipping");
+                        continue;
+                    }
+
+                    // Try to reclaim stale listeners on Windows by killing matching processes.
+                    if try_reclaim_stale_listener(p) {
+                        // give the OS a moment to release the socket
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        if let Ok(l2) = tokio::net::TcpListener::bind(format!("127.0.0.1:{p}")).await {
+                            bound = Some((p, l2));
+                            break;
+                        }
+                    }
+                    // otherwise continue to next candidate
+                    continue;
+                }
+            }
+        }
+    }
+
+    let (port, listener) = bound.ok_or_else(|| format!("no admin port available near {}", preferred_port))?;
 
     let state = AdminState {
         metrics,
@@ -124,6 +179,103 @@ pub async fn start(
     });
 
     Ok(AdminHandle { shutdown_tx: Some(shutdown_tx), join, port })
+}
+
+async fn is_api_healthy(host: &str, port: u16) -> bool {
+    let url = format!("http://{host}:{port}/health");
+    match reqwest::Client::builder()
+        .timeout(Duration::from_millis(1200))
+        .build()
+    {
+        Ok(client) => client
+            .get(url)
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success()),
+        Err(_) => false,
+    }
+}
+
+fn try_reclaim_stale_listener(port: u16) -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = port;
+        false
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let pids = listening_pids_on_port(port);
+        if pids.is_empty() {
+            return false;
+        }
+
+        let mut killed_any = false;
+        for pid in pids {
+            let image = process_image_name(pid);
+            let img = image.to_ascii_lowercase();
+            if img != "bonsai-bot.exe" && img != "bonsai-bot" {
+                continue;
+            }
+            if let Ok(out) = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .output()
+            {
+                if out.status.success() {
+                    killed_any = true;
+                }
+            }
+        }
+        killed_any
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn listening_pids_on_port(port: u16) -> Vec<u32> {
+    let out = match Command::new("netstat").args(["-ano"]).output() {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+    let dump = String::from_utf8_lossy(&out.stdout);
+    let mut pids = std::collections::BTreeSet::new();
+    let needle = format!(":{port}");
+
+    for line in dump.lines() {
+        let l = line.trim();
+        if l.is_empty() || !l.contains(&needle) || !l.to_ascii_uppercase().contains("LISTEN") {
+            continue;
+        }
+        let parts: Vec<&str> = l.split_whitespace().collect();
+        if let Some(last) = parts.last() {
+            if let Ok(pid) = last.parse::<u32>() {
+                if pid > 0 {
+                    pids.insert(pid);
+                }
+            }
+        }
+    }
+
+    pids.into_iter().collect()
+}
+
+#[cfg(target_os = "windows")]
+fn process_image_name(pid: u32) -> String {
+    let out = match Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.trim();
+    if line.is_empty() || line.contains("No tasks are running") {
+        return String::new();
+    }
+    line.split(',')
+        .next()
+        .map(|s| s.trim_matches('"').to_string())
+        .unwrap_or_default()
 }
 
 fn check_auth(headers: &HeaderMap, state: &AdminState) -> bool {

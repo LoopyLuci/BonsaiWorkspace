@@ -1,7 +1,8 @@
 import { writable, derived, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { apiBaseUrl } from '$lib/stores/settings';
+import { apiBaseUrl, apiHost, apiPort } from '$lib/stores/settings';
+import { DEFAULT_API_HOST, DEFAULT_API_PORT } from '$lib/constants/network';
 import { swarmEnabled } from '$lib/stores/agents';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -93,10 +94,12 @@ export async function refreshModels() {
   } catch (e) {
     console.warn('[models] list_models_registry invoke failed, falling back to HTTP:', e);
   }
-
-  // Browser fallback — try the runtime HTTP API
+  // Browser fallback — try the runtime HTTP API. If the configured API
+  // endpoint is unreachable, attempt to probe the default port range
+  // (preferred port +1..+4) and update the settings store when found.
   try {
-    const base = get(apiBaseUrl) || 'http://127.0.0.1:11369';
+    await discoverApiEndpointIfNeeded();
+    const base = get(apiBaseUrl) || `http://${DEFAULT_API_HOST}:${DEFAULT_API_PORT}`;
     const resp = await fetch(`${base}/v1/models`);
     const body = await resp.json().catch(() => ({}));
     if (resp.ok && Array.isArray(body.data)) {
@@ -119,9 +122,9 @@ export async function refreshStatus() {
   } catch (e) {
     console.warn('[models] get_orchestrator_status invoke failed, falling back to HTTP:', e);
   }
-
   try {
-    const base = get(apiBaseUrl) || 'http://127.0.0.1:11369';
+    await discoverApiEndpointIfNeeded();
+    const base = get(apiBaseUrl) || `http://${DEFAULT_API_HOST}:${DEFAULT_API_PORT}`;
     const resp = await fetch(`${base}/v1/orchestrator/status`);
     const body = await resp.json().catch(() => ({}));
     if (resp.ok) {
@@ -131,6 +134,66 @@ export async function refreshStatus() {
     }
   } catch (e) {
     console.error('[models] HTTP status fetch failed:', e);
+  }
+}
+
+// ── Helper: probe local API ports when running in a browser (no Tauri invoke)
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 800) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(input, { ...init, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function probeHealth(host: string, port: number): Promise<boolean> {
+  try {
+    const url = `http://${host}:${port}/health`;
+    const resp = await fetchWithTimeout(url, {}, 700);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function discoverApiEndpointIfNeeded() {
+  // If Tauri invoke is available and has already set the config, skip probing.
+  // Otherwise, try the currently configured port first, then default+1..+4.
+  try {
+    const currentHost = get(apiHost) || DEFAULT_API_HOST;
+    const currentPort = Number(get(apiPort) || DEFAULT_API_PORT);
+    if (await probeHealth(currentHost, currentPort)) return;
+
+    const tried = new Set<number>();
+    const candidates: number[] = [];
+    // Prefer current port then the default workspace range
+    candidates.push(currentPort);
+    for (let i = 0; i <= 4; i++) candidates.push(DEFAULT_API_PORT + i);
+    // Also try common local bot/buddy ports (11421, 11420) which tools sometimes use
+    const COMMON_BOT_PORTS = [11421, 11420];
+    for (const p of COMMON_BOT_PORTS) candidates.push(p);
+
+    for (const p of candidates) {
+      if (!Number.isFinite(p) || tried.has(p)) continue;
+      tried.add(p);
+      // Try both explicit loopback and hostname 'localhost' (covers IPv4/IPv6 cases)
+      const hostsToTry = [DEFAULT_API_HOST, 'localhost'];
+      for (const h of hostsToTry) {
+        if (await probeHealth(h, p)) {
+          // update settings so apiBaseUrl reflects reachable endpoint
+          console.info(`[models] discovered reachable API at http://${h}:${p}`);
+          apiHost.set(h);
+          apiPort.set(p);
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal — leave defaults in place
+    console.debug('[models] API discovery failed:', e);
   }
 }
 

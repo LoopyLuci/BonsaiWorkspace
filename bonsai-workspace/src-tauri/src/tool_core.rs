@@ -172,6 +172,15 @@ pub enum ToolOutput {
     Streaming(mpsc::Receiver<ToolChunk>),
 }
 
+impl std::fmt::Debug for ToolOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolOutput::Complete(v) => f.debug_tuple("Complete").field(v).finish(),
+            ToolOutput::Streaming(_) => f.write_str("Streaming(<mpsc::Receiver>)"),
+        }
+    }
+}
+
 pub type ToolResult = Result<ToolOutput, ToolError>;
 
 // ── Tool execution context ────────────────────────────────────────────────────
