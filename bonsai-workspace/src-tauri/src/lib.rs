@@ -292,11 +292,14 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             restore_main_window_state(&app_handle, &api_config);
 
-            // Keep the workspace API on the canonical default (11369) unless an explicit
-            // BONSAI_API_PORT override is provided.
-            if std::env::var("BONSAI_API_PORT").is_err()
-                && api_config.api_port != config::DEFAULT_API_PORT
-            {
+            // Respect explicit `BONSAI_API_PORT` environment override when present.
+            // Otherwise, keep the persisted `api_port` (if non-zero). If the persisted
+            // value is zero/unset, fall back to the default and persist it.
+            if let Ok(val) = std::env::var("BONSAI_API_PORT") {
+                if let Ok(p) = val.parse::<u16>() {
+                    api_config.api_port = p;
+                }
+            } else if api_config.api_port == 0 {
                 api_config.api_port = config::DEFAULT_API_PORT;
                 let _ = config::save_config(&app_handle, &api_config);
             }
@@ -315,13 +318,17 @@ pub fn run() {
                 let token  = pair_token.clone();
                 let host   = api_config.api_host.clone();
                 let port   = api_config.api_port;
-                match tauri::async_runtime::block_on(api_server::start(
+                // Try the preferred port and a small range of fallback ports if binding fails.
+                // This avoids hard failures when the preferred port is briefly unavailable
+                // (e.g., stale listeners or other local tools). We attempt +1..+4 as fallbacks.
+                match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
                     remote,
                     ws,
                     token,
                     host,
                     port,
+                    4u16,
                     app_handle.clone(),
                 )) {
                     Ok(handle) => Some(handle),
