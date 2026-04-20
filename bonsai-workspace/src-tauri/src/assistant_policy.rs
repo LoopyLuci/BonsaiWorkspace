@@ -216,7 +216,15 @@ impl PolicyEngine {
         let policy = match self.default_policies.get(tool) {
             Some(p) => p,
             None => {
-                // Unknown tools are denied by default
+                // MCP namespace-qualified tools (format: `namespace__toolname`) are legitimate
+                // but external — require confirmation rather than deny. This is the conservative
+                // trust-tier default for dynamic tools not explicitly in the policy registry.
+                if tool.contains("__") {
+                    return PolicyDecision::RequireConfirmation(format!(
+                        "Allow external tool '{tool}' to execute? (dynamic MCP tool — not in policy registry)"
+                    ));
+                }
+                // All other unknown tools are denied by default.
                 return PolicyDecision::Deny(format!("Tool '{tool}' is not registered in the policy engine."));
             }
         };
@@ -321,11 +329,16 @@ impl PolicyEngine {
                     }
                 }
 
-                // Basic URL scheme check for URL fields
+                // URL validation: scheme check + SSRF guard (no localhost/private ranges).
                 if rule.is_url {
                     if let Some(s) = v.as_str() {
                         if !s.starts_with("https://") && !s.starts_with("http://") {
                             return Err(format!("Field '{}' must start with http:// or https://", rule.field));
+                        }
+                        if is_ssrf_target(s) {
+                            return Err(format!(
+                                "Field '{}' targets a private or loopback address (SSRF blocked)", rule.field
+                            ));
                         }
                     }
                 }
@@ -335,12 +348,72 @@ impl PolicyEngine {
     }
 
     pub fn is_path_sandbox_tool(&self, tool: &str) -> bool {
+        // (see is_ssrf_target free function below)
         self.default_policies.get(tool).map(|p| p.path_sandbox_applies).unwrap_or(false)
     }
 
     pub fn is_domain_restricted_tool(&self, tool: &str) -> bool {
         self.default_policies.get(tool).map(|p| p.domain_allowlist_applies).unwrap_or(false)
     }
+}
+
+// ── SSRF guard ────────────────────────────────────────────────────────────────
+
+/// Returns `true` if the URL's host resolves to a loopback address, link-local,
+/// or RFC-1918 private range — any of which would allow server-side request forgery.
+/// This is a conservative string-based check; DNS resolution is not performed.
+fn is_ssrf_target(url: &str) -> bool {
+    // Extract host from URL (after "http://" or "https://", before the next "/" or ":")
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+
+    let host = after_scheme
+        .split(['/', ':', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // Localhost variants
+    if host == "localhost" || host == "localhost." {
+        return true;
+    }
+    // IPv6 loopback
+    if host == "[::1]" || host == "::1" {
+        return true;
+    }
+    // 127.x.x.x
+    if host.starts_with("127.") {
+        return true;
+    }
+    // 10.x.x.x (RFC-1918)
+    if host.starts_with("10.") {
+        return true;
+    }
+    // 192.168.x.x (RFC-1918)
+    if host.starts_with("192.168.") {
+        return true;
+    }
+    // 172.16.0.0/12 (RFC-1918): 172.16.x.x – 172.31.x.x
+    if let Some(rest) = host.strip_prefix("172.") {
+        if let Some(octet) = rest.split('.').next() {
+            if let Ok(n) = octet.parse::<u8>() {
+                if (16..=31).contains(&n) {
+                    return true;
+                }
+            }
+        }
+    }
+    // 169.254.x.x (link-local)
+    if host.starts_with("169.254.") {
+        return true;
+    }
+    // 0.0.0.0
+    if host == "0.0.0.0" {
+        return true;
+    }
+    false
 }
 
 // ── Pending confirmation tokens ───────────────────────────────────────────────
@@ -458,6 +531,162 @@ mod tests {
             Some(RiskLevel::Safe),
         );
 
+        assert!(matches!(decision, PolicyDecision::RequireConfirmation(_)));
+    }
+
+    // ── Trust-tier governance tests ───────────────────────────────────────────
+
+    #[test]
+    fn mcp_dynamic_tool_requires_confirmation_not_deny() {
+        let engine = PolicyEngine::new();
+        let args = json!({});
+        let perms = json!({});
+        // MCP tools arrive as "namespace__toolname" — must be RequireConfirmation, not Deny
+        let decision = engine.evaluate("myserver__do_something", &args, &perms);
+        assert!(
+            matches!(decision, PolicyDecision::RequireConfirmation(_)),
+            "MCP namespace-qualified tool should require confirmation, not be denied: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_unnamespaced_tool_is_denied() {
+        let engine = PolicyEngine::new();
+        let decision = engine.evaluate("totally_unknown_tool", &json!({}), &json!({}));
+        assert!(
+            matches!(decision, PolicyDecision::Deny(_)),
+            "Unknown unnamespaced tool should be denied: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn profile_can_disable_mcp_tool() {
+        let engine = PolicyEngine::new();
+        let perms = json!({ "myserver__do_something": false });
+        let decision = engine.evaluate("myserver__do_something", &json!({}), &perms);
+        assert!(
+            matches!(decision, PolicyDecision::Deny(_)),
+            "Profile-disabled MCP tool should be denied"
+        );
+    }
+
+    #[test]
+    fn advisory_ceiling_escalates_mcp_tool() {
+        let engine = PolicyEngine::new();
+        // MCP tool already gets RequireConfirmation; advisory ceiling must not weaken it
+        let decision = engine.evaluate_with_risk(
+            "srv__read_db",
+            &json!({}),
+            &json!({}),
+            Some(RiskLevel::Safe),
+        );
+        assert!(
+            matches!(decision, PolicyDecision::RequireConfirmation(_)),
+            "Advisory ceiling Safe must not override MCP tool RequireConfirmation"
+        );
+    }
+
+    // ── SSRF guard tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn ssrf_blocks_localhost() {
+        assert!(is_ssrf_target("http://localhost/api"));
+        assert!(is_ssrf_target("http://localhost:8080/"));
+    }
+
+    #[test]
+    fn ssrf_blocks_loopback_ip() {
+        assert!(is_ssrf_target("http://127.0.0.1/admin"));
+        assert!(is_ssrf_target("https://127.1.2.3/"));
+    }
+
+    #[test]
+    fn ssrf_blocks_rfc1918() {
+        assert!(is_ssrf_target("http://10.0.0.1/secret"));
+        assert!(is_ssrf_target("http://192.168.1.100/"));
+        assert!(is_ssrf_target("http://172.16.0.1/"));
+        assert!(is_ssrf_target("http://172.31.255.255/"));
+    }
+
+    #[test]
+    fn ssrf_blocks_link_local() {
+        assert!(is_ssrf_target("http://169.254.169.254/latest/meta-data/"));
+    }
+
+    #[test]
+    fn ssrf_allows_public_urls() {
+        assert!(!is_ssrf_target("https://example.com/api"));
+        assert!(!is_ssrf_target("http://172.32.0.1/")); // 172.32 is NOT in 172.16-172.31
+        assert!(!is_ssrf_target("https://192.169.0.1/")); // not 192.168
+    }
+
+    #[test]
+    fn url_validation_rejects_non_http_schemes() {
+        let engine = PolicyEngine::new();
+        let args = json!({ "url": "file:///etc/passwd" });
+        let decision = engine.evaluate("fetch_url", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn url_validation_rejects_ssrf_in_fetch_url() {
+        let engine = PolicyEngine::new();
+        let args = json!({ "url": "http://localhost/admin" });
+        let decision = engine.evaluate("fetch_url", &args, &json!({}));
+        assert!(
+            matches!(decision, PolicyDecision::Deny(_)),
+            "fetch_url to localhost should be denied as SSRF"
+        );
+    }
+
+    // ── Path traversal tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn path_traversal_is_blocked() {
+        let engine = PolicyEngine::new();
+        let args = json!({ "path": "../../etc/passwd", "content": "x" });
+        let decision = engine.evaluate("write_file_assistant", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    // ── Policy bypass / injection tests ──────────────────────────────────────
+
+    #[test]
+    fn offline_strict_mode_blocks_network_tools() {
+        let engine = PolicyEngine::new();
+        let perms = json!({ "offline_strict_mode": true });
+        for tool in &["fetch_url", "get_weather", "send_email"] {
+            let decision = engine.evaluate(tool, &json!({}), &perms);
+            assert!(
+                matches!(decision, PolicyDecision::Deny(_)),
+                "offline_strict_mode should deny {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_disabled_tool_cannot_be_un_denied_by_advisory() {
+        let engine = PolicyEngine::new();
+        let perms = json!({ "get_weather": false });
+        // Even with Safe advisory, a profile-disabled tool stays Denied
+        let decision = engine.evaluate_with_risk(
+            "get_weather",
+            &json!({ "location": "Berlin" }),
+            &perms,
+            Some(RiskLevel::Safe),
+        );
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn destructive_tool_always_requires_confirmation() {
+        let engine = PolicyEngine::new();
+        // run_command must require confirmation even with no advisory
+        let decision = engine.evaluate(
+            "run_command",
+            &json!({ "command": "ls" }),
+            &json!({}),
+        );
         assert!(matches!(decision, PolicyDecision::RequireConfirmation(_)));
     }
 }

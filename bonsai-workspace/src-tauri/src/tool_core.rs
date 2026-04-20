@@ -363,4 +363,133 @@ mod tests {
         // attempt>4 clamps to 4 for bounded growth
         assert_eq!(policy.backoff_ms(8), 1_600);
     }
+
+    // ── Scheduler / parallelization tests ────────────────────────────────────
+
+    #[test]
+    fn none_can_parallelize_with_anything() {
+        assert!(SideEffectProfile::None.can_parallelize_with(&SideEffectProfile::None));
+        assert!(SideEffectProfile::None.can_parallelize_with(&SideEffectProfile::Read));
+        assert!(SideEffectProfile::None.can_parallelize_with(&SideEffectProfile::Write));
+        assert!(SideEffectProfile::None.can_parallelize_with(&SideEffectProfile::External));
+        assert!(SideEffectProfile::None.can_parallelize_with(&SideEffectProfile::Unknown));
+    }
+
+    #[test]
+    fn reads_can_parallelize_with_reads_but_not_writes() {
+        assert!(SideEffectProfile::Read.can_parallelize_with(&SideEffectProfile::Read));
+        assert!(!SideEffectProfile::Read.can_parallelize_with(&SideEffectProfile::Write));
+        assert!(!SideEffectProfile::Read.can_parallelize_with(&SideEffectProfile::External));
+    }
+
+    #[test]
+    fn writes_cannot_parallelize_with_non_none() {
+        // None is a no-op side-effect so it parallelizes with everything including Write.
+        // Any non-None pair involving Write must be serialized.
+        assert!(!SideEffectProfile::Write.can_parallelize_with(&SideEffectProfile::Read));
+        assert!(!SideEffectProfile::Write.can_parallelize_with(&SideEffectProfile::Write));
+        assert!(!SideEffectProfile::Write.can_parallelize_with(&SideEffectProfile::External));
+        // But Write with None is fine — None has no side effects to conflict with
+        assert!(SideEffectProfile::Write.can_parallelize_with(&SideEffectProfile::None));
+    }
+
+    #[test]
+    fn external_and_unknown_cannot_parallelize_with_each_other() {
+        assert!(!SideEffectProfile::External.can_parallelize_with(&SideEffectProfile::External));
+        assert!(!SideEffectProfile::Unknown.can_parallelize_with(&SideEffectProfile::Unknown));
+        assert!(!SideEffectProfile::External.can_parallelize_with(&SideEffectProfile::Unknown));
+    }
+
+    #[test]
+    fn cacheability_only_for_none_and_read() {
+        assert!(SideEffectProfile::None.is_cacheable());
+        assert!(SideEffectProfile::Read.is_cacheable());
+        assert!(!SideEffectProfile::Write.is_cacheable());
+        assert!(!SideEffectProfile::External.is_cacheable());
+        assert!(!SideEffectProfile::Unknown.is_cacheable());
+    }
+
+    // ── Cancellation tests ───────────────────────────────────────────────────
+
+    fn make_test_ctx(cancel: Arc<std::sync::atomic::AtomicBool>) -> ToolContext {
+        use crate::secrets_store::SecretsStore;
+        ToolContext {
+            session_id:     "s1".into(),
+            turn_id:        "t1".into(),
+            workspace_path: Some("/tmp".into()),
+            profile_id:     "default".into(),
+            call_depth:     0,
+            cancel,
+            secrets:        Arc::new(SecretsStore::new()),
+        }
+    }
+
+    #[test]
+    fn context_starts_not_cancelled() {
+        let ctx = make_test_ctx(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        assert!(!ctx.is_cancelled());
+    }
+
+    #[test]
+    fn context_reports_cancelled_after_flag_set() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ctx = make_test_ctx(flag.clone());
+        assert!(!ctx.is_cancelled());
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(ctx.is_cancelled());
+    }
+
+    // ── ToolError taxonomy completeness tests ────────────────────────────────
+
+    #[test]
+    fn configuration_error_is_not_retryable() {
+        assert!(!ToolError::Configuration {
+            message: "missing api key".into(),
+            fix_hint: "set OPENAI_API_KEY".into(),
+        }.is_retryable());
+    }
+
+    #[test]
+    fn not_found_error_is_not_retryable() {
+        assert!(!ToolError::NotFound { resource: "file.txt".into() }.is_retryable());
+    }
+
+    #[test]
+    fn injection_blocked_is_not_retryable() {
+        assert!(!ToolError::InjectionBlocked.is_retryable());
+    }
+
+    #[test]
+    fn not_in_context_is_not_retryable() {
+        assert!(!ToolError::NotInContext { tool_name: "unknown_tool".into() }.is_retryable());
+    }
+
+    #[test]
+    fn internal_error_is_not_retryable() {
+        assert!(!ToolError::Internal { message: "panic".into() }.is_retryable());
+    }
+
+    #[test]
+    fn rate_limited_with_zero_delay_is_retryable() {
+        assert!(ToolError::RateLimited { retry_after_ms: 0 }.is_retryable());
+    }
+
+    // ── ToolCallOutcome context message tests ────────────────────────────────
+
+    #[test]
+    fn outcome_to_context_message_has_correct_structure() {
+        let outcome = ToolCallOutcome {
+            tool_call_id: "tc1".into(),
+            tool_name:    "get_datetime".into(),
+            args:         serde_json::json!({}),
+            result_json:  r#"{"now":"2026-04-19"}"#.into(),
+            decision:     "allowed".into(),
+            duration_ms:  12,
+            from_cache:   false,
+        };
+        let msg = outcome.to_context_message();
+        assert_eq!(msg["role"], "tool");
+        assert_eq!(msg["tool_call_id"], "tc1");
+        assert_eq!(msg["content"], r#"{"now":"2026-04-19"}"#);
+    }
 }

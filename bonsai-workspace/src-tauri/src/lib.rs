@@ -1,4 +1,6 @@
 mod action_parser;
+mod memory_store;
+mod context_builder;
 mod mcp_bridge;
 mod assistant_audit_log;
 mod assistant_backup;
