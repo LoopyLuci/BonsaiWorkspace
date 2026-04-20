@@ -269,16 +269,16 @@
         <button class="btn-icon" title="Tools" on:click={() => (showTools = !showTools)}>Tools ▾</button>
         {#if showTools}
           <div class="tools-menu" role="menu">
-            <button class="tools-item" title="Bonsai Buddy Assistant (Ctrl+Shift+B)" on:click={() => { invoke('toggle_assistant_window'); showTools=false; }}>
+            <button class="tools-item" type="button" role="menuitem" title="Bonsai Buddy Assistant (Ctrl+Shift+B)" aria-label="Bonsai Buddy Assistant" on:click={() => { invoke('toggle_assistant_window'); showTools=false; }}>
               🌿 Bonsai Buddy Assistant
             </button>
-            <button class="tools-item" on:click={() => { toggleAgentVisionPanel(); showTools=false; }}>
+            <button class="tools-item" type="button" role="menuitem" title="Agent Vision" aria-label="Agent Vision" on:click={() => { toggleAgentVisionPanel(); showTools=false; }}>
               ⚡ Agent Vision
             </button>
-            <button class="tools-item" on:click={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } showTools=false; }}>
+            <button class="tools-item" type="button" role="menuitem" title="Android USB Lab" aria-label="Android USB Lab" on:click={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } showTools=false; }}>
               📱 Android USB Lab
             </button>
-            <button class="tools-item" on:click={() => { showAgentConnect = true; showTools=false; }}>
+            <button class="tools-item" type="button" role="menuitem" title="Agent Connect" aria-label="Agent Connect" on:click={() => { showAgentConnect = true; showTools=false; }}>
               🔗 Agent Connect
             </button>
           </div>
