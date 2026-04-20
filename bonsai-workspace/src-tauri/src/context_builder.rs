@@ -301,7 +301,7 @@ mod tests {
         let mut builder = ContextBuilder::new(budget);
         // Each item is ~5 tokens (20 chars)
         builder.add_system("x".repeat(20), 1.0);
-        builder.add_history("{\"role\":\"user\",\"content\":\"hi\"}".into(), 0.9);
+        builder.add_history("{\"role\":\"user\",\"content\":\"hi\"}", 0.9);
         builder.add_memory("y".repeat(20), 0.8);
 
         let ctx = builder.build();
@@ -314,8 +314,8 @@ mod tests {
         budget.memory = 50; // ~12 tokens max
 
         let mut builder = ContextBuilder::new(budget);
-        builder.add_memory("high score memory content here".into(), 0.95);
-        builder.add_memory("low score memory junk content fill".into(), 0.1);
+        builder.add_memory("high score memory content here", 0.95);
+        builder.add_memory("low score memory junk content fill", 0.1);
 
         let ctx = builder.build();
         let mem = ctx.slot_content(ContextSlot::Memory);
@@ -345,8 +345,8 @@ mod tests {
     #[test]
     fn to_messages_has_system_block() {
         let mut builder = ContextBuilder::with_default_budget();
-        builder.add_system("You are a helpful assistant.".into(), 1.0);
-        builder.add_memory("User prefers dark mode.".into(), 0.8);
+        builder.add_system("You are a helpful assistant.", 1.0);
+        builder.add_memory("User prefers dark mode.", 0.8);
 
         let ctx  = builder.build();
         let msgs = ctx.to_messages();

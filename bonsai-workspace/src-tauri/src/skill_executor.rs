@@ -308,11 +308,17 @@ impl ShellGuard {
     pub async fn execute(&self, script: &str) -> ToolResult {
         self.check(script).map_err(|e| ToolError::PolicyDenied { reason: e })?;
 
-        let output_fut = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .kill_on_drop(true)
-            .output();
+        // Use platform-appropriate shell
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = tokio::process::Command::new("cmd");
+            c.arg("/C").arg(script);
+            c
+        } else {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(script);
+            c
+        };
+        let output_fut = cmd.kill_on_drop(true).output();
 
         let output = match tokio::time::timeout(self.timeout, output_fut).await {
             Ok(Ok(o)) => o,

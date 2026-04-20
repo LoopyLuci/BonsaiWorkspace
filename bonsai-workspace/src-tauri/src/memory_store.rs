@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use sqlx::sqlite::SqlitePoolOptions;
 
 fn now_secs() -> i64 {
     SystemTime::now()
@@ -85,7 +86,9 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub async fn open(url: &str) -> Result<Self, String> {
-        let pool = SqlitePool::connect(url)
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(url)
             .await
             .map_err(|e| format!("memory_store open: {e}"))?;
         let store = Self { pool };
@@ -94,7 +97,11 @@ impl MemoryStore {
     }
 
     pub async fn open_in_memory() -> Result<Self, String> {
-        let pool = SqlitePool::connect("sqlite::memory:")
+        // Use a single-connection shared in-memory DB for tests to ensure migrations
+        // and subsequent operations see the same database instance.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:?cache=shared")
             .await
             .map_err(|e| format!("memory_store open_in_memory: {e}"))?;
         let store = Self { pool };
@@ -367,8 +374,8 @@ mod tests {
     fn record(domain: MemoryDomain, profile: &str, content: &str) -> MemoryRecord {
         MemoryRecord {
             id:          format!("r-{}-{}", content.len(), profile),
-            domain,
-            session_id:  Some("sess-1".into()),
+            domain:      domain.clone(),
+            session_id:  if domain == MemoryDomain::Session { Some("sess-1".into()) } else { None },
             profile_id:  profile.to_string(),
             content:     content.to_string(),
             tags:        vec!["test".into()],

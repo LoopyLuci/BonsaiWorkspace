@@ -5135,7 +5135,7 @@ pub async fn cancel_agent(state: State<'_, AppState>, run_id: String, slot: usiz
 
 // ─── Messaging bot integration ───────────────────────────────────────────────
 
-const BOT_ADMIN_PORT: u16 = 11421;
+const BOT_ADMIN_PORT: u16 = 11666;
 // bonsai-bot stores its admin token under its own keyring service, separate from
 // the workspace's "bonsai-assistant" service used by SecretsStore.
 const BOT_KEYRING_SERVICE: &str = "bonsai-bot";
