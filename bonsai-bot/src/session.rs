@@ -45,6 +45,124 @@ pub async fn migrate(db: &Db) -> Result<(), tokio_rusqlite::Error> {
     .await
 }
 
+    // Add runtime_records table for persisted runtime metadata
+    db.call(|conn| {
+        conn.execute_batch(
+            r#"CREATE TABLE IF NOT EXISTS runtime_records (
+                id           TEXT PRIMARY KEY,
+                kind         TEXT NOT NULL,
+                script       TEXT NOT NULL,
+                user         TEXT,
+                pid          INTEGER,
+                status       TEXT NOT NULL,
+                started_at   INTEGER NOT NULL,
+                timeout_secs INTEGER
+            );"#,
+        )
+        .map_err(tokio_rusqlite::Error::from)
+    })
+    .await
+}
+
+/// Insert or update a runtime record
+pub async fn upsert_runtime_record(
+    db: &Db,
+    id: &str,
+    kind: &str,
+    script: &str,
+    user: Option<&str>,
+    pid: Option<i64>,
+    status: &str,
+    started_at: i64,
+    timeout_secs: Option<i64>,
+) -> Result<(), tokio_rusqlite::Error> {
+    let u = user.map(|s| s.to_string());
+    db.call(move |conn| {
+        conn.execute(
+            r#"INSERT INTO runtime_records
+               (id, kind, script, user, pid, status, started_at, timeout_secs)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               ON CONFLICT(id) DO UPDATE SET
+                   kind = excluded.kind,
+                   script = excluded.script,
+                   user = excluded.user,
+                   pid = excluded.pid,
+                   status = excluded.status,
+                   started_at = excluded.started_at,
+                   timeout_secs = excluded.timeout_secs"#,
+            rusqlite::params![id, kind, script, u, pid, status, started_at, timeout_secs],
+        )
+        .map(|_| ())
+        .map_err(tokio_rusqlite::Error::from)
+    })
+    .await
+}
+
+pub async fn update_runtime_status(
+    db: &Db,
+    id: &str,
+    status: &str,
+    pid: Option<i64>,
+) -> Result<(), tokio_rusqlite::Error> {
+    let p = pid;
+    db.call(move |conn| {
+        conn.execute(
+            "UPDATE runtime_records SET status = ?1, pid = COALESCE(?2, pid) WHERE id = ?3",
+            rusqlite::params![status, p, id],
+        )
+        .map(|_| ())
+        .map_err(tokio_rusqlite::Error::from)
+    })
+    .await
+}
+
+pub async fn list_runtime_records(db: &Db) -> Vec<serde_json::Value> {
+    db.call(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, script, user, pid, status, started_at, timeout_secs FROM runtime_records ORDER BY started_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "kind": row.get::<_, String>(1)?,
+                "script": row.get::<_, String>(2)?,
+                "user": row.get::<_, Option<String>>(3)?,
+                "pid": row.get::<_, Option<i64>>(4)?,
+                "status": row.get::<_, String>(5)?,
+                "started_at": row.get::<_, i64>(6)?,
+                "timeout_secs": row.get::<_, Option<i64>>(7)?,
+            }))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+        Ok(rows)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+pub async fn get_runtime_record(db: &Db, id: &str) -> Option<serde_json::Value> {
+    db.call(move |conn| {
+        conn.query_row(
+            "SELECT id, kind, script, user, pid, status, started_at, timeout_secs FROM runtime_records WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "kind": row.get::<_, String>(1)?,
+                "script": row.get::<_, String>(2)?,
+                "user": row.get::<_, Option<String>>(3)?,
+                "pid": row.get::<_, Option<i64>>(4)?,
+                "status": row.get::<_, String>(5)?,
+                "started_at": row.get::<_, i64>(6)?,
+                "timeout_secs": row.get::<_, Option<i64>>(7)?,
+            }))
+        ).optional().map_err(tokio_rusqlite::Error::from)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 // ── Sessions ─────────────────────────────────────────────────────────────────
 
 pub async fn find_active_session(

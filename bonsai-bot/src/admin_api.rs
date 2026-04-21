@@ -24,6 +24,48 @@ use crate::config::keyring_set;
 use crate::metrics::SharedMetrics;
 use crate::session::Db;
 
+fn pid_running(pid: i64) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        match std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {}", pid), "/NH"]).output() {
+            Ok(out) => {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let s = s.trim();
+                if s.is_empty() || s.contains("No tasks") { return false; }
+                // crude check: if output contains pid number
+                s.contains(&pid.to_string())
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        match std::process::Command::new("ps").arg("-p").arg(pid.to_string()).status() {
+            Ok(st) => st.success(),
+            Err(_) => false,
+        }
+    }
+}
+
+fn kill_pid(pid: i64) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        match std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).status() {
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => Err(format!("taskkill exit: {}", s)),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        match std::process::Command::new("kill").arg("-TERM").arg(pid.to_string()).status() {
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => Err(format!("kill exit: {}", s)),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 /// Per-platform connection state, written by platform adapters, read by /status.
 pub type PlatformStates = Arc<DashMap<String, String>>;
 
@@ -54,7 +96,8 @@ pub struct AdminState {
 
 #[derive(Debug)]
 struct RuntimeInfo {
-    child: tokio::process::Child,
+    child: Option<tokio::process::Child>,
+    pid: Option<i64>,
     user: Option<String>,
     script: String,
     started_at: chrono::DateTime<chrono::Utc>,
@@ -140,6 +183,43 @@ pub async fn start(
         runtime_limits: cfg.runtime_limits.clone(),
         runtime_children: Arc::new(Mutex::new(HashMap::new())),
     };
+
+    // Reconcile persisted runtime records on startup; populate in-memory map with metadata
+    {
+        let state_clone = state.clone();
+        let db = state_clone.db.clone();
+        let children = state_clone.runtime_children.clone();
+        tokio::spawn(async move {
+            let records = crate::session::list_runtime_records(&db).await;
+            for rec in records.into_iter() {
+                if rec["status"] == "running" {
+                    let id = rec["id"].as_str().unwrap_or_default().to_string();
+                    let pid = rec["pid"].as_i64();
+                    let script = rec["script"].as_str().unwrap_or_default().to_string();
+                    let user = rec["user"].as_str().map(|s| s.to_string());
+                    let started_at = rec["started_at"].as_i64().unwrap_or(0);
+                    let started_dt = chrono::Utc.timestamp_opt(started_at, 0).unwrap_or_else(|| chrono::Utc::now());
+                    // Check whether PID is running; if not, mark as orphan
+                    let alive = pid.and_then(|p| Some(pid_running(p))).unwrap_or(false);
+                    if !alive {
+                        let _ = crate::session::update_runtime_status(&db, &id, "orphan", None).await;
+                        continue;
+                    }
+                    // Insert metadata with no Child handle (cannot reattach)
+                    let info = RuntimeInfo {
+                        child: None,
+                        pid,
+                        user,
+                        script,
+                        started_at: started_dt,
+                        timeout_secs: rec["timeout_secs"].as_i64().map(|v| v as u64),
+                    };
+                    let mut m = children.lock().await;
+                    m.insert(id, info);
+                }
+            }
+        });
+    }
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -301,11 +381,53 @@ fn write_admin_audit(action: &str, token_hash: Option<&str>, details: &Value) ->
     if let Some(parent) = target_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // Rotate/prune older audit logs if needed
+    if let Err(e) = rotate_and_prune_audit_log(&target_path, 10 * 1024 * 1024, 30) {
+        tracing::warn!("[admin-audit] rotation check failed: {}", e);
+    }
     let s = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
     let mut f = OpenOptions::new().create(true).append(true).open(&target_path).map_err(|e| e.to_string())?;
     use std::io::Write;
     f.write_all(s.as_bytes()).map_err(|e| e.to_string())?;
     f.write_all(b"\n").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn rotate_and_prune_audit_log(target: &PathBuf, max_bytes: u64, retain_days: i64) -> Result<(), String> {
+    use std::fs;
+    if !target.exists() {
+        return Ok(());
+    }
+    // Rotate if file is larger than threshold
+    if let Ok(meta) = fs::metadata(target) {
+        if meta.len() > max_bytes {
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let rotated = target.with_extension(format!("log.{}", stamp));
+            fs::rename(target, &rotated).map_err(|e| e.to_string())?;
+        }
+    }
+    // Prune files older than retain_days in same directory that match admin-audit.log.*
+    if let Some(parent) = target.parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(retain_days);
+            for e in entries.flatten() {
+                if let Ok(fname) = e.file_name().into_string() {
+                    if fname.starts_with("admin-audit.log.") {
+                        if let Ok(meta) = e.metadata() {
+                            if let Ok(mtime) = meta.modified() {
+                                if let Ok(since) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                                    let dt = chrono::Utc.timestamp_opt(since.as_secs() as i64, 0).unwrap_or(chrono::Utc::now());
+                                    if dt < cutoff {
+                                        let _ = std::fs::remove_file(e.path());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -398,36 +520,56 @@ async fn start_runtime(
             let port = body.port.unwrap_or(0);
             rm.start_python_worker(&script_canon.to_string_lossy(), port).await
         }
+        "clojurewasm" => rm.start_clojurewasm_worker(&script_canon.to_string_lossy(), timeout).await,
         "babashka" => rm.start_babashka_worker(&script_canon.to_string_lossy()).await,
         _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "unknown runtime kind"}))).into_response(),
     };
 
     match child_res {
         Ok(mut child) => {
-            let pid = child.id().unwrap_or(0);
-            // store child for lifecycle management
+            let pid = child.id().map(|p| p as i64).unwrap_or(0);
+            // store child for lifecycle management and persist metadata
             {
                 let mut map = s.runtime_children.lock().await;
                 map.insert(id.clone(), RuntimeInfo {
-                    child,
+                    child: Some(child),
+                    pid: Some(pid),
                     user: body.user.clone(),
                     script: script_canon.to_string_lossy().into_owned(),
                     started_at: chrono::Utc::now(),
                     timeout_secs: timeout,
                 });
             }
+            let _ = crate::session::upsert_runtime_record(
+                &s.db,
+                &id,
+                &body.kind,
+                &script_canon.to_string_lossy(),
+                body.user.as_deref(),
+                Some(pid),
+                "running",
+                chrono::Utc::now().timestamp(),
+                timeout.map(|t| t as i64),
+            ).await;
 
             // If timeout was requested, spawn a monitor that will kill the runtime after timeout
             if let Some(tsec) = timeout {
                 let children_map = s.runtime_children.clone();
                 let id_clone = id.clone();
+                let db_clone = s.db.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(tsec)).await;
                     let mut map = children_map.lock().await;
                     if let Some(mut info) = map.remove(&id_clone) {
-                        let _ = info.child.kill().await;
-                        let _ = info.child.wait().await;
+                        // kill via Child if available, otherwise by PID
+                        if let Some(mut child) = info.child.take() {
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                        } else if let Some(p) = info.pid {
+                            let _ = kill_pid(p);
+                        }
                         let _ = write_admin_audit("runtime_timeout", None, &json!({"id": id_clone}));
+                        let _ = crate::session::update_runtime_status(&db_clone, &id_clone, "timed_out", None).await;
                     }
                 });
             }
@@ -448,14 +590,28 @@ async fn stop_runtime(
     }
     let mut map = s.runtime_children.lock().await;
     if let Some(mut info) = map.remove(&body.id) {
-        // attempt graceful kill
-        if let Err(e) = info.child.kill().await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("kill failed: {}", e)}))).into_response();
-        }
-        // wait for exit
-        match info.child.wait().await {
-            Ok(status) => Json(json!({"ok": true, "code": status.code()})).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        // attempt graceful kill: prefer Child handle, otherwise kill by PID
+        if let Some(mut child) = info.child.take() {
+            if let Err(e) = child.kill().await {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("kill failed: {}", e)}))).into_response();
+            }
+            match child.wait().await {
+                Ok(status) => {
+                    let _ = crate::session::update_runtime_status(&s.db, &body.id, "stopped", None).await;
+                    return Json(json!({"ok": true, "code": status.code()})).into_response()
+                }
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+            }
+        } else if let Some(pid) = info.pid {
+            // Kill by PID via platform command
+            if let Err(e) = kill_pid(pid) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("kill-pid failed: {}", e)}))).into_response();
+            }
+            let _ = crate::session::update_runtime_status(&s.db, &body.id, "stopped", None).await;
+            return Json(json!({"ok": true, "killed_pid": pid})).into_response();
+        } else {
+            let _ = crate::session::update_runtime_status(&s.db, &body.id, "unknown", None).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "no handle or pid for runtime"}))).into_response();
         }
     } else {
         (StatusCode::NOT_FOUND, Json(json!({"error": "runtime id not found"}))).into_response()
@@ -472,8 +628,9 @@ async fn list_runtimes(
     let map = s.runtime_children.lock().await;
     let mut out = Vec::new();
     for (id, info) in map.iter() {
-        let pid = info.child.id().unwrap_or(0);
-        out.push(json!({"id": id, "pid": pid, "user": info.user, "script": info.script, "started_at": info.started_at.to_rfc3339()}));
+        let pid = info.pid.unwrap_or(0);
+        let controllable = info.child.is_some();
+        out.push(json!({"id": id, "pid": pid, "controllable": controllable, "user": info.user, "script": info.script, "started_at": info.started_at.to_rfc3339()}));
     }
     Json(json!({"runtimes": out})).into_response()
 }

@@ -1,0 +1,45 @@
+name: ClojureWasm Full CI (build & test)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-17-jdk git curl unzip build-essential
+      - name: Add wasm target
+        run: rustup target add wasm32-wasi
+      - name: Run clojurewasm prereq check
+        run: ./runtimes/clojure-wasm/build-local.sh --ci
+      - name: Build example module if present
+        run: |
+          if [ -f runtimes/clojure-wasm/example/build.sh ]; then
+            chmod +x runtimes/clojure-wasm/example/build.sh
+            runtimes/clojure-wasm/example/build.sh
+          elif [ -f runtimes/clojure-wasm/example/module.wasm ]; then
+            echo "Example module already present; skipping build"
+          else
+            echo "No example module present; skipping example build"
+          fi
+      - name: Install wasmtime
+        run: |
+          ASSET_URL=$(curl -s https://api.github.com/repos/bytecodealliance/wasmtime/releases/latest | jq -r '.assets[] | select(.name | test("wasmtime-.*-x86_64-linux")) | .browser_download_url' | head -n1)
+          curl -L -o wasmtime.tar.gz "$ASSET_URL"
+          tar -xzf wasmtime.tar.gz --wildcards --no-anchored 'wasmtime'
+          sudo mv wasmtime /usr/local/bin/wasmtime
+          wasmtime --version
+      - name: Run bonsai-runtime wasm integration test
+        run: |
+          cargo test -p bonsai-runtime --test wasm_integration -- --nocapture
