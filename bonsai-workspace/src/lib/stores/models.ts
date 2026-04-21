@@ -167,6 +167,24 @@ async function discoverApiEndpointIfNeeded() {
     const currentPort = Number(get(apiPort) || DEFAULT_API_PORT);
     if (await probeHealth(currentHost, currentPort)) return;
 
+    // Prefer a persisted port file if available (Tauri host only).
+    try {
+      // `read_persisted_bot_port` returns an optional port number when running under Tauri.
+      // Use invoke when available; in a pure browser environment this will throw and be ignored.
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore
+      const persisted: number | null = await invoke('read_persisted_bot_port').catch(() => null);
+      if (persisted && Number.isFinite(persisted)) {
+        if (await probeHealth(DEFAULT_API_HOST, persisted)) {
+          apiHost.set(DEFAULT_API_HOST);
+          apiPort.set(persisted);
+          return;
+        }
+      }
+    } catch (e) {
+      // ignore — invoke not available in browser
+    }
+
     const tried = new Set<number>();
     const candidates: number[] = [];
     // Prefer current port then the default workspace range

@@ -12,6 +12,8 @@ pub struct BotConfig {
     #[serde(default = "default_admin_port")]
     pub admin_port: u16,
     #[serde(default)]
+    pub reclaim_allowed_ports: Vec<u16>,
+    #[serde(default)]
     pub db_path: String,
     #[serde(default)]
     pub discord: PlatformSlot<DiscordConfig>,
@@ -40,6 +42,7 @@ impl Default for BotConfig {
             schema_version: 1,
             buddy_api_url:  "http://127.0.0.1:11420".to_string(),
             admin_port:     11666,
+            reclaim_allowed_ports: Vec::new(),
             db_path,
             discord:         PlatformSlot::default(),
             telegram:        PlatformSlot::default(),

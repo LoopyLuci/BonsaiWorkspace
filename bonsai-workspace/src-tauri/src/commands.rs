@@ -5223,6 +5223,75 @@ async fn fetch_from_bot_path(path: &str, token: &str) -> Result<(Value, u16), St
     Err("Bot server not running".to_string())
 }
 
+/// Read a persisted bonsai-bot port file (if present) from the OS config dir or
+/// the local workspace, returning the port number when available.
+#[tauri::command]
+pub fn read_persisted_bot_port() -> Result<Option<u16>, String> {
+    // First try the OS config dir: {config_dir}/bonsai/bonsai-bot-port.json
+    if let Some(cfg) = dirs::config_dir() {
+        let path = cfg.join("bonsai").join("bonsai-bot-port.json");
+        if path.exists() {
+            if let Ok(s) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                    if let Some(p) = v.get("port").and_then(|n| n.as_u64()) {
+                        return Ok(Some(p as u16));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback to local workspace file if present
+    let local = std::path::Path::new("bonsai-bot-port.json");
+    if local.exists() {
+        if let Ok(s) = std::fs::read_to_string(local) {
+            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                if let Some(p) = v.get("port").and_then(|n| n.as_u64()) {
+                    return Ok(Some(p as u16));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Execute the reclaim-listener PowerShell script and return its output.
+#[tauri::command]
+pub fn run_reclaim_listener(
+    ports: Option<Vec<u16>>,
+    force_kill: Option<bool>,
+    use_handle: Option<bool>,
+) -> Result<String, String> {
+    let script = std::path::Path::new("scripts").join("reclaim-listener.ps1");
+    if !script.exists() {
+        return Err(format!("reclaim script not found: {}", script.display()));
+    }
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(script);
+    if let Some(ports) = ports {
+        let port_arg = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+        cmd.arg("-Ports").arg(port_arg);
+    }
+    if force_kill.unwrap_or(false) {
+        cmd.arg("-ForceKill");
+    }
+    if use_handle.unwrap_or(false) {
+        cmd.arg("-UseHandle");
+    }
+    match cmd.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Ok(format!("STDOUT:\n{}\n\nSTDERR:\n{}", stdout, stderr))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn bot_config_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
