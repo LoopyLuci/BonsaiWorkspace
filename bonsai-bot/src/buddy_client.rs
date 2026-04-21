@@ -83,6 +83,7 @@ impl BuddyClient {
     }
 
     /// Check if Buddy /health is reachable.
+    #[allow(dead_code)]
     pub async fn is_healthy(&self) -> bool {
         let url = format!("{}/health", self.base);
         self.http.get(&url).send().await

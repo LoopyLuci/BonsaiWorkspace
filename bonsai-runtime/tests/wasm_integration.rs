@@ -1,7 +1,6 @@
 use bonsai_runtime::RuntimeManager;
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
 
 #[tokio::test]
 async fn start_clojurewasm_if_wasmtime_present() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,17 +26,16 @@ async fn start_clojurewasm_if_wasmtime_present() -> Result<(), Box<dyn std::erro
     let module_path = path.to_string_lossy().to_string();
 
     let rm = RuntimeManager::new();
-    let mut child = rm.start_clojurewasm_worker(&module_path, None).await?;
+    let mut controller = rm.start_clojurewasm_worker(&module_path, None).await?;
     // Give it a moment to start and exit
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    // Try to get exit status; if still running, kill
-    match child.try_wait()? {
-        Some(status) => {
-            eprintln!("child exited quickly with: {:?}", status);
-        }
-        None => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+    // Try to wait for exit; if still running, kill
+    match controller.wait().await {
+        Ok(Some(code)) => eprintln!("runtime exited with code: {:?}", code),
+        Ok(None) => eprintln!("runtime exited with no code"),
+        Err(_) => {
+            let _ = controller.kill().await;
+            let _ = controller.wait().await;
         }
     }
 

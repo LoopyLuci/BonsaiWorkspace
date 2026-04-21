@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_rusqlite::Connection;
+use rusqlite::OptionalExtension;
 
 fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
@@ -38,17 +39,8 @@ pub async fn migrate(db: &Db) -> Result<(), tokio_rusqlite::Error> {
                 expires_at   INTEGER NOT NULL,
                 prompt_state TEXT NOT NULL DEFAULT 'created',
                 prompt_nonce INTEGER NOT NULL DEFAULT 0
-            );"#,
-        )
-        .map_err(tokio_rusqlite::Error::from)
-    })
-    .await
-}
-
-    // Add runtime_records table for persisted runtime metadata
-    db.call(|conn| {
-        conn.execute_batch(
-            r#"CREATE TABLE IF NOT EXISTS runtime_records (
+            );
+            CREATE TABLE IF NOT EXISTS runtime_records (
                 id           TEXT PRIMARY KEY,
                 kind         TEXT NOT NULL,
                 script       TEXT NOT NULL,
@@ -76,6 +68,10 @@ pub async fn upsert_runtime_record(
     started_at: i64,
     timeout_secs: Option<i64>,
 ) -> Result<(), tokio_rusqlite::Error> {
+    let id_s = id.to_string();
+    let kind_s = kind.to_string();
+    let script_s = script.to_string();
+    let status_s = status.to_string();
     let u = user.map(|s| s.to_string());
     db.call(move |conn| {
         conn.execute(
@@ -90,7 +86,7 @@ pub async fn upsert_runtime_record(
                    status = excluded.status,
                    started_at = excluded.started_at,
                    timeout_secs = excluded.timeout_secs"#,
-            rusqlite::params![id, kind, script, u, pid, status, started_at, timeout_secs],
+            rusqlite::params![id_s, kind_s, script_s, u, pid, status_s, started_at, timeout_secs],
         )
         .map(|_| ())
         .map_err(tokio_rusqlite::Error::from)
@@ -104,16 +100,18 @@ pub async fn update_runtime_status(
     status: &str,
     pid: Option<i64>,
 ) -> Result<(), tokio_rusqlite::Error> {
-    let p = pid;
-    db.call(move |conn| {
-        conn.execute(
-            "UPDATE runtime_records SET status = ?1, pid = COALESCE(?2, pid) WHERE id = ?3",
-            rusqlite::params![status, p, id],
-        )
-        .map(|_| ())
-        .map_err(tokio_rusqlite::Error::from)
-    })
-    .await
+    let id_s = id.to_string();
+    let status_s = status.to_string();
+        let p = pid;
+        db.call(move |conn| {
+            conn.execute(
+                "UPDATE runtime_records SET status = ?1, pid = COALESCE(?2, pid) WHERE id = ?3",
+                rusqlite::params![status_s, p, id_s],
+            )
+            .map(|_| ())
+            .map_err(tokio_rusqlite::Error::from)
+        })
+        .await
 }
 
 pub async fn list_runtime_records(db: &Db) -> Vec<serde_json::Value> {
@@ -141,11 +139,13 @@ pub async fn list_runtime_records(db: &Db) -> Vec<serde_json::Value> {
     .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 pub async fn get_runtime_record(db: &Db, id: &str) -> Option<serde_json::Value> {
+    let id_s = id.to_string();
     db.call(move |conn| {
         conn.query_row(
             "SELECT id, kind, script, user, pid, status, started_at, timeout_secs FROM runtime_records WHERE id = ?1",
-            rusqlite::params![id],
+            rusqlite::params![id_s],
             |row| Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
                 "kind": row.get::<_, String>(1)?,
@@ -271,6 +271,7 @@ pub async fn cleanup_stale(db: &Db) {
 
 // ── Pending confirmations ─────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub struct PendingConfirm {
     pub token:        String,
     pub platform:     String,

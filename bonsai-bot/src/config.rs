@@ -61,6 +61,8 @@ impl Default for BotConfig {
             buddy_api_url:  "http://127.0.0.1:11420".to_string(),
             admin_port:     11666,
             reclaim_allowed_ports: Vec::new(),
+            allowed_script_paths: Vec::new(),
+            runtime_limits: RuntimeLimits::default(),
             db_path,
             discord:         PlatformSlot::default(),
             telegram:        PlatformSlot::default(),
@@ -181,6 +183,7 @@ pub fn keyring_set(account: &str, value: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 pub fn keyring_delete(account: &str) -> Result<(), String> {
     keyring::Entry::new(KEYRING_SERVICE, account)
         .map_err(|e: keyring::Error| e.to_string())?
