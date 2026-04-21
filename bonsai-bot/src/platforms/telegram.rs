@@ -49,7 +49,7 @@ impl MessagingPlatform for TelegramPlatform {
         let platform2 = self.clone();
 
         let message_handler = Update::filter_message().branch(
-            teloxide::dptree::endpoint(move |bot: Bot, msg: Message| {
+            teloxide::dptree::endpoint(move |_bot: Bot, msg: Message| {
                 let tx       = tx.clone();
                 let shed_tx  = shed_tx.clone();
                 let platform = platform.clone();

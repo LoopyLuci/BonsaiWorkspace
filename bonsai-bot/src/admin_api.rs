@@ -18,7 +18,7 @@ use sha2::Digest;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
 use hex;
-use chrono;
+use chrono::{self, TimeZone};
 
 use crate::config::keyring_set;
 use crate::metrics::SharedMetrics;
@@ -94,16 +94,18 @@ pub struct AdminState {
     pub runtime_children: Arc<Mutex<HashMap<String, RuntimeInfo>>>,
 }
 
-#[derive(Debug)]
-struct RuntimeInfo {
-    child: Option<tokio::process::Child>,
+#[allow(dead_code)]
+pub(crate) struct RuntimeInfo {
+    controller: Option<Box<dyn bonsai_runtime::RuntimeController + Send + Sync>>,
     pid: Option<i64>,
     user: Option<String>,
     script: String,
     started_at: chrono::DateTime<chrono::Utc>,
+    #[allow(dead_code)]
     timeout_secs: Option<u64>,
 }
 
+#[allow(dead_code)]
 pub struct AdminHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
     join:        JoinHandle<()>,
@@ -111,6 +113,7 @@ pub struct AdminHandle {
 }
 
 impl AdminHandle {
+    #[allow(dead_code)]
     pub async fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
@@ -198,16 +201,16 @@ pub async fn start(
                     let script = rec["script"].as_str().unwrap_or_default().to_string();
                     let user = rec["user"].as_str().map(|s| s.to_string());
                     let started_at = rec["started_at"].as_i64().unwrap_or(0);
-                    let started_dt = chrono::Utc.timestamp_opt(started_at, 0).unwrap_or_else(|| chrono::Utc::now());
+                    let started_dt = chrono::Utc.timestamp_opt(started_at, 0).single().unwrap_or_else(|| chrono::Utc::now());
                     // Check whether PID is running; if not, mark as orphan
                     let alive = pid.and_then(|p| Some(pid_running(p))).unwrap_or(false);
                     if !alive {
                         let _ = crate::session::update_runtime_status(&db, &id, "orphan", None).await;
                         continue;
                     }
-                    // Insert metadata with no Child handle (cannot reattach)
+                    // Insert metadata with no controller handle (cannot reattach)
                     let info = RuntimeInfo {
-                        child: None,
+                        controller: None,
                         pid,
                         user,
                         script,
@@ -416,7 +419,7 @@ fn rotate_and_prune_audit_log(target: &PathBuf, max_bytes: u64, retain_days: i64
                         if let Ok(meta) = e.metadata() {
                             if let Ok(mtime) = meta.modified() {
                                 if let Ok(since) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                                    let dt = chrono::Utc.timestamp_opt(since.as_secs() as i64, 0).unwrap_or(chrono::Utc::now());
+                                    let dt = chrono::Utc.timestamp_opt(since.as_secs() as i64, 0).single().unwrap_or(chrono::Utc::now());
                                     if dt < cutoff {
                                         let _ = std::fs::remove_file(e.path());
                                     }
@@ -515,7 +518,7 @@ async fn start_runtime(
 
     let id = uuid::Uuid::new_v4().to_string();
     let rm = bonsai_runtime::RuntimeManager::new();
-    let child_res = match body.kind.as_str() {
+    let controller_res = match body.kind.as_str() {
         "python" => {
             let port = body.port.unwrap_or(0);
             rm.start_python_worker(&script_canon.to_string_lossy(), port).await
@@ -525,14 +528,14 @@ async fn start_runtime(
         _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "unknown runtime kind"}))).into_response(),
     };
 
-    match child_res {
-        Ok(mut child) => {
-            let pid = child.id().map(|p| p as i64).unwrap_or(0);
-            // store child for lifecycle management and persist metadata
+    match controller_res {
+        Ok(controller) => {
+            let pid = controller.pid().unwrap_or(0);
+            // store controller for lifecycle management and persist metadata
             {
                 let mut map = s.runtime_children.lock().await;
                 map.insert(id.clone(), RuntimeInfo {
-                    child: Some(child),
+                    controller: Some(controller),
                     pid: Some(pid),
                     user: body.user.clone(),
                     script: script_canon.to_string_lossy().into_owned(),
@@ -561,10 +564,10 @@ async fn start_runtime(
                     tokio::time::sleep(Duration::from_secs(tsec)).await;
                     let mut map = children_map.lock().await;
                     if let Some(mut info) = map.remove(&id_clone) {
-                        // kill via Child if available, otherwise by PID
-                        if let Some(mut child) = info.child.take() {
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
+                        // kill via controller if available, otherwise by PID
+                        if let Some(mut ctrl) = info.controller.take() {
+                            let _ = ctrl.kill().await;
+                            let _ = ctrl.wait().await;
                         } else if let Some(p) = info.pid {
                             let _ = kill_pid(p);
                         }
@@ -590,15 +593,15 @@ async fn stop_runtime(
     }
     let mut map = s.runtime_children.lock().await;
     if let Some(mut info) = map.remove(&body.id) {
-        // attempt graceful kill: prefer Child handle, otherwise kill by PID
-        if let Some(mut child) = info.child.take() {
-            if let Err(e) = child.kill().await {
+        // attempt graceful kill: prefer controller handle, otherwise kill by PID
+        if let Some(mut ctrl) = info.controller.take() {
+            if let Err(e) = ctrl.kill().await {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("kill failed: {}", e)}))).into_response();
             }
-            match child.wait().await {
-                Ok(status) => {
+            match ctrl.wait().await {
+                Ok(code_opt) => {
                     let _ = crate::session::update_runtime_status(&s.db, &body.id, "stopped", None).await;
-                    return Json(json!({"ok": true, "code": status.code()})).into_response()
+                    return Json(json!({"ok": true, "code": code_opt})).into_response()
                 }
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
             }
@@ -628,8 +631,8 @@ async fn list_runtimes(
     let map = s.runtime_children.lock().await;
     let mut out = Vec::new();
     for (id, info) in map.iter() {
-        let pid = info.pid.unwrap_or(0);
-        let controllable = info.child.is_some();
+        let pid = info.pid.or_else(|| info.controller.as_ref().and_then(|c| c.pid())).unwrap_or(0);
+        let controllable = info.controller.is_some();
         out.push(json!({"id": id, "pid": pid, "controllable": controllable, "user": info.user, "script": info.script, "started_at": info.started_at.to_rfc3339()}));
     }
     Json(json!({"runtimes": out})).into_response()
