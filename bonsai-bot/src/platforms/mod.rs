@@ -59,6 +59,7 @@ pub trait MessagingPlatform: Send + Sync {
 
 // ── Shed notice ───────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ShedNotice {
     pub platform: String,

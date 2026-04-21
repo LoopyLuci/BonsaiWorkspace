@@ -20,6 +20,7 @@ fn now_secs() -> i64 {
 
 type UserLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>;
 
+#[allow(dead_code)]
 pub struct Router {
     pub buddy:   Arc<BuddyClient>,
     pub dedup:   Arc<DedupCache>,
