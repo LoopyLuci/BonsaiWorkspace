@@ -489,7 +489,24 @@ async function checkApiHealthyOnce(apiPort) {
   }
 }
 
+function killOrphanBuildProcs() {
+  // Kill orphaned cargo/rustc processes from prior crashed runs that would
+  // hold the build lock or compete for RAM, then remove any stale lock file.
+  if (process.platform === 'win32') {
+    for (const name of ['cargo.exe', 'rustc.exe']) {
+      try { spawnSync('taskkill', ['/F', '/IM', name], { stdio: 'ignore' }); } catch {}
+    }
+  } else {
+    for (const name of ['cargo', 'rustc']) {
+      try { spawnSync('pkill', ['-x', name], { stdio: 'ignore' }); } catch {}
+    }
+  }
+  const lockFile = path.join(ROOT_DIR, 'target', 'debug', '.cargo-lock');
+  try { if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile); } catch {}
+}
+
 function spawnTauriDev() {
+  killOrphanBuildProcs();
   return spawn('cargo', ['tauri', 'dev'], {
     cwd: TAURI_DIR,
     stdio: 'inherit',
