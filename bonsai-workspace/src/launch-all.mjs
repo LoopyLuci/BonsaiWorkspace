@@ -505,12 +505,37 @@ function killOrphanBuildProcs() {
   try { if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile); } catch {}
 }
 
+function ensureDepsCached() {
+  // Fetch all locked dependencies into ~/.cargo/registry so the build can run
+  // with CARGO_NET_OFFLINE=true, avoiding curl_easy_init() failures that occur
+  // when cargo tries to refresh the crates.io index under low memory.
+  // Runs synchronously; exits 0 if everything is cached, non-zero if a new dep
+  // needs to be downloaded (in which case offline mode is skipped below).
+  try {
+    const result = spawnSync(
+      'cargo', ['fetch', '--manifest-path', path.join(TAURI_DIR, 'Cargo.toml')],
+      { stdio: 'inherit', timeout: 120_000 }
+    );
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function spawnTauriDev() {
   killOrphanBuildProcs();
+  const offline = ensureDepsCached();
   return spawn('cargo', ['tauri', 'dev'], {
     cwd: TAURI_DIR,
     stdio: 'inherit',
-    env: { ...process.env, BONSAI_DEV_ALL_NO_BACKEND: '1' },
+    env: {
+      ...process.env,
+      BONSAI_DEV_ALL_NO_BACKEND: '1',
+      // Prevent cargo from re-fetching the crates.io index during the build.
+      // ensureDepsCached() already synced the registry; the index refresh is
+      // what triggers the curl_easy_init() null-handle OOM panic.
+      ...(offline ? { CARGO_NET_OFFLINE: '1' } : {}),
+    },
   });
 }
 
