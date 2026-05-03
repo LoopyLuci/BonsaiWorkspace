@@ -27,6 +27,17 @@ pub struct SubtaskSpec {
 
 // ── Public result types ───────────────────────────────────────────────────────
 
+/// Structured self-assessment emitted by each worker inside <worker_assessment> tags.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct WorkerAssessment {
+    /// 0-100. 90+ = verified by tools; 70-89 = strong evidence; 50-69 = partial; <50 = inference.
+    pub confidence: f64,
+    /// Specific observations cited as evidence (e.g. "src/auth.rs:47 — buffer overflow confirmed").
+    pub evidence_sources: Vec<String>,
+    /// What the worker could not verify or explicitly left open.
+    pub gaps: Vec<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct AgentOutput {
     pub agent_id:    String,
@@ -34,6 +45,8 @@ pub struct AgentOutput {
     pub subtask:     String,
     pub result:      String,
     pub stats:       InferStats,
+    /// Parsed from the worker's <worker_assessment> block; None if worker did not emit one.
+    pub assessment:  Option<WorkerAssessment>,
 }
 
 #[derive(Serialize)]
@@ -369,12 +382,15 @@ async fn run_swarm(
             SubtaskSpec {
                 worker_slot: *slot,
                 task: format!(
-                    "{} pass: produce a concrete, non-duplicative contribution for this request: {}",
+                    "As the {}, address the following request: {}",
                     profile.role_name,
                     user_prompt,
                 ),
                 context: format!(
-                    "Focus on {}. {}",
+                    "Your role: {}. Your focus: {}. Required deliverable: {}.\n\
+                     Only use workspace tools when the request requires inspecting files or machine state. \
+                     Answer knowledge questions (language, math, science, history, definitions) directly without tools.",
+                    profile.role_name,
                     profile.focus,
                     profile.deliverable,
                 ),
@@ -441,6 +457,7 @@ async fn continue_swarm_with_plan(
         leader_plan.subtasks,
         &enabled_worker_slots,
         &user_prompt,
+        &runtime_settings,
     );
     for spec in &mut planned_subtasks {
         let profile = role_profile_for_slot(&runtime_settings, spec.worker_slot);
@@ -477,7 +494,12 @@ async fn continue_swarm_with_plan(
     });
 
     let chain_strategy = runtime_settings.chain_strategy.to_lowercase();
-    let run_parallel = true;
+    // Derive execution mode from chain_strategy — previously this was hardcoded to true,
+    // which made sequential strategies dead code.
+    let run_parallel = !matches!(
+        chain_strategy.as_str(),
+        "sequential_gate" | "sequential_then_delegate"
+    );
 
     let mut worker_outputs: Vec<AgentOutput> = Vec::new();
 
@@ -877,6 +899,7 @@ async fn continue_swarm_with_plan(
                 subtask: "[auto-detected missing worker output]".to_string(),
                 result: "Error: Worker did not return a final output in this run. Check swarm-debug/swarm-error telemetry for timeout/cancellation/details.".to_string(),
                 stats: InferStats::default(),
+                assessment: None,
             });
 
             if runtime_settings.emit_debug_events {
@@ -904,33 +927,60 @@ async fn continue_swarm_with_plan(
         }));
     }
 
-    // Build synthesis context
-    let synthesis_context = worker_outputs.iter()
+    // Build synthesis context — exclude failed workers, surface self-assessments.
+    let (successful_outputs, failed_outputs): (Vec<_>, Vec<_>) = worker_outputs
+        .iter()
+        .partition(|o| !o.result.trim_start().starts_with("Error:") && !o.result.trim().is_empty());
+
+    let synthesis_context = successful_outputs.iter()
         .map(|o| {
+            let assessment_line = o.assessment.as_ref().map(|a| {
+                let sources = if a.evidence_sources.is_empty() { "none cited".to_string() } else { a.evidence_sources.join("; ") };
+                let gaps    = if a.gaps.is_empty() { "none".to_string() } else { a.gaps.join("; ") };
+                format!("\n> Self-assessment — confidence: {}%, evidence: [{}], gaps: [{}]", a.confidence as u32, sources, gaps)
+            }).unwrap_or_default();
+
             if runtime_settings.include_worker_summaries {
-                format!("### Worker {} result\n{}", o.slot_index, o.result)
+                format!("### Worker {} result{}\n{}", o.slot_index, assessment_line, o.result)
             } else {
                 let summary = o.result.lines().take(3).collect::<Vec<_>>().join(" ");
-                format!("### Worker {} summary\n{}", o.slot_index, summary)
+                format!("### Worker {} summary{}\n{}", o.slot_index, assessment_line, summary)
             }
         })
         .collect::<Vec<_>>()
         .join("\n\n");
 
+    let failure_note = if failed_outputs.is_empty() {
+        String::new()
+    } else {
+        let list = failed_outputs.iter()
+            .map(|o| format!("  - Worker {}: {}", o.slot_index, &o.result[..o.result.len().min(120)]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\n**Workers excluded (failed or timed out — do not speculate about their output):**\n{list}")
+    };
+
     let cross_review_directive = if runtime_settings.enable_worker_cross_review {
-        "\n\nCross-review mode: explicitly identify disagreements between workers, choose the most evidence-backed claims, and call out uncertain points."
+        "\n\nCross-review: explicitly identify disagreements, choose the most evidence-backed claims, and call out uncertain points."
     } else {
         ""
     };
 
+    let strategy_directive = match chain_strategy.as_str() {
+        "parallel_vote" => "\n\nVote synthesis: for each key claim, count agreements vs. disagreements across workers. Prefer the majority view and state the tally (e.g. '2 of 3 workers confirmed X'). Note any minority views.",
+        _ => "",
+    };
+
     let synthesis_user_msg = format!(
-        "## Original request\n{user_prompt}\n\n## Worker results\n{synthesis_context}\n\nSynthesis style: {}{}\n\nReconcile before summarizing:\n- Identify key agreements and disagreements between workers.\n- Resolve conflicts by preferring evidence-backed claims; if unresolved, state uncertainty clearly.\n- Merge complementary findings into one coherent plan (do not concatenate raw outputs).\n- Attribute important claims to worker slots when useful (for traceability).\n- End with a concrete final answer and actionable next steps.",
+        "## Original request\n{user_prompt}\n\n## Worker results\n{synthesis_context}{failure_note}\n\nSynthesis style: {}{}{}\n\nReconcile before writing:\n- Identify key agreements and disagreements between workers.\n- Workers with higher confidence and cited evidence sources carry more weight.\n- Resolve conflicts by preferring evidence-backed claims; where unresolved, state uncertainty explicitly.\n- Merge complementary findings into one coherent answer — do not concatenate raw worker outputs.\n- Attribute important claims to worker slots when it aids traceability.\n- End with a concrete final answer and actionable next steps.",
         runtime_settings.synthesis_style,
         cross_review_directive,
+        strategy_directive,
     );
 
+    let synthesis_sys_prompt = synthesis_system_prompt(workspace_path.as_deref());
     let synthesis_ctx = vec![
-        json!({"role": "system", "content": base_prompt}),
+        json!({"role": "system", "content": synthesis_sys_prompt}),
         json!({"role": "user",   "content": synthesis_user_msg}),
     ];
 
@@ -997,7 +1047,18 @@ async fn run_worker_subtask(
 
     let role_profile = role_profile_for_slot(settings, worker.config.slot_index as usize);
     let worker_role_prompt = format!(
-        "## Worker role\nRole: {}\nFocus: {}\nDeliverable: {}\n\nGrounded tool policy:\n- Use tools only when needed to verify facts.\n- Do not guess file paths; discover with list tools first when uncertain.\n- For file reads/writes, stay within the open workspace unless explicitly instructed otherwise.",
+        "## Worker role\nRole: {}\nFocus: {}\nDeliverable: {}\n\n\
+         Grounded tool policy:\n\
+         - Use tools only when needed to verify facts from the workspace or machine.\n\
+         - Do not guess file paths; discover with list tools first when uncertain.\n\
+         - For file reads/writes, stay within the open workspace unless explicitly instructed otherwise.\n\n\
+         ## Required self-assessment\n\
+         At the very end of your response, append EXACTLY this block — no prose before or after the tags:\n\
+         <worker_assessment>\n\
+         {{\"confidence\": <0-100>, \"evidence_sources\": [\"specific file:line or observation\"], \"gaps\": [\"what you could not verify\"]}}\n\
+         </worker_assessment>\n\n\
+         Confidence scale: 90-100 = verified by tool results; 70-89 = strong evidence, minor gaps; \
+         50-69 = partial evidence; below 50 = inference only.",
         role_profile.role_name,
         role_profile.focus,
         role_profile.deliverable,
@@ -1012,7 +1073,7 @@ async fn run_worker_subtask(
 
     let workspace_grounding = workspace_path
         .as_deref()
-        .map(|path| format!("\n\n## Workspace grounding\nCurrent workspace root: {path}\nPrefer paths under this root and cite exact files when possible."))
+        .map(|path| format!("\n\n## Workspace grounding\nOpen workspace folder: {path}\nAlways pass this exact string as the 'path' argument for file/directory tool calls. Do not append any tokens or placeholders to it."))
         .unwrap_or_default();
 
     let ctx_user_base = if settings.include_original_prompt_in_worker_context {
@@ -1098,18 +1159,24 @@ async fn run_worker_subtask(
                 if text.is_empty() {
                     text = tools::strip_tool_calls(&strip_think_tags(&raw_clone));
                 }
+                // Extract structured self-assessment before truncation.
+                let assessment = parse_worker_assessment(&text);
+                if assessment.is_some() {
+                    text = strip_worker_assessment(&text);
+                }
                 if text.len() > settings.max_worker_response_chars {
-                    text = text.chars().take(settings.max_worker_response_chars).collect::<String>();
+                    text = truncate_at_semantic_boundary(&text, settings.max_worker_response_chars);
                 }
                 let _ = app_handle.emit("swarm-agent-complete", json!({
                     "run_id": run_id,
                     "agent_id": &agent_id,
                     "slot": slot,
                     "result": &text,
+                    "confidence": assessment.as_ref().map(|a| a.confidence),
                     "stats": &stats,
                     "attempt": attempt + 1,
                 }));
-                return AgentOutput { agent_id, slot_index: slot, subtask: task_clone, result: text, stats };
+                return AgentOutput { agent_id, slot_index: slot, subtask: task_clone, result: text, stats, assessment };
             }
             Err(e) => {
                 last_error = Some(e.clone());
@@ -1173,6 +1240,7 @@ async fn run_worker_subtask(
         subtask: task_clone,
         result: format!("Error: {}", final_err),
         stats: InferStats::default(),
+        assessment: None,
     }
 }
 
@@ -1248,11 +1316,21 @@ fn score_agent_output(out: &AgentOutput, policy: &AgentChainPolicy) -> f64 {
         return 0.0;
     }
 
-    let explicit_conf = extract_confidence_percent(text).unwrap_or(0.0);
-    let length_bonus = (text.len().min(4000) as f64 / 4000.0) * 30.0;
-    let clarity_bonus = if text.contains("```") || text.contains("1.") { 12.0 } else { 4.0 };
-    let explicit_bonus = if explicit_conf > 0.0 { explicit_conf * 0.55 } else { 0.0 };
-    let base = (38.0 + explicit_bonus + length_bonus + clarity_bonus).min(100.0);
+    let base = if let Some(ref a) = out.assessment {
+        // Structured self-assessment path: use worker-reported confidence with
+        // an evidence bonus and a gap penalty.
+        let evidence_bonus = (a.evidence_sources.len().min(5) as f64) * 4.0;
+        let gap_penalty    = (a.gaps.len().min(3) as f64) * 3.0;
+        (a.confidence + evidence_bonus - gap_penalty).clamp(0.0, 100.0)
+    } else {
+        // Fallback heuristics when worker did not emit an assessment block.
+        // Still less reliable than self-assessment, but avoids total score collapse.
+        let explicit_conf  = extract_confidence_percent(text).unwrap_or(0.0);
+        let length_bonus   = (text.len().min(4000) as f64 / 4000.0) * 30.0;
+        let clarity_bonus  = if text.contains("```") || text.contains("1.") { 12.0 } else { 4.0 };
+        let explicit_bonus = if explicit_conf > 0.0 { explicit_conf * 0.55 } else { 0.0 };
+        (38.0 + explicit_bonus + length_bonus + clarity_bonus).min(100.0)
+    };
 
     let weight = policy.response_weight.max(1) as f64;
     (base * (0.85 + (weight.min(10.0) / 25.0))).min(100.0)
@@ -1443,6 +1521,7 @@ fn normalize_subtasks_for_active_workers(
     mut subtasks: Vec<SubtaskSpec>,
     enabled_worker_slots: &[usize],
     user_prompt: &str,
+    settings: &SwarmRuntimeSettings,
 ) -> Vec<SubtaskSpec> {
     let mut seen_slots = std::collections::HashSet::new();
     subtasks.retain(|spec| {
@@ -1454,10 +1533,18 @@ fn normalize_subtasks_for_active_workers(
 
     for slot in enabled_worker_slots {
         if !seen_slots.contains(slot) {
+            let profile = role_profile_for_slot(settings, *slot);
             subtasks.push(SubtaskSpec {
                 worker_slot: *slot,
-                task: format!("Handle this request from your specialist perspective and provide complete output: {}", user_prompt),
-                context: "Auto-filled because this enabled worker was not assigned in the leader plan.".to_string(),
+                task: format!("As the {}, address the following request: {}", profile.role_name, user_prompt),
+                context: format!(
+                    "Your role: {}. Your focus: {}. Required deliverable: {}.\n\
+                     Auto-assigned because this worker slot was not included in the leader plan.\n\
+                     Only use workspace tools when the request requires inspecting files or machine state.",
+                    profile.role_name,
+                    profile.focus,
+                    profile.deliverable,
+                ),
             });
         }
     }
@@ -1625,6 +1712,64 @@ fn update_discovered_paths_from_tool_result(
             }
         }
     }
+}
+
+/// Parse the <worker_assessment> JSON block from the end of a worker response.
+/// Uses rfind so incidental mentions of the tag earlier in the text are ignored.
+fn parse_worker_assessment(text: &str) -> Option<WorkerAssessment> {
+    let open  = "<worker_assessment>";
+    let close = "</worker_assessment>";
+    let start = text.rfind(open)?;
+    let end   = text[start..].find(close).map(|p| start + p)?;
+    let json  = text[start + open.len()..end].trim();
+    serde_json::from_str(json).ok()
+}
+
+/// Remove the <worker_assessment> block from worker output so it is not shown to users.
+fn strip_worker_assessment(text: &str) -> String {
+    let open  = "<worker_assessment>";
+    let close = "</worker_assessment>";
+    if let Some(start) = text.rfind(open) {
+        if let Some(rel) = text[start..].find(close) {
+            let end = start + rel + close.len();
+            return format!("{}{}", text[..start].trim_end(), &text[end..]);
+        }
+    }
+    text.to_string()
+}
+
+/// Truncate worker output at a paragraph or sentence boundary rather than mid-character,
+/// and append a notice so synthesis knows the output was cut.
+fn truncate_at_semantic_boundary(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars { return text.to_string(); }
+    let candidate = &text[..max_chars];
+    if let Some(pos) = candidate.rfind("\n\n") {
+        return format!("{}\n\n[... response truncated at {max_chars} chars]", &text[..pos]);
+    }
+    if let Some(pos) = candidate.rfind(". ") {
+        return format!("{}.\n\n[... response truncated]", &text[..pos]);
+    }
+    format!("{}\n\n[... response truncated]", candidate)
+}
+
+/// Lightweight system prompt for the synthesis pass — no tool definitions, no workspace tree.
+/// The leader doesn't call tools during synthesis; injecting the full tool registry wastes
+/// ~3 KB of context and creates confusing "should I call a tool?" noise.
+fn synthesis_system_prompt(workspace_path: Option<&str>) -> String {
+    let ws_line = workspace_path
+        .map(|p| format!("\nWorkspace: {p}"))
+        .unwrap_or_default();
+    format!(
+        "You are the synthesis leader in a multi-agent swarm.{ws_line}\n\
+         Your task: reconcile the worker findings below into one authoritative, coherent answer.\n\n\
+         Rules:\n\
+         - Weigh evidence-backed claims (with file/line citations or tool-verified facts) over unsupported assertions.\n\
+         - Workers who reported higher confidence and specific evidence sources carry more weight.\n\
+         - Explicitly resolve contradictions — do not silently pick one side.\n\
+         - Workers excluded due to errors are noted; do not speculate about what they would have said.\n\
+         - Do not call any tools. Synthesize only from the provided worker results.\n\
+         - End with a concrete final answer and actionable next steps."
+    )
 }
 
 fn parse_swarm_plan(text: &str) -> Option<LeaderPlan> {

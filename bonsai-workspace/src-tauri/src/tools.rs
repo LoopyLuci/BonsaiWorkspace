@@ -274,7 +274,7 @@ pub fn system_prompt(tools: &[ToolDef], workspace_path: Option<&str>) -> String 
     let mut s = String::from(
         "You are Bonsai, an AI coding assistant running locally on the user's device.\n\
          You can read and modify files, search code, and run commands on the user's machine.\n\
-         Be precise, evidence-driven, and tool-first when facts are needed.\n\n"
+         Be precise and evidence-driven. Use tools only when the answer requires inspecting the workspace or machine — not for questions answerable from general knowledge.\n\n"
     );
 
     if let Some(ws) = workspace_path {
@@ -345,11 +345,12 @@ pub fn system_prompt(tools: &[ToolDef], workspace_path: Option<&str>) -> String 
             - If the user asks about tools, skills, capabilities, or what you can do, answer using the tool registry above.\n\
             - Treat each custom tool (is_custom=true) as a workspace skill and include it in capability summaries.\n\
             - For file inventory tasks, never guess from memory; use list_files and report counts from tool results.\n\
-            - For requests like 'list all files in current/open directory', use list_all_files first with:\n\
-             {\"path\": \"<workspace_or_target_dir_or_omit_for_current>\", \"offset\": 0, \"limit\": 200}\n\
+            - For requests like 'list all files in current/open directory', use list_all_files. Omit 'path' to default to the current workspace, or pass an absolute path string. Example:\n\
+             {\"offset\": 0, \"limit\": 200}\n\
              and keep paging with offset += returned_count while has_more=true.\n\
             - When the user asks for recursive/full tree output, use list_all_files (already recursive).\n\
-            - If no workspace is open and the request requires file/directory tools, do not call a tool yet; ask the user to open a folder first.\n\n"
+            - If no workspace is open and the request requires file/directory tools, do not call a tool yet; ask the user to open a folder first.\n\
+            - IMPORTANT: Do NOT use file tools for requests that are answerable from general knowledge — language translation, math, science, history, definitions, and similar factual questions. Answer these directly without calling any tool. Only call tools when the answer requires inspecting the actual workspace or machine state.\n\n"
         );
 
     s.push_str(
