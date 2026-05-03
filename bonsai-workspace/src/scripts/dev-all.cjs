@@ -10,6 +10,8 @@ const VITE_URLS = [process.env.VITE_DEV_URL || 'http://127.0.0.1:1420/', process
 const API_HOST = process.env.VITE_API_HOST || process.env.BONSAI_API_HOST || '127.0.0.1';
 const API_PORT = process.env.VITE_API_PORT || process.env.BONSAI_API_PORT || '11369';
 const API_HEALTH_URL = `http://${API_HOST}:${API_PORT}/health`;
+const TAURI_CONTEXT = Object.keys(process.env).some((k) => k.startsWith('TAURI_'));
+const SKIP_BACKEND = process.env.BONSAI_DEV_ALL_NO_BACKEND === '1' || TAURI_CONTEXT;
 
 function probe(url, timeout = 500) {
   return new Promise((resolve) => {
@@ -66,12 +68,16 @@ function startVite() {
       break;
     }
   }
-  const apiRunning = await probe(API_HEALTH_URL, 700);
+  const apiRunning = SKIP_BACKEND ? false : await probe(API_HEALTH_URL, 700);
   if (viteRunning) console.log('[dev-all] detected existing Vite server; skipping start');
-  if (apiRunning) console.log('[dev-all] detected existing Bonsai API; skipping backend start');
+  if (SKIP_BACKEND) {
+    console.log('[dev-all] tauri/beforeDevCommand context detected; skipping backend launcher');
+  } else if (apiRunning) {
+    console.log('[dev-all] detected existing Bonsai API; skipping backend start');
+  }
 
   let backend;
-  if (!apiRunning) {
+  if (!SKIP_BACKEND && !apiRunning) {
     console.log('[dev-all] starting backend...');
     backend = startBackend();
   }

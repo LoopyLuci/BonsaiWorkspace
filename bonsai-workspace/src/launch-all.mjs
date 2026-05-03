@@ -492,7 +492,7 @@ function spawnTauriDev() {
   return spawn('cargo', ['tauri', 'dev'], {
     cwd: TAURI_DIR,
     stdio: 'inherit',
-    env: { ...process.env },
+    env: { ...process.env, BONSAI_DEV_ALL_NO_BACKEND: '1' },
   });
 }
 
