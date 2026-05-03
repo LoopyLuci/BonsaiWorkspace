@@ -801,10 +801,13 @@ async function run() {
       shuttingDown = true;
       if (botProc) { try { botProc.kill(); } catch { /* ignore */ } }
       if (!tauri) return;
-      try {
-        tauri.kill('SIGINT');
-      } catch {
-        // ignore
+      // On Windows, SIGINT does not propagate to grandchildren (cargo → rustc).
+      // Use taskkill /F /T to kill the entire process tree so cargo's build lock
+      // and port bindings are released before the next launch attempt.
+      if (process.platform === 'win32' && tauri.pid) {
+        try { spawnSync('taskkill', ['/F', '/T', '/PID', String(tauri.pid)], { stdio: 'ignore' }); } catch { /* ignore */ }
+      } else {
+        try { tauri.kill('SIGINT'); } catch { /* ignore */ }
       }
     };
 
