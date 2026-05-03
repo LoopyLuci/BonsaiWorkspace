@@ -499,7 +499,10 @@ fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle) {
         "--ctx-size", &ctx,
         "--threads", &threads,
         "--n-gpu-layers", n_gpu_layers,
-        "--log-disable",
+        // NOTE: do NOT pass --log-disable. Vulkan memory initialization on AMD
+        // behaves differently (and crashes) when llama-server's internal logging
+        // is suppressed. stderr is already redirected to llama-slot-N.log, so all
+        // output is captured without cluttering the terminal.
     ])
     .current_dir(&dir)
     .stdout(std::process::Stdio::null())
