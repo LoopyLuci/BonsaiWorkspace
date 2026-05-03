@@ -23,6 +23,12 @@ pub struct SubtaskSpec {
     pub worker_slot: usize,
     pub task:        String,
     pub context:     String,
+    /// Optional per-subtask tool allow-list.  When Some, the worker receives only
+    /// these tools regardless of the global tool set.  When None, the worker gets
+    /// the role-appropriate default (read-only for reviewers/analysts; full set for
+    /// implementers and deep-specialists).  The leader can override either direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 // ── Public result types ───────────────────────────────────────────────────────
@@ -308,7 +314,7 @@ async fn run_swarm(
 
     let leader_sys_prompt = if agents.len() > 1 {
         format!(
-            "{base_prompt}\n\n## Swarm coordination\n\nYou are the Leader in a multi-agent swarm. Available workers:\n{workers_summary}{workspace_hint}\n\nDecompose by role, not by duplication:\n- Assign each worker a distinct angle (implementation, verification, risk review, architecture, UX, etc.).\n- Every subtask must include concrete objective, expected output artifact, and constraints.\n- Prefer grounded tasks that reference workspace paths or verifiable checks when relevant.\n\nOutput a plan FIRST when decomposition helps:\n<swarm_plan>\n{{\"subtasks\":[{{\"worker_slot\":1,\"task\":\"objective + deliverable\",\"context\":\"constraints + evidence targets\"}},...]}}\n</swarm_plan>\nThen optionally add a brief note. If no decomposition needed, skip the tag and reply directly."
+            "{base_prompt}\n\n## Swarm coordination\n\nYou are the Leader in a multi-agent swarm. Available workers:\n{workers_summary}{workspace_hint}\n\nDecompose by role, not by duplication:\n- Assign each worker a distinct angle (implementation, verification, risk review, architecture, UX, etc.).\n- Every subtask must include concrete objective, expected output artifact, and constraints.\n- Prefer grounded tasks that reference workspace paths or verifiable checks when relevant.\n\nOutput a plan FIRST when decomposition helps:\n<swarm_plan>\n{{\"subtasks\":[{{\"worker_slot\":1,\"task\":\"objective + deliverable\",\"context\":\"constraints + evidence targets\",\"allowed_tools\":[\"read_file\",\"list_files\"]}},...]}}\n</swarm_plan>\nThe `allowed_tools` field is optional. Omit it to use role defaults (reviewers/analysts get read-only tools; implementers and specialists get full access). Include it only when you need to override the default — e.g. grant a reviewer write access for a specific subtask, or restrict an implementer to read-only research.\nThen optionally add a brief note. If no decomposition needed, skip the tag and reply directly."
         )
     } else {
         base_prompt.clone()
@@ -455,6 +461,7 @@ async fn run_swarm(
                     profile.focus,
                     profile.deliverable,
                 ),
+                allowed_tools: None,
             }
         })
         .collect::<Vec<_>>();
@@ -821,6 +828,7 @@ async fn continue_swarm_with_plan(
                     worker_slot: target_slot,
                     task: "Perform the heavy implementation/deep reasoning pass now using the chosen strategy and produce implementation-ready output.".to_string(),
                     context: "Heavy-work delegation stage after leader comparison.".to_string(),
+                    allowed_tools: None,
                 };
 
                 let out = run_worker_subtask(
@@ -897,6 +905,7 @@ async fn continue_swarm_with_plan(
                 worker_slot: slot,
                 task: format!("Retry worker task after initial miss: {}", user_prompt),
                 context: "Recovery assignment generated after missing worker output.".to_string(),
+                allowed_tools: None,
             });
 
             let ah_clone = app_handle.clone();
@@ -1101,12 +1110,24 @@ async fn run_worker_subtask(
     worker_cancel: Arc<AtomicBool>,
     prior_results_context: String,
 ) -> AgentOutput {
+    // Resolve role first — it drives the default tool restriction.
+    let role_profile = role_profile_for_slot(settings, worker.config.slot_index as usize);
+
     let mut worker_tools = tools_available.clone();
     if !settings.allow_worker_tools {
+        // Global kill-switch: strip all tools.
         worker_tools.clear();
+    } else if let Some(ref explicit) = spec.allowed_tools {
+        // Leader explicitly specified a tool allow-list for this subtask.
+        let allow: HashSet<&str> = explicit.iter().map(String::as_str).collect();
+        worker_tools.retain(|t| allow.contains(t.name.as_str()));
+    } else if let Some(role_default) = default_allowed_tools_for_role(role_profile.role_name) {
+        // No explicit list — apply the role-appropriate default.
+        // Reviewers and analysts get read-only; implementers/specialists keep everything.
+        let allow: HashSet<&str> = role_default.iter().map(String::as_str).collect();
+        worker_tools.retain(|t| allow.contains(t.name.as_str()));
     }
-
-    let role_profile = role_profile_for_slot(settings, worker.config.slot_index as usize);
+    // None from default_allowed_tools_for_role → unrestricted (implementer / deep-specialist).
     let worker_role_prompt = format!(
         "## Worker role\nRole: {}\nFocus: {}\nDeliverable: {}\n\n\
          Grounded tool policy:\n\
@@ -1662,6 +1683,7 @@ fn normalize_subtasks_for_active_workers(
                     profile.focus,
                     profile.deliverable,
                 ),
+                allowed_tools: None,
             });
         }
     }
@@ -1702,6 +1724,21 @@ fn role_profile_for_slot(settings: &SwarmRuntimeSettings, slot: usize) -> Worker
         role_name: "Supporting Analyst",
         focus: "add complementary checks, documentation, and verification context",
         deliverable: "targeted findings that improve synthesis quality",
+    }
+}
+
+/// Returns the default allowed tool names for a role, or None (unrestricted).
+/// Reviewers and analysts are read-only by default; implementers and specialists are unrestricted.
+fn default_allowed_tools_for_role(role_name: &str) -> Option<Vec<String>> {
+    match role_name {
+        "Gatekeeper Reviewer" | "Supporting Analyst" => Some(vec![
+            "read_file".to_string(),
+            "list_files".to_string(),
+            "list_all_files".to_string(),
+            "search_files".to_string(),
+            "grep_files".to_string(),
+        ]),
+        _ => None,
     }
 }
 
