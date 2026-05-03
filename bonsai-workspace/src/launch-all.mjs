@@ -14,6 +14,7 @@ const PREFLIGHT_CACHE_FILE = path.join(LAUNCHER_ARTIFACT_DIR, 'preflight-cache.j
 const DEFAULT_API_PORT = 11369;
 const DEFAULT_DEV_UI_PORT = 1420;
 const DEFAULT_PREFLIGHT_CACHE_TTL_MS = 10 * 60 * 1000;
+const PID_FILE = path.join(ROOT_DIR, '.bonsai-launcher.pid');
 
 function readConfiguredApiPort() {
   const envPort = Number(process.env.BONSAI_API_PORT);
@@ -593,6 +594,34 @@ function runRemoteSurfaceSmoke(cfg) {
   };
 }
 
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquirePidLock() {
+  if (fs.existsSync(PID_FILE)) {
+    const raw = fs.readFileSync(PID_FILE, 'utf8').trim();
+    const existing = Number(raw);
+    if (Number.isFinite(existing) && existing > 0 && isProcessAlive(existing) && existing !== process.pid) {
+      log(`[launcher] Bonsai is already running (PID ${existing}). Exiting.`);
+      process.exit(0);
+    }
+  }
+  fs.writeFileSync(PID_FILE, String(process.pid), 'utf8');
+}
+
+function releasePidLock() {
+  try {
+    const raw = fs.existsSync(PID_FILE) ? fs.readFileSync(PID_FILE, 'utf8').trim() : '';
+    if (Number(raw) === process.pid) fs.unlinkSync(PID_FILE);
+  } catch { /* best-effort */ }
+}
+
 async function run() {
   const cfg = parseArgs(process.argv.slice(2));
   if (cfg.help) {
@@ -603,6 +632,9 @@ async function run() {
   if (!['desktop', 'desktop+usb'].includes(cfg.mode)) {
     throw new Error(`Unsupported mode: ${cfg.mode}`);
   }
+
+  acquirePidLock();
+  process.on('exit', releasePidLock);
 
   const report = {
     schema_version: 1,
