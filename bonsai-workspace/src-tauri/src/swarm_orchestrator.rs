@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agent_store::ResolvedAgent;
+use crate::context_builder::estimate_tokens;
 use crate::model_orchestrator::{InferRequest, InferStats, ModelOrchestrator};
 use crate::tools;
 
@@ -76,6 +77,7 @@ pub struct SwarmRunRecord {
     pub total_prompt_tokens:     u32,
     pub total_completion_tokens: u32,
     pub total_time_ms:           u64,
+    pub summary:                 String,
 }
 
 fn metrics_store() -> &'static std::sync::Mutex<VecDeque<SwarmRunRecord>> {
@@ -246,8 +248,26 @@ async fn run_swarm(
     req: SwarmRequest,
 ) -> Result<(), ()> {
     let SwarmRequest {
-        run_id, workspace_path, enabled_tools, runtime_settings, agents, cancel_flags, global_cancel, resp_tx, user_prompt, ..
+        run_id, session_id, workspace_path, enabled_tools, runtime_settings, agents, cancel_flags, global_cancel, resp_tx, user_prompt, ..
     } = req;
+
+    let agent_store = app_handle
+        .try_state::<crate::AppState>()
+        .map(|state| state.agent_store.clone());
+
+    if let Some(store) = &agent_store {
+        let started_at = unix_now();
+        let _ = store.save_swarm_run(&crate::agent_store::SwarmRun {
+            id: run_id.clone(),
+            session_id: session_id.clone(),
+            user_prompt: user_prompt.clone(),
+            leader_plan: None,
+            summary: None,
+            status: "running".to_string(),
+            started_at,
+            completed_at: None,
+        }).await;
+    }
 
     let leader = agents
         .iter()
@@ -339,19 +359,39 @@ async fn run_swarm(
             let name = a.persona.as_ref().map(|p| p.name.as_str()).unwrap_or(&a.config.label);
             let desc = a.system_prompt.lines().next().unwrap_or("specialist agent");
             let role = role_profile_for_slot(&runtime_settings, a.config.slot_index as usize);
-            format!("  Worker {} ({name}) [{}/{}]: {desc}", a.config.slot_index, role.role_name, role.focus)
+            let ctx_k = (a.context_length / 1024).max(1);
+            let tool_cap = if a.supports_tools { "tool-capable" } else { "chat-only hint" };
+            format!(
+                "  Worker {} ({name}) [{}/{} | {}k ctx | {tool_cap}]: {desc}",
+                a.config.slot_index,
+                role.role_name,
+                role.focus,
+                ctx_k,
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
+
+    let prior_swarm_memory = if let Some(store) = &agent_store {
+        build_recent_swarm_memory(&user_prompt, store).await
+    } else {
+        String::new()
+    };
 
     let workspace_hint = workspace_path
         .as_deref()
         .map(|p| format!("\nWorkspace path: {p}"))
         .unwrap_or_default();
 
+    let swarm_memory_hint = if prior_swarm_memory.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nRecent relevant swarm memory:\n{prior_swarm_memory}")
+    };
+
     let leader_sys_prompt = if agents.len() > 1 {
         format!(
-            "{base_prompt}\n\n## Swarm coordination\n\nYou are the Leader in a multi-agent swarm. Available workers:\n{workers_summary}{workspace_hint}\n\nDecompose by role, not by duplication:\n- Assign each worker a distinct angle (implementation, verification, risk review, architecture, UX, etc.).\n- Every subtask must include concrete objective, expected output artifact, and constraints.\n- Prefer grounded tasks that reference workspace paths or verifiable checks when relevant.\n\nOutput a plan FIRST when decomposition helps:\n<swarm_plan>\n{{\"subtasks\":[{{\"worker_slot\":1,\"task\":\"objective + deliverable\",\"context\":\"constraints + evidence targets\",\"allowed_tools\":[\"read_file\",\"list_files\"]}},...]}}\n</swarm_plan>\nThe `allowed_tools` field is optional. Omit it to use role defaults (reviewers/analysts get read-only tools; implementers and specialists get full access). Include it only when you need to override the default — e.g. grant a reviewer write access for a specific subtask, or restrict an implementer to read-only research.\nThen optionally add a brief note. If no decomposition needed, skip the tag and reply directly."
+            "{base_prompt}\n\n## Swarm coordination\n\nYou are the Leader in a multi-agent swarm. Available workers:\n{workers_summary}{workspace_hint}{swarm_memory_hint}\n\nDecompose by role, not by duplication:\n- Assign each worker a distinct angle (implementation, verification, risk review, architecture, UX, etc.).\n- Match investigation-heavy or tool-heavy subtasks to workers with larger context/tool capability when possible.\n- Every subtask must include concrete objective, expected output artifact, and constraints.\n- Prefer grounded tasks that reference workspace paths or verifiable checks when relevant.\n\nOutput a plan FIRST when decomposition helps:\n<swarm_plan>\n{{\"subtasks\":[{{\"worker_slot\":1,\"task\":\"objective + deliverable\",\"context\":\"constraints + evidence targets\",\"allowed_tools\":[\"read_file\",\"list_files\"]}},...]}}\n</swarm_plan>\nThe `allowed_tools` field is optional. Omit it to use role defaults (reviewers/analysts get read-only tools; implementers and specialists get full access). Include it only when you need to override the default — e.g. grant a reviewer write access for a specific subtask, or restrict an implementer to read-only research.\nThen optionally add a brief note. If no decomposition needed, skip the tag and reply directly."
         )
     } else {
         base_prompt.clone()
@@ -470,6 +510,21 @@ async fn run_swarm(
             "final_content": &final_text,
             "stats": &leader_stats,
         }));
+
+        if let Some(store) = &agent_store {
+            let summary = summarize_swarm_run(&user_prompt, &final_text, &runtime_settings.chain_strategy, &[]);
+            let _ = store.save_swarm_run(&crate::agent_store::SwarmRun {
+                id: run_id.clone(),
+                session_id: session_id.clone(),
+                user_prompt: user_prompt.clone(),
+                leader_plan: None,
+                summary: Some(summary),
+                status: "completed".to_string(),
+                started_at: unix_now(),
+                completed_at: Some(unix_now()),
+            }).await;
+        }
+
         let _ = resp_tx.send(Ok(SwarmResult {
             final_response: final_text,
             leader_plan: None,
@@ -508,6 +563,7 @@ async fn run_swarm(
         app_handle,
         orchestrator,
         run_id,
+        session_id,
         workspace_path,
         enabled_tools,
         runtime_settings,
@@ -530,6 +586,7 @@ async fn continue_swarm_with_plan(
     app_handle: AppHandle,
     orchestrator: Arc<ModelOrchestrator>,
     run_id: String,
+    session_id: Option<String>,
     workspace_path: Option<String>,
     enabled_tools: Option<Vec<String>>,
     runtime_settings: SwarmRuntimeSettings,
@@ -545,6 +602,10 @@ async fn continue_swarm_with_plan(
     leader_cancel: Arc<AtomicBool>,
     leader_plan: LeaderPlan,
 ) -> Result<(), ()> {
+    let agent_store = app_handle
+        .try_state::<crate::AppState>()
+        .map(|state| state.agent_store.clone());
+
     let slot_to_agent: HashMap<usize, ResolvedAgent> = agents
         .iter()
         .cloned()
@@ -1040,19 +1101,19 @@ async fn continue_swarm_with_plan(
         .partition(|o| !o.result.trim_start().starts_with("Error:") && !o.result.trim().is_empty());
 
     // Conversation compression: if the total worker output exceeds the synthesis budget,
-    // truncate each worker result proportionally so the context fits one inference window.
-    const SYNTHESIS_CONTEXT_BUDGET: usize = 20_000;
-    let raw_worker_chars: usize = successful_outputs.iter().map(|o| o.result.len()).sum();
+    // truncate each worker result proportionally using token estimates rather than raw chars.
+    const SYNTHESIS_CONTEXT_BUDGET_TOKENS: usize = 6_000;
+    let raw_worker_tokens: usize = successful_outputs.iter().map(|o| estimate_tokens(&o.result)).sum();
     let n_successful = successful_outputs.len().max(1);
-    let per_worker_cap = if raw_worker_chars > SYNTHESIS_CONTEXT_BUDGET {
-        let cap = SYNTHESIS_CONTEXT_BUDGET / n_successful;
+    let per_worker_cap_tokens = if raw_worker_tokens > SYNTHESIS_CONTEXT_BUDGET_TOKENS {
+        let cap = SYNTHESIS_CONTEXT_BUDGET_TOKENS / n_successful;
         if runtime_settings.emit_debug_events {
             let _ = app_handle.emit("swarm-debug", json!({
                 "run_id": &run_id,
                 "phase": "synthesis.context_compressed",
-                "raw_worker_chars": raw_worker_chars,
-                "budget": SYNTHESIS_CONTEXT_BUDGET,
-                "per_worker_cap": cap,
+                "raw_worker_tokens": raw_worker_tokens,
+                "budget_tokens": SYNTHESIS_CONTEXT_BUDGET_TOKENS,
+                "per_worker_cap_tokens": cap,
             }));
         }
         cap
@@ -1068,8 +1129,8 @@ async fn continue_swarm_with_plan(
                 format!("\n> Self-assessment — confidence: {}%, evidence: [{}], gaps: [{}]", a.confidence as u32, sources, gaps)
             }).unwrap_or_default();
 
-            let capped = if per_worker_cap < usize::MAX && o.result.len() > per_worker_cap {
-                truncate_at_semantic_boundary(&o.result, per_worker_cap)
+            let capped = if per_worker_cap_tokens < usize::MAX && estimate_tokens(&o.result) > per_worker_cap_tokens {
+                truncate_to_token_budget(&o.result, per_worker_cap_tokens)
             } else {
                 o.result.clone()
             };
@@ -1205,6 +1266,8 @@ async fn continue_swarm_with_plan(
         }));
     }
 
+    let memory_summary = summarize_swarm_run(&user_prompt, &final_text, &chain_strategy, &worker_outputs);
+
     record_swarm_run(SwarmRunRecord {
         run_id: run_id.clone(),
         chain_strategy: chain_strategy.clone(),
@@ -1217,7 +1280,21 @@ async fn continue_swarm_with_plan(
             .sum::<u32>()
             + synth_stats.completion_tokens,
         total_time_ms: synth_stats.total_time_ms,
+        summary: memory_summary.clone(),
     });
+
+    if let Some(store) = &agent_store {
+        let _ = store.save_swarm_run(&crate::agent_store::SwarmRun {
+            id: run_id.clone(),
+            session_id: session_id.clone(),
+            user_prompt: user_prompt.clone(),
+            leader_plan: serde_json::to_string(&plan_json).ok(),
+            summary: Some(memory_summary),
+            status: "completed".to_string(),
+            started_at: unix_now(),
+            completed_at: Some(unix_now()),
+        }).await;
+    }
 
     let _ = app_handle.emit("swarm-complete", json!({
         "run_id": &run_id,
@@ -1791,6 +1868,113 @@ fn enabled_worker_slots(agents: &[ResolvedAgent]) -> Vec<usize> {
         .filter(|a| a.config.enabled && a.config.slot_index != 0)
         .map(|a| a.config.slot_index as usize)
         .collect::<Vec<_>>()
+}
+
+async fn build_recent_swarm_memory(
+    user_prompt: &str,
+    store: &crate::agent_store::AgentStore,
+) -> String {
+    let Ok(runs) = store.recent_completed_swarm_runs(8).await else {
+        return String::new();
+    };
+
+    let prompt_terms = lexical_terms(user_prompt);
+    let mut ranked = runs
+        .into_iter()
+        .filter_map(|run| {
+            let summary = run.summary?;
+            let overlap = lexical_overlap(&prompt_terms, &lexical_terms(&format!("{} {}", run.user_prompt, summary)));
+            Some((overlap, run.completed_at.unwrap_or(run.started_at), summary))
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    ranked
+        .into_iter()
+        .filter(|(overlap, _, _)| *overlap > 0)
+        .take(3)
+        .enumerate()
+        .map(|(idx, (_, _, summary))| format!("{}. {}", idx + 1, summary))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn summarize_swarm_run(
+    user_prompt: &str,
+    final_text: &str,
+    chain_strategy: &str,
+    worker_outputs: &[AgentOutput],
+) -> String {
+    let high_conf = worker_outputs
+        .iter()
+        .filter_map(|output| output.assessment.as_ref())
+        .filter(|assessment| assessment.confidence >= 75.0)
+        .count();
+
+    let prompt_excerpt = compact_text(user_prompt, 28);
+    let answer_excerpt = compact_text(final_text, 72);
+    format!(
+        "Request: {prompt_excerpt}. Strategy: {chain_strategy}. Outcome: {answer_excerpt}. Signals: {} worker(s), {} high-confidence.",
+        worker_outputs.len(),
+        high_conf,
+    )
+}
+
+fn compact_text(text: &str, max_tokens: usize) -> String {
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if estimate_tokens(&flattened) <= max_tokens {
+        return flattened;
+    }
+    truncate_to_token_budget(&flattened, max_tokens)
+        .replace('\n', " ")
+        .trim()
+        .to_string()
+}
+
+fn lexical_terms(text: &str) -> HashSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|term| term.len() >= 4)
+        .map(|term| term.to_string())
+        .collect()
+}
+
+fn lexical_overlap(left: &HashSet<String>, right: &HashSet<String>) -> usize {
+    left.intersection(right).count()
+}
+
+fn truncate_to_token_budget(text: &str, max_tokens: usize) -> String {
+    if estimate_tokens(text) <= max_tokens {
+        return text.to_string();
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    let mut best = 0usize;
+
+    while low <= high {
+        let mid = (low + high) / 2;
+        let candidate = chars[..mid].iter().collect::<String>();
+        if estimate_tokens(&candidate) <= max_tokens {
+            best = mid;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let prefix = chars[..best].iter().collect::<String>();
+    truncate_at_semantic_boundary(&prefix, prefix.len())
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 fn normalize_subtasks_for_active_workers(

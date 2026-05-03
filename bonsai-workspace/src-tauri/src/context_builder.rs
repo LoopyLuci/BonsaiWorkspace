@@ -7,9 +7,19 @@ use serde_json::{json, Value};
 
 // ── Token budget ──────────────────────────────────────────────────────────────
 
-/// Conservative token estimator: 1 token ≈ 4 characters (English prose).
+/// Charset-aware token estimator.  More accurate than a flat chars/4 heuristic:
+/// - ASCII alphabetic runs: ~4 chars/token (English prose)
+/// - Non-ASCII chars (CJK, emoji): ~1 char/token
+/// - Non-alphanumeric, non-space (punctuation, operators): ~2 chars/token
 pub fn estimate_tokens(text: &str) -> usize {
-    (text.len() + 3) / 4
+    if text.is_empty() { return 0; }
+    let char_count: usize = text.chars().count();
+    let non_ascii:  usize = text.chars().filter(|c| !c.is_ascii()).count();
+    let punct:      usize = text.chars()
+        .filter(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        .count();
+    let ascii_text = char_count.saturating_sub(non_ascii).saturating_sub(punct);
+    (ascii_text + 3) / 4 + non_ascii + (punct + 1) / 2
 }
 
 /// Token budget allocation across context slots.
@@ -268,6 +278,10 @@ mod tests {
         // 400-char string → ~100 tokens
         let long = "a".repeat(400);
         assert_eq!(estimate_tokens(&long), 100);
+        // CJK stays closer to 1 char/token than chars/4.
+        assert_eq!(estimate_tokens("你好世界"), 4);
+        // Punctuation-heavy snippets should cost more than plain prose of the same length.
+        assert!(estimate_tokens("fn main() { println!(\"hi\"); }") >= 10);
     }
 
     #[test]

@@ -1,7 +1,9 @@
-/// BM25-based in-process RAG (Retrieval-Augmented Generation) store.
+/// Hybrid in-process RAG (Retrieval-Augmented Generation) store.
 ///
-/// Indexes text files from the workspace into an inverted term-frequency map and
-/// scores queries with BM25. No external server or embedding model required.
+/// Combines two lexical signals and fuses them with Reciprocal Rank Fusion (RRF):
+///   1. BM25 (stemmed query tokens, inverted index) — rewards term frequency + rarity.
+///   2. Exact-match (un-stemmed lowercased terms) — rewards verbatim occurrences.
+/// A path-relevance bonus is added when query terms appear in the file path.
 ///
 /// Typical flow:
 ///   1. `index_directory(path, max_files)` — walk & chunk files at startup.
@@ -9,9 +11,10 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-// ── BM25 constants ─────────────────────────────────────────────────────────────
-const K1: f32 = 1.5;   // term-frequency saturation
-const B:  f32 = 0.75;  // length normalisation
+// ── Scoring constants ──────────────────────────────────────────────────────────
+const K1: f32 = 1.5;       // BM25 term-frequency saturation
+const B:  f32 = 0.75;      // BM25 length normalisation
+const RRF_K: f32 = 60.0;   // RRF rank smoothing constant (standard value)
 const CHUNK_CHARS: usize = 512;
 const CHUNK_OVERLAP: usize = 64;
 
@@ -79,35 +82,77 @@ impl RagStore {
         let query_tokens = tokenize(query);
         if query_tokens.is_empty() { return Vec::new(); }
 
-        let chunks_guard  = self.chunks.read().unwrap();
-        let df_guard      = self.df.read().unwrap();
+        // Exact (un-stemmed, lowercased) terms for the second signal.
+        let exact_terms: Vec<String> = query.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|t| t.len() >= 2)
+            .map(|t| t.to_string())
+            .collect();
+
+        let chunks_guard = self.chunks.read().unwrap();
+        let df_guard     = self.df.read().unwrap();
         let n = chunks_guard.len() as f32;
         if n == 0.0 { return Vec::new(); }
 
-        // Average document length
         let avg_dl = chunks_guard.iter().map(|c| c.tokens.len() as f32).sum::<f32>() / n;
 
-        let mut scores: HashMap<usize, f32> = HashMap::new();
-
+        // ── Signal 1: BM25 ──────────────────────────────────────────────────────
+        let mut bm25: HashMap<usize, f32> = HashMap::new();
         for qt in &query_tokens {
             let df_t = *df_guard.get(qt).unwrap_or(&0) as f32;
             if df_t == 0.0 { continue; }
-            // IDF (BM25+ variant)
             let idf = ((n - df_t + 0.5) / (df_t + 0.5) + 1.0).ln();
-
             for chunk in chunks_guard.iter() {
-                if let Some(pf) = path_filter {
-                    if !chunk.path.contains(pf) { continue; }
-                }
+                if let Some(pf) = path_filter { if !chunk.path.contains(pf) { continue; } }
                 let tf = chunk.tokens.iter().filter(|t| *t == qt).count() as f32;
                 if tf == 0.0 { continue; }
                 let dl = chunk.tokens.len() as f32;
                 let tf_norm = tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * dl / avg_dl));
-                *scores.entry(chunk.id).or_insert(0.0) += idf * tf_norm;
+                *bm25.entry(chunk.id).or_insert(0.0) += idf * tf_norm;
             }
         }
 
-        let mut results: Vec<(f32, DocChunk)> = scores
+        // ── Signal 2: exact-match ───────────────────────────────────────────────
+        let mut exact: HashMap<usize, f32> = HashMap::new();
+        if !exact_terms.is_empty() {
+            for chunk in chunks_guard.iter() {
+                if let Some(pf) = path_filter { if !chunk.path.contains(pf) { continue; } }
+                let lowered = chunk.text.to_lowercase();
+                let hits: usize = exact_terms.iter()
+                    .map(|t| lowered.matches(t.as_str()).count())
+                    .sum();
+                if hits > 0 {
+                    exact.insert(chunk.id, hits as f32);
+                }
+            }
+        }
+
+        // ── RRF fusion ──────────────────────────────────────────────────────────
+        let mut bm25_sorted: Vec<(usize, f32)> = bm25.into_iter().collect();
+        bm25_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut exact_sorted: Vec<(usize, f32)> = exact.into_iter().collect();
+        exact_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut rrf: HashMap<usize, f32> = HashMap::new();
+        for (rank, (id, _)) in bm25_sorted.iter().enumerate() {
+            *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + (rank + 1) as f32);
+        }
+        for (rank, (id, _)) in exact_sorted.iter().enumerate() {
+            *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + (rank + 1) as f32);
+        }
+
+        // ── Path-relevance bonus ────────────────────────────────────────────────
+        // Boost chunks whose file path contains query terms (e.g. query "auth" → auth.rs).
+        for chunk in chunks_guard.iter() {
+            let path_lower = chunk.path.to_lowercase();
+            let matches = exact_terms.iter().filter(|t| path_lower.contains(t.as_str())).count();
+            if matches > 0 {
+                // Scale: RRF scores are ~0.01-0.02; add ~0.01 per path match.
+                *rrf.entry(chunk.id).or_insert(0.0) += matches as f32 * 0.01;
+            }
+        }
+
+        let mut results: Vec<(f32, DocChunk)> = rrf
             .into_iter()
             .filter_map(|(id, score)| chunks_guard.get(id).map(|c| (score, c.clone())))
             .collect();

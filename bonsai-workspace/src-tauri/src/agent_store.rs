@@ -39,6 +39,8 @@ pub struct ResolvedAgent {
     pub persona:             Option<Persona>,
     pub system_prompt:       String,
     pub effective_model_id:  Option<String>,
+    pub context_length:      u32,
+    pub supports_tools:      bool,
     pub ram_required_mb:     u64,
 }
 
@@ -48,6 +50,7 @@ pub struct SwarmRun {
     pub session_id:   Option<String>,
     pub user_prompt:  String,
     pub leader_plan:  Option<String>,
+    pub summary:      Option<String>,
     pub status:       String,
     pub started_at:   i64,
     pub completed_at: Option<i64>,
@@ -141,6 +144,12 @@ impl AgentStore {
         .execute(&pool)
         .await;
 
+        let _ = sqlx::query(
+            "ALTER TABLE swarm_runs ADD COLUMN summary TEXT",
+        )
+        .execute(&pool)
+        .await;
+
         // Seed Leader if table is empty
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_configs")
             .fetch_one(&pool)
@@ -207,12 +216,30 @@ impl AgentStore {
             let effective_model_id = cfg.model_id.clone()
                 .or_else(|| persona.as_ref().and_then(|p| p.model_id.clone()));
 
-            let ram_required_mb = effective_model_id.as_deref()
-                .and_then(|mid| models.iter().find(|m| m.id == mid))
+            let model_info = effective_model_id.as_deref()
+                .and_then(|mid| models.iter().find(|m| m.id == mid));
+
+            let ram_required_mb = model_info
                 .map(|m| m.ram_required_mb)
                 .unwrap_or(0);
 
-            resolved.push(ResolvedAgent { config: cfg, persona, system_prompt, effective_model_id, ram_required_mb });
+            let context_length = model_info
+                .map(|m| m.context_length)
+                .unwrap_or(4096);
+
+            let supports_tools = model_info
+                .map(|m| m.supports_tools)
+                .unwrap_or(false);
+
+            resolved.push(ResolvedAgent {
+                config: cfg,
+                persona,
+                system_prompt,
+                effective_model_id,
+                context_length,
+                supports_tools,
+                ram_required_mb,
+            });
         }
         Ok(resolved)
     }
@@ -307,21 +334,48 @@ impl AgentStore {
 
     pub async fn save_swarm_run(&self, run: &SwarmRun) -> Result<()> {
         sqlx::query(
-            "INSERT INTO swarm_runs (id, session_id, user_prompt, leader_plan, status, started_at, completed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO swarm_runs (id, session_id, user_prompt, leader_plan, summary, status, started_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
-               leader_plan=excluded.leader_plan, status=excluded.status, completed_at=excluded.completed_at",
+               leader_plan=excluded.leader_plan, summary=excluded.summary, status=excluded.status, completed_at=excluded.completed_at",
         )
         .bind(&run.id)
         .bind(&run.session_id)
         .bind(&run.user_prompt)
         .bind(&run.leader_plan)
+        .bind(&run.summary)
         .bind(&run.status)
         .bind(run.started_at)
         .bind(run.completed_at)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn recent_completed_swarm_runs(&self, limit: usize) -> Result<Vec<SwarmRun>> {
+        use sqlx::Row;
+
+        let rows = sqlx::query(
+            "SELECT id, session_id, user_prompt, leader_plan, summary, status, started_at, completed_at
+             FROM swarm_runs
+             WHERE status = 'completed' AND summary IS NOT NULL AND TRIM(summary) <> ''
+             ORDER BY completed_at DESC, started_at DESC
+             LIMIT ?",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| SwarmRun {
+            id: r.get("id"),
+            session_id: r.get("session_id"),
+            user_prompt: r.get("user_prompt"),
+            leader_plan: r.get("leader_plan"),
+            summary: r.get("summary"),
+            status: r.get("status"),
+            started_at: r.get("started_at"),
+            completed_at: r.get("completed_at"),
+        }).collect())
     }
 
     pub async fn save_agent_result(&self, r: &SwarmAgentResult) -> Result<()> {

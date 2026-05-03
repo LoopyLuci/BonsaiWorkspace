@@ -275,15 +275,14 @@ fn estimate_msg_tokens(msg: &Value) -> usize {
     let role_len = msg
         .get("role")
         .and_then(|v| v.as_str())
-        .map(|s| s.chars().count())
+        .map(crate::context_builder::estimate_tokens)
         .unwrap_or(0);
     let content_len = msg
         .get("content")
         .and_then(|v| v.as_str())
-        .map(|s| s.chars().count())
+        .map(crate::context_builder::estimate_tokens)
         .unwrap_or(0);
-    // Rough estimator used for conservative trimming.
-    ((role_len + content_len) / 4) + 10
+    role_len + content_len + 10
 }
 
 fn estimate_ctx_tokens(ctx: &[Value]) -> usize {

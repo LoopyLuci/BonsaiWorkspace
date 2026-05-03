@@ -89,6 +89,8 @@ pub struct ModelInfo {
     /// 0 if not encoded in the GGUF header.
     pub parameter_count: u64,
     pub context_length:  u32,
+    /// Heuristic capability hint for swarm routing and tool-using agents.
+    pub supports_tools:  bool,
     pub quant:           Quant,
     pub quant_label:     String,
     /// Estimated peak RAM in MiB (weights + KV cache overhead).
@@ -105,6 +107,43 @@ impl ModelInfo {
             format!("{} MB", self.ram_required_mb)
         }
     }
+}
+
+fn infer_supports_tools(name: &str, architecture: &str, path: &Path) -> bool {
+    let haystack = format!(
+        "{} {} {}",
+        name.to_lowercase(),
+        architecture.to_lowercase(),
+        path.to_string_lossy().to_lowercase()
+    );
+
+    let explicit = [
+        "functionary",
+        "function-calling",
+        "function_call",
+        "tool",
+        "tools",
+        "fc",
+    ];
+    if explicit.iter().any(|needle| haystack.contains(needle)) {
+        return true;
+    }
+
+    // Most local chat/coder models in this workspace can follow structured tool-call
+    // prompting even if the GGUF metadata does not declare it explicitly.
+    let families = [
+        "llama",
+        "qwen",
+        "mistral",
+        "mixtral",
+        "deepseek",
+        "granite",
+        "gemma",
+        "command-r",
+        "phi",
+        "coder",
+    ];
+    families.iter().any(|needle| haystack.contains(needle))
 }
 
 // ── ModelRegistry ─────────────────────────────────────────────────────────────
@@ -154,14 +193,17 @@ fn probe(path: &Path) -> ModelInfo {
     match parse_header(path) {
         Ok(h) => {
             let ram = estimate_ram(h.params, &h.quant, file_size_bytes);
+            let architecture = h.arch.clone();
+            let supports_tools = infer_supports_tools(&fallback_name, &architecture, path);
             ModelInfo {
                 id,
                 name:            h.name.unwrap_or_else(|| fallback_name.clone()),
                 path:            path.to_path_buf(),
                 file_size_bytes,
-                architecture:    h.arch,
+                architecture,
                 parameter_count: h.params,
                 context_length:  h.ctx_len,
+                supports_tools,
                 quant_label:     h.quant.label().to_string(),
                 quant:           h.quant,
                 ram_required_mb: ram,
@@ -178,6 +220,7 @@ fn probe(path: &Path) -> ModelInfo {
                 architecture:    "unknown".into(),
                 parameter_count: 0,
                 context_length:  4096,
+                supports_tools:  infer_supports_tools("unknown", "unknown", path),
                 quant:           Quant::Unknown(0),
                 quant_label:     "?".into(),
                 // Conservative estimate: file size + 25% overhead
