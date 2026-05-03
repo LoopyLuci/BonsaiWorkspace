@@ -781,6 +781,8 @@ mod tests {
             broadcast_tx: tx,
             admin_token: Arc::new(RwLock::new("s3cr3t".to_string())),
             reclaim_allowed_ports: vec![],
+            allowed_script_paths: vec![],
+            runtime_limits: crate::config::RuntimeLimits::default(),
             runtime_children: Arc::new(Mutex::new(HashMap::new())),
         };
 

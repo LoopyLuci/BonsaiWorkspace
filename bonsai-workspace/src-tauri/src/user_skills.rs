@@ -53,17 +53,12 @@ pub struct UserSkillTool {
 
 impl UserSkillTool {
     pub fn new(row: UserSkillRow) -> Self {
-        let static_name: &'static str = Box::leak(
-            format!("skill_{}", row.name).into_boxed_str(),
-        );
-        let static_desc: &'static str = Box::leak(
-            row.description.clone().into_boxed_str(),
-        );
-        // Leak each tag string and build a leaked slice
+        let static_name = crate::tool_core::intern_str(format!("skill_{}", row.name));
+        let static_desc = crate::tool_core::intern_str(row.description.clone());
         let tag_vec = row.tags_vec();
         let leaked_tags: Vec<&'static str> = tag_vec
             .into_iter()
-            .map(|t| -> &'static str { Box::leak(t.into_boxed_str()) })
+            .map(crate::tool_core::intern_str)
             .collect();
         let static_tags: &'static [&'static str] = Box::leak(leaked_tags.into_boxed_slice());
 

@@ -231,8 +231,8 @@ impl McpManager {
                             let shared = Arc::new(Mutex::new(conn));
                             for def in tool_defs {
                                 let qualified = format!("{namespace}__{}", def.name);
-                                let tool_name: &'static str = Box::leak(qualified.into_boxed_str());
-                                let description: &'static str = Box::leak(def.description.into_boxed_str());
+                                let tool_name  = crate::tool_core::intern_str(qualified);
+                                let description = crate::tool_core::intern_str(def.description);
                                 let adapter = McpToolAdapter {
                                     tool_name,
                                     original: def.name,

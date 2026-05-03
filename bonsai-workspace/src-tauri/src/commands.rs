@@ -5125,6 +5125,11 @@ pub async fn cancel_swarm(state: State<'_, AppState>, run_id: String) -> Result<
 }
 
 #[tauri::command]
+pub async fn get_swarm_metrics() -> Vec<crate::swarm_orchestrator::SwarmRunRecord> {
+    crate::swarm_orchestrator::recent_swarm_runs()
+}
+
+#[tauri::command]
 pub async fn cancel_agent(state: State<'_, AppState>, run_id: String, slot: usize) -> Result<(), String> {
     let cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
     if let Some(flags) = cancels.get(&run_id) {

@@ -741,6 +741,7 @@ pub fn run() {
             commands::submit_swarm_chat,
             commands::cancel_swarm,
             commands::cancel_agent,
+            commands::get_swarm_metrics,
             // ── Bonsai Assistant ──────────────────────────────────────────────
             assistant_commands::list_assistant_profiles,
             assistant_commands::get_active_assistant_profile,

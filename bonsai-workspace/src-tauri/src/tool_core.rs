@@ -4,9 +4,24 @@
 /// implement the `Tool` trait defined here. They each maintain a separate
 /// `ToolRegistry` instance — no forced merger of semantically distinct tool sets.
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{atomic::AtomicBool, Arc, OnceLock, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+
+/// Deduplicated string interning pool for `&'static str` tool names / descriptions.
+/// `Box::leak` is called at most once per unique string, preventing repeated leaks on
+/// hot paths like MCP server reconnections or skill reloads.
+pub(crate) fn intern_str(s: String) -> &'static str {
+    static POOL: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&ptr) = guard.get(&s) {
+        return ptr;
+    }
+    let leaked: &'static str = Box::leak(s.clone().into_boxed_str());
+    guard.insert(s, leaked);
+    leaked
+}
 
 // ── Side-effect profile ───────────────────────────────────────────────────────
 
