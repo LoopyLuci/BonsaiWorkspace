@@ -84,12 +84,12 @@ pub struct AdminState {
     pub broadcast_tx:    mpsc::Sender<BroadcastRequest>,
     /// In-memory token, wrapped for atomic rotation without restart.
     pub admin_token:     Arc<RwLock<String>>,
-    /// Allowed ports for reclaim operations. Empty means no ports allowed by default.
-    pub reclaim_allowed_ports: Vec<u16>,
-    /// Allowed script path prefixes for runtime start requests. Empty -> fallback allowlist.
-    pub allowed_script_paths: Vec<String>,
-    /// Per-runtime limits (timeout, per-user concurrency, etc.)
-    pub runtime_limits: crate::config::RuntimeLimits,
+    /// Allowed ports for reclaim operations — hot-reloadable.
+    pub reclaim_allowed_ports: Arc<RwLock<Vec<u16>>>,
+    /// Allowed script path prefixes for runtime start requests — hot-reloadable.
+    pub allowed_script_paths: Arc<RwLock<Vec<String>>>,
+    /// Per-runtime limits — hot-reloadable.
+    pub runtime_limits: Arc<RwLock<crate::config::RuntimeLimits>>,
     /// Spawned runtime child processes keyed by generated id.
     pub runtime_children: Arc<Mutex<HashMap<String, RuntimeInfo>>>,
 }
@@ -181,9 +181,9 @@ pub async fn start(
         db,
         broadcast_tx,
         admin_token: Arc::new(RwLock::new(admin_token)),
-        reclaim_allowed_ports: cfg.reclaim_allowed_ports.clone(),
-        allowed_script_paths: cfg.allowed_script_paths.clone(),
-        runtime_limits: cfg.runtime_limits.clone(),
+        reclaim_allowed_ports: Arc::new(RwLock::new(cfg.reclaim_allowed_ports.clone())),
+        allowed_script_paths: Arc::new(RwLock::new(cfg.allowed_script_paths.clone())),
+        runtime_limits: Arc::new(RwLock::new(cfg.runtime_limits.clone())),
         runtime_children: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -302,8 +302,12 @@ async fn reclaim_listener(
     };
 
     // Enforce whitelist: only allow requested ports that are in the configured reclaim_allowed_ports
-    let allowed_ports = if !s.reclaim_allowed_ports.is_empty() {
-        s.reclaim_allowed_ports.clone()
+    let allowed_ports = {
+        let rp = s.reclaim_allowed_ports.read().unwrap();
+        rp.clone()
+    };
+    let allowed_ports = if !allowed_ports.is_empty() {
+        allowed_ports
     } else {
         // If no explicit allowed list, try to include the persisted bot admin port (if present)
         let mut v = Vec::new();
@@ -470,8 +474,9 @@ async fn start_runtime(
 
     // Build allowed base paths list (from config or fallback locations)
     let mut allowed_bases: Vec<PathBuf> = Vec::new();
-    if !s.allowed_script_paths.is_empty() {
-        for p in s.allowed_script_paths.iter() {
+    let script_paths_snap = s.allowed_script_paths.read().unwrap().clone();
+    if !script_paths_snap.is_empty() {
+        for p in script_paths_snap.iter() {
             let pb = PathBuf::from(p);
             let canon = pb.canonicalize().unwrap_or(pb);
             allowed_bases.push(canon);
@@ -493,8 +498,12 @@ async fn start_runtime(
     }
 
     // Enforce per-user concurrency limit (if present)
+    let (max_instances, max_secs) = {
+        let rl = s.runtime_limits.read().unwrap();
+        (rl.max_instances_per_user, rl.max_runtime_secs)
+    };
     if let Some(user) = &body.user {
-        if let Some(max) = s.runtime_limits.max_instances_per_user {
+        if let Some(max) = max_instances {
             let map = s.runtime_children.lock().await;
             let count = map.values().filter(|info| info.user.as_deref() == Some(user.as_str())).count();
             if (count as u32) >= max {
@@ -506,14 +515,14 @@ async fn start_runtime(
     // Enforce timeout limit if provided
     let timeout = match body.timeout_secs {
         Some(t) => {
-            if let Some(max) = s.runtime_limits.max_runtime_secs {
+            if let Some(max) = max_secs {
                 if t > max {
                     return (StatusCode::BAD_REQUEST, Json(json!({"error": "requested timeout exceeds configured maximum"}))).into_response();
                 }
             }
             Some(t)
         }
-        None => s.runtime_limits.max_runtime_secs,
+        None => max_secs,
     };
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -686,8 +695,18 @@ async fn config_reload(
     if !check_auth(&headers, &s) {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
     }
-    tracing::info!("[admin-api] Config reload requested");
-    Json(json!({ "status": "reload_scheduled" })).into_response()
+    let cfg = crate::config::load_config();
+    {
+        *s.reclaim_allowed_ports.write().unwrap() = cfg.reclaim_allowed_ports.clone();
+        *s.allowed_script_paths.write().unwrap()  = cfg.allowed_script_paths.clone();
+        *s.runtime_limits.write().unwrap()         = cfg.runtime_limits.clone();
+    }
+    tracing::info!("[admin-api] Config reloaded from disk (reclaim_ports={}, script_paths={}, max_secs={:?})",
+        cfg.reclaim_allowed_ports.len(),
+        cfg.allowed_script_paths.len(),
+        cfg.runtime_limits.max_runtime_secs,
+    );
+    Json(json!({ "status": "reloaded" })).into_response()
 }
 
 async fn rotate_token(
@@ -780,9 +799,9 @@ mod tests {
             db,
             broadcast_tx: tx,
             admin_token: Arc::new(RwLock::new("s3cr3t".to_string())),
-            reclaim_allowed_ports: vec![],
-            allowed_script_paths: vec![],
-            runtime_limits: crate::config::RuntimeLimits::default(),
+            reclaim_allowed_ports: Arc::new(RwLock::new(vec![])),
+            allowed_script_paths: Arc::new(RwLock::new(vec![])),
+            runtime_limits: Arc::new(RwLock::new(crate::config::RuntimeLimits::default())),
             runtime_children: Arc::new(Mutex::new(HashMap::new())),
         };
 

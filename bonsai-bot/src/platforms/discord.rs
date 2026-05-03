@@ -116,10 +116,15 @@ impl EventHandler for Handler {
                 return;
             }
 
-            // Acknowledge immediately (Discord requires response within 3s)
-            let _ = component.create_response(&ctx.http,
-                serenity::builder::CreateInteractionResponse::Acknowledge,
+            // Acknowledge within Discord's 3-second window
+            let ack_result = tokio::time::timeout(
+                tokio::time::Duration::from_secs(2),
+                component.create_response(&ctx.http, serenity::builder::CreateInteractionResponse::Acknowledge),
             ).await;
+            if ack_result.is_err() {
+                tracing::warn!("[discord] interaction ACK timed out — skipping follow-up");
+                return;
+            }
 
             // Resolve in our DB
             let _ = session::resolve_confirm(db, token.clone()).await;
@@ -127,13 +132,17 @@ impl EventHandler for Handler {
                 self.platform.router.metrics.confirms_resolved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
 
-            // Send confirm_response to Buddy and get the reply
-            let reply = self.platform.router.send_confirm_response(&token, approved).await
-                .unwrap_or_else(|_| if approved {
-                    "✅ Confirmed. Processing...".to_string()
-                } else {
-                    "❌ Denied. No action taken.".to_string()
-                });
+            // Send confirm_response to Buddy and get the reply (bounded to 25s follow-up window)
+            let reply = tokio::time::timeout(
+                tokio::time::Duration::from_secs(25),
+                self.platform.router.send_confirm_response(&token, approved),
+            ).await
+            .unwrap_or_else(|_| Ok("⏱️ Response timed out. Please check back later.".to_string()))
+            .unwrap_or_else(|_| if approved {
+                "✅ Confirmed. Processing...".to_string()
+            } else {
+                "❌ Denied. No action taken.".to_string()
+            });
 
             // Send follow-up message
             let channel_id_str = component.channel_id.to_string();
