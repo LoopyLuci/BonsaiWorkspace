@@ -29,7 +29,7 @@ const DEFAULTS = {
   strictApp: false,
   noTests: false,
   preflightOnly: false,
-  healthTimeoutMs: 180000,
+  healthTimeoutMs: 1200000, // 20 min — covers cold first build with jobs=1 (~654 crates serialised)
   wifiPort: 5555,
   allowPortInUse: false,
   noInstall: false,
