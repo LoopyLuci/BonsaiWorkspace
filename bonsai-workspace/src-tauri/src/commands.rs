@@ -5609,6 +5609,54 @@ pub async fn sync_registry_to_model_data(state: State<'_, AppState>) -> Result<u
         .map_err(|e| e.to_string())
 }
 
+// ─── Model directories ────────────────────────────────────────────────────────
+
+/// List all configured model directories (bootstrap dir + extra dirs).
+#[tauri::command]
+pub async fn list_model_directories(app_handle: AppHandle) -> Result<Vec<String>, String> {
+    let cfg = crate::config::load_config(&app_handle).map_err(|e| e.to_string())?;
+    let bootstrap = crate::bootstrap::models_dir(&app_handle).display().to_string();
+    let mut dirs = vec![bootstrap];
+    dirs.extend(cfg.extra_model_dirs);
+    Ok(dirs)
+}
+
+/// Add a directory to scan for .gguf models. Refreshes the registry immediately.
+#[tauri::command]
+pub async fn add_model_directory(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let canonical = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|e| format!("Cannot access '{path}': {e}"))?;
+    let canonical_str = canonical.display().to_string();
+
+    let mut cfg = crate::config::load_config(&app_handle).map_err(|e| e.to_string())?;
+    if !cfg.extra_model_dirs.contains(&canonical_str) {
+        cfg.extra_model_dirs.push(canonical_str);
+        crate::config::save_config(&app_handle, &cfg).map_err(|e| e.to_string())?;
+    }
+
+    state.orchestrator.refresh_registry();
+    Ok(())
+}
+
+/// Remove an extra model directory. Does not remove the bootstrap directory.
+#[tauri::command]
+pub async fn remove_model_directory(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let mut cfg = crate::config::load_config(&app_handle).map_err(|e| e.to_string())?;
+    cfg.extra_model_dirs.retain(|d| d != &path);
+    crate::config::save_config(&app_handle, &cfg).map_err(|e| e.to_string())?;
+    state.orchestrator.refresh_registry();
+    Ok(())
+}
+
 // ─── Unit tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

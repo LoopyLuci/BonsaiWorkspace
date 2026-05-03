@@ -186,6 +186,83 @@ fn knowledge_base() -> HashMap<&'static str, KbEntry> {
                 ("write_file", Good),
             ],
         }),
+        kb!("bonsai" => KbEntry {
+            family:           "Bonsai",
+            organization:     "Prism ML",
+            description:      "Bonsai is an ultra-efficient 1.7B model purpose-built for the Bonsai Workspace. Uses BitNet-inspired quantization for minimal RAM usage and near-instant responses — ideal for quick questions, simple code generation, and rapid iteration.",
+            license:          "Bonsai Community License",
+            homepage_url:     "https://huggingface.co/prism-ml",
+            training_cutoff:  Some("2024-06"),
+            strengths:        &[Instruction, Speed, Coding],
+            tier:             ModelTier::Embedded,
+            tool_calling:     ToolCallingSupport::Basic,
+            prompt_format:    PromptFormat::Llama3,
+            json_mode:        false,
+            extended_thinking: false,
+            skill_affinities: &[
+                ("get_datetime", Excellent),
+                ("get_system_stats", Good),
+                ("read_file", Good),
+            ],
+        }),
+        kb!("qwen3.6-35b-a3b" => KbEntry {
+            family:           "Qwen 3 MoE",
+            organization:     "Alibaba Cloud / Community",
+            description:      "A 35B Mixture-of-Experts model with only ~3B parameters active per token, distilled from Claude 4.7 Opus reasoning traces. Delivers frontier-quality reasoning and coding at 3B compute cost. The APEX-I series applies advanced post-training for sharper instruction following.",
+            license:          "Qwen License",
+            homepage_url:     "https://huggingface.co/Qwen",
+            training_cutoff:  Some("2025-01"),
+            strengths:        &[Reasoning, Coding, Math, Instruction],
+            tier:             ModelTier::Frontier,
+            tool_calling:     ToolCallingSupport::Parallel,
+            prompt_format:    PromptFormat::Qwen2,
+            json_mode:        true,
+            extended_thinking: true,
+            skill_affinities: &[
+                ("read_file", Excellent),
+                ("write_file", Excellent),
+                ("run_shell", Excellent),
+                ("search_knowledge", Excellent),
+                ("write_code", Excellent),
+            ],
+        }),
+        kb!("gemma-4" => KbEntry {
+            family:           "Gemma 4",
+            organization:     "Google DeepMind",
+            description:      "Google's Gemma 4 31B instruction-tuned model. Strong multilingual reasoning and 128K context window. The Q2_K_XL quantization from Unsloth preserves quality in a memory-efficient format.",
+            license:          "Gemma Terms of Use",
+            homepage_url:     "https://ai.google.dev/gemma",
+            training_cutoff:  Some("2025-01"),
+            strengths:        &[Reasoning, Instruction, Multilingual, LongContext],
+            tier:             ModelTier::Capable,
+            tool_calling:     ToolCallingSupport::Basic,
+            prompt_format:    PromptFormat::Gemma,
+            json_mode:        true,
+            extended_thinking: false,
+            skill_affinities: &[
+                ("read_file", Excellent),
+                ("search_knowledge", Excellent),
+                ("search_web", Good),
+                ("write_file", Good),
+            ],
+        }),
+        kb!("gliese" => KbEntry {
+            family:           "Gliese",
+            organization:     "Community",
+            description:      "A sub-1B Qwen model fine-tuned and abliterated (uncensored) for image captioning tasks. Ultra-fast with minimal RAM — best used for quick caption generation and rapid simple responses where speed matters most.",
+            license:          "Apache 2.0",
+            homepage_url:     "https://huggingface.co/",
+            training_cutoff:  None,
+            strengths:        &[Speed, Vision],
+            tier:             ModelTier::Embedded,
+            tool_calling:     ToolCallingSupport::None,
+            prompt_format:    PromptFormat::Qwen2,
+            json_mode:        false,
+            extended_thinking: false,
+            skill_affinities: &[
+                ("get_datetime", Excellent),
+            ],
+        }),
         kb!("command-r" => KbEntry {
             family:           "Command R",
             organization:     "Cohere",
@@ -287,6 +364,10 @@ impl ModelDataGenerator {
     /// Auto-generate ModelData for a local GGUF entry from the registry.
     pub async fn from_registry_info(&self, info: &ModelInfo) -> Result<ModelData> {
         let mut data = ModelData::from_registry(info);
+
+        // Give the model a clean display name.
+        let clean = clean_display_name(&info.name);
+        if !clean.is_empty() { data.name = clean; }
 
         // 1. Apply knowledge base if we recognise the model family.
         self.apply_knowledge_base(&mut data, &info.name, &info.architecture);
@@ -572,9 +653,6 @@ fn parse_tier(s: &str) -> Option<ModelTier> {
 }
 
 fn model_id_to_display_name(model_id: &str) -> String {
-    // "claude-3-5-sonnet-20241022" → "Claude 3.5 Sonnet (20241022)"
-    // "gpt-4o-mini" → "GPT-4o Mini"
-    // "llama-3.1-8b-instruct" → "Llama 3.1 8B Instruct"
     let parts: Vec<&str> = model_id.split('-').collect();
     let capitalised: Vec<String> = parts.iter().map(|p| {
         let mut chars = p.chars();
@@ -584,6 +662,47 @@ fn model_id_to_display_name(model_id: &str) -> String {
         }
     }).collect();
     capitalised.join(" ")
+}
+
+/// Produce a clean human-readable name from a raw GGUF filename stem.
+/// Strips quantization suffixes, normalises separators, and applies
+/// known model-family rewrites for a polished display label.
+pub fn clean_display_name(raw: &str) -> String {
+    // Known specific rewrites (match substring, most-specific first).
+    let rewrites: &[(&str, &str)] = &[
+        ("Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-APEX-I-Quality",
+            "Qwen 3 35B MoE · APEX-I Quality (Claude Opus Distilled)"),
+        ("Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-APEX-I-Compact",
+            "Qwen 3 35B MoE · APEX-I Compact (Claude Opus Distilled)"),
+        ("Qwen3.6-35B-A3B-Claude-4.7-Opus-Reasoning-Distilled-APEX-I",
+            "Qwen 3 35B MoE · APEX-I (Claude Opus Distilled)"),
+        ("Gliese-Qwen3.5-0.8B-Abliterated-Caption", "Gliese 0.8B Caption (Abliterated)"),
+        ("Qwen3.5-0.8B-UD-IQ2_XXS",   "Qwen 2.5 0.8B · IQ2_XXS"),
+        ("gemma-4-31B-it-UD-Q2_K_XL",  "Gemma 4 31B IT · Q2_K_XL"),
+        ("Bonsai-1.7B-IQ1_S",          "Bonsai 1.7B · IQ1_S"),
+        ("Bonsai-1.7B-Q2_K",           "Bonsai 1.7B · Q2_K"),
+        ("Bonsai-1.7B-TQ1_0",          "Bonsai 1.7B · TQ1_0"),
+        ("Bonsai-1.7B-TQ2_0",          "Bonsai 1.7B · TQ2_0"),
+    ];
+    for (pattern, label) in rewrites {
+        if raw.contains(pattern) { return label.to_string(); }
+    }
+
+    // Generic fallback: strip trailing quant token(s) and clean separators.
+    // Pattern: anything matching known quant suffixes at the end.
+    let stripped = regex::Regex::new(
+        r"[-_](?:IQ\d+_\w+|Q\d+[_K]\w*|TQ\d+_\d+|UD-\w+|i1-\w+|gguf)$"
+    )
+    .ok()
+    .map(|re| re.replace(raw, "").to_string())
+    .unwrap_or_else(|| raw.to_string());
+
+    stripped
+        .replace('-', " ")
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn capitalise(s: &str) -> String {

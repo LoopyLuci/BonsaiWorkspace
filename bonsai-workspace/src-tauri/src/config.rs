@@ -35,6 +35,9 @@ pub struct AppConfig {
     pub main_window_width: Option<u32>,
     #[serde(default)]
     pub main_window_height: Option<u32>,
+    /// Additional directories scanned for .gguf model files beyond the bootstrap path.
+    #[serde(default)]
+    pub extra_model_dirs: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -53,6 +56,7 @@ impl Default for AppConfig {
             main_window_y: None,
             main_window_width: None,
             main_window_height: None,
+            extra_model_dirs: Vec::new(),
         }
     }
 }

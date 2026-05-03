@@ -150,33 +150,66 @@ fn infer_supports_tools(name: &str, architecture: &str, path: &Path) -> bool {
 
 pub struct ModelRegistry {
     pub models: Vec<ModelInfo>,
+    /// All directories that were (or should be) scanned — kept for refresh.
+    pub scan_dirs: Vec<PathBuf>,
 }
 
 impl ModelRegistry {
-    /// Scan a directory for `.gguf` files and parse their headers.
+    /// Scan a single directory recursively for `.gguf` files.
     pub fn scan(dir: &Path) -> Self {
-        let models = match std::fs::read_dir(dir) {
-            Err(_) => vec![],
-            Ok(rd) => rd
-                .flatten()
-                .filter_map(|e| {
-                    let p = e.path();
-                    (p.extension()?.to_str()? == "gguf").then(|| probe(&p))
-                })
-                .collect(),
-        };
-        Self { models }
+        Self::scan_dirs_recursive(&[dir])
     }
 
-    /// Re-scan and update the registry in place.
-    pub fn refresh(&mut self, dir: &Path) {
-        *self = Self::scan(dir);
+    /// Scan multiple directories (each recursively) and merge results.
+    /// Deduplicates by stable file-path hash so symlinks don't double-count.
+    pub fn scan_dirs_recursive(dirs: &[&Path]) -> Self {
+        let mut models: Vec<ModelInfo> = Vec::new();
+        let mut seen = std::collections::HashSet::<String>::new();
+        for dir in dirs {
+            for info in walk_gguf_in(dir) {
+                if seen.insert(info.id.clone()) {
+                    models.push(info);
+                }
+            }
+        }
+        models.sort_by(|a, b| a.name.cmp(&b.name));
+        Self {
+            models,
+            scan_dirs: dirs.iter().map(|p| p.to_path_buf()).collect(),
+        }
     }
 
-    #[allow(dead_code)]
+    /// Re-scan the same directories in place.
+    pub fn refresh(&mut self) {
+        let dirs: Vec<&Path> = self.scan_dirs.iter().map(PathBuf::as_path).collect();
+        let fresh = Self::scan_dirs_recursive(&dirs);
+        self.models = fresh.models;
+    }
+
     pub fn by_id(&self, id: &str) -> Option<&ModelInfo> {
         self.models.iter().find(|m| m.id == id)
     }
+}
+
+/// Walk `dir` recursively up to 4 levels and return all `.gguf` files found.
+fn walk_gguf_in(dir: &Path) -> Vec<ModelInfo> {
+    use walkdir::WalkDir;
+    if !dir.exists() {
+        return vec![];
+    }
+    WalkDir::new(dir)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                .unwrap_or(false)
+        })
+        .map(|e| probe(e.path()))
+        .collect()
 }
 
 // ── GGUF probe ────────────────────────────────────────────────────────────────

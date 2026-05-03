@@ -189,10 +189,17 @@ pub struct ModelOrchestrator {
 }
 
 impl ModelOrchestrator {
-    pub fn new(app: AppHandle) -> Self {
+    /// `extra_dirs` are additional model directories beyond the bootstrap path.
+    pub fn new(app: AppHandle, extra_dirs: Vec<std::path::PathBuf>) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Cmd>();
         let models_dir = bootstrap::models_dir(&app);
-        let registry   = Arc::new(Mutex::new(ModelRegistry::scan(&models_dir)));
+
+        let mut all_dirs: Vec<std::path::PathBuf> = vec![models_dir];
+        for d in extra_dirs {
+            if !all_dirs.contains(&d) { all_dirs.push(d); }
+        }
+        let dir_refs: Vec<&std::path::Path> = all_dirs.iter().map(|p| p.as_path()).collect();
+        let registry = Arc::new(Mutex::new(ModelRegistry::scan_dirs_recursive(&dir_refs)));
 
         let reg2    = registry.clone();
         let cmd_tx2 = cmd_tx.clone();
@@ -385,11 +392,10 @@ async fn handle_cmd(
         }
 
         Cmd::RefreshRegistry => {
-            // Re-scan the models directory
-            let models_dir = bootstrap::models_dir(app);
+            // Re-scan all known model directories.
             {
                 let mut reg = registry.lock().await;
-                reg.refresh(&models_dir);
+                reg.refresh();
             }
             let _ = app.emit("registry-updated", ());
             // If all slots are empty/crashed, try to auto-load the first model

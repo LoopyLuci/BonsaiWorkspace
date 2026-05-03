@@ -290,10 +290,30 @@ pub fn run() {
             // Check first-run bootstrap status
             let status = bootstrap::check_status(&app_handle);
 
+            // Load config early so we can pass extra model dirs to the orchestrator.
+            let early_cfg = config::load_config(&app_handle).unwrap_or_default();
+
+            // Auto-register D:\Models\general on Windows if it exists and isn't already listed.
+            {
+                let general_dir = std::path::PathBuf::from(r"D:\Models\general");
+                let general_str = general_dir.display().to_string();
+                if general_dir.exists() && !early_cfg.extra_model_dirs.iter().any(|d| d == &general_str) {
+                    let mut patched = early_cfg.clone();
+                    patched.extra_model_dirs.push(general_str);
+                    let _ = config::save_config(&app_handle, &patched);
+                }
+            }
+            let early_cfg = config::load_config(&app_handle).unwrap_or_default();
+
             // Model orchestrator — starts event loop immediately;
             // slots go to Crashed if llama-server isn't present yet.
+            let extra_model_dirs: Vec<std::path::PathBuf> = early_cfg.extra_model_dirs
+                .iter()
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.exists())
+                .collect();
             let orchestrator = Arc::new(
-                model_orchestrator::ModelOrchestrator::new(app_handle.clone()),
+                model_orchestrator::ModelOrchestrator::new(app_handle.clone(), extra_model_dirs),
             );
 
             // Whisper manager — best-effort spawn (no-op if binary absent)
@@ -929,6 +949,10 @@ pub fn run() {
             commands::rank_models_for_skill,
             commands::generate_model_data,
             commands::sync_registry_to_model_data,
+            // ── Model directories ─────────────────────────────────────────────
+            commands::list_model_directories,
+            commands::add_model_directory,
+            commands::remove_model_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
