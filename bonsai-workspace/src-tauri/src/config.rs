@@ -38,6 +38,9 @@ pub struct AppConfig {
     /// Additional directories scanned for .gguf model files beyond the bootstrap path.
     #[serde(default)]
     pub extra_model_dirs: Vec<String>,
+    /// Model ID last loaded by the user — restored on next startup.
+    #[serde(default)]
+    pub last_model_id: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -57,6 +60,7 @@ impl Default for AppConfig {
             main_window_width: None,
             main_window_height: None,
             extra_model_dirs: Vec::new(),
+            last_model_id: None,
         }
     }
 }

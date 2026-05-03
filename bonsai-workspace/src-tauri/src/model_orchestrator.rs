@@ -45,7 +45,7 @@ const MODEL_LOAD_MAX_POLLS: u64 = (MODEL_LOAD_TIMEOUT_SECS * 1000) / MODEL_LOAD_
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SlotState {
     Empty,
-    Loading { model_id: String },
+    Loading { model_id: String, #[serde(skip_serializing_if = "Option::is_none")] load_pct: Option<u32> },
     Ready   { model_id: String },
     Busy    { model_id: String },
     Crashed { model_id: String, error: String },
@@ -54,7 +54,7 @@ pub enum SlotState {
 impl SlotState {
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            Self::Loading { model_id }
+            Self::Loading { model_id, .. }
             | Self::Ready { model_id }
             | Self::Busy  { model_id }
             | Self::Crashed { model_id, .. } => Some(model_id),
@@ -76,6 +76,7 @@ struct Slot {
     process:        Option<std::process::Child>,
     last_used:      Instant,
     total_requests: u64,
+    load_started:   Option<Instant>,
 }
 
 impl Slot {
@@ -89,6 +90,7 @@ impl Slot {
             process: None,
             last_used: Instant::now(),
             total_requests: 0,
+            load_started: None,
         }
     }
 
@@ -113,6 +115,7 @@ pub struct SlotStatus {
     pub state:        SlotState,
     pub requests:     u64,
     pub idle_secs:    u64,
+    pub load_elapsed_secs: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -295,10 +298,16 @@ async fn event_loop(
         .build()
         .unwrap_or_default();
 
-    // Auto-load the first model at startup
+    // Auto-load the last-used model on startup (falls back to first in registry)
     {
+        let last_id = crate::config::load_config(&app).ok()
+            .and_then(|c| c.last_model_id);
         let reg = registry.lock().await;
-        if let Some(info) = reg.models.first().cloned() {
+        let info = last_id
+            .as_deref()
+            .and_then(|id| reg.models.iter().find(|m| m.id == id).cloned())
+            .or_else(|| reg.models.first().cloned());
+        if let Some(info) = info {
             drop(reg);
             spawn_model(&mut slots[0], &info, &app);
         }
@@ -454,7 +463,8 @@ async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
 
 fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle) {
     slot.kill();
-    slot.state = SlotState::Loading { model_id: info.id.clone() };
+    slot.state = SlotState::Loading { model_id: info.id.clone(), load_pct: None };
+    slot.load_started = Some(Instant::now());
 
     let exe = bootstrap::llama_exe(app);
     if !exe.exists() {
@@ -571,11 +581,10 @@ async fn maybe_start_load(
 
 async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHandle) {
     for slot in slots.iter_mut() {
-        if let SlotState::Loading { model_id } = &slot.state.clone() {
+        if let SlotState::Loading { model_id, .. } = &slot.state.clone() {
             // Check if the process has exited unexpectedly
             if let Some(ref mut child) = slot.process {
                 if let Ok(Some(status)) = child.try_wait() {
-                    // Try to surface the last line of the slot's stderr log as the error.
                     let log_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let log_path = log_dir.join(format!("llama-slot-{}.log", slot.index));
                     let detail = std::fs::read_to_string(&log_path)
@@ -591,13 +600,47 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                         model_id: model_id.clone(),
                         error,
                     };
+                    slot.load_started = None;
                     continue;
                 }
             }
+
+            // Parse load progress from log: "llama_model_load: loaded N of M tensors (P%)"
+            let log_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let log_path = log_dir.join(format!("llama-slot-{}.log", slot.index));
+            if let Ok(log) = std::fs::read_to_string(&log_path) {
+                // Walk lines in reverse to find the latest progress line
+                let pct = log.lines().rev().find_map(|line| {
+                    // Match "llama_model_load: loaded N of M tensors (P%)"
+                    // or the briefer "loaded N of M tensors (P%)"
+                    let paren = line.find('(')?;
+                    let after = &line[paren + 1..];
+                    let end = after.find('%')?;
+                    after[..end].trim().parse::<u32>().ok()
+                });
+                if let Some(p) = pct {
+                    if let SlotState::Loading { load_pct, .. } = &mut slot.state {
+                        *load_pct = Some(p);
+                    }
+                    let _ = app.emit("model-load-progress", json!({
+                        "slot":     slot.index,
+                        "model_id": model_id,
+                        "pct":      p,
+                        "elapsed_secs": slot.load_started.map(|t| t.elapsed().as_secs()).unwrap_or(0),
+                    }));
+                }
+            }
+
             // Probe readiness endpoints (/health and /v1/models fallback).
             let ok = probe_model_ready(client, &slot.base_url).await;
             if ok {
                 slot.state = SlotState::Ready { model_id: model_id.clone() };
+                slot.load_started = None;
+                // Persist last-used model id so next startup can pre-load it
+                if let Ok(mut cfg) = crate::config::load_config(app) {
+                    cfg.last_model_id = Some(model_id.clone());
+                    let _ = crate::config::save_config(app, &cfg);
+                }
                 let _ = app.emit("model-ready", json!({
                     "slot":     slot.index,
                     "model_id": model_id,
@@ -828,6 +871,7 @@ fn build_status(slots: &[Slot], queue: &VecDeque<InferRequest>) -> OrchestratorS
             state:     s.state.clone(),
             requests:  s.total_requests,
             idle_secs: s.last_used.elapsed().as_secs(),
+            load_elapsed_secs: s.load_started.map(|t| t.elapsed().as_secs()),
         }).collect(),
         queue_depth:  queue.len(),
         total_ram_mb: sys.total_memory() / (1024 * 1024),

@@ -38,6 +38,7 @@
   import { currentWorkspace, fileTreeRefresh } from '$lib/stores/workspace';
   import {
     modelSwitchStatus,
+    modelLoadProgress,
     activeModel,
     activeModelId,
     CUSTOM_SWARM_MODEL_ID,
@@ -1329,7 +1330,17 @@
     </div>
   {/if}
 
-  {#if $modelSwitchStatus}
+  {#if $modelLoadProgress}
+    {@const prog = $modelLoadProgress}
+    <div class="model-load-bar">
+      <div class="model-load-bar-track">
+        <div class="model-load-bar-fill" style="width: {prog.pct}%"></div>
+      </div>
+      <span class="model-load-label">
+        Loading… {prog.pct}% &nbsp;·&nbsp; {prog.elapsed_secs}s elapsed
+      </span>
+    </div>
+  {:else if $modelSwitchStatus}
     <div class="model-progress-badge">
       <span>🔄 { $modelSwitchStatus }</span>
     </div>
@@ -2155,6 +2166,32 @@
     color: var(--accent-hl);
     font-size: 12px;
     animation: pulse 1.4s infinite;
+  }
+
+  .model-load-bar {
+    padding: 6px 12px;
+    background: rgba(34, 197, 94, 0.08);
+    border-top: 1px solid rgba(34, 197, 94, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .model-load-bar-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(34, 197, 94, 0.2);
+    overflow: hidden;
+  }
+  .model-load-bar-fill {
+    height: 100%;
+    background: var(--accent-hl, #22c55e);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  .model-load-label {
+    font-size: 11px;
+    color: var(--accent-hl, #22c55e);
+    opacity: 0.85;
   }
 
   /* Thinking status bar */

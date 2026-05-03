@@ -26,12 +26,22 @@ export interface ModelInfo {
 }
 
 export interface SlotStatus {
-  index:     number;
-  port:      number;
-  state:     { state: string; model_id?: string; error?: string };
-  requests:  number;
-  idle_secs: number;
+  index:              number;
+  port:               number;
+  state:              { state: string; model_id?: string; load_pct?: number; error?: string };
+  requests:           number;
+  idle_secs:          number;
+  load_elapsed_secs?: number;
 }
+
+export interface ModelLoadProgress {
+  slot:          number;
+  model_id:      string;
+  pct:           number;
+  elapsed_secs:  number;
+}
+
+export const modelLoadProgress = writable<ModelLoadProgress | null>(null);
 
 export interface OrchestratorStatus {
   slots:       SlotStatus[];
@@ -358,7 +368,11 @@ export function initModelStores() {
   listen('orchestrator-status', ({ payload }) => {
     orchestratorStatus.set(payload as OrchestratorStatus);
   });
+  listen<ModelLoadProgress>('model-load-progress', ({ payload }) => {
+    modelLoadProgress.set(payload);
+  });
   listen('model-ready', () => {
+    modelLoadProgress.set(null);
     refreshModels();
     refreshStatus();
   });
