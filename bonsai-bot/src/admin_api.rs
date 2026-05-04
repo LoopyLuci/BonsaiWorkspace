@@ -242,6 +242,9 @@ pub async fn start(
         .route("/config/reload",             post(config_reload))
         .route("/config/rotate-admin-token", post(rotate_token))
         .route("/runtime/create-skill",      post(create_skill))
+        .route("/skills",                    get(list_skills_handler))
+        .route("/skills/:id/toggle",         post(toggle_skill_handler))
+        .route("/skills/:id",               axum::routing::delete(delete_skill_handler))
         .layer(cors)
         .with_state(state);
 
@@ -888,9 +891,75 @@ async fn create_skill(
 
     tracing::info!("[admin-api] Skill created: id={skill_id} name={} lang={}", body.name, body.language);
 
+    // Also persist the skill record in SQLite so it survives restarts
+    let now = chrono::Utc::now().timestamp();
+    let skill_rec = crate::session::SkillRecord {
+        id:          skill_id.clone(),
+        name:        body.name.clone(),
+        description: body.description.clone(),
+        language:    body.language.clone(),
+        script_path: script_path.to_string_lossy().to_string(),
+        version:     1,
+        enabled:     true,
+        created_at:  now,
+        updated_at:  now,
+    };
+    let _ = crate::session::upsert_skill(&s.db, skill_rec).await;
+
     (StatusCode::CREATED, Json(json!({
         "status":      "created",
         "skill_id":    skill_id,
         "script_path": script_path.to_string_lossy(),
     }))).into_response()
+}
+
+// ── Skill registry endpoints ──────────────────────────────────────────────────
+
+async fn list_skills_handler(
+    State(s): State<AdminState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &s) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
+    }
+    let skills = crate::session::list_skills(&s.db).await;
+    Json(json!({ "skills": skills })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ToggleBody { enabled: bool }
+
+async fn toggle_skill_handler(
+    State(s): State<AdminState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ToggleBody>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &s) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
+    }
+    match crate::session::toggle_skill(&s.db, id.clone(), body.enabled).await {
+        Ok(()) => {
+            tracing::info!("[admin-api] Skill {id} enabled={}", body.enabled);
+            Json(json!({ "status": "updated", "id": id, "enabled": body.enabled })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn delete_skill_handler(
+    State(s): State<AdminState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &s) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
+    }
+    match crate::session::delete_skill(&s.db, id.clone()).await {
+        Ok(()) => {
+            tracing::info!("[admin-api] Skill {id} deleted");
+            Json(json!({ "status": "deleted", "id": id })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
 }

@@ -54,6 +54,15 @@ async fn main() {
 
     session::migrate(&db).await.expect("DB migrate");
 
+    // Sync skill manifests from disk into DB on every startup
+    {
+        let db2 = db.clone();
+        let paths = cfg.allowed_script_paths.clone();
+        tokio::spawn(async move {
+            session::sync_skills_from_disk(&db2, paths).await;
+        });
+    }
+
     // Shared state
     let metrics = Arc::new(Metrics::default());
     let breaker = CircuitBreaker::new(cfg.circuit_breaker.clone());

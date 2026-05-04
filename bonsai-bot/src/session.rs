@@ -49,6 +49,17 @@ pub async fn migrate(db: &Db) -> Result<(), tokio_rusqlite::Error> {
                 status       TEXT NOT NULL,
                 started_at   INTEGER NOT NULL,
                 timeout_secs INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS skills (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                description TEXT NOT NULL,
+                language    TEXT NOT NULL,
+                script_path TEXT NOT NULL,
+                version     INTEGER NOT NULL DEFAULT 1,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  INTEGER NOT NULL,
+                updated_at  INTEGER NOT NULL
             );"#,
         )
         .map_err(tokio_rusqlite::Error::from)
@@ -455,6 +466,122 @@ mod tests {
         let stored = pending.iter().find(|p| p.token == "tok-stale").map(|p| p.prompt_nonce);
         assert_ne!(stored, Some(nonce), "old nonce should not match stored nonce after restart");
         assert_eq!(stored, Some(new_nonce));
+    }
+}
+
+// ── Skill registry ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillRecord {
+    pub id:          String,
+    pub name:        String,
+    pub description: String,
+    pub language:    String,
+    pub script_path: String,
+    pub version:     i64,
+    pub enabled:     bool,
+    pub created_at:  i64,
+    pub updated_at:  i64,
+}
+
+pub async fn upsert_skill(db: &Db, rec: SkillRecord) -> Result<(), tokio_rusqlite::Error> {
+    db.call(move |conn| {
+        conn.execute(
+            r#"INSERT INTO skills (id, name, description, language, script_path, version, enabled, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               ON CONFLICT(id) DO UPDATE SET
+                 name        = excluded.name,
+                 description = excluded.description,
+                 language    = excluded.language,
+                 script_path = excluded.script_path,
+                 version     = version + 1,
+                 updated_at  = excluded.updated_at"#,
+            rusqlite::params![
+                rec.id, rec.name, rec.description, rec.language,
+                rec.script_path, rec.version, rec.enabled as i64,
+                rec.created_at, rec.updated_at,
+            ],
+        ).map(|_| ())?;
+        Ok(())
+    }).await
+}
+
+pub async fn list_skills(db: &Db) -> Vec<SkillRecord> {
+    db.call(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, language, script_path, version, enabled, created_at, updated_at
+             FROM skills ORDER BY name"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SkillRecord {
+                id:          row.get(0)?,
+                name:        row.get(1)?,
+                description: row.get(2)?,
+                language:    row.get(3)?,
+                script_path: row.get(4)?,
+                version:     row.get(5)?,
+                enabled:     row.get::<_, i64>(6)? != 0,
+                created_at:  row.get(7)?,
+                updated_at:  row.get(8)?,
+            })
+        })?;
+        Ok(rows.flatten().collect())
+    }).await.unwrap_or_default()
+}
+
+pub async fn toggle_skill(db: &Db, id: String, enabled: bool) -> Result<(), tokio_rusqlite::Error> {
+    let now = now_secs();
+    db.call(move |conn| {
+        conn.execute(
+            "UPDATE skills SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![enabled as i64, now, id],
+        ).map(|_| ())?;
+        Ok(())
+    }).await
+}
+
+pub async fn delete_skill(db: &Db, id: String) -> Result<(), tokio_rusqlite::Error> {
+    db.call(move |conn| {
+        conn.execute("DELETE FROM skills WHERE id = ?1", rusqlite::params![id])
+            .map(|_| ())?;
+        Ok(())
+    }).await
+}
+
+/// Scan manifest files under `base_dirs` and sync them into the skills table.
+pub async fn sync_skills_from_disk(db: &Db, base_dirs: Vec<String>) {
+    let now = now_secs();
+    for base in &base_dirs {
+        let skills_dir = std::path::PathBuf::from(base).join("skills");
+        if !skills_dir.exists() { continue; }
+        let entries = match std::fs::read_dir(&skills_dir) {
+            Ok(e) => e, Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if !fname.ends_with(".skill.json") { continue; }
+
+            if let Ok(s) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                    let rec = SkillRecord {
+                        id:          v["id"].as_str().unwrap_or_default().to_string(),
+                        name:        v["name"].as_str().unwrap_or_default().to_string(),
+                        description: v["description"].as_str().unwrap_or_default().to_string(),
+                        language:    v["language"].as_str().unwrap_or_default().to_string(),
+                        script_path: v["script_path"].as_str().unwrap_or_default().to_string(),
+                        version:     1,
+                        enabled:     true,
+                        created_at:  now,
+                        updated_at:  now,
+                    };
+                    if !rec.id.is_empty() {
+                        let _ = upsert_skill(db, rec).await;
+                    }
+                }
+            }
+        }
     }
 }
 
