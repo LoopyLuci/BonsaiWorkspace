@@ -61,9 +61,6 @@
 
   <!-- Right -->
   <div class="status-right">
-    {#if queueSummary}
-      <span class="status-item queue-indicator" title="Inference task queue status">{queueSummary}</span>
-    {/if}
     {#if $orchestratorStatus}
       <span class="status-item dim" title="Orchestrator queue depth">📥 {$orchestratorStatus.queue_depth}</span>
       <span class="status-item dim" title="Loaded slots">📦 {$orchestratorStatus.slots.length}</span>
@@ -80,6 +77,9 @@
     <span class="status-item api-badge" title="OpenAI-compatible API — point Claude, Copilot, or Continue.dev here">
       API :{apiPort}
     </span>
+    {#if queueSummary}
+      <span class="status-item queue-indicator" title="Inference task queue status">{queueSummary}</span>
+    {/if}
     <span class="status-item dim" title="Bonsai Workspace">Bonsai v0.1</span>
   </div>
 </footer>
