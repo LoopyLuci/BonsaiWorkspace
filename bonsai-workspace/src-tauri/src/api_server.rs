@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::{
     body::Body,
     extract::{State, ws::{WebSocket, WebSocketUpgrade}},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response, Sse},
     response::sse::{Event, KeepAlive},
     routing::{get, post},
@@ -110,8 +110,12 @@ pub async fn start(
     };
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
+        .allow_origin([
+            "tauri://localhost".parse::<HeaderValue>().expect("valid origin"),
+            "http://localhost:1420".parse::<HeaderValue>().expect("valid origin"),
+            "https://localhost:1420".parse::<HeaderValue>().expect("valid origin"),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(Any);
 
     let app = Router::new()

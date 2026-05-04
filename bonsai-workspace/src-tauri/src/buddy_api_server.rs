@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response, Sse},
     response::sse::{Event, KeepAlive},
     routing::{get, post},
@@ -122,8 +122,12 @@ pub async fn start(
     };
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
+        .allow_origin([
+            "tauri://localhost".parse::<HeaderValue>().expect("valid origin"),
+            "http://localhost:1420".parse::<HeaderValue>().expect("valid origin"),
+            "https://localhost:1420".parse::<HeaderValue>().expect("valid origin"),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(Any);
 
     let app = Router::new()

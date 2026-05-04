@@ -13,7 +13,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::process::Command;
 use tokio::time::Duration;
-use tower_http::cors::{Any, CorsLayer};
+// CORS intentionally omitted — admin API is loopback-only (127.0.0.1) and
+// must never be accessible from browser origins.
 use sha2::Digest;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
@@ -233,11 +234,6 @@ pub async fn start(
         });
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let app = Router::new()
         .route("/health",                    get(health))
         .route("/reclaim-listener",          post(reclaim_listener))
@@ -257,7 +253,6 @@ pub async fn start(
         .route("/health/full",               get(health_full))
         .route("/audit-log",                 get(audit_log_handler))
         .route("/metrics/prometheus",        get(prometheus_handler))
-        .layer(cors)
         .with_state(state);
 
     tracing::info!("[admin-api] Listening on http://127.0.0.1:{port}");
