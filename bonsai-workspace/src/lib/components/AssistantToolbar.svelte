@@ -6,7 +6,7 @@
 
   const dispatch = createEventDispatcher<{ showDiagnostics: void; showProfile: void; showBackup: void; showHistory: void }>();
 
-  let pinned = true;
+  let pinned = false;
 
   async function togglePin() {
     pinned = !pinned;

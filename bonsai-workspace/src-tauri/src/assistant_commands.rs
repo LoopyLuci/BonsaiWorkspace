@@ -136,7 +136,7 @@ pub async fn toggle_assistant_window(app: AppHandle) -> Result<(), String> {
                 .resizable(true)
                 .visible(false)
                 .decorations(true)
-                .always_on_top(true)
+                .always_on_top(false)
                 .build()
                 .map_err(|e| e.to_string())?
             }
