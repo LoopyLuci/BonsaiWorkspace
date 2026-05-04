@@ -655,7 +655,13 @@ impl Tool for OpenUrl {
             return Err(ToolError::ValidationFailed { field: "url".into(), reason: "must start with http:// or https://".into() });
         }
         #[cfg(target_os = "windows")]
-        let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn();
+        {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/c", "start", url]);
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let _ = c.spawn();
+        }
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(url).spawn();
         #[cfg(target_os = "linux")]
@@ -879,10 +885,16 @@ impl Tool for RunCommand {
             ("sh", "-c")
         };
 
-        let output_fut = tokio::process::Command::new(prog)
-            .args([arg1, command])
-            .current_dir(work_dir)
-            .output();
+        let output_fut = {
+            let mut c = tokio::process::Command::new(prog);
+            c.args([arg1, command]).current_dir(work_dir);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            c.output()
+        };
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout),

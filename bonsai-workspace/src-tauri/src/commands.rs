@@ -2130,7 +2130,14 @@ fn collect_raw_gpu_names() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         let args = ["path", "win32_VideoController", "get", "name"];
-        if let Ok(output) = Command::new("wmic").args(&args).output() {
+        let mut wmic_cmd = Command::new("wmic");
+        wmic_cmd.args(&args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            wmic_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        if let Ok(output) = wmic_cmd.output() {
             let names: Vec<String> = String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .skip(1)
@@ -5285,6 +5292,11 @@ pub fn run_reclaim_listener(
         .arg("Bypass")
         .arg("-File")
         .arg(script);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     if let Some(ports) = ports {
         let port_arg = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
         cmd.arg("-Ports").arg(port_arg);

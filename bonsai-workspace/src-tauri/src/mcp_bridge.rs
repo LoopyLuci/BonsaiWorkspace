@@ -48,13 +48,20 @@ impl McpConnection {
     pub async fn connect(config: McpServerConfig) -> Result<Self, String> {
         use std::process::Stdio;
 
-        let mut child = tokio::process::Command::new(&config.command)
-            .args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("mcp spawn '{}': {e}", config.command))?;
+        let mut child = {
+            let mut c = tokio::process::Command::new(&config.command);
+            c.args(&config.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            c.spawn()
+                .map_err(|e| format!("mcp spawn '{}': {e}", config.command))?
+        };
 
         let stdin  = child.stdin.take()
             .ok_or_else(|| "mcp: no stdin handle".to_string())?;

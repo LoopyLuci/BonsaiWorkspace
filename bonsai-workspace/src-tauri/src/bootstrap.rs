@@ -301,10 +301,12 @@ async fn github_zip_url(client: &reqwest::Client, api: &str) -> Result<String> {
 fn has_vulkan_gpu() -> bool {
     #[cfg(target_os = "windows")]
     {
-        if let Ok(out) = std::process::Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
+        if let Ok(out) = {
+            let mut c = std::process::Command::new("wmic");
+            c.args(["path", "win32_VideoController", "get", "name"]);
+            #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+            c.output()
+        } {
             let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
             return s.contains("nvidia") || s.contains("amd") || s.contains("radeon")
                 || s.contains("intel arc") || s.contains("intel xe");

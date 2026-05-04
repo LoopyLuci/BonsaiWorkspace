@@ -1110,10 +1110,12 @@ fn has_discrete_gpu() -> bool {
                 || lower.contains("intel xe")
         };
 
-        if let Ok(out) = std::process::Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
-            .output()
-        {
+        if let Ok(out) = {
+            let mut c = std::process::Command::new("wmic");
+            c.args(["path", "win32_VideoController", "get", "name"]);
+            #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+            c.output()
+        } {
             let s = String::from_utf8_lossy(&out.stdout);
             if looks_discrete(&s) {
                 return true;
@@ -1122,14 +1124,16 @@ fn has_discrete_gpu() -> bool {
 
         // WMIC can be unavailable/deprecated on some Windows installs.
         // Use a PowerShell CIM fallback so GPU-first remains reliable.
-        if let Ok(out) = std::process::Command::new("powershell")
-            .args([
+        if let Ok(out) = {
+            let mut c = std::process::Command::new("powershell");
+            c.args([
                 "-NoProfile",
                 "-Command",
                 "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
-            ])
-            .output()
-        {
+            ]);
+            #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+            c.output()
+        } {
             let s = String::from_utf8_lossy(&out.stdout);
             if looks_discrete(&s) {
                 return true;
