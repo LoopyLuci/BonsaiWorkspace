@@ -250,22 +250,35 @@ impl ModelOrchestrator {
         let (tx, rx) = oneshot::channel();
         let _ = self.cmd_tx.send(Cmd::Status { resp_tx: tx });
         let status = rx.await.ok()?;
-        if let Some(url) = status.slots.iter()
-            .find(|s| s.state.is_ready())
-            .map(|s| format!("http://127.0.0.1:{}", s.port))
-        {
-            return Some(url);
-        }
-
-        // Startup race guard: a slot can be process-healthy for a brief window
-        // before the orchestrator poll loop transitions Loading -> Ready.
         let probe = Client::new();
-        for slot in status.slots.iter().filter(|s| matches!(s.state, SlotState::Loading { .. })) {
-            let url = format!("http://127.0.0.1:{}", slot.port);
-            if probe_model_ready(&probe, &url).await {
-                return Some(url);
+        resolve_active_slot_url(&status, &probe).await
+    }
+
+    /// Best-effort readiness details for user-facing diagnostics.
+    pub async fn readiness_hint(&self) -> Option<String> {
+        let status = self.status().await;
+
+        let mut loading = Vec::new();
+        for slot in status.slots.iter() {
+            if let SlotState::Loading { model_id, load_pct } = &slot.state {
+                let pct = load_pct.map(|p| format!("{p}%")).unwrap_or_else(|| "starting".to_string());
+                loading.push(format!("slot {}: {} ({})", slot.index, model_id, pct));
             }
         }
+        if !loading.is_empty() {
+            return Some(format!("Still loading: {}.", loading.join(", ")));
+        }
+
+        let mut crashed = Vec::new();
+        for slot in status.slots.iter() {
+            if let SlotState::Crashed { model_id, error } = &slot.state {
+                crashed.push(format!("slot {}: {} ({})", slot.index, model_id, error));
+            }
+        }
+        if !crashed.is_empty() {
+            return Some(format!("Crashed slots: {}.", crashed.join(", ")));
+        }
+
         None
     }
 
@@ -454,6 +467,37 @@ async fn wait_for_model_health(url: String) -> Result<(), String> {
         }
     }
     Err(format!("model load timeout after {}s", MODEL_LOAD_TIMEOUT_SECS))
+}
+
+async fn resolve_active_slot_url(status: &OrchestratorStatus, probe: &Client) -> Option<String> {
+    if let Some(url) = status.slots.iter()
+        .find(|s| s.state.is_ready())
+        .map(|s| format!("http://127.0.0.1:{}", s.port))
+    {
+        return Some(url);
+    }
+
+    // Startup race guard: a slot can be process-healthy for a brief window
+    // before the orchestrator poll loop transitions Loading -> Ready.
+    for slot in status.slots.iter().filter(|s| matches!(s.state, SlotState::Loading { .. })) {
+        let url = format!("http://127.0.0.1:{}", slot.port);
+        if probe_model_ready(probe, &url).await {
+            return Some(url);
+        }
+    }
+
+    // Last-chance probe: if any non-crashed slot process is healthy, allow the
+    // caller to proceed even before the next orchestrator status transition.
+    for slot in status.slots.iter().filter(|s| {
+        !matches!(s.state, SlotState::Empty | SlotState::Crashed { .. })
+    }) {
+        let url = format!("http://127.0.0.1:{}", slot.port);
+        if probe_model_ready(probe, &url).await {
+            return Some(url);
+        }
+    }
+
+    None
 }
 
 async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
@@ -965,4 +1009,56 @@ fn has_discrete_gpu() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn spawn_ok_server() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test server");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let handle = tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (port, handle)
+    }
+
+    #[tokio::test]
+    async fn active_slot_url_resolves_from_loading_health_probe() {
+        let (port, handle) = spawn_ok_server().await;
+        let status = OrchestratorStatus {
+            slots: vec![SlotStatus {
+                index: 0,
+                port,
+                state: SlotState::Loading {
+                    model_id: "Bonsai-1.7B".to_string(),
+                    load_pct: Some(100),
+                },
+                requests: 0,
+                idle_secs: 0,
+                load_elapsed_secs: Some(1),
+            }],
+            queue_depth: 0,
+            total_ram_mb: 0,
+            free_ram_mb: 0,
+        };
+
+        let client = Client::new();
+        let resolved = resolve_active_slot_url(&status, &client).await;
+        assert_eq!(resolved, Some(format!("http://127.0.0.1:{port}")));
+
+        handle.abort();
+    }
 }
