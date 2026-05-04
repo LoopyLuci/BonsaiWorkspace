@@ -6,6 +6,35 @@
 
  This README summarizes the product features, developer quick-starts, and where to find detailed docs in the repository.
 
+ ## What's New
+
+ - Model Data system with rich metadata and AI-assisted model profile generation for local and catalog models.
+ - Quick Options dropdown in chat for Weather, Time, Files, Sys Stats, and Web actions.
+ - Task queue with priority-aware scheduling and resource gating so chat/tool requests can be processed safely under load.
+ - BonsaiBot multi-platform support across Discord, Telegram, Email, and Matrix.
+ - BonsaiExeLauncherBuilder scripts for repeatable local build and packaging workflows.
+
+ ## Quick Start
+
+ 1. Launch the desktop stack:
+
+ ```powershell
+ node bonsai-workspace/src/launch-all.mjs --mode desktop
+ ```
+
+ 2. Open Model Selector and choose a model to load.
+ 3. Start chatting with Bonsai Buddy in the chat panel.
+
+ ## Building from Source
+
+ Use the launcher builder scripts from the repository root to produce desktop artifacts:
+
+ ```powershell
+ .\BonsaiExeLauncherBuilder.ps1
+ ```
+
+ The builder script runs frontend and Tauri build steps, then resolves and stages the built executable. See launcher options in the script help and `bonsai-workspace/launcher_manual.md`.
+
  ## Highlights
 
  - Multi-pane IDE with file tree, Monaco editor, integrated terminal, command palette, status bar, and activity-first logging.

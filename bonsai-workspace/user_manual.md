@@ -174,6 +174,24 @@ Persistence:
 
 ## 6) Chat Panel and Assistant Behavior
 
+### 6.5 Quick Options
+
+Quick Options is a shortcut dropdown in the chat area for common assistant actions.
+
+Available options:
+
+- Weather: asks Bonsai Buddy for current weather details.
+- Time: requests local date/time from runtime tools.
+- Files: launches a file-focused request pattern for search/read operations.
+- Sys Stats: fetches live machine metrics and hardware summary.
+- Web: opens a web-fetch workflow for URL/page summaries.
+
+Usage:
+
+1. Click Quick Options in the chat area.
+2. Pick an option.
+3. Review the injected prompt and send.
+
 ### 6.1 Sending prompts
 
 - Enter sends.
@@ -317,6 +335,29 @@ Settings covers model/runtime/network/remote/mobile/USB features.
 - View hardware info
 - Download whisper model
 
+### 10.1.1 Model Selector
+
+The Model Selector is the main model control surface.
+
+Core actions:
+
+- Browse installed models and Bonsai Catalog entries.
+- Load or switch the active model.
+- Monitor load progress (percentage and elapsed time).
+
+Rich metadata shown in the selector:
+
+- Tier icon: indicates model class/size band.
+- Strength chips: capability hints such as Code, Math, Writing, Reasoning.
+- Context window badge: maximum context length for prompts.
+- RAM badge: estimated memory footprint for local execution.
+
+State indicators:
+
+- Active badge: model is loaded and routing requests.
+- Loading indicator: model is currently warming/loading.
+- Download/Use action for catalog models depending on installation state.
+
 ### 10.2 API settings
 
 Fields:
@@ -415,6 +456,23 @@ Persistent session state includes:
 - Git branch indicator
 - API/connection status
 - Token speed and runtime indicators
+
+- Queue indicator: pending and active task counts for assistant/task execution.
+
+## 13.3 Task Queue
+
+The task queue coordinates assistant and tool workloads under resource constraints.
+
+Queue indicator behavior:
+
+- Pending: tasks waiting for an execution slot.
+- Active: tasks currently executing.
+
+Priority behavior:
+
+- Higher-priority tasks are scheduled first.
+- Resource gating may defer large tasks until sufficient capacity is available.
+- Rapid user submissions can temporarily increase pending count, then drain as workers complete.
 
 ## 14) Local API and External Automation
 
@@ -590,6 +648,35 @@ cargo test
 Unit tests and quick integration checks are included for: policy rules, tool scheduler, memory store, context builder, skill executor, and mobile tooling helpers.
 
 ## 23) Bots: setup, platforms, and communication
+
+## 23.0 BonsaiBot Setup
+
+BonsaiBot provides messaging integration and admin control endpoints.
+
+Supported platforms:
+
+- Discord
+- Telegram
+- Matrix
+- Email
+
+Where to configure:
+
+- Main config: OS config directory `bonsai-bot-config.json` (or working directory override).
+- Secrets/tokens: platform sections in config and keyring-backed admin token handling.
+
+Token placement guidance:
+
+- Discord token under the Discord platform config block.
+- Telegram bot token under Telegram config.
+- Matrix credentials and homeserver URL under Matrix config.
+- SMTP/IMAP credentials for Email in the Email config block.
+
+Validation:
+
+1. Start `bonsai-bot`.
+2. Check `/health` for liveness.
+3. Check authenticated `/status` for per-platform connection state.
 
 `bonsai-bot` is the local platform gateway and adapter that connects the Workspace to chat platforms (Discord, Telegram, Matrix, Email) and to the Buddy local API.
 
