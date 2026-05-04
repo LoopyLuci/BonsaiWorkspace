@@ -785,16 +785,23 @@ pub async fn run_assistant_turn(
 
     let base_url = {
         let mut url = orch.active_slot_url().await;
-        if url.is_none() {
-            for _ in 0..20 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                url = orch.active_slot_url().await;
-                if url.is_some() {
-                    break;
-                }
+        for _ in 0..3 {
+            if url.is_some() {
+                break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            url = orch.active_slot_url().await;
         }
-        url.ok_or("No model slot is ready.")?
+
+        if let Some(url) = url {
+            url
+        } else {
+            let hint = orch
+                .readiness_hint()
+                .await
+                .unwrap_or_else(|| "No model is currently loading. Load a model from Model Selector.".to_string());
+            return Err(format!("No model slot is ready. {hint}"));
+        }
     };
 
     let client = reqwest::Client::builder()

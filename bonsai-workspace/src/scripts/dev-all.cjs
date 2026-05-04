@@ -44,14 +44,20 @@ function startBackend() {
 
 function startVite() {
   let p;
+  const viteStdio = ['ignore', 'inherit', 'inherit'];
   if (process.platform === 'win32') {
-    p = spawn('cmd.exe', ['/d', '/s', '/c', 'npm run dev'], { stdio: 'inherit', cwd: ROOT });
+    p = spawn('cmd.exe', ['/d', '/s', '/c', 'npm run dev'], { stdio: viteStdio, cwd: ROOT });
   } else {
-    p = spawn('npm', ['run', 'dev'], { stdio: 'inherit', cwd: ROOT });
+    p = spawn('npm', ['run', 'dev'], { stdio: viteStdio, cwd: ROOT });
   }
   p.on('exit', (code) => {
     console.log(`[dev-all] vite exited with ${code}`);
-    // let backend continue
+    // In Tauri beforeDevCommand mode, Vite is the primary child. If it exits,
+    // fail fast so Tauri can surface the startup failure instead of hanging.
+    if (SKIP_BACKEND) {
+      process.exit(code || 1);
+    }
+    // In launcher mode, backend may continue serving API.
   });
   return p;
 }
@@ -94,4 +100,8 @@ function startVite() {
     try { if (vite) vite.kill('SIGINT'); } catch {};
     process.exit(0);
   });
+
+  // Keep this supervisor process alive; otherwise npm may exit early and tear
+  // down child processes (notably Vite) in beforeDevCommand mode on Windows.
+  await new Promise(() => {});
 })();
