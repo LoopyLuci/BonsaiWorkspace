@@ -7,6 +7,8 @@ import time
 import tracemalloc
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import subprocess
+from urllib.parse import urlparse
 
 DEFAULT_MAX_CPU_SECONDS = 30
 DEFAULT_MAX_MEMORY_MB = 512
@@ -72,6 +74,72 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'status': 'ok'}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == '/run':
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'empty request body'}).encode())
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                request = json.loads(body.decode())
+                script = request.get('script', '')
+                args = request.get('args', '')
+
+                if not script:
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'error': 'script is required'}).encode())
+                    return
+
+                # Execute the script with optional arguments
+                cmd = [sys.executable, '-c', script]
+                if args:
+                    cmd.append(args)
+
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=30  # Safety timeout
+                    )
+                    response = {
+                        'stdout': result.stdout,
+                        'stderr': result.stderr,
+                        'exit_code': result.returncode
+                    }
+                except subprocess.TimeoutExpired:
+                    response = {
+                        'stdout': '',
+                        'stderr': 'script execution exceeded 30 second timeout',
+                        'exit_code': 124
+                    }
+                except Exception as e:
+                    response = {
+                        'stdout': '',
+                        'stderr': f'script execution failed: {str(e)}',
+                        'exit_code': 1
+                    }
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(response).encode())
+            except json.JSONDecodeError:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'invalid JSON'}).encode())
         else:
             self.send_response(404)
             self.end_headers()
