@@ -112,6 +112,18 @@ async fn main() {
         cfg.clone(),
     ));
 
+    // Hourly eviction of stale rate limiter entries (inactive for 24h)
+    {
+        let router2 = router.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(3600));
+            loop {
+                ticker.tick().await;
+                router2.evict_stale_limiters(86_400);
+            }
+        });
+    }
+
     let swarm = swarm_client::SwarmClient::new(cfg.swarm_peers.clone());
 
     // Per-platform connection state — written by platforms, read by /status
