@@ -210,7 +210,7 @@ impl TaskQueue {
 
     fn start_dispatch_loop(&self) {
         let queue = self.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             loop {
                 queue.dispatch_once().await;
                 tokio::time::sleep(Duration::from_millis(75)).await;
@@ -366,7 +366,7 @@ impl TaskQueue {
         }
 
         let queue = self.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let (resp_tx, resp_rx) = oneshot::channel();
 
             let infer_res = queue.orchestrator.infer(InferRequest {
