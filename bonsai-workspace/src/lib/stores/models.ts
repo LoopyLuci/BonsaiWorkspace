@@ -9,6 +9,8 @@ import type {
   ModelDataSummary,
   GenerateModelDataInput,
 } from '$lib/types/model_data';
+import type { InferenceMode } from '$lib/types/inference_mode';
+import { DEFAULT_INFERENCE_MODE } from '$lib/types/inference_mode';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -118,6 +120,7 @@ export const modelDataList      = writable<ModelDataSummary[]>([]);
 export const modelDataDetail    = writable<Record<string, ModelData>>({});
 export const modelDataGenerating = writable(false);
 export const modelDataError     = writable<string | null>(null);
+export const defaultInferenceMode = writable<InferenceMode>(DEFAULT_INFERENCE_MODE);
 
 export const isBootstrapping   = writable(false);
 export const bootstrapProgress = writable<Record<string, BootstrapProgress>>({});
@@ -367,6 +370,59 @@ export async function syncRegistryToModelData(): Promise<number> {
   }
 }
 
+export async function refreshDefaultInferenceMode(): Promise<void> {
+  try {
+    const mode = await invoke<InferenceMode>('get_default_inference_mode');
+    defaultInferenceMode.set(mode);
+  } catch (e) {
+    console.error('[model-data] default inference mode fetch failed:', e);
+  }
+}
+
+export async function setDefaultInferenceMode(mode: InferenceMode): Promise<InferenceMode | null> {
+  try {
+    const saved = await invoke<InferenceMode>('set_default_inference_mode', { mode });
+    defaultInferenceMode.set(saved);
+    return saved;
+  } catch (e) {
+    modelDataError.set(String(e));
+    return null;
+  }
+}
+
+export async function getModelInferenceMode(modelId: string): Promise<InferenceMode> {
+  try {
+    return await invoke<InferenceMode>('get_inference_mode', { modelId });
+  } catch {
+    return get(defaultInferenceMode);
+  }
+}
+
+export async function setModelInferenceMode(modelId: string, mode: InferenceMode): Promise<InferenceMode | null> {
+  try {
+    const saved = await invoke<InferenceMode>('set_inference_mode', { modelId, mode });
+    await refreshModelData();
+    await refreshStatus();
+    return saved;
+  } catch (e) {
+    modelDataError.set(String(e));
+    return null;
+  }
+}
+
+export async function applyInferenceModeToAll(mode: InferenceMode): Promise<number> {
+  try {
+    const updated = await invoke<number>('apply_inference_mode_to_all', { mode });
+    defaultInferenceMode.set(mode);
+    await refreshModelData();
+    await refreshStatus();
+    return updated;
+  } catch (e) {
+    modelDataError.set(String(e));
+    return 0;
+  }
+}
+
 export async function rankModelsForSkill(skillId: string): Promise<ModelDataSummary[]> {
   try {
     return await invoke<ModelDataSummary[]>('rank_models_for_skill', { skillId });
@@ -427,6 +483,7 @@ export function initModelStores() {
   refreshStatus();
   refreshTaskQueueStatus();
   refreshModelData();
+  refreshDefaultInferenceMode();
 
   window.setInterval(() => {
     refreshTaskQueueStatus();

@@ -418,6 +418,7 @@ impl ModelDataGenerator {
                 ..Default::default()
             },
             inference:        InferenceProfile::default(),
+            inference_mode:   crate::inference_mode::InferenceMode::default(),
             prompt_format:    PromptFormat::OpenAIMessages,
             skill_affinities: vec![],
             authors:          vec![],

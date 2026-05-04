@@ -43,8 +43,12 @@
     activeModelId,
     CUSTOM_SWARM_MODEL_ID,
     orchestratorStatus,
+    getModelInferenceMode,
+    setModelInferenceMode,
     refreshStatus,
   } from '$lib/stores/models';
+  import type { InferenceMode } from '$lib/types/inference_mode';
+  import { DEFAULT_INFERENCE_MODE, inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
 
   let input       = '';
@@ -58,8 +62,40 @@
   let speechStatusTimer: ReturnType<typeof setInterval> | null = null;
   let modelFallbackNotice = '';
   let modelReadyCpuNotice = '';
+  let activeInferenceMode: InferenceMode = DEFAULT_INFERENCE_MODE;
+  let inferenceModeLoading = false;
+  let inferenceModeStatus = '';
+  let lastModeModelId = '';
   let showToolSkills = false;
   let showNewMenu = false;
+
+  $: activeModelRegistryId = $activeModel?.id ?? '';
+  $: isCustomSwarm = $activeModelId === CUSTOM_SWARM_MODEL_ID;
+
+  $: if (activeModelRegistryId && activeModelRegistryId !== lastModeModelId && !isCustomSwarm) {
+    lastModeModelId = activeModelRegistryId;
+    void loadActiveInferenceMode(activeModelRegistryId);
+  }
+
+  async function loadActiveInferenceMode(modelId: string) {
+    activeInferenceMode = await getModelInferenceMode(modelId);
+  }
+
+  async function onInferenceModeChange(event: Event) {
+    if (!$activeModel?.id || isCustomSwarm) return;
+    const selected = (event.currentTarget as HTMLSelectElement).value;
+    const nextMode = toInferenceMode(selected, activeInferenceMode.mode === 'hybrid' ? activeInferenceMode.gpu_layers : 20);
+    inferenceModeLoading = true;
+    inferenceModeStatus = '';
+    const saved = await setModelInferenceMode($activeModel.id, nextMode);
+    if (saved) {
+      activeInferenceMode = saved;
+      inferenceModeStatus = `${inferenceModeLabel(saved)} mode applied`;
+    } else {
+      inferenceModeStatus = 'Failed to update inference mode';
+    }
+    inferenceModeLoading = false;
+  }
 
   type ToolInfo = {
     name: string;
@@ -1400,6 +1436,17 @@
     ></textarea>
     <div class="input-actions">
       <ModelSelector inline={true} />
+      {#if $activeModel && !isCustomSwarm}
+        <label class="inference-chip" title={`Inference mode: ${inferenceModeLabel(activeInferenceMode)}`}>
+          <span>Mode</span>
+          <select value={activeInferenceMode.mode} on:change={onInferenceModeChange} disabled={inferenceModeLoading || $isThinking}>
+            <option value="auto">Auto</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="gpu_only">GPU Only</option>
+            <option value="cpu_only">CPU Only</option>
+          </select>
+        </label>
+      {/if}
       <button
         class="btn-send"
         on:click={send}
@@ -1426,6 +1473,9 @@
         ⏹ TTS
       </button>
     </div>
+    {#if inferenceModeStatus}
+      <div class="inference-mode-status">{inferenceModeStatus}</div>
+    {/if}
   </div>
 
   {#if showToolSkills}
@@ -2131,6 +2181,31 @@
     justify-content: flex-start;
     align-items: center;
     flex-wrap: nowrap;
+  }
+
+  .inference-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-dim);
+    border-radius: 999px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .inference-chip select {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .inference-mode-status {
+    font-size: 12px;
+    color: var(--text-dim);
   }
 
   .btn-send {

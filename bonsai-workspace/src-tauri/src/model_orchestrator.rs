@@ -15,7 +15,7 @@
 //!        ↑ OrchestratorCmd channel (mpsc)
 //!        ↑ SlotFreed notifications from inference tasks
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +30,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::bootstrap;
+use crate::inference_mode::InferenceMode;
 use crate::model_registry::{ModelInfo, ModelRegistry};
 
 const MODEL_LOAD_POLL_INTERVAL_MS: u64 = 500;
@@ -84,6 +85,7 @@ struct Slot {
     load_attempt:   u8,
     gpu_layers:     u32,
     cpu_mode:       bool,
+    inference_mode: InferenceMode,
     fallback_note:  Option<String>,
 }
 
@@ -103,6 +105,7 @@ impl Slot {
             load_attempt: 0,
             gpu_layers: 0,
             cpu_mode: false,
+            inference_mode: InferenceMode::default(),
             fallback_note: None,
         }
     }
@@ -116,6 +119,7 @@ impl Slot {
         self.load_attempt = 0;
         self.gpu_layers = 0;
         self.cpu_mode = false;
+        self.inference_mode = InferenceMode::default();
         self.fallback_note = None;
     }
 }
@@ -138,6 +142,7 @@ pub struct SlotStatus {
     pub fallback_note: Option<String>,
     #[serde(skip_serializing_if = "is_false")]
     pub cpu_mode: bool,
+    pub inference_mode: InferenceMode,
 }
 
 #[derive(Serialize, Clone)]
@@ -201,6 +206,8 @@ enum Cmd {
     Load { model_id: String, resp_tx: oneshot::Sender<Result<(), String>> },
     Unload(usize),
     Status { resp_tx: oneshot::Sender<OrchestratorStatus> },
+    SetInferenceMode { model_id: String, mode: InferenceMode },
+    GetInferenceMode { model_id: String, resp_tx: oneshot::Sender<Option<InferenceMode>> },
     RefreshRegistry,
     SlotFreed(usize),
 }
@@ -253,6 +260,31 @@ impl ModelOrchestrator {
 
     pub fn refresh_registry(&self) {
         let _ = self.cmd_tx.send(Cmd::RefreshRegistry);
+    }
+
+    pub fn set_inference_mode(&self, model_id: String, mode: InferenceMode) {
+        let _ = self.cmd_tx.send(Cmd::SetInferenceMode { model_id, mode });
+    }
+
+    pub async fn get_inference_mode(&self, model_id: String) -> Option<InferenceMode> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.cmd_tx.send(Cmd::GetInferenceMode { model_id, resp_tx: tx });
+        rx.await.ok().flatten()
+    }
+
+    pub async fn is_model_loaded(&self, model_id: &str) -> bool {
+        let status = self.status().await;
+        status
+            .slots
+            .iter()
+            .any(|s| s.state.model_id() == Some(model_id) && !matches!(s.state, SlotState::Empty | SlotState::Crashed { .. }))
+    }
+
+    pub async fn unload_model(&self, model_id: &str) {
+        let status = self.status().await;
+        for slot in status.slots.into_iter().filter(|s| s.state.model_id() == Some(model_id)) {
+            self.unload(slot.index);
+        }
     }
 
     pub async fn status(&self) -> OrchestratorStatus {
@@ -341,6 +373,7 @@ async fn event_loop(
     let n_slots = decide_slot_count();
     let mut slots: Vec<Slot> = (0..n_slots).map(Slot::new).collect();
     let mut queue: VecDeque<InferRequest> = VecDeque::new();
+    let mut inference_modes: HashMap<String, InferenceMode> = HashMap::new();
 
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
@@ -358,7 +391,11 @@ async fn event_loop(
             .or_else(|| reg.models.first().cloned());
         if let Some(info) = info {
             drop(reg);
-            spawn_model(&mut slots[0], &info, &app);
+            let mode = inference_modes
+                .get(&info.id)
+                .cloned()
+                .unwrap_or_default();
+            spawn_model(&mut slots[0], &info, &app, &mode);
         }
     }
 
@@ -366,7 +403,7 @@ async fn event_loop(
         tokio::select! {
             cmd = rx.recv() => match cmd {
                 None => break,
-                Some(c) => handle_cmd(c, &mut slots, &mut queue, &cmd_tx, &registry, &client, &app).await,
+                Some(c) => handle_cmd(c, &mut slots, &mut queue, &mut inference_modes, &cmd_tx, &registry, &client, &app).await,
             },
             // Periodic: advance queue + poll Loading slots for readiness
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
@@ -382,6 +419,7 @@ async fn handle_cmd(
     cmd:      Cmd,
     slots:    &mut Vec<Slot>,
     queue:    &mut VecDeque<InferRequest>,
+    inference_modes: &mut HashMap<String, InferenceMode>,
     cmd_tx:   &mpsc::UnboundedSender<Cmd>,
     registry: &Arc<Mutex<ModelRegistry>>,
     client:   &Client,
@@ -395,7 +433,7 @@ async fn handle_cmd(
             } else {
                 // No ready slot — if a suitable model isn't loading, start it
                 if let Some(mid_owned) = req.model_id.clone() {
-                    maybe_start_load(mid_owned, slots, registry, app).await;
+                    maybe_start_load(mid_owned, slots, registry, inference_modes, app).await;
                 }
                 queue.push_back(req);
             }
@@ -430,7 +468,11 @@ async fn handle_cmd(
                 None => { let _ = resp_tx.send(Err(format!("model {model_id} not in registry"))); }
                 Some(info) => {
                     let idx = empty_or_evict(slots);
-                    spawn_model(&mut slots[idx], &info, app);
+                    let mode = inference_modes
+                        .get(&model_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    spawn_model(&mut slots[idx], &info, app, &mode);
                     let url = slots[idx].base_url.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = resp_tx.send(wait_for_model_health(url).await);
@@ -449,6 +491,14 @@ async fn handle_cmd(
             let _ = resp_tx.send(build_status(slots, queue));
         }
 
+        Cmd::SetInferenceMode { model_id, mode } => {
+            inference_modes.insert(model_id, mode);
+        }
+
+        Cmd::GetInferenceMode { model_id, resp_tx } => {
+            let _ = resp_tx.send(inference_modes.get(&model_id).cloned());
+        }
+
         Cmd::RefreshRegistry => {
             // Re-scan all known model directories.
             {
@@ -464,7 +514,11 @@ async fn handle_cmd(
                 let reg = registry.lock().await;
                 if let Some(info) = reg.models.first().cloned() {
                     drop(reg);
-                    spawn_model(&mut slots[0], &info, app);
+                    let mode = inference_modes
+                        .get(&info.id)
+                        .cloned()
+                        .unwrap_or_default();
+                    spawn_model(&mut slots[0], &info, app, &mode);
                 }
             }
         }
@@ -554,14 +608,15 @@ async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
 
 // ── Slot management ───────────────────────────────────────────────────────────
 
-fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle) {
+fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &InferenceMode) {
     let exe = bootstrap::llama_exe(app);
     let exe_name = exe.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let initial_gpu_layers = if exe_name.contains("vulkan") || has_discrete_gpu() { 20 } else { 0 };
-    spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, None);
+    let gpu_preferred_layers = if exe_name.contains("vulkan") || has_discrete_gpu() { 20 } else { 0 };
+    let initial_gpu_layers = mode.gpu_layers(gpu_preferred_layers);
+    spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, mode.clone(), None);
 }
 
 fn spawn_model_with_layers(
@@ -570,6 +625,7 @@ fn spawn_model_with_layers(
     app: &AppHandle,
     gpu_layers: u32,
     attempt: u8,
+    mode: InferenceMode,
     fallback_note: Option<String>,
 ) {
     slot.kill();
@@ -577,6 +633,7 @@ fn spawn_model_with_layers(
     slot.load_attempt = attempt;
     slot.gpu_layers = gpu_layers;
     slot.cpu_mode = gpu_layers == 0;
+    slot.inference_mode = mode;
     slot.fallback_note = fallback_note;
     slot.state = SlotState::Loading { model_id: info.id.clone(), load_pct: None };
     slot.load_started = Some(Instant::now());
@@ -673,6 +730,7 @@ async fn maybe_start_load(
     model_id: String,
     slots: &mut Vec<Slot>,
     registry: &Arc<Mutex<ModelRegistry>>,
+    inference_modes: &HashMap<String, InferenceMode>,
     app: &AppHandle,
 ) {
     // Don't load if already loading/ready
@@ -681,7 +739,11 @@ async fn maybe_start_load(
     if let Some(info) = reg.models.iter().find(|m| m.id == model_id).cloned() {
         drop(reg);
         let idx = empty_or_evict(slots);
-        spawn_model(&mut slots[idx], &info, app);
+        let mode = inference_modes
+            .get(&model_id)
+            .cloned()
+            .unwrap_or_default();
+        spawn_model(&mut slots[idx], &info, app, &mode);
     }
 }
 
@@ -719,7 +781,15 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 
                         if let Some(info) = slot.current_model.clone() {
                             let next_attempt = (slot.load_attempt + 1).min(MAX_MODEL_LOAD_ATTEMPTS);
-                            spawn_model_with_layers(slot, &info, app, 0, next_attempt, Some(note));
+                            spawn_model_with_layers(
+                                slot,
+                                &info,
+                                app,
+                                0,
+                                next_attempt,
+                                slot.inference_mode.clone(),
+                                Some(note),
+                            );
                             continue;
                         }
                     }
@@ -784,7 +854,7 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 }
 
 fn should_retry_cpu_fallback(slot: &Slot, code: Option<i32>, detail: &str) -> bool {
-    if slot.cpu_mode || slot.load_attempt >= MAX_MODEL_LOAD_ATTEMPTS {
+    if slot.cpu_mode || slot.load_attempt >= MAX_MODEL_LOAD_ATTEMPTS || !slot.inference_mode.allows_cpu_fallback() {
         return false;
     }
 
@@ -1066,6 +1136,7 @@ fn build_status(slots: &[Slot], queue: &VecDeque<InferRequest>) -> OrchestratorS
             load_elapsed_secs: s.load_started.map(|t| t.elapsed().as_secs()),
             fallback_note: s.fallback_note.clone(),
             cpu_mode: s.cpu_mode,
+            inference_mode: s.inference_mode.clone(),
         }).collect(),
         queue_depth:  queue.len(),
         total_ram_mb: sys.total_memory() / (1024 * 1024),
@@ -1190,6 +1261,7 @@ mod tests {
                 load_elapsed_secs: Some(1),
                 fallback_note: None,
                 cpu_mode: false,
+                inference_mode: InferenceMode::default(),
             }],
             queue_depth: 0,
             total_ram_mb: 0,

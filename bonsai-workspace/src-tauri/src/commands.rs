@@ -5524,6 +5524,7 @@ async fn bot_reload(_state: &State<'_, AppState>) -> Result<(), ()> {
 
 // ─── Model Data ──────────────────────────────────────────────────────────────
 
+use crate::inference_mode::InferenceMode;
 use crate::model_data::{GenerateModelDataInput, ModelData, ModelDataSummary};
 use crate::model_data_generator::ModelDataGenerator;
 
@@ -5628,12 +5629,149 @@ pub async fn generate_model_data(
 /// Ensure every local GGUF in the registry has a ModelData entry.
 /// Skips models that already have an entry. Returns the count of new entries created.
 #[tauri::command]
-pub async fn sync_registry_to_model_data(state: State<'_, AppState>) -> Result<usize, String> {
+pub async fn sync_registry_to_model_data(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
     let models = state.orchestrator.list_models().await;
+    let default_mode = crate::config::load_config(&app_handle)
+        .map(|c| c.default_inference_mode)
+        .unwrap_or_default();
     state.model_data_store
-        .sync_from_registry(&models)
+        .sync_from_registry(&models, &default_mode)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_default_inference_mode(app_handle: AppHandle) -> Result<InferenceMode, String> {
+    let cfg = crate::config::load_config(&app_handle)?;
+    Ok(cfg.default_inference_mode)
+}
+
+#[tauri::command]
+pub async fn set_default_inference_mode(
+    app_handle: AppHandle,
+    mode: InferenceMode,
+) -> Result<InferenceMode, String> {
+    let mut cfg = crate::config::load_config(&app_handle)?;
+    cfg.default_inference_mode = mode.clone();
+    crate::config::save_config(&app_handle, &cfg)?;
+    Ok(mode)
+}
+
+#[tauri::command]
+pub async fn get_inference_mode(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<InferenceMode, String> {
+    if let Some(data) = state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(data.inference_mode);
+    }
+    let cfg = crate::config::load_config(&app_handle)?;
+    Ok(cfg.default_inference_mode)
+}
+
+#[tauri::command]
+pub async fn set_inference_mode(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+    mode: InferenceMode,
+) -> Result<InferenceMode, String> {
+    let mut data = if let Some(existing) = state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        existing
+    } else {
+        let models = state.orchestrator.list_models().await;
+        let info = models
+            .iter()
+            .find(|m| m.id == model_id)
+            .ok_or_else(|| format!("model '{model_id}' not found in registry"))?;
+        ModelData::from_registry_with_mode(info, mode.clone())
+    };
+
+    data.inference_mode = mode.clone();
+    data.touch();
+    state
+        .model_data_store
+        .save(&data)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    state
+        .orchestrator
+        .set_inference_mode(model_id.clone(), mode.clone());
+
+    if state.orchestrator.is_model_loaded(&model_id).await {
+        state.orchestrator.unload_model(&model_id).await;
+        let rx = state.orchestrator.load(model_id.clone());
+        rx.await.map_err(|_| "Orchestrator offline".to_string())??;
+    }
+
+    let _ = app_handle.emit(
+        "model-inference-mode-updated",
+        serde_json::json!({
+            "model_id": model_id,
+            "mode": mode,
+        }),
+    );
+
+    Ok(data.inference_mode)
+}
+
+#[tauri::command]
+pub async fn apply_inference_mode_to_all(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    mode: InferenceMode,
+) -> Result<usize, String> {
+    let mut cfg = crate::config::load_config(&app_handle)?;
+    cfg.default_inference_mode = mode.clone();
+    crate::config::save_config(&app_handle, &cfg)?;
+
+    let models = state.orchestrator.list_models().await;
+    state
+        .model_data_store
+        .sync_from_registry(&models, &mode)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut updated = 0usize;
+    for m in models {
+        let mut data = match state
+            .model_data_store
+            .find_by_registry_id(&m.id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(d) => d,
+            None => ModelData::from_registry_with_mode(&m, mode.clone()),
+        };
+        data.inference_mode = mode.clone();
+        data.touch();
+        state
+            .model_data_store
+            .save(&data)
+            .await
+            .map_err(|e| e.to_string())?;
+        state
+            .orchestrator
+            .set_inference_mode(m.id.clone(), mode.clone());
+        updated += 1;
+    }
+
+    Ok(updated)
 }
 
 // ─── Model directories ────────────────────────────────────────────────────────

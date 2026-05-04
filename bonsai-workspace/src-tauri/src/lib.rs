@@ -32,6 +32,7 @@ mod chat_sessions;
 mod cluster_orchestrator;
 mod commands;
 mod config;
+mod inference_mode;
 mod model_data;
 mod model_data_store;
 mod model_data_generator;
@@ -537,12 +538,21 @@ pub fn run() {
             {
                 let mds  = model_data_store.clone();
                 let orch = orchestrator.clone();
+                let default_mode = early_cfg.default_inference_mode.clone();
                 tauri::async_runtime::spawn(async move {
                     let models = orch.list_models().await;
-                    match mds.sync_from_registry(&models).await {
+                    match mds.sync_from_registry(&models, &default_mode).await {
                         Ok(n) if n > 0 => tracing::info!("[model-data] created {n} skeleton entries from registry"),
                         Ok(_)          => {},
                         Err(e)         => tracing::warn!("[model-data] registry sync failed: {e}"),
+                    }
+
+                    if let Ok(entries) = mds.list().await {
+                        for d in entries {
+                            if let crate::model_data::ModelSource::LocalGguf { registry_id: Some(id), .. } = d.source {
+                                orch.set_inference_mode(id, d.inference_mode.clone());
+                            }
+                        }
                     }
                 });
             }
@@ -1016,6 +1026,11 @@ pub fn run() {
             commands::rank_models_for_skill,
             commands::generate_model_data,
             commands::sync_registry_to_model_data,
+            commands::get_default_inference_mode,
+            commands::set_default_inference_mode,
+            commands::get_inference_mode,
+            commands::set_inference_mode,
+            commands::apply_inference_mode_to_all,
             commands::get_task_queue_status,
             // ── Model directories ─────────────────────────────────────────────
             commands::list_model_directories,
