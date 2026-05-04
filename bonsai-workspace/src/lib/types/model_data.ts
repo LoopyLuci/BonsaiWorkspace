@@ -3,6 +3,8 @@
  * Keep in sync with bonsai-workspace/src-tauri/src/model_data.rs.
  */
 
+import type { InferenceMode } from '$lib/types/inference_mode';
+
 // ── Source / Provider ─────────────────────────────────────────────────────────
 
 export type ModelSource =
@@ -113,6 +115,7 @@ export interface ModelData {
   source:          ModelSource;
   capabilities:    ModelCapabilities;
   inference:       InferenceProfile;
+  inference_mode:  InferenceMode;
   prompt_format:   PromptFormat;
   skill_affinities: SkillAffinity[];
   authors:         string[];
@@ -141,6 +144,7 @@ export interface ModelDataSummary {
   strengths:      ModelStrength[];
   context_window: number;
   tool_calling:   ToolCallingSupport;
+  inference_mode: InferenceMode;
   tags:           string[];
   updated_at:     number;
 }

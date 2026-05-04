@@ -6,7 +6,22 @@
   import { addAssistantMessage } from '$lib/stores/chat';
   import ClusterControlPanel from '$lib/components/ClusterControlPanel.svelte';
   import { DEFAULT_API_PORT } from '$lib/constants/network';
-  import { availableModels, activeModel, activeModelId, orchestratorStatus, refreshStatus, refreshModels, modelSwitchStatus } from '$lib/stores/models';
+  import {
+    availableModels,
+    activeModel,
+    activeModelId,
+    orchestratorStatus,
+    refreshStatus,
+    refreshModels,
+    modelSwitchStatus,
+    setModelSwitchStatus,
+    defaultInferenceMode,
+    refreshDefaultInferenceMode,
+    setDefaultInferenceMode,
+    applyInferenceModeToAll,
+  } from '$lib/stores/models';
+  import type { InferenceMode } from '$lib/types/inference_mode';
+  import { inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
   import { apiHost, apiPort, apiBaseUrl, loadApiSettings, saveApiSettings } from '$lib/stores/settings';
   import {
     applyAutoDetectedMobileDisplaySettings,
@@ -32,6 +47,9 @@
   let displaySettingsStatus = '';
   let apiTestLoading   = false;
   let saveApiLoading   = false;
+  let defaultInferenceModeKey: 'auto' | 'cpu_only' | 'gpu_only' | 'hybrid' = 'hybrid';
+  let defaultHybridLayers = 20;
+  let inferenceDefaultsMsg = '';
 
   let remoteSessionId  = '';
   let remoteState      = 'inactive';
@@ -51,6 +69,13 @@
     modelSwitchStatus.set('');
     try { hwInfo = await invoke<Record<string,unknown>>('get_hardware_info'); } catch {}
     try { await loadApiSettings(); } catch (e) { console.warn('Failed to load API settings', e); }
+    try {
+      await refreshDefaultInferenceMode();
+      defaultInferenceModeKey = $defaultInferenceMode.mode;
+      if ($defaultInferenceMode.mode === 'hybrid') {
+        defaultHybridLayers = $defaultInferenceMode.gpu_layers;
+      }
+    } catch {}
     try { await refreshAndroidUsbDevices(); } catch {}
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
@@ -102,7 +127,7 @@
       await refreshModels();
       await refreshStatus();
       switchDetails = `${msg} Orchestrator refreshed.`;
-      modelSwitchStatus.set(switchDetails);
+      setModelSwitchStatus(switchDetails, 5000);
       addAssistantMessage(msg);
     } catch (e) {
       errorMsg = String(e);
@@ -119,7 +144,7 @@
           if (isReady) {
             await refreshModels();
             switchDetails = `${name} became ready after timeout grace window.`;
-            modelSwitchStatus.set(switchDetails);
+            setModelSwitchStatus(switchDetails, 5000);
             errorMsg = '';
             return;
           }
@@ -169,6 +194,22 @@
     } finally {
       saveApiLoading = false;
     }
+  }
+
+  async function saveInferenceDefaults() {
+    const mode: InferenceMode = toInferenceMode(defaultInferenceModeKey, defaultHybridLayers);
+    const saved = await setDefaultInferenceMode(mode);
+    inferenceDefaultsMsg = saved ? `Default set to ${inferenceModeLabel(saved)}` : 'Failed to save default inference mode';
+  }
+
+  async function applyInferenceDefaultsToAllModels() {
+    const mode: InferenceMode = toInferenceMode(defaultInferenceModeKey, defaultHybridLayers);
+    const updated = await applyInferenceModeToAll(mode);
+    inferenceDefaultsMsg = updated > 0
+      ? `Applied ${inferenceModeLabel(mode)} to ${updated} model(s)`
+      : 'No models were updated';
+    await refreshModels();
+    await refreshStatus();
   }
 
   function disconnectRemotePreview() {
@@ -1253,6 +1294,39 @@
           ⬇ Download Whisper
         </button>
       </div>
+    </section>
+
+    <section class="section">
+      <h3 class="section-title">Inference Defaults</h3>
+      <p class="section-desc">Choose the default mode for newly discovered local models, then optionally apply it to all existing models.</p>
+      <div class="api-config-grid">
+        <label>
+          Default mode
+          <select bind:value={defaultInferenceModeKey}>
+            <option value="auto">Auto</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="gpu_only">GPU Only</option>
+            <option value="cpu_only">CPU Only</option>
+          </select>
+        </label>
+        {#if defaultInferenceModeKey === 'hybrid'}
+          <label>
+            GPU layers
+            <input type="number" min="1" max="200" bind:value={defaultHybridLayers} />
+          </label>
+        {/if}
+      </div>
+      <div class="action-grid">
+        <button class="action-btn blue" type="button" on:click={saveInferenceDefaults}>
+          Save Default
+        </button>
+        <button class="action-btn" type="button" on:click={applyInferenceDefaultsToAllModels}>
+          Apply To All Models
+        </button>
+      </div>
+      {#if inferenceDefaultsMsg}
+        <div class="api-test-result">{inferenceDefaultsMsg}</div>
+      {/if}
     </section>
 
     <!-- ── Connection / Pairing ──────────────────────────────────────────── -->

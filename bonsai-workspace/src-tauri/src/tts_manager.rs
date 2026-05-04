@@ -97,13 +97,20 @@ impl TtsManager {
         // Run Piper:
         //   piper --model <model> --output_file <wav> --json_output <json> --length_scale <1/speed>
         let length_scale = 1.0 / speed;
-        let output = Command::new(&piper)
+        let mut piper_cmd = Command::new(&piper);
+        piper_cmd
             .arg("--model").arg(&model_path)
             .arg("--output_file").arg(&wav_out)
             .arg("--length_scale").arg(length_scale.to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            piper_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let output = piper_cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn Piper: {e}"))?;
 

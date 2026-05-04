@@ -9,6 +9,7 @@ use anyhow::Result;
 use serde_json;
 use sqlx::SqlitePool;
 
+use crate::inference_mode::InferenceMode;
 use crate::model_data::{AffinityLevel, ModelData, ModelDataSummary};
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ impl ModelDataStore {
                 source_json          TEXT    NOT NULL,
                 capabilities_json    TEXT    NOT NULL,
                 inference_json       TEXT    NOT NULL,
+                inference_mode_json  TEXT    NOT NULL DEFAULT '{"mode":"hybrid","gpu_layers":20}',
                 prompt_format_json   TEXT    NOT NULL,
                 skill_affinities_json TEXT   NOT NULL DEFAULT '[]',
                 authors_json         TEXT    NOT NULL DEFAULT '[]',
@@ -50,6 +52,13 @@ impl ModelDataStore {
         "#)
         .execute(&pool)
         .await?;
+
+        // Backward-compatible migration for existing databases.
+        let _ = sqlx::query(
+            "ALTER TABLE model_data ADD COLUMN inference_mode_json TEXT NOT NULL DEFAULT '{\"mode\":\"hybrid\",\"gpu_layers\":20}'",
+        )
+        .execute(&pool)
+        .await;
 
         Ok(Self { pool })
     }
@@ -83,6 +92,7 @@ impl ModelDataStore {
         let source_json           = serde_json::to_string(&data.source)?;
         let capabilities_json     = serde_json::to_string(&data.capabilities)?;
         let inference_json        = serde_json::to_string(&data.inference)?;
+        let inference_mode_json   = serde_json::to_string(&data.inference_mode)?;
         let prompt_format_json    = serde_json::to_string(&data.prompt_format)?;
         let skill_affinities_json = serde_json::to_string(&data.skill_affinities)?;
         let authors_json          = serde_json::to_string(&data.authors)?;
@@ -94,11 +104,11 @@ impl ModelDataStore {
         sqlx::query(r#"
             INSERT INTO model_data (
                 id, name, family, version, description,
-                source_json, capabilities_json, inference_json, prompt_format_json,
+                source_json, capabilities_json, inference_json, inference_mode_json, prompt_format_json,
                 skill_affinities_json, authors_json, organization, license,
                 homepage_url, training_cutoff, parameter_count, architecture,
                 tags_json, notes, local_file_json, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 name                  = excluded.name,
                 family                = excluded.family,
@@ -107,6 +117,7 @@ impl ModelDataStore {
                 source_json           = excluded.source_json,
                 capabilities_json     = excluded.capabilities_json,
                 inference_json        = excluded.inference_json,
+                inference_mode_json   = excluded.inference_mode_json,
                 prompt_format_json    = excluded.prompt_format_json,
                 skill_affinities_json = excluded.skill_affinities_json,
                 authors_json          = excluded.authors_json,
@@ -129,6 +140,7 @@ impl ModelDataStore {
         .bind(&source_json)
         .bind(&capabilities_json)
         .bind(&inference_json)
+        .bind(&inference_mode_json)
         .bind(&prompt_format_json)
         .bind(&skill_affinities_json)
         .bind(&authors_json)
@@ -220,11 +232,12 @@ impl ModelDataStore {
     pub async fn sync_from_registry(
         &self,
         models: &[crate::model_registry::ModelInfo],
+        default_inference_mode: &InferenceMode,
     ) -> Result<usize> {
         let mut created = 0usize;
         for info in models {
             if self.find_by_registry_id(&info.id).await?.is_none() {
-                let mut data = ModelData::from_registry(info);
+                let data = ModelData::from_registry_with_mode(info, default_inference_mode.clone());
                 self.save(&data).await?;
                 created += 1;
             }
@@ -251,6 +264,7 @@ struct ModelDataRow {
     source_json:           String,
     capabilities_json:     String,
     inference_json:        String,
+    inference_mode_json:   Option<String>,
     prompt_format_json:    String,
     skill_affinities_json: String,
     authors_json:          String,
@@ -278,6 +292,12 @@ impl ModelDataRow {
             source:       serde_json::from_str(&self.source_json)?,
             capabilities: serde_json::from_str(&self.capabilities_json)?,
             inference:    serde_json::from_str(&self.inference_json)?,
+            inference_mode: self
+                .inference_mode_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
             prompt_format: serde_json::from_str(&self.prompt_format_json)?,
             skill_affinities: serde_json::from_str(&self.skill_affinities_json)?,
             authors:      serde_json::from_str(&self.authors_json)?,

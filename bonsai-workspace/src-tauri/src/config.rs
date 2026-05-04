@@ -3,11 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use crate::inference_mode::InferenceMode;
+
 pub const DEFAULT_API_HOST: &str = "127.0.0.1";
 pub const DEFAULT_API_PORT: u16 = 11369;   // Bonsai Workspace
 pub const BUDDY_API_PORT:   u16 = 11420;   // Bonsai Buddy
 
 fn default_buddy_api_port() -> u16 { BUDDY_API_PORT }
+fn default_inference_mode() -> InferenceMode { InferenceMode::default() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -41,6 +44,9 @@ pub struct AppConfig {
     /// Model ID last loaded by the user — restored on next startup.
     #[serde(default)]
     pub last_model_id: Option<String>,
+    /// Default mode applied to newly discovered local models.
+    #[serde(default = "default_inference_mode")]
+    pub default_inference_mode: InferenceMode,
 }
 
 impl Default for AppConfig {
@@ -61,6 +67,7 @@ impl Default for AppConfig {
             main_window_height: None,
             extra_model_dirs: Vec::new(),
             last_model_id: None,
+            default_inference_mode: InferenceMode::default(),
         }
     }
 }

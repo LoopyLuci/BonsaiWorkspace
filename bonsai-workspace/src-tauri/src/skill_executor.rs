@@ -361,6 +361,11 @@ impl ShellGuard {
         let mut cmd = if cfg!(target_os = "windows") {
             let mut c = tokio::process::Command::new("cmd");
             c.arg("/C").arg(script);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
             c
         } else {
             let mut c = tokio::process::Command::new("sh");

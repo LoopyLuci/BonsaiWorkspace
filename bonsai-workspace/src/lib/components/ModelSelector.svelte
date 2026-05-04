@@ -20,6 +20,7 @@
     activeModelId,
     orchestratorStatus,
     modelSwitchStatus,
+    setModelSwitchStatus,
     modelDataList,
     CUSTOM_SWARM_MODEL_ID,
   } from '$lib/stores/models';
@@ -221,7 +222,7 @@
     modelSwitchStatus.set(`Loading ${model.name}…`);
     try {
       const msg = await invoke<string>('switch_model', { modelId: model.id });
-      modelSwitchStatus.set(msg);
+      setModelSwitchStatus(msg, 5000);
     } catch (e) {
       modelSwitchStatus.set(`Switch failed: ${e}`);
     }

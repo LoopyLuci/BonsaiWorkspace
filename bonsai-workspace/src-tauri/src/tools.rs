@@ -1023,13 +1023,18 @@ pub async fn execute_built_in(
             let raw = args["command"].as_str().ok_or("Missing 'command' arg")?;
             let cmd = normalize_run_command(raw);
             #[cfg(target_os = "windows")]
-            let output = if is_specs_alias(raw) {
-                let specs_script = "$os=Get-CimInstance Win32_OperatingSystem; $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1; $cs=Get-CimInstance Win32_ComputerSystem; $gpu=Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; [PSCustomObject]@{ComputerName=$env:COMPUTERNAME;OS=$os.Caption;OSVersion=$os.Version;CPU=$cpu.Name;Cores=$cpu.NumberOfCores;LogicalProcessors=$cpu.NumberOfLogicalProcessors;RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2);GPU=($gpu -join '; ')} | ConvertTo-Json -Compress";
-                std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", specs_script])
-                    .output()
-            } else {
-                std::process::Command::new("cmd").args(["/C", &cmd]).output()
+            let output = {
+                use std::os::windows::process::CommandExt;
+                if is_specs_alias(raw) {
+                    let specs_script = "$os=Get-CimInstance Win32_OperatingSystem; $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1; $cs=Get-CimInstance Win32_ComputerSystem; $gpu=Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name; [PSCustomObject]@{ComputerName=$env:COMPUTERNAME;OS=$os.Caption;OSVersion=$os.Version;CPU=$cpu.Name;Cores=$cpu.NumberOfCores;LogicalProcessors=$cpu.NumberOfLogicalProcessors;RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2);GPU=($gpu -join '; ')} | ConvertTo-Json -Compress";
+                    let mut c = std::process::Command::new("powershell");
+                    c.args(["-NoProfile", "-Command", specs_script]).creation_flags(0x0800_0000);
+                    c.output()
+                } else {
+                    let mut c = std::process::Command::new("cmd");
+                    c.args(["/C", &cmd]).creation_flags(0x0800_0000);
+                    c.output()
+                }
             };
             #[cfg(not(target_os = "windows"))]
             let output = std::process::Command::new("sh").args(["-c", &cmd]).output();
@@ -1069,15 +1074,34 @@ pub async fn execute_custom(script_path: &str, args: &serde_json::Value) -> Resu
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    let output = match ext {
-        "py"       => std::process::Command::new("python").args([script_path, &args_json]).output(),
-        "js"       => std::process::Command::new("node").args([script_path, &args_json]).output(),
-        "ts"       => std::process::Command::new("npx").args(["ts-node", script_path, &args_json]).output(),
-        "sh"       => std::process::Command::new("sh").args([script_path, &args_json]).output(),
-        "ps1"      => std::process::Command::new("powershell").args(["-File", script_path, &args_json]).output(),
-        "rb"       => std::process::Command::new("ruby").args([script_path, &args_json]).output(),
-        "exe" | "" => std::process::Command::new(script_path).arg(&args_json).output(),
-        _          => return Err(format!("Unsupported script extension: .{ext}")),
+    let output = {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut c: std::process::Command = match ext {
+                "py"       => { let mut c = std::process::Command::new("python"); c.args([script_path, &args_json]); c },
+                "js"       => { let mut c = std::process::Command::new("node"); c.args([script_path, &args_json]); c },
+                "ts"       => { let mut c = std::process::Command::new("npx"); c.args(["ts-node", script_path, &args_json]); c },
+                "sh"       => { let mut c = std::process::Command::new("sh"); c.args([script_path, &args_json]); c },
+                "ps1"      => { let mut c = std::process::Command::new("powershell"); c.args(["-File", script_path, &args_json]); c },
+                "rb"       => { let mut c = std::process::Command::new("ruby"); c.args([script_path, &args_json]); c },
+                "exe" | "" => { let mut c = std::process::Command::new(script_path); c.arg(&args_json); c },
+                _          => return Err(format!("Unsupported script extension: .{ext}")),
+            };
+            c.creation_flags(0x0800_0000);
+            c.output()
+        }
+        #[cfg(not(windows))]
+        match ext {
+            "py"       => std::process::Command::new("python").args([script_path, &args_json]).output(),
+            "js"       => std::process::Command::new("node").args([script_path, &args_json]).output(),
+            "ts"       => std::process::Command::new("npx").args(["ts-node", script_path, &args_json]).output(),
+            "sh"       => std::process::Command::new("sh").args([script_path, &args_json]).output(),
+            "ps1"      => std::process::Command::new("powershell").args(["-File", script_path, &args_json]).output(),
+            "rb"       => std::process::Command::new("ruby").args([script_path, &args_json]).output(),
+            "exe" | "" => std::process::Command::new(script_path).arg(&args_json).output(),
+            _          => return Err(format!("Unsupported script extension: .{ext}")),
+        }
     };
 
     match output {

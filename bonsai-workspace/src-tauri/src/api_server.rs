@@ -282,10 +282,12 @@ fn try_reclaim_stale_bonsai_listener(port: u16) -> bool {
             if img != "bonsai-workspace.exe" && img != "bonsai-workspace" {
                 continue;
             }
-            if let Ok(out) = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output()
-            {
+            if let Ok(out) = {
+                let mut c = Command::new("taskkill");
+                c.args(["/PID", &pid.to_string(), "/T", "/F"]);
+                #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+                c.output()
+            } {
                 if out.status.success() {
                     killed_any = true;
                 }
@@ -297,7 +299,12 @@ fn try_reclaim_stale_bonsai_listener(port: u16) -> bool {
 
 #[cfg(target_os = "windows")]
 fn listening_pids_on_port(port: u16) -> Vec<u32> {
-    let out = match Command::new("netstat").args(["-ano"]).output() {
+    let out = match {
+        let mut c = Command::new("netstat");
+        c.args(["-ano"]);
+        #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+        c.output()
+    } {
         Ok(o) => o,
         Err(_) => return vec![],
     };
@@ -325,10 +332,12 @@ fn listening_pids_on_port(port: u16) -> Vec<u32> {
 
 #[cfg(target_os = "windows")]
 fn process_image_name(pid: u32) -> String {
-    let out = match Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-    {
+    let out = match {
+        let mut c = Command::new("tasklist");
+        c.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+        #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+        c.output()
+    } {
         Ok(o) => o,
         Err(_) => return String::new(),
     };

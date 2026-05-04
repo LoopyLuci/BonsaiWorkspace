@@ -6,6 +6,7 @@
     activeModelId,
     availableModels,
     modelSwitchStatus,
+    setModelSwitchStatus,
     orchestratorStatus,
     refreshModels,
     refreshStatus,
@@ -34,7 +35,7 @@
 
     try {
       const msg = await invoke<string>('switch_model', { modelId });
-      modelSwitchStatus.set(msg);
+      setModelSwitchStatus(msg, 5000);
       await refreshModels();
       await refreshStatus();
       return;
@@ -56,7 +57,7 @@
           slot.state.state === 'ready' && slot.state.model_id === modelId,
         );
         if (isReady) {
-          modelSwitchStatus.set(`Model ${modelName} became ready after timeout grace window.`);
+          setModelSwitchStatus(`Model ${modelName} became ready after timeout grace window.`, 5000);
           await refreshModels();
           infoMsg = `Model switched to ${modelName}.`;
           return;

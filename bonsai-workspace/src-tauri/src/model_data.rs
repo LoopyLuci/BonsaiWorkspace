@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::inference_mode::InferenceMode;
+
 // ── Source / Provider ─────────────────────────────────────────────────────────
 
 /// Where inference for this model comes from.
@@ -295,6 +297,8 @@ pub struct ModelData {
     // ── Rich Metadata ─────────────────────────────────────────────────────────
     pub capabilities:     ModelCapabilities,
     pub inference:        InferenceProfile,
+    #[serde(default)]
+    pub inference_mode:   InferenceMode,
     pub prompt_format:    PromptFormat,
     pub skill_affinities: Vec<SkillAffinity>,
 
@@ -324,6 +328,13 @@ impl ModelData {
     /// Create a minimal ModelData from a local GGUF `ModelInfo`.
     /// Capabilities and description are left at defaults for the generator to fill.
     pub fn from_registry(info: &crate::model_registry::ModelInfo) -> Self {
+        Self::from_registry_with_mode(info, InferenceMode::default())
+    }
+
+    pub fn from_registry_with_mode(
+        info: &crate::model_registry::ModelInfo,
+        inference_mode: InferenceMode,
+    ) -> Self {
         let now = chrono::Utc::now().timestamp_millis();
         let prompt_fmt = PromptFormat::infer_from(&info.architecture, &info.name);
         let tool_support = if info.supports_tools {
@@ -349,6 +360,7 @@ impl ModelData {
                 ..Default::default()
             },
             inference:        InferenceProfile::default(),
+            inference_mode,
             prompt_format:    prompt_fmt,
             skill_affinities: vec![],
             authors:          vec![],
@@ -390,6 +402,7 @@ pub struct ModelDataSummary {
     pub strengths:    Vec<ModelStrength>,
     pub context_window: u32,
     pub tool_calling: ToolCallingSupport,
+    pub inference_mode: InferenceMode,
     pub tags:         Vec<String>,
     pub updated_at:   i64,
 }
@@ -406,6 +419,7 @@ impl From<&ModelData> for ModelDataSummary {
             strengths:      d.capabilities.strengths.clone(),
             context_window: d.capabilities.context_window,
             tool_calling:   d.capabilities.tool_calling.clone(),
+            inference_mode: d.inference_mode.clone(),
             tags:           d.tags.clone(),
             updated_at:     d.updated_at,
         }
