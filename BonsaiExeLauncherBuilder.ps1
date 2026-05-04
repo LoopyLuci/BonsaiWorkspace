@@ -8,6 +8,7 @@ $WorkspaceRoot = $ScriptDir
 $FrontendDir = Join-Path $WorkspaceRoot "bonsai-workspace\src"
 $TauriDir = Join-Path $WorkspaceRoot "bonsai-workspace\src-tauri"
 $OutputExe = Join-Path $WorkspaceRoot "BonsaiWorkspace.exe"
+$WorkspaceTargetRelease = Join-Path $WorkspaceRoot "target\release"
 
 function Write-Info([string]$Message) {
   Write-Host "[builder] $Message" -ForegroundColor Yellow
@@ -47,7 +48,8 @@ function Parse-NodeMajor([string]$VersionText) {
 
 function Resolve-BuiltExePath([string]$TauriRoot) {
   $candidates = @(
-    (Join-Path $TauriRoot "target\release\bonsai-workspace.exe")
+    (Join-Path $TauriRoot "target\release\bonsai-workspace.exe"),
+    (Join-Path $WorkspaceTargetRelease "bonsai-workspace.exe")
   )
 
   foreach ($candidate in $candidates) {
@@ -56,16 +58,46 @@ function Resolve-BuiltExePath([string]$TauriRoot) {
     }
   }
 
-  $bundleRoot = Join-Path $TauriRoot "target\release\bundle"
-  if (Test-Path $bundleRoot) {
-    $bundleExe = Get-ChildItem -Path $bundleRoot -Recurse -Filter "bonsai-workspace.exe" -File -ErrorAction SilentlyContinue |
-      Select-Object -First 1
-    if ($bundleExe) {
-      return $bundleExe.FullName
+  $bundleRoots = @(
+    (Join-Path $TauriRoot "target\release\bundle"),
+    (Join-Path $WorkspaceTargetRelease "bundle")
+  )
+  foreach ($bundleRoot in $bundleRoots) {
+    if (Test-Path $bundleRoot) {
+      $bundleExe = Get-ChildItem -Path $bundleRoot -Recurse -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match 'bonsai[- ]workspace' } |
+        Select-Object -First 1
+      if ($bundleExe) {
+        return $bundleExe.FullName
+      }
     }
   }
 
   return $null
+}
+
+function Test-TauriViaCargo {
+  $v = (& cargo tauri --version 2>$null).Trim()
+  if ($LASTEXITCODE -eq 0 -and $v) {
+    return @{ ok = $true; version = $v }
+  }
+  return @{ ok = $false; version = "" }
+}
+
+function Test-TauriViaNpx([switch]$NoInstall) {
+  Push-Location $FrontendDir
+  try {
+    $args = @()
+    if ($NoInstall) { $args += "--no-install" }
+    $args += @("tauri", "--version")
+    $v = (& npx @args 2>$null).Trim()
+    if ($LASTEXITCODE -eq 0 -and $v) {
+      return @{ ok = $true; version = $v; noInstall = [bool]$NoInstall }
+    }
+  } finally {
+    Pop-Location
+  }
+  return @{ ok = $false; version = ""; noInstall = [bool]$NoInstall }
 }
 
 try {
@@ -82,7 +114,9 @@ try {
   Require-Command "node"
   Require-Command "npm"
   Require-Command "cargo"
-  Require-Command "npx"
+  if (-not (Get-Command "npx" -ErrorAction SilentlyContinue)) {
+    Write-Info "npx not found on PATH; will prefer cargo-tauri if available."
+  }
 
   $nodeVersion = (& node --version).Trim()
   if ($LASTEXITCODE -ne 0) {
@@ -106,19 +140,33 @@ try {
   }
   Write-Success "cargo: $cargoVersion"
 
-  $tauriViaNpx = $false
-  $tauriVersion = ""
-  $tauriVersion = (& npx tauri --version 2>$null).Trim()
-  if ($LASTEXITCODE -eq 0 -and $tauriVersion) {
-    $tauriViaNpx = $true
-    Write-Success "tauri (npx): $tauriVersion"
+  $tauriBuildMethod = ""
+  $npxNoInstall = $false
+  $cargoTauri = Test-TauriViaCargo
+  if ($cargoTauri.ok) {
+    $tauriBuildMethod = "cargo-tauri"
+    Write-Success "tauri (cargo): $($cargoTauri.version)"
   } else {
-    $tauriVersion = (& cargo tauri --version 2>$null).Trim()
-    if ($LASTEXITCODE -eq 0 -and $tauriVersion) {
-      Write-Success "tauri (cargo): $tauriVersion"
-    } else {
-      Write-FailAndExit "Tauri CLI not found. Install @tauri-apps/cli or cargo-tauri."
+    if (Get-Command "npx" -ErrorAction SilentlyContinue) {
+      $npxLocal = Test-TauriViaNpx -NoInstall
+      if ($npxLocal.ok) {
+        $tauriBuildMethod = "npx-tauri"
+        $npxNoInstall = $true
+        Write-Success "tauri (npx --no-install): $($npxLocal.version)"
+      } else {
+        $npxRemote = Test-TauriViaNpx
+        if ($npxRemote.ok) {
+          $tauriBuildMethod = "npx-tauri"
+          $npxNoInstall = $false
+          Write-Success "tauri (npx): $($npxRemote.version)"
+          Write-Info "Using network-enabled npx tauri fallback."
+        }
+      }
     }
+  }
+
+  if (-not $tauriBuildMethod) {
+    Write-Info "Tauri CLI not detected; will use cargo build --release fallback for local exe."
   }
 
   Push-Location $FrontendDir
@@ -139,17 +187,45 @@ try {
   }
   Write-Success "Frontend dist found: $distPath"
 
-  if ($tauriViaNpx) {
-    Push-Location $FrontendDir
+  $tauriBuildOk = $false
+  if ($tauriBuildMethod -eq "cargo-tauri") {
+    Push-Location $TauriDir
     try {
-      Run-Step "Building Tauri application with npx tauri build" { npx tauri build }
+      Write-Info "Building Tauri application with cargo tauri build"
+      & cargo tauri build
+      if ($LASTEXITCODE -eq 0) {
+        $tauriBuildOk = $true
+      } else {
+        Write-Host "[builder] WARNING: cargo tauri build failed with exit code $LASTEXITCODE. Falling back to cargo build --release." -ForegroundColor Yellow
+      }
     } finally {
       Pop-Location
     }
-  } else {
+  }
+
+  if (-not $tauriBuildOk -and $tauriBuildMethod -eq "npx-tauri") {
+    Push-Location $FrontendDir
+    try {
+      Write-Info "Building Tauri application with npx tauri build"
+      $npxArgs = @()
+      if ($npxNoInstall) { $npxArgs += "--no-install" }
+      $npxArgs += @("tauri", "build")
+      & npx @npxArgs
+      if ($LASTEXITCODE -eq 0) {
+        $tauriBuildOk = $true
+      } else {
+        Write-Host "[builder] WARNING: npx tauri build failed with exit code $LASTEXITCODE. Falling back to cargo build --release." -ForegroundColor Yellow
+      }
+    } finally {
+      Pop-Location
+    }
+  }
+
+  if (-not $tauriBuildOk) {
     Push-Location $TauriDir
     try {
-      Run-Step "Building release executable with cargo build --release" { cargo build --release }
+      Run-Step "Building release executable with cargo build --release (fallback)" { cargo build --release }
+      $tauriBuildOk = $true
     } finally {
       Pop-Location
     }
