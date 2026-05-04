@@ -53,3 +53,22 @@ These scripts standardize frontend plus Tauri build orchestration and artifact o
 - `cargo check` in relevant Rust crates.
 - Targeted runtime/feature tests for new behavior.
 - Launcher smoke validation for Vite + Tauri startup.
+
+## 19. Development Cycle Closeout - 2026-05-04
+
+### Merged PRs (This Cycle)
+| PR | Title | Status |
+|----|-------|--------|
+| #19 | Warmup crash fix (--no-warmup) | ✅ Merged |
+| #20 | Vite launcher crash + slot-ready race fix | ✅ Merged |
+| #21 | Documentation update (README, manual, handbook) | ✅ Merged |
+| #22 | Clojure/Python P1 hardening (4 commits) | ✅ Merged |
+| #23 | GPU crash auto-fallback to CPU | ✅ Merged |
+| #24 | Inference mode system + notification UX + terminal fix | ✅ Merged |
+
+### Build Status
+- `cargo check -p bonsai-workspace` - clean
+- `npm run build` - clean
+
+### Unstaged Artifacts
+- latest.json, preflight-cache.json, BonsaiWorkspace.exe, .kotlin/
