@@ -31,6 +31,8 @@ pub struct BotConfig {
     pub backpressure: BackpressureConfig,
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub swarm_peers: Vec<SwarmPeer>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -70,6 +72,7 @@ impl Default for BotConfig {
             email:           PlatformSlot::default(),
             backpressure:    BackpressureConfig::default(),
             circuit_breaker: CircuitBreakerConfig::default(),
+            swarm_peers:     Vec::new(),
         }
     }
 }
@@ -164,6 +167,22 @@ impl Default for CircuitBreakerConfig {
             close_on_successes:   1,
         }
     }
+}
+
+// ── Swarm peers ───────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SwarmPeer {
+    /// Human name for this peer (used in logs and routing rules)
+    pub name:      String,
+    /// Full URL of the peer's admin API (e.g. "http://10.0.0.2:11666")
+    pub admin_url: String,
+    /// Admin token for the peer's API
+    pub token:     String,
+    /// Message routing rules: if the inbound text contains any of these
+    /// keywords, prefer forwarding to this peer over handling locally.
+    #[serde(default)]
+    pub route_keywords: Vec<String>,
 }
 
 // ── Keyring ───────────────────────────────────────────────────────────────────

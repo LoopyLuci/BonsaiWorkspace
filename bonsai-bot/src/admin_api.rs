@@ -241,6 +241,7 @@ pub async fn start(
         .route("/metrics",                   get(metrics_handler))
         .route("/config/reload",             post(config_reload))
         .route("/config/rotate-admin-token", post(rotate_token))
+        .route("/runtime/create-skill",      post(create_skill))
         .layer(cors)
         .with_state(state);
 
@@ -812,4 +813,84 @@ mod tests {
         let headers2 = HeaderMap::new();
         assert!(!check_auth(&headers2, &state));
     }
+}
+
+// ── Skill creation ─────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct CreateSkillBody {
+    name:        String,
+    description: String,
+    script:      String,
+    language:    String,
+}
+
+async fn create_skill(
+    State(s): State<AdminState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateSkillBody>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &s) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))).into_response();
+    }
+
+    // Validate language
+    let ext = match body.language.as_str() {
+        "python"   => "py",
+        "clojure"  => "clj",
+        "babashka" => "clj",
+        other => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("unsupported language: {other}")}))).into_response(),
+    };
+
+    // Sanitize name to safe filename (alphanumeric + underscore)
+    let safe_name: String = body.name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if safe_name.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "name is required"}))).into_response();
+    }
+
+    // Determine skills directory (first allowed_script_paths entry, else config_dir/skills)
+    let skills_dir: std::path::PathBuf = {
+        let paths = s.allowed_script_paths.read().unwrap();
+        if let Some(first) = paths.first() {
+            std::path::PathBuf::from(first).join("skills")
+        } else if let Some(dir) = crate::config::config_dir() {
+            dir.join("bonsai").join("skills")
+        } else {
+            std::path::PathBuf::from("skills")
+        }
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&skills_dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("mkdir: {e}")}))).into_response();
+    }
+
+    let skill_id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("{safe_name}_{}.{ext}", &skill_id[..8]);
+    let script_path = skills_dir.join(&filename);
+
+    if let Err(e) = std::fs::write(&script_path, &body.script) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("write: {e}")}))).into_response();
+    }
+
+    // Persist skill manifest alongside the script
+    let manifest = json!({
+        "id":          &skill_id,
+        "name":        &body.name,
+        "description": &body.description,
+        "language":    &body.language,
+        "script_path": script_path.to_string_lossy(),
+        "created_at":  chrono::Utc::now().to_rfc3339(),
+    });
+    let manifest_path = script_path.with_extension("skill.json");
+    let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default());
+
+    tracing::info!("[admin-api] Skill created: id={skill_id} name={} lang={}", body.name, body.language);
+
+    (StatusCode::CREATED, Json(json!({
+        "status":      "created",
+        "skill_id":    skill_id,
+        "script_path": script_path.to_string_lossy(),
+    }))).into_response()
 }
