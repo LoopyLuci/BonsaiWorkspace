@@ -4,7 +4,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 
-use crate::metrics::Metrics;
+use bonsai_bot::metrics::Metrics;
 use tokio_rusqlite::Connection;
 
 #[tokio::test]
@@ -13,12 +13,12 @@ async fn integration_runtime_start_stop() -> Result<(), Box<dyn std::error::Erro
     let metrics = Arc::new(Metrics::default());
     let platform_states = Arc::new(DashMap::new());
     let db = Arc::new(Connection::open_in_memory().await?);
-    crate::session::migrate(&db).await?;
-    let (tx, _rx) = mpsc::channel::<crate::admin_api::BroadcastRequest>(1);
+    bonsai_bot::session::migrate(&db).await?;
+    let (tx, _rx) = mpsc::channel::<bonsai_bot::admin_api::BroadcastRequest>(1);
 
     let admin_token = "itest-token".to_string();
     // start admin server on ephemeral port
-    let mut handle = crate::admin_api::start(0, metrics, platform_states, db, tx, admin_token.clone())
+    let mut handle = bonsai_bot::admin_api::start(0, metrics, platform_states, db, tx, admin_token.clone())
         .await
         .map_err(|e| format!("failed to start admin server: {}", e))?;
 
