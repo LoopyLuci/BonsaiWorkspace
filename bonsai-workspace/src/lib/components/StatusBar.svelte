@@ -4,7 +4,7 @@
   import { invoke }             from '@tauri-apps/api/core';
   import { currentWorkspace }   from '$lib/stores/workspace';
   import { isThinking }         from '$lib/stores/chat';
-  import { orchestratorStatus } from '$lib/stores/models';
+  import { orchestratorStatus, taskQueueStatus } from '$lib/stores/models';
   import { DEFAULT_API_PORT }   from '$lib/constants/network';
 
   let apiPort     = DEFAULT_API_PORT;
@@ -36,6 +36,10 @@
       gitBranch = '';
     }
   })();
+
+  $: queueSummary = $taskQueueStatus
+    ? `Queue: ${$taskQueueStatus.pending_total} pending, ${$taskQueueStatus.active_total} active`
+    : '';
 </script>
 
 <footer class="status-bar" aria-label="Status bar">
@@ -73,6 +77,9 @@
     <span class="status-item api-badge" title="OpenAI-compatible API — point Claude, Copilot, or Continue.dev here">
       API :{apiPort}
     </span>
+    {#if queueSummary}
+      <span class="status-item queue-indicator" title="Inference task queue status">{queueSummary}</span>
+    {/if}
     <span class="status-item dim" title="Bonsai Workspace">Bonsai v0.1</span>
   </div>
 </footer>
@@ -120,6 +127,15 @@
     letter-spacing: 0.04em;
     opacity: 1;
     cursor: default;
+  }
+  .status-item.queue-indicator {
+    border: 1px solid rgba(250, 204, 21, 0.45);
+    border-radius: 999px;
+    color: #fde68a;
+    background: rgba(120, 53, 15, 0.35);
+    padding: 1px 7px;
+    font-size: 10px;
+    opacity: 1;
   }
   @keyframes blink {
     0%, 100% { opacity: 0.92; }

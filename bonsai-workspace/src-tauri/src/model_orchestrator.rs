@@ -530,6 +530,9 @@ fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle) {
         // single-allocation for FA compute buffers which ErrorOutOfDeviceMemory.
         // The non-FA path uses smaller scattered allocations that succeed.
         "--flash-attn", "off",
+        // Empty-run warmup is crashing this Windows/Vulkan build after model init.
+        // Skip it and let the server become ready without the extra probe pass.
+        "--no-warmup",
         // stderr is redirected to llama-slot-N.log — do NOT add --log-disable here,
         // as it changes Vulkan init behavior and causes additional crashes on AMD.
     ])
