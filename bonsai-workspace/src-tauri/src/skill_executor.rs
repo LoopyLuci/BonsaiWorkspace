@@ -6,6 +6,7 @@
 /// - `ShellGuard`: command allow/deny list and resource quotas for shell skills.
 /// - `preflight_validate()`: schema + compatibility check before execution.
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +14,54 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::tool_core::{ToolContext, ToolError, ToolOutput, ToolResult, RetryPolicy};
+
+/// Runtime resource ceilings applied per skill execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    pub max_cpu_seconds: u64,
+    pub max_memory_mb: u64,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_cpu_seconds: 30,
+            max_memory_mb: 512,
+        }
+    }
+}
+
+/// Common execution settings used by language-specific skill runtimes.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillConfig {
+    #[serde(default)]
+    pub resource_limits: ResourceLimits,
+    #[serde(default)]
+    pub required_bb_version: Option<String>,
+}
+
+/// Compose a BONSAI_ALLOWED_PATHS value from workspace root and explicit skill paths.
+pub fn build_allowed_paths_env(workspace_root: &Path, skill_paths: &[String]) -> String {
+    let mut roots = std::collections::BTreeSet::new();
+    roots.insert(workspace_root.to_string_lossy().to_string());
+    for p in skill_paths {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            roots.insert(trimmed.to_string());
+        }
+    }
+
+    let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+    roots.into_iter().collect::<Vec<_>>().join(sep)
+}
+
+/// Returns true when the installed babashka version does not match a required pin.
+pub fn bb_version_mismatch(required_bb_version: Option<&str>, installed_version: &str) -> bool {
+    match required_bb_version.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(required) => !installed_version.contains(required),
+        None => false,
+    }
+}
 
 // ── Skill Manifest ────────────────────────────────────────────────────────────
 

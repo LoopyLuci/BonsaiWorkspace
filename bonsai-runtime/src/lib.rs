@@ -1,6 +1,9 @@
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Once;
 use async_trait::async_trait;
+
+static BB_VERSION_CHECK: Once = Once::new();
 
 pub struct RuntimeManager {}
 
@@ -67,19 +70,51 @@ impl RuntimeController for InProcessController {
 impl RuntimeManager {
     pub fn new() -> Self { Self {} }
 
+    const DEFAULT_SKILL_MAX_CPU_SECONDS: u64 = 30;
+    const DEFAULT_SKILL_MAX_MEMORY_MB: u64 = 512;
+
     /// Start a Python worker by spawning the given script path with the provided port.
     /// Returns a boxed `RuntimeController` that can be used to manage the runtime.
     pub async fn start_python_worker(&self, script_path: &str, port: u16) -> Result<Box<dyn RuntimeController + Send + Sync>> {
-        let mut cmd = tokio::process::Command::new("python");
-        cmd.arg(script_path).arg(port.to_string());
+        let mut cmd = tokio::process::Command::new(resolve_python_binary());
+        cmd.arg(script_path)
+            .arg(port.to_string())
+            .arg("--max-cpu-seconds")
+            .arg(Self::DEFAULT_SKILL_MAX_CPU_SECONDS.to_string())
+            .arg("--max-memory-mb")
+            .arg(Self::DEFAULT_SKILL_MAX_MEMORY_MB.to_string());
         let child = cmd.spawn()?;
         Ok(Box::new(ProcessController { child }))
     }
 
     /// Start a Babashka (Clojure) worker by spawning `bb` with the given script.
     pub async fn start_babashka_worker(&self, script_path: &str) -> Result<Box<dyn RuntimeController + Send + Sync>> {
+        BB_VERSION_CHECK.call_once(|| {
+            let required = std::env::var("BONSAI_REQUIRED_BB_VERSION").ok();
+            warn_if_bb_version_mismatch(required.as_deref());
+        });
+
+        let script = std::path::PathBuf::from(script_path);
+        let script_root = script
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| script_root.clone());
+        let allowed_paths = build_allowed_paths_env(&workspace_root, &[script_root.clone()]);
+
         let mut cmd = tokio::process::Command::new("bb");
-        cmd.arg(script_path);
+        cmd.current_dir(&script_root)
+            .env("BONSAI_ALLOWED_PATHS", &allowed_paths)
+            .arg(script_path);
+
+        if script
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("bb_runner.clj"))
+        {
+            cmd.arg("--allowed-paths").arg(&allowed_paths);
+        }
+
         let child = cmd.spawn()?;
         Ok(Box::new(ProcessController { child }))
     }
@@ -182,6 +217,51 @@ impl RuntimeManager {
             cmd.arg(module_path);
             let child = cmd.spawn()?;
             return Ok(Box::new(ProcessController { child }));
+        }
+    }
+}
+
+fn resolve_python_binary() -> String {
+    if cfg!(target_os = "windows") {
+        return "python".to_string();
+    }
+
+    if which::which("python3").is_ok() {
+        "python3".to_string()
+    } else {
+        "python".to_string()
+    }
+}
+
+fn build_allowed_paths_env(workspace_root: &Path, additional_paths: &[std::path::PathBuf]) -> String {
+    let mut unique = std::collections::BTreeSet::new();
+
+    unique.insert(workspace_root.to_string_lossy().to_string());
+    for p in additional_paths {
+        unique.insert(p.to_string_lossy().to_string());
+    }
+
+    let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+    unique.into_iter().collect::<Vec<_>>().join(sep)
+}
+
+fn warn_if_bb_version_mismatch(required: Option<&str>) {
+    let required = required.map(str::trim).filter(|v| !v.is_empty());
+    let Some(required) = required else { return; };
+
+    let output = std::process::Command::new("bb").arg("--version").output();
+    match output {
+        Ok(out) => {
+            let installed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !installed.contains(required) {
+                eprintln!(
+                    "[runtime] WARN: babashka version mismatch. required={required}, installed='{}'",
+                    if installed.is_empty() { "unknown" } else { &installed }
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("[runtime] WARN: unable to run 'bb --version' for version check: {e}");
         }
     }
 }

@@ -1,7 +1,69 @@
 #!/usr/bin/env python3
+import argparse
+import os
 import sys
+import threading
+import time
+import tracemalloc
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+
+DEFAULT_MAX_CPU_SECONDS = 30
+DEFAULT_MAX_MEMORY_MB = 512
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Bonsai Python worker")
+    parser.add_argument("port", nargs="?", type=int, default=8000)
+    parser.add_argument("--max-cpu-seconds", type=int, default=DEFAULT_MAX_CPU_SECONDS)
+    parser.add_argument("--max-memory-mb", type=int, default=DEFAULT_MAX_MEMORY_MB)
+    return parser.parse_args()
+
+
+def _terminate_worker(reason: str) -> None:
+    print(f"python worker limit reached: {reason}", file=sys.stderr)
+    os._exit(137)
+
+
+def apply_resource_limits(max_cpu_seconds: int, max_memory_mb: int) -> None:
+    max_cpu_seconds = max(1, int(max_cpu_seconds))
+    max_memory_mb = max(64, int(max_memory_mb))
+
+    # Start Python-level trackers for all platforms.
+    tracemalloc.start()
+
+    if os.name != "nt":
+        try:
+            import resource
+
+            memory_bytes = max_memory_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_CPU, (max_cpu_seconds, max_cpu_seconds))
+            resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        except Exception as exc:
+            print(f"python worker warning: failed to set rlimit: {exc}", file=sys.stderr)
+
+        # Backup timer to ensure long-running workloads are interrupted.
+        try:
+            import signal
+
+            signal.alarm(max_cpu_seconds)
+        except Exception as exc:
+            print(f"python worker warning: failed to set alarm: {exc}", file=sys.stderr)
+
+    def watchdog() -> None:
+        start_cpu = time.process_time()
+        memory_limit = max_memory_mb * 1024 * 1024
+        while True:
+            time.sleep(0.25)
+            cpu_used = time.process_time() - start_cpu
+            if cpu_used > max_cpu_seconds:
+                _terminate_worker(f"cpu>{max_cpu_seconds}s")
+
+            current, peak = tracemalloc.get_traced_memory()
+            if peak > memory_limit or current > memory_limit:
+                _terminate_worker(f"memory>{max_memory_mb}MB")
+
+    threading.Thread(target=watchdog, name="bonsai-worker-watchdog", daemon=True).start()
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -19,12 +81,10 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 if __name__ == '__main__':
-    port = 8000
-    if len(sys.argv) > 1:
-        try:
-            port = int(sys.argv[1])
-        except ValueError:
-            pass
+    args = parse_args()
+    apply_resource_limits(args.max_cpu_seconds, args.max_memory_mb)
+
+    port = args.port
     server = HTTPServer(('127.0.0.1', port), Handler)
     print(f"python worker listening on {port}")
     try:
