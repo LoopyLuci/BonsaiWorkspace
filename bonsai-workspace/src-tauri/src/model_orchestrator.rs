@@ -16,6 +16,7 @@
 //!        ↑ SlotFreed notifications from inference tasks
 
 use std::collections::{HashMap, VecDeque};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -91,7 +92,16 @@ struct Slot {
 
 impl Slot {
     fn new(index: usize) -> Self {
-        let port = rand::thread_rng().gen_range(30_000u16..50_000u16);
+        // Find a free port by trying to bind; avoids port collision race conditions
+        let port = loop {
+            let candidate = rand::thread_rng().gen_range(30_000u16..50_000u16);
+            if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
+                // Port is free; drop listener to release the binding
+                drop(listener);
+                break candidate;
+            }
+            // Port is busy or can't bind; try next
+        };
         Self {
             index,
             port,

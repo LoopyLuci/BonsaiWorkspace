@@ -23,7 +23,7 @@ export class BonsaiClient {
   private connected = false;
   private stopped = false;
 
-  constructor(private readonly outputChannel: vscode.OutputChannel) {
+  constructor(private readonly context: vscode.ExtensionContext, private readonly outputChannel: vscode.OutputChannel) {
     this.statusBarItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       100,
@@ -49,7 +49,7 @@ export class BonsaiClient {
 
   connect(): void {
     this.stopped = false;
-    this.tryConnect();
+    void this.tryConnect(); // Fire and forget
   }
 
   disconnect(): void {
@@ -66,12 +66,33 @@ export class BonsaiClient {
     this.statusBarItem.dispose();
   }
 
-  private tryConnect(): void {
+  private async tryConnect(): Promise<void> {
     if (this.stopped) return;
 
     const config = vscode.workspace.getConfiguration('bonsai');
     const url    = config.get<string>('wsUrl') ?? DEFAULT_BONSAI_WS_URL;
-    const token  = config.get<string>('pairToken') ?? '';
+    
+    // Try to get token from SecretStorage first, fall back to workspace config
+    let token = '';
+    try {
+      const secretToken = await this.context.secrets.get('bonsai.pairToken');
+      if (secretToken) {
+        token = secretToken;
+      } else {
+        // Fallback to workspace config (deprecated)
+        const configToken = config.get<string>('pairToken') ?? '';
+        if (configToken) {
+          token = configToken;
+          this.log('ℹ pairToken in settings.json is deprecated — token has been migrated to SecretStorage.');
+          // Migrate to SecretStorage
+          await this.context.secrets.store('bonsai.pairToken', configToken);
+        }
+      }
+    } catch (e) {
+      this.log(`Failed to retrieve token from SecretStorage: ${e}`);
+      // Fall back to config
+      token = config.get<string>('pairToken') ?? '';
+    }
 
     this.updateStatus('connecting');
     this.log(`Connecting to ${url}…`);
@@ -134,7 +155,7 @@ export class BonsaiClient {
     this.log(`Reconnecting in ${this.reconnectDelay / 1000}s…`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxDelay);
-      this.tryConnect();
+      void this.tryConnect(); // Fire and forget
     }, this.reconnectDelay);
   }
 

@@ -51,7 +51,10 @@ pub struct RuntimeLimits {
 
 impl Default for RuntimeLimits {
     fn default() -> Self {
-        Self { max_runtime_secs: None, max_instances_per_user: None }
+        Self {
+            max_runtime_secs: Some(300),      // 5 minutes
+            max_instances_per_user: Some(5),  // 5 concurrent runtimes
+        }
     }
 }
 

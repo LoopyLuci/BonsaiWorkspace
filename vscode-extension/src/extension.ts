@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Bonsai Workspace Runner');
   context.subscriptions.push(output);
 
-  client  = new BonsaiClient(output);
+  client  = new BonsaiClient(context, output);
   streamer = new StateStreamer(client);
 
   // Route inbound commands from Bonsai.

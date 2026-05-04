@@ -25,8 +25,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub desktop_connection_ip: Option<String>,
     #[serde(default)]
-    pub desktop_connection_token: Option<String>,
-    #[serde(default)]
     pub assistant_window_open: bool,
     #[serde(default)]
     pub usb_lab_window_open: bool,
@@ -58,7 +56,6 @@ impl Default for AppConfig {
             current_session_id: None,
             current_session_title: None,
             desktop_connection_ip: None,
-            desktop_connection_token: None,
             assistant_window_open: false,
             usb_lab_window_open: false,
             main_window_x: None,

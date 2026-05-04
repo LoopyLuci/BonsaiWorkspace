@@ -55,3 +55,4 @@ pub const ACCOUNT_SMTP_PASSWORD: &str = "smtp_password";
 pub const ACCOUNT_SMTP_USERNAME: &str = "smtp_username";
 pub const ACCOUNT_SMTP_HOST:     &str = "smtp_host";
 pub const ACCOUNT_SMTP_FROM:     &str = "smtp_from";
+pub const ACCOUNT_DESKTOP_CONNECTION_TOKEN: &str = "desktop_connection_token";

@@ -4755,12 +4755,15 @@ pub async fn save_desktop_connection(
 
     let mut config = crate::config::load_config(&app_handle)?;
     config.desktop_connection_ip = Some(ip.clone());
-    config.desktop_connection_token = Some(token.clone());
     let config = crate::config::save_config(&app_handle, &config)?;
+
+    // Store the token in the OS keychain instead of the config file
+    let secrets = crate::secrets_store::SecretsStore::new();
+    secrets.store(crate::secrets_store::ACCOUNT_DESKTOP_CONNECTION_TOKEN, &token)?;
 
     Ok(serde_json::json!({
         "ip": config.desktop_connection_ip,
-        "token": config.desktop_connection_token,
+        "token": token,
     }))
 }
 
@@ -4768,7 +4771,13 @@ pub async fn save_desktop_connection(
 #[tauri::command]
 pub async fn load_desktop_connection(app_handle: AppHandle) -> Result<Option<serde_json::Value>, String> {
     let config = crate::config::load_config(&app_handle)?;
-    match (config.desktop_connection_ip, config.desktop_connection_token) {
+    
+    // Retrieve the token from the OS keychain
+    let secrets = crate::secrets_store::SecretsStore::new();
+    let token = secrets.get(crate::secrets_store::ACCOUNT_DESKTOP_CONNECTION_TOKEN)?
+        .and_then(|t| if t.is_empty() { None } else { Some(t) });
+    
+    match (config.desktop_connection_ip, token) {
         (Some(ip), Some(token)) => Ok(Some(serde_json::json!({
             "ip": ip,
             "token": token,
