@@ -934,6 +934,7 @@ pub fn run() {
             commands::cluster_plan_workload,
             // ── Messaging bot ─────────────────────────────────────────────────
             commands::get_bot_server_status,
+            commands::get_bot_metrics,
             commands::save_discord_bot_config,
             commands::save_telegram_bot_config,
             commands::save_matrix_bot_config,

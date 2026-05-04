@@ -14,9 +14,28 @@
     gpu_names: string[];
   };
 
+  type BotStatus = {
+    platform_states?: Record<string, string>;
+    active_sessions?: number;
+  };
+  type BotMetrics = {
+    messages_inbound?:      number;
+    messages_processed?:    number;
+    buddy_requests?:        number;
+    buddy_errors?:          number;
+    rate_limit_hits?:       number;
+    dedup_hits?:            number;
+    allowlist_denials?:     number;
+    confirms_resolved?:     number;
+    messages_queued_full?:  number;
+  };
+
   let hardware: HardwareInfo | null = null;
   let loading = true;
   let error = '';
+  let botStatus: BotStatus | null = null;
+  let botMetrics: BotMetrics | null = null;
+  let botOnline = false;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   async function loadSnapshot() {
@@ -31,6 +50,21 @@
       error = String(e);
     } finally {
       loading = false;
+    }
+
+    // Bot status — non-fatal if bot is not running
+    try {
+      const [st, mt] = await Promise.all([
+        invoke<BotStatus>('get_bot_server_status'),
+        invoke<BotMetrics>('get_bot_metrics'),
+      ]);
+      botStatus  = st;
+      botMetrics = mt;
+      botOnline  = true;
+    } catch {
+      botOnline  = false;
+      botStatus  = null;
+      botMetrics = null;
     }
   }
 
@@ -170,6 +204,51 @@
             </table>
           </div>
           <p class="note">Estimated RAM is model-based. Slot state/requests are live runtime telemetry.</p>
+        </section>
+
+        <!-- BonsaiBot live status -->
+        <section class="agents-section">
+          <div class="section-title">
+            BonsaiBot
+            <span class={`state-pill ${botOnline ? 'ready' : 'crashed'}`} style="margin-left:8px;font-size:11px">
+              {botOnline ? 'online' : 'offline'}
+            </span>
+          </div>
+          {#if botOnline && botStatus}
+            <div class="summary-grid" style="margin-top:8px">
+              {#each Object.entries(botStatus.platform_states ?? {}) as [platform, state]}
+                <article class="card" style="padding:10px 14px">
+                  <div class="card-label">{platform}</div>
+                  <div class="card-value" style="font-size:14px">{state}</div>
+                </article>
+              {/each}
+              <article class="card" style="padding:10px 14px">
+                <div class="card-label">Active Sessions</div>
+                <div class="card-value" style="font-size:14px">{botStatus.active_sessions ?? '—'}</div>
+              </article>
+            </div>
+            {#if botMetrics}
+              <div class="table-wrap" style="margin-top:10px">
+                <table>
+                  <thead>
+                    <tr><th>Metric</th><th>Value</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Messages inbound</td><td>{botMetrics.messages_inbound ?? 0}</td></tr>
+                    <tr><td>Messages processed</td><td>{botMetrics.messages_processed ?? 0}</td></tr>
+                    <tr><td>Buddy requests</td><td>{botMetrics.buddy_requests ?? 0}</td></tr>
+                    <tr><td>Buddy errors</td><td>{botMetrics.buddy_errors ?? 0}</td></tr>
+                    <tr><td>Rate-limited</td><td>{botMetrics.rate_limit_hits ?? 0}</td></tr>
+                    <tr><td>Dedup hits</td><td>{botMetrics.dedup_hits ?? 0}</td></tr>
+                    <tr><td>Allowlist denials</td><td>{botMetrics.allowlist_denials ?? 0}</td></tr>
+                    <tr><td>Confirms resolved</td><td>{botMetrics.confirms_resolved ?? 0}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          {:else}
+            <p class="note" style="margin-top:8px">Bot is not running or not reachable.</p>
+          {/if}
         </section>
       {/if}
     </div>
