@@ -51,10 +51,10 @@
 </script>
 
 {#each pending as p (p.token)}
-  <div class="confirm-card">
+  <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title-{p.token}">
     <div class="icon">⚠️</div>
     <div class="body">
-      <div class="prompt">{p.prompt}</div>
+      <div class="prompt" id="confirm-title-{p.token}">{p.prompt}</div>
       <div class="tool-name">Tool: <code>{p.tool}</code></div>
     </div>
     <div class="actions">
