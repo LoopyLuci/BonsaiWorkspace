@@ -184,7 +184,7 @@ pub fn search(query: &str, top_k: usize, path_filter: Option<&str>) -> Vec<(f32,
 pub fn index_directory(root: &str, max_files: usize) {
     let s = store();
     index_recursive(std::path::Path::new(root), s, &mut 0, max_files);
-    eprintln!("[rag] indexed {} chunks from {root}", s.chunks.read().map(|c| c.len()).unwrap_or(0));
+    tracing::info!(chunks=%s.chunks.read().map(|c| c.len()).unwrap_or(0), root=%root, "[rag] indexed chunks");
 }
 
 fn index_recursive(dir: &std::path::Path, s: &RagStore, count: &mut usize, max_files: usize) {

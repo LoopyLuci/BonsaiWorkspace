@@ -112,6 +112,18 @@ async fn main() {
         cfg.clone(),
     ));
 
+    // Hourly eviction of stale rate limiter entries (inactive for 24h)
+    {
+        let router2 = router.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(3600));
+            loop {
+                ticker.tick().await;
+                router2.evict_stale_limiters(86_400);
+            }
+        });
+    }
+
     let swarm = swarm_client::SwarmClient::new(cfg.swarm_peers.clone());
 
     // Per-platform connection state — written by platforms, read by /status
@@ -224,15 +236,24 @@ async fn main() {
         }
     }
 
-    // Background confirm cleanup
+    // Background confirm cleanup (every minute) + session TTL purge (daily)
     {
         let db2 = db.clone();
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(60));
+            let mut daily_counter: u64 = 0;
             loop {
                 ticker.tick().await;
                 session::purge_expired_confirms(&db2).await;
                 session::cleanup_stale(&db2).await;
+                daily_counter += 1;
+                // Purge hard-deleted sessions once per day (every 1440 ticks of 60s)
+                if daily_counter % 1440 == 0 {
+                    let purged = session::purge_old_sessions(&db2, 90).await;
+                    if purged > 0 {
+                        tracing::info!(purged, "session TTL purge completed");
+                    }
+                }
             }
         });
     }

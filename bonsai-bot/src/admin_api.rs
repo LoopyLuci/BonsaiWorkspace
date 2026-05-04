@@ -19,7 +19,7 @@ use sha2::Digest;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
 use hex;
-use chrono::{self, TimeZone};
+use chrono::{self};
 
 use crate::config::keyring_set;
 use crate::metrics::SharedMetrics;
@@ -211,7 +211,8 @@ pub async fn start(
                     let script = rec["script"].as_str().unwrap_or_default().to_string();
                     let user = rec["user"].as_str().map(|s| s.to_string());
                     let started_at = rec["started_at"].as_i64().unwrap_or(0);
-                    let started_dt = chrono::Utc.timestamp_opt(started_at, 0).single().unwrap_or_else(|| chrono::Utc::now());
+                    let started_dt = chrono::DateTime::from_timestamp(started_at, 0)
+                        .unwrap_or_else(chrono::Utc::now);
                     // Check whether PID is running; if not, mark as orphan
                     let alive = pid.and_then(|p| Some(pid_running(p))).unwrap_or(false);
                     if !alive {
@@ -370,6 +371,10 @@ async fn reclaim_listener(
 
     let mut cmd = Command::new("powershell");
     cmd.arg("-NoProfile").arg("-ExecutionPolicy").arg("Bypass").arg("-Command").arg(ps_cmd);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
 
     match cmd.output().await {
         Ok(output) => {
@@ -434,7 +439,8 @@ fn rotate_and_prune_audit_log(target: &PathBuf, max_bytes: u64, retain_days: i64
                         if let Ok(meta) = e.metadata() {
                             if let Ok(mtime) = meta.modified() {
                                 if let Ok(since) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                                    let dt = chrono::Utc.timestamp_opt(since.as_secs() as i64, 0).single().unwrap_or(chrono::Utc::now());
+                                    let dt = chrono::DateTime::from_timestamp(since.as_secs() as i64, 0)
+                                        .unwrap_or_else(chrono::Utc::now);
                                     if dt < cutoff {
                                         let _ = std::fs::remove_file(e.path());
                                     }

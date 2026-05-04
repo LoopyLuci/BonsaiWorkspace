@@ -700,11 +700,15 @@ pub async fn delete_mcp_server(
 #[tauri::command]
 pub async fn reconnect_mcp_servers(
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Vec<String>, String> {
     let configs = state.assistant_store.list_mcp_servers().await?;
+    let allowed_commands = crate::config::load_config(&app)
+        .map(|c| c.mcp_allowed_commands)
+        .unwrap_or_default();
     state.mcp_manager.load_configs(configs).await;
     let registry = crate::assistant_manager::assistant_registry();
     let mut reg = registry.write().await;
-    let connected = state.mcp_manager.connect_all_into_registry(&mut *reg).await;
+    let connected = state.mcp_manager.connect_all_into_registry(&mut *reg, &allowed_commands).await;
     Ok(connected)
 }

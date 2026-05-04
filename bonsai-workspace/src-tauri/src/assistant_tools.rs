@@ -508,33 +508,40 @@ impl Tool for FindFiles {
 
 fn find_recursive(dir: &std::path::Path, pattern: &str, results: &mut Vec<String>, max: usize) {
     if results.len() >= max { return; }
+    // Build a GlobSet that matches against the full path (handles **/*.rs correctly).
+    let glob = globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .and_then(|g| globset::GlobSetBuilder::new().add(g).build());
+    let Ok(matcher) = glob else { return };
+
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         if results.len() >= max { return; }
         let path = entry.path();
         if path.is_dir() {
             find_recursive(&path, pattern, results, max);
-        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if glob_match(pattern, name) || glob_match_full(pattern, &path.display().to_string()) {
-                results.push(path.display().to_string());
+        } else {
+            let path_str = path.display().to_string();
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Match against both the filename alone and the full path
+            if matcher.is_match(file_name) || matcher.is_match(&path_str) {
+                results.push(path_str);
             }
         }
     }
 }
 
 fn glob_match(pattern: &str, name: &str) -> bool {
-    if pattern == "*" || pattern == "**" { return true; }
-    if let Some(ext) = pattern.strip_prefix("*.") { return name.ends_with(&format!(".{ext}")); }
-    if let Some(pre) = pattern.strip_suffix("*")  { return name.starts_with(pre); }
-    pattern == name
+    globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+        .and_then(|g| globset::GlobSetBuilder::new().add(g).build())
+        .map(|m| m.is_match(name))
+        .unwrap_or(false)
 }
 
 fn glob_match_full(pattern: &str, path: &str) -> bool {
-    // Handle **/*.ext patterns
-    if let Some(rest) = pattern.strip_prefix("**/") {
-        return glob_match(rest, std::path::Path::new(path)
-            .file_name().and_then(|n| n.to_str()).unwrap_or(""));
-    }
     glob_match(pattern, path)
 }
 

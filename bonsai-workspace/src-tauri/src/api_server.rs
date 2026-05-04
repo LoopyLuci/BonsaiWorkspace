@@ -155,7 +155,7 @@ pub async fn start(
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 // If a healthy Bonsai API is already bound, attach instead of failing.
                 if is_api_healthy(&host, port).await {
-                    eprintln!("[api] Port {addr} already in use by healthy API; attaching to existing runtime");
+                    tracing::info!(addr=%addr, "[api] Port already in use by healthy API; attaching to existing runtime");
                     return Ok(ApiServerHandle {
                         shutdown_tx: None,
                         join: tokio::spawn(async {}),
@@ -181,7 +181,7 @@ pub async fn start(
         }
     };
 
-    eprintln!("[api] Bonsai API server listening on http://{addr}");
+    tracing::info!(addr=%addr, "[api] Bonsai API server listening");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -189,9 +189,9 @@ pub async fn start(
             let _ = shutdown_rx.await;
         });
         if let Err(e) = server.await {
-            eprintln!("[api] Server error: {e}");
+            tracing::error!(error=%e, "[api] Server error");
         }
-        eprintln!("[api] Bonsai API server stopped");
+        tracing::info!("[api] Bonsai API server stopped");
     });
 
     Ok(ApiServerHandle {
@@ -764,7 +764,7 @@ async fn handle_ws(socket: WebSocket, router: Arc<WsRouter>, pair_token: String)
     )).await;
 
     let (client_id, mut rx) = router.register();
-    eprintln!("[ws] client {client_id} connected ({} total)", router.client_count());
+    tracing::info!(client_id=%client_id, total=%router.client_count(), "[ws] client connected");
 
     // Spawn a task that drains the broadcast channel → WebSocket sink.
     let send_task = tokio::spawn(async move {
@@ -788,7 +788,7 @@ async fn handle_ws(socket: WebSocket, router: Arc<WsRouter>, pair_token: String)
 
     router.unregister(client_id);
     send_task.abort();
-    eprintln!("[ws] client {client_id} disconnected ({} remaining)", router.client_count());
+    tracing::info!(client_id=%client_id, remaining=%router.client_count(), "[ws] client disconnected");
 }
 
 // ── Core proxy ────────────────────────────────────────────────────────────────

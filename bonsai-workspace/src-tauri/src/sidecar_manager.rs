@@ -73,8 +73,8 @@ impl WhisperManager {
                     let text = r.text().await.map_err(|e| e.to_string())?;
                     return Ok(text.trim().to_string());
                 }
-                Ok(r) => eprintln!("[whisper] attempt {attempt}: HTTP {}", r.status()),
-                Err(e) => eprintln!("[whisper] attempt {attempt}: {e}"),
+                Ok(r) => tracing::warn!(attempt=%attempt, status=%r.status(), "[whisper] HTTP error"),
+                Err(e) => tracing::warn!(attempt=%attempt, error=%e, "[whisper] request error"),
             }
             tokio::time::sleep(Duration::from_millis(600 * u64::from(attempt + 1))).await;
         }
@@ -129,7 +129,7 @@ impl WhisperManager {
                     return;
                 }
             }
-            eprintln!("[whisper] Readiness timeout — transcription unavailable until restart");
+            tracing::warn!("[whisper] Readiness timeout — transcription unavailable until restart");
         });
 
         Ok(())
@@ -153,7 +153,7 @@ fn try_spawn(app: &AppHandle, port: u16) -> Option<std::process::Child> {
     let model = bootstrap::whisper_model(app);
 
     if !exe.exists() {
-        eprintln!("[whisper] binary not found (bootstrap pending): {:?}", exe);
+        tracing::warn!(path=?exe, "[whisper] binary not found (bootstrap pending)");
         return None;
     }
 
@@ -179,7 +179,7 @@ fn try_spawn(app: &AppHandle, port: u16) -> Option<std::process::Child> {
     match cmd.spawn() {
         Ok(child) => Some(child),
         Err(e) => {
-            eprintln!("[whisper] spawn failed: {e}");
+            tracing::error!(error=%e, "[whisper] spawn failed");
             None
         }
     }

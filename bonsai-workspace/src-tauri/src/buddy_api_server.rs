@@ -137,7 +137,7 @@ pub async fn start(
         .layer(cors)
         .with_state(state);
 
-    eprintln!("[buddy-api] Bonsai Buddy API listening on http://127.0.0.1:{port}");
+    tracing::info!(port=%port, "[buddy-api] Bonsai Buddy API listening");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -145,9 +145,9 @@ pub async fn start(
             let _ = shutdown_rx.await;
         });
         if let Err(e) = server.await {
-            eprintln!("[buddy-api] server error: {e}");
+            tracing::error!(error=%e, "[buddy-api] server error");
         }
-        eprintln!("[buddy-api] stopped");
+        tracing::info!("[buddy-api] stopped");
     });
 
     Ok(BuddyApiHandle { shutdown_tx: Some(shutdown_tx), join, port })

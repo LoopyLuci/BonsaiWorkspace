@@ -778,9 +778,10 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                         let note = format!(
                             "GPU unstable (exit code {exit_code:#010X}) — switching to CPU mode"
                         );
-                        eprintln!(
-                            "[orchestrator] GPU crash detected on slot {} (exit code {exit_code:#010X}), retrying with CPU-only",
-                            slot.index
+                        tracing::warn!(
+                            slot=%slot.index,
+                            exit_code=%format!("{exit_code:#010X}"),
+                            "[orchestrator] GPU crash detected, retrying with CPU-only"
                         );
                         let _ = app.emit("model-load-fallback", json!({
                             "slot": slot.index,
@@ -1234,6 +1235,7 @@ fn has_discrete_gpu() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1291,5 +1293,89 @@ mod tests {
         assert!(is_gpu_memory_crash(0xC0000409u32 as i32));
         assert!(!is_gpu_memory_crash(0));
         assert!(!is_gpu_memory_crash(1));
+    }
+
+    #[test]
+    fn slot_lifecycle_transitions_are_valid() {
+        let mut slot = Slot::new(0);
+        assert!(matches!(slot.state, SlotState::Empty));
+
+        slot.state = SlotState::Loading {
+            model_id: "test-model".to_string(),
+            load_pct: Some(25),
+        };
+        assert!(slot.state.is_loading());
+
+        slot.state = SlotState::Ready {
+            model_id: "test-model".to_string(),
+        };
+        assert!(slot.state.is_ready());
+
+        slot.state = SlotState::Busy {
+            model_id: "test-model".to_string(),
+        };
+        assert!(matches!(slot.state, SlotState::Busy { .. }));
+
+        slot.kill();
+        assert!(slot.state.is_empty());
+    }
+
+    #[test]
+    fn cpu_fallback_retry_policy_respects_mode_and_attempts() {
+        let mut slot = Slot::new(0);
+        slot.cpu_mode = false;
+        slot.load_attempt = 1;
+        slot.inference_mode = InferenceMode::Auto;
+        assert!(should_retry_cpu_fallback(
+            &slot,
+            Some(0xC0000409u32 as i32),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        ));
+
+        slot.inference_mode = InferenceMode::GpuOnly;
+        assert!(!should_retry_cpu_fallback(
+            &slot,
+            Some(0xC0000409u32 as i32),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        ));
+
+        slot.inference_mode = InferenceMode::Auto;
+        slot.load_attempt = MAX_MODEL_LOAD_ATTEMPTS;
+        assert!(!should_retry_cpu_fallback(
+            &slot,
+            Some(0xC0000409u32 as i32),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        ));
+    }
+
+    #[test]
+    fn empty_or_evict_prefers_empty_then_lru_ready() {
+        let mut slots = vec![Slot::new(0), Slot::new(1), Slot::new(2)];
+
+        slots[0].state = SlotState::Ready {
+            model_id: "a".to_string(),
+        };
+        slots[1].state = SlotState::Busy {
+            model_id: "b".to_string(),
+        };
+        slots[2].state = SlotState::Empty;
+        assert_eq!(empty_or_evict(&mut slots), 2);
+
+        slots[2].state = SlotState::Ready {
+            model_id: "c".to_string(),
+        };
+        slots[0].last_used = Instant::now() - Duration::from_secs(120);
+        slots[2].last_used = Instant::now() - Duration::from_secs(30);
+        assert_eq!(empty_or_evict(&mut slots), 0);
+    }
+
+    #[test]
+    fn slot_new_uses_unique_ports_for_small_batch() {
+        let mut seen = HashSet::new();
+        for i in 0..8 {
+            let s = Slot::new(i);
+            assert!(seen.insert(s.port), "duplicate port allocated: {}", s.port);
+            assert!((30_000..50_000).contains(&s.port));
+        }
     }
 }

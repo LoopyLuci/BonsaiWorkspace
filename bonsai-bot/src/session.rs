@@ -69,7 +69,8 @@ pub async fn migrate(db: &Db) -> Result<(), tokio_rusqlite::Error> {
                 user_id     TEXT,
                 detail      TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);"#,
+            CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+            CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON bot_sessions(last_active);"#,
         )
         .map_err(tokio_rusqlite::Error::from)
     })
@@ -269,6 +270,22 @@ pub async fn list_active_sessions(db: &Db) -> Vec<serde_json::Value> {
     })
     .await
     .unwrap_or_default()
+}
+
+/// Permanently delete sessions (and archived sessions) whose `last_active`
+/// is older than `days` days. Returns the number of rows deleted.
+pub async fn purge_old_sessions(db: &Db, days: u64) -> usize {
+    let cutoff = now_secs() - (days as i64) * 86_400;
+    db.call(move |conn| {
+        conn.execute(
+            "DELETE FROM bot_sessions WHERE last_active < ?1",
+            rusqlite::params![cutoff],
+        )
+        .map(|n| n)
+        .map_err(tokio_rusqlite::Error::from)
+    })
+    .await
+    .unwrap_or(0)
 }
 
 pub async fn cleanup_stale(db: &Db) {

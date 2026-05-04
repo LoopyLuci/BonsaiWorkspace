@@ -209,7 +209,7 @@ pub fn load_custom_tools(workspace_path: &Path) -> Vec<ToolDef> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
         let Ok(content) = std::fs::read_to_string(&path) else { continue };
         let Ok(manifest) = serde_json::from_str::<CustomToolManifest>(&content) else {
-            eprintln!("[tools] Failed to parse manifest: {}", path.display());
+            tracing::warn!(path=%path.display(), "[tools] Failed to parse manifest");
             continue;
         };
         let script_path = tools_dir.join(&manifest.script);

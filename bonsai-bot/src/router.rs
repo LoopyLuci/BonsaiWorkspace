@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::num::NonZeroU32;
 use dashmap::DashMap;
@@ -19,6 +20,8 @@ fn now_secs() -> i64 {
 }
 
 type UserLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>;
+// (limiter, last_access_epoch_secs)
+type LimiterEntry = (UserLimiter, Arc<AtomicU64>);
 
 #[allow(dead_code)]
 pub struct Router {
@@ -28,7 +31,7 @@ pub struct Router {
     pub metrics: SharedMetrics,
     pub config:  BotConfig,
     // Stage 3: per-user token-bucket rate limiters (10 msgs / 60 s per user)
-    rate_limiters: DashMap<String, UserLimiter>,
+    rate_limiters: DashMap<String, LimiterEntry>,
 }
 
 impl Router {
@@ -42,15 +45,30 @@ impl Router {
         Self { buddy, dedup, db, metrics, config, rate_limiters: DashMap::new() }
     }
 
+    /// Remove rate limiter entries not accessed in the last `stale_secs` seconds.
+    pub fn evict_stale_limiters(&self, stale_secs: u64) {
+        let cutoff = now_secs() as u64 - stale_secs;
+        let before = self.rate_limiters.len();
+        self.rate_limiters.retain(|_, (_, last)| last.load(AtomicOrdering::Relaxed) >= cutoff);
+        let evicted = before - self.rate_limiters.len();
+        if evicted > 0 {
+            tracing::info!(evicted, "rate limiter stale entries evicted");
+        }
+    }
+
     fn rate_limiter_for(&self, key: &str) -> UserLimiter {
-        self.rate_limiters
+        let entry = self.rate_limiters
             .entry(key.to_string())
             .or_insert_with(|| {
-                Arc::new(RateLimiter::direct(
+                let limiter = Arc::new(RateLimiter::direct(
                     Quota::per_minute(NonZeroU32::new(10).unwrap()),
-                ))
-            })
-            .clone()
+                ));
+                let last_access = Arc::new(AtomicU64::new(now_secs() as u64));
+                (limiter, last_access)
+            });
+        // Update last-access timestamp on each use
+        entry.1.store(now_secs() as u64, AtomicOrdering::Relaxed);
+        entry.0.clone()
     }
 
     pub async fn handle(

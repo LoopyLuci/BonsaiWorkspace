@@ -206,17 +206,17 @@ fn play_wav_rodio(wav_bytes: &[u8], stop: &AtomicBool) {
 
     let (_stream, stream_handle) = match OutputStream::try_default() {
         Ok(o) => o,
-        Err(e) => { eprintln!("[tts] rodio output error: {e}"); return; }
+        Err(e) => { tracing::error!(error=%e, "[tts] rodio output error"); return; }
     };
     let sink = match Sink::try_new(&stream_handle) {
         Ok(s) => s,
-        Err(e) => { eprintln!("[tts] rodio sink error: {e}"); return; }
+        Err(e) => { tracing::error!(error=%e, "[tts] rodio sink error"); return; }
     };
 
     let cursor = Cursor::new(wav_bytes.to_vec());
     let decoder = match Decoder::new_wav(cursor) {
         Ok(d) => d,
-        Err(e) => { eprintln!("[tts] WAV decode error: {e}"); return; }
+        Err(e) => { tracing::error!(error=%e, "[tts] WAV decode error"); return; }
     };
 
     sink.append(decoder);

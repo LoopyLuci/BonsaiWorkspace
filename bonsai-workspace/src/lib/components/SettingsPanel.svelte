@@ -4,6 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { scan } from '@tauri-apps/plugin-barcode-scanner';
   import { addAssistantMessage } from '$lib/stores/chat';
+  import DOMPurify from 'dompurify';
   import ClusterControlPanel from '$lib/components/ClusterControlPanel.svelte';
   import { DEFAULT_API_PORT } from '$lib/constants/network';
   import {
@@ -1339,7 +1340,7 @@
       <div class="pair-row">
         <div class="qr-area">
           {#if pairQrSvg}
-            {@html pairQrSvg}
+            {@html DOMPurify.sanitize(pairQrSvg, { USE_PROFILES: { svg: true, svgFilters: true } })}
           {:else}
             <button class="action-btn" on:click={loadPairInfo} disabled={pairLoading}>
               {pairLoading ? 'Loading…' : 'Show QR Code'}

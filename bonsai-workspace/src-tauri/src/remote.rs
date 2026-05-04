@@ -65,7 +65,7 @@ impl RemoteManager {
             return Err("No active remote session".into());
         }
 
-        eprintln!("[remote] queued input event: {:?}", event);
+        tracing::debug!(event=?event, "[remote] queued input event");
 
         let mut enigo = Enigo::new();
 

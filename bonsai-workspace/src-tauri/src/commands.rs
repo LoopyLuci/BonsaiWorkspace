@@ -1517,7 +1517,7 @@ pub async fn voice_transcribe(state: State<'_, AppState>) -> Result<String, Stri
                         buf.push((s.clamp(-1.0, 1.0) * 32767.0) as i16);
                     }
                 },
-                |err| eprintln!("Audio input error: {err}"),
+                |err| tracing::error!(error=%err, "Audio input error"),
                 None,
             )
             .map_err(|e| e.to_string())?;
@@ -2388,7 +2388,7 @@ pub async fn run_bootstrap(
                 let _ = bh.emit("bootstrap-complete", ());
             }
             Err(e) => {
-                eprintln!("[bootstrap] run_bootstrap error: {e}");
+                tracing::error!(error=%e, "[bootstrap] run_bootstrap error");
                 let _ = bh.emit("bootstrap-error", e.to_string());
             }
         }
@@ -6012,7 +6012,7 @@ mod tests {
                 assert!(!parsed.is_loopback(), "local_ip should not return loopback, got {parsed}");
             }
             // In CI / sandboxed environments there may be no network — skip.
-            Err(e) => eprintln!("[skip] local_ip_address unavailable: {e}"),
+            Err(e) => tracing::warn!(error=%e, "[skip] local_ip_address unavailable"),
         }
     }
 }

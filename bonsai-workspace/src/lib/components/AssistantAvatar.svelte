@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
+  import DOMPurify from 'dompurify';
 
   // Built-in avatar SVG is loaded via fetch so it stays in the Rust bundle
   const BUILTIN_AVATAR_URL = '/avatars/buddy-default.svg';
@@ -114,7 +115,7 @@
     try {
       const resp = await fetch(BUILTIN_AVATAR_URL);
       if (resp.ok) {
-        svgContent = await resp.text();
+        svgContent = DOMPurify.sanitize(await resp.text(), { USE_PROFILES: { svg: true, svgFilters: true } });
         // After DOM update, set initial viseme
         setTimeout(() => setViseme(0), 50);
       }

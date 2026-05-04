@@ -373,7 +373,7 @@ pub(crate) fn pick_zip(assets: &[serde_json::Value], must: &[&str]) -> Option<St
             if !must.iter().all(|p| name.contains(p)) { continue; }
             if name.contains("vulkan") {
                 if let Some(url) = asset["browser_download_url"].as_str() {
-                    eprintln!("[bootstrap] Using Vulkan llama.cpp build: {}", name);
+                tracing::info!(name=%name, "[bootstrap] Using Vulkan llama.cpp build");
                     return Some(url.to_string());
                 }
             }
@@ -478,10 +478,10 @@ fn extract(data: &[u8], dest: &Path) -> Result<()> {
         // defence against exotic implementations.
         let fname = match Path::new(&raw).file_name() {
             Some(n) => n.to_string_lossy().to_string(),
-            None    => { eprintln!("[zip] Skipping entry with no filename: {raw:?}"); continue; }
+            None    => { tracing::warn!(entry=%raw, "[zip] Skipping entry with no filename"); continue; }
         };
         if fname.is_empty() || fname.contains("..") || fname.contains('/') || fname.contains('\\') {
-            eprintln!("[zip] Skipping suspicious entry: {raw:?}");
+            tracing::warn!(entry=%raw, "[zip] Skipping suspicious entry");
             continue;
         }
 
@@ -511,7 +511,7 @@ fn extract(data: &[u8], dest: &Path) -> Result<()> {
         #[cfg(all(windows, target_arch = "x86_64"))]
         if matches!(ext.as_str(), "exe" | "dll") {
             if let Some(false) = pe_is_x64(&content) {
-                eprintln!("[zip] Skipping 32-bit binary (need x64): {fname}");
+                tracing::warn!(fname=%fname, "[zip] Skipping 32-bit binary (need x64)");
                 continue;
             }
         }

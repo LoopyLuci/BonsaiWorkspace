@@ -639,6 +639,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn known_safe_tool_is_allowed() {
+        let engine = PolicyEngine::new();
+        let decision = engine.evaluate("get_system_stats", &json!({}), &json!({}));
+        assert!(matches!(decision, PolicyDecision::Allow));
+    }
+
+    #[test]
+    fn high_risk_tool_requires_confirmation() {
+        let engine = PolicyEngine::new();
+        let args = json!({
+            "to": "ops@example.com",
+            "subject": "test",
+            "body": "hello",
+        });
+        let decision = engine.evaluate("send_email", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::RequireConfirmation(_)));
+    }
+
+    #[test]
+    fn missing_required_argument_is_denied() {
+        let engine = PolicyEngine::new();
+        let decision = engine.evaluate("write_file_assistant", &json!({ "path": "notes.txt" }), &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn invalid_allowed_value_is_denied() {
+        let engine = PolicyEngine::new();
+        let args = json!({
+            "chart_type": "scatter",
+            "data_json": "[]",
+        });
+        let decision = engine.evaluate("render_chart", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn numeric_limit_is_enforced() {
+        let engine = PolicyEngine::new();
+        let args = json!({
+            "path": "src",
+            "pattern": "*.rs",
+            "max_results": 999,
+        });
+        let decision = engine.evaluate("find_files", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn path_traversal_is_denied() {
+        let engine = PolicyEngine::new();
+        let args = json!({ "path": "../secret.txt" });
+        let decision = engine.evaluate("read_file_assistant", &args, &json!({}));
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn offline_strict_blocks_network_tools() {
+        let engine = PolicyEngine::new();
+        let perms = json!({ "offline_strict_mode": true });
+        let args = json!({ "url": "https://example.com" });
+        let decision = engine.evaluate("fetch_url", &args, &perms);
+        assert!(matches!(decision, PolicyDecision::Deny(_)));
+    }
+
+    #[test]
+    fn path_and_domain_tool_metadata_is_exposed() {
+        let engine = PolicyEngine::new();
+        assert!(engine.is_path_sandbox_tool("find_files"));
+        assert!(!engine.is_path_sandbox_tool("get_weather"));
+        assert!(engine.is_domain_restricted_tool("fetch_url"));
+        assert!(!engine.is_domain_restricted_tool("find_files"));
+    }
+
     // ── Path traversal tests ─────────────────────────────────────────────────
 
     #[test]

@@ -244,7 +244,7 @@ fn probe(path: &Path) -> ModelInfo {
             }
         }
         Err(e) => {
-            eprintln!("[registry] Failed to parse {:?}: {e}", path.file_name().unwrap_or_default());
+            tracing::warn!(path=?path.file_name().unwrap_or_default(), error=%e, "[registry] Failed to parse GGUF");
             ModelInfo {
                 id,
                 name:            fallback_name,
