@@ -5329,6 +5329,14 @@ pub async fn get_bot_server_status(_state: State<'_, AppState>) -> Result<Value,
     Ok(v)
 }
 
+/// Fetch live metrics counters from the bot admin API.
+#[tauri::command]
+pub async fn get_bot_metrics(_state: State<'_, AppState>) -> Result<Value, String> {
+    let token = bot_admin_token();
+    let (v, _p) = fetch_from_bot_path("metrics", &token).await?;
+    Ok(v)
+}
+
 /// Save Discord bot configuration: store token in keychain, persist non-secret settings to
 /// the bot config file, then signal a reload if the bot is running.
 #[tauri::command]

@@ -9,7 +9,9 @@ mod metrics;
 mod platforms;
 mod router;
 mod sanitizer;
+mod scheduler;
 mod session;
+mod swarm_client;
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -68,6 +70,8 @@ async fn main() {
         metrics.clone(),
         cfg.clone(),
     ));
+
+    let swarm = swarm_client::SwarmClient::new(cfg.swarm_peers.clone());
 
     // Per-platform connection state — written by platforms, read by /status
     let platform_states: PlatformStates = Arc::new(dashmap::DashMap::new());
@@ -157,6 +161,12 @@ async fn main() {
 
     let platforms: Arc<Vec<Arc<dyn MessagingPlatform>>> = Arc::new(platform_list);
 
+    // Scheduled tasks — fires synthetic InboundMessages into the same queue
+    {
+        let sched = scheduler::Scheduler::load();
+        sched.spawn_all(tx.clone(), platforms.clone());
+    }
+
     // Shed reply task (low-cost control path, outside worker pool)
     tokio::spawn(async move {
         while let Some(notice) = shed_rx.recv().await {
@@ -214,6 +224,7 @@ async fn main() {
     let sem   = semaphore.clone();
     let rtr   = router.clone();
     let plats = platforms.clone();
+    let swarm2 = swarm.clone();
 
     loop {
         tokio::select! {
@@ -239,9 +250,20 @@ async fn main() {
                     }
                 };
 
-                let rtr2 = rtr.clone();
+                let rtr2   = rtr.clone();
+                let swarm3 = swarm2.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
+                    // Try swarm routing first if any peers are configured
+                    if swarm3.has_peers() {
+                        if let Some(peer) = swarm3.route(&msg).await {
+                            if let Err(e) = swarm3.forward(peer, &msg).await {
+                                tracing::warn!("[swarm] forward to '{}' failed: {e}; falling back to local", peer.name);
+                            } else {
+                                return;
+                            }
+                        }
+                    }
                     rtr2.handle(msg, &plat).await;
                 });
             }
