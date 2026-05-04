@@ -73,7 +73,7 @@ impl RuntimeManager {
     /// Start a Python worker by spawning the given script path with the provided port.
     /// Returns a boxed `RuntimeController` that can be used to manage the runtime.
     pub async fn start_python_worker(&self, script_path: &str, port: u16) -> Result<Box<dyn RuntimeController + Send + Sync>> {
-        let mut cmd = tokio::process::Command::new("python");
+        let mut cmd = tokio::process::Command::new(resolve_python_binary());
         cmd.arg(script_path)
             .arg(port.to_string())
             .arg("--max-cpu-seconds")
@@ -191,6 +191,18 @@ impl RuntimeManager {
             let child = cmd.spawn()?;
             return Ok(Box::new(ProcessController { child }));
         }
+    }
+}
+
+fn resolve_python_binary() -> String {
+    if cfg!(target_os = "windows") {
+        return "python".to_string();
+    }
+
+    if which::which("python3").is_ok() {
+        "python3".to_string()
+    } else {
+        "python".to_string()
     }
 }
 
