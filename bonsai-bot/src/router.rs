@@ -173,6 +173,80 @@ impl Router {
         self.metrics.messages_processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Like `handle`, but uses the streaming Buddy API path. Accumulates tokens and
+    /// sends a single reply when complete (platforms can override to send chunks).
+    pub async fn handle_streaming(
+        &self,
+        msg: InboundMessage,
+        platform: &Arc<dyn MessagingPlatform>,
+    ) {
+        let req_id = uuid::Uuid::new_v4();
+
+        if self.dedup.is_duplicate(&msg.platform, &msg.event_id) {
+            self.metrics.dedup_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+
+        let rate_key = format!("{}:{}", msg.platform, msg.user_id);
+        if self.rate_limiter_for(&rate_key).check().is_err() {
+            self.metrics.rate_limit_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _ = platform.send_reply(&msg.platform_id, &msg.user_id,
+                "⏳ Rate limit exceeded.", msg.reply_to.as_deref()).await;
+            return;
+        }
+
+        let clean_text = match crate::sanitizer::sanitize(&msg.text, &self.metrics) {
+            Ok(t) => t,
+            Err(_) => {
+                let _ = platform.send_reply(&msg.platform_id, &msg.user_id,
+                    "⚠️ Your message could not be processed safely.", msg.reply_to.as_deref()).await;
+                return;
+            }
+        };
+
+        let buddy_session = match session::find_active_session(
+            &self.db, msg.platform.clone(), msg.user_id.clone(), msg.platform_id.clone(),
+        ).await {
+            Some(id) => id,
+            None => {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                let _ = session::upsert_session(&self.db,
+                    msg.platform.clone(), msg.user_id.clone(), msg.platform_id.clone(),
+                    msg.display_name.clone(), new_id.clone()).await;
+                new_id
+            }
+        };
+
+        let messages = vec![json!({
+            "role": "user",
+            "content": clean_text,
+            "_bonsai_session": buddy_session,
+        })];
+
+        let mut rx = match self.buddy.chat_stream(BuddyClient::build_request(messages, None)).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(req_id=%req_id, error=%e, "buddy stream failed");
+                let _ = platform.send_reply(&msg.platform_id, &msg.user_id,
+                    "⚠️ Bonsai error. Please retry.", msg.reply_to.as_deref()).await;
+                return;
+            }
+        };
+
+        // Accumulate all stream tokens then send as one reply
+        let mut full = String::new();
+        while let Some(token) = rx.recv().await {
+            full.push_str(&token);
+        }
+
+        if full.is_empty() { full = "(no response)".to_string(); }
+
+        tracing::info!(req_id=%req_id, platform=%msg.platform, user=%msg.user_id, "stream reply sent");
+        let _ = platform.send_reply(&msg.platform_id, &msg.user_id, &full, msg.reply_to.as_deref()).await;
+        session::touch_session(&self.db, msg.platform.clone(), msg.user_id.clone(), msg.platform_id.clone()).await;
+        self.metrics.messages_processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Send a structured confirm_response to Buddy, return Buddy's reply text.
     pub async fn send_confirm_response(
         &self,

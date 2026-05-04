@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use reqwest::Client;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
+use futures::StreamExt;
 
 use crate::health::CircuitBreaker;
 use crate::metrics::SharedMetrics;
@@ -71,6 +73,76 @@ impl BuddyClient {
         }
 
         Err(last_err)
+    }
+
+    /// Send a streaming chat/completions request. Tokens are sent to the returned receiver
+    /// as they arrive. The receiver closes when the stream ends or on error.
+    pub async fn chat_stream(
+        &self,
+        body: Value,
+    ) -> Result<mpsc::UnboundedReceiver<String>, String> {
+        if self.breaker.is_open() {
+            return Err("circuit_open".to_string());
+        }
+
+        let mut streaming_body = body.clone();
+        streaming_body["stream"] = json!(true);
+
+        let url = format!("{}/v1/chat/completions", self.base);
+        self.metrics.buddy_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let resp = self.http.post(&url).json(&streaming_body).send().await
+            .map_err(|e| { self.breaker.record_failure(); e.to_string() })?;
+
+        if !resp.status().is_success() {
+            self.breaker.record_failure();
+            return Err(format!("HTTP {}", resp.status()));
+        }
+
+        let breaker = self.breaker.clone();
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+
+        tokio::spawn(async move {
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut ok = false;
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+
+                // SSE lines: "data: {...}\n\n" or "data: [DONE]\n\n"
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf = buf[pos + 1..].to_string();
+
+                    if line == "data: [DONE]" {
+                        ok = true;
+                        break;
+                    }
+                    if let Some(json_str) = line.strip_prefix("data: ") {
+                        if let Ok(v) = serde_json::from_str::<Value>(json_str) {
+                            if let Some(token) = v["choices"][0]["delta"]["content"].as_str() {
+                                if !token.is_empty() {
+                                    let _ = tx.send(token.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ok {
+                breaker.record_success();
+            } else {
+                breaker.record_failure();
+            }
+        });
+
+        Ok(rx)
     }
 
     /// Build an OpenAI-compatible chat request body from a list of messages.
