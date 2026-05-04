@@ -23,6 +23,7 @@ use futures::StreamExt;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
+use sha2::{Digest, Sha256};
 
 // ── Model sources ─────────────────────────────────────────────────────────────
 
@@ -40,6 +41,37 @@ const LLAMA_API: &str =
     "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest";
 const WHISPER_API: &str =
     "https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest";
+
+// ── Checksum verification ─────────────────────────────────────────────────────
+
+/// Compute SHA-256 hash of a file and return as lowercase hex string.
+async fn compute_sha256(path: &Path) -> Result<String> {
+    let data = tokio::fs::read(path).await?;
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
+/// Load checksums from checksums.json. Returns empty map if file not found.
+async fn load_checksums() -> Result<std::collections::HashMap<String, String>> {
+    // Try to load from the assets bundled with the binary
+    if let Ok(data) = std::fs::read_to_string("checksums.json") {
+        if let Ok(map) = serde_json::from_str::<serde_json::Value>(&data) {
+            let mut checksums: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            if let Some(obj) = map.as_object() {
+                for (key, val) in obj {
+                    if let Some(hash) = val.get("latest").and_then(|v| v.as_str()) {
+                        checksums.insert(key.clone(), hash.to_string());
+                    }
+                }
+            }
+            return Ok(checksums);
+        }
+    }
+    // If checksums.json not found, return empty map (verification skipped)
+    Ok(std::collections::HashMap::new())
+}
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
@@ -393,6 +425,24 @@ async fn download_and_extract(
         step(app, tag, (done * 85 / total.max(1)) as u8, "Downloading…");
     }
 
+    // Verify SHA-256 if checksums are available
+    {
+        let checksums = load_checksums().await.unwrap_or_default();
+        if let Some(expected_hash) = checksums.get(tag) {
+            step(app, tag, 86, "Verifying SHA-256…");
+            let mut hasher = Sha256::new();
+            hasher.update(&buf);
+            let actual_hash = format!("{:x}", hasher.finalize());
+            
+            if actual_hash != *expected_hash {
+                return Err(anyhow::anyhow!(
+                    "SHA-256 mismatch for {}: expected {}, got {}",
+                    tag, expected_hash, actual_hash
+                ));
+            }
+        }
+    }
+
     step(app, tag, 87, "Extracting…");
     let dest = dest.to_path_buf();
     tokio::task::spawn_blocking(move || extract(&buf, &dest)).await??;
@@ -528,17 +578,39 @@ async fn stream_file(
     let mut file = tokio::fs::File::create(dest).await?;
     let mut stream = resp.bytes_stream();
     let mut done = 0u64;
+    let mut hasher = Sha256::new();
     use tokio::io::AsyncWriteExt;
+    
     while let Some(chunk) = stream.next().await {
         check_cancel(cancel, "Download cancelled")?;
         let chunk = chunk?;
+        hasher.update(&chunk);
         done += chunk.len() as u64;
         file.write_all(&chunk).await?;
         if total > 0 {
-            step(app, tag, (done * 100 / total) as u8, "Downloading…");
+            step(app, tag, (done * 90 / total) as u8, "Downloading…");
         }
     }
     file.flush().await?;
+
+    // Verify SHA-256 if checksums are available
+    {
+        let checksums = load_checksums().await.unwrap_or_default();
+        if let Some(expected_hash) = checksums.get(tag) {
+            step(app, tag, 95, "Verifying SHA-256…");
+            let actual_hash = format!("{:x}", hasher.finalize());
+            
+            if actual_hash != *expected_hash {
+                // Delete the file on mismatch
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(anyhow::anyhow!(
+                    "SHA-256 mismatch for {}: expected {}, got {}",
+                    tag, expected_hash, actual_hash
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
