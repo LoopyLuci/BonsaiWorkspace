@@ -224,15 +224,24 @@ async fn main() {
         }
     }
 
-    // Background confirm cleanup
+    // Background confirm cleanup (every minute) + session TTL purge (daily)
     {
         let db2 = db.clone();
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(60));
+            let mut daily_counter: u64 = 0;
             loop {
                 ticker.tick().await;
                 session::purge_expired_confirms(&db2).await;
                 session::cleanup_stale(&db2).await;
+                daily_counter += 1;
+                // Purge hard-deleted sessions once per day (every 1440 ticks of 60s)
+                if daily_counter % 1440 == 0 {
+                    let purged = session::purge_old_sessions(&db2, 90).await;
+                    if purged > 0 {
+                        tracing::info!(purged, "session TTL purge completed");
+                    }
+                }
             }
         });
     }
