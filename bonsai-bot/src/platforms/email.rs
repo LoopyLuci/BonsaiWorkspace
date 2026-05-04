@@ -218,8 +218,19 @@ impl EmailPlatform {
                     });
                 }
 
+                // Mark as seen
                 let _ = imap_session.uid_store(&uid_str, "+FLAGS.SILENT (\\Seen)").await;
+
+                // Optionally delete the message (IMAP EXPUNGE) if configured
+                if self.config.delete_processed {
+                    let _ = imap_session.uid_store(&uid_str, "+FLAGS.SILENT (\\Deleted)").await;
+                }
             }
+        }
+
+        // Flush any pending EXPUNGE requests before logging out
+        if self.config.delete_processed {
+            let _ = imap_session.expunge().await;
         }
 
         imap_session.logout().await.map_err(|e| format!("LOGOUT: {e}"))?;
