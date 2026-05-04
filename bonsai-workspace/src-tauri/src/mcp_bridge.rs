@@ -215,12 +215,34 @@ impl McpManager {
     pub async fn connect_all_into_registry(
         &self,
         registry: &mut ToolRegistry,
+        allowed_commands: &[String],
     ) -> Vec<String> {
         let configs = self.configs.read().await.clone();
         let mut connected = Vec::new();
 
+        if allowed_commands.is_empty() {
+            tracing::warn!("[mcp] mcp_allowed_commands is empty; allowing all configured MCP commands");
+        }
+
         for cfg in configs {
             if !cfg.enabled { continue; }
+
+            if !allowed_commands.is_empty()
+                && !allowed_commands.iter().any(|allowed| {
+                    if cfg!(windows) {
+                        allowed.eq_ignore_ascii_case(&cfg.command)
+                    } else {
+                        allowed == &cfg.command
+                    }
+                })
+            {
+                tracing::warn!(
+                    server=%cfg.name,
+                    command=%cfg.command,
+                    "[mcp] skipping server: command not in mcp_allowed_commands"
+                );
+                continue;
+            }
 
             let name = cfg.name.clone();
             let namespace = cfg.namespace.clone();

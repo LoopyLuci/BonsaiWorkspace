@@ -42,6 +42,9 @@ pub struct AppConfig {
     /// Model ID last loaded by the user — restored on next startup.
     #[serde(default)]
     pub last_model_id: Option<String>,
+    /// Optional allowlist for MCP server commands. Empty means allow all.
+    #[serde(default)]
+    pub mcp_allowed_commands: Vec<String>,
     /// Default mode applied to newly discovered local models.
     #[serde(default = "default_inference_mode")]
     pub default_inference_mode: InferenceMode,
@@ -64,6 +67,7 @@ impl Default for AppConfig {
             main_window_height: None,
             extra_model_dirs: Vec::new(),
             last_model_id: None,
+            mcp_allowed_commands: Vec::new(),
             default_inference_mode: InferenceMode::default(),
         }
     }

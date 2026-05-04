@@ -571,13 +571,17 @@ pub fn run() {
             {
                 let store   = app.state::<AppState>().assistant_store.clone();
                 let mgr     = mcp_manager.clone();
+                let app_for_cfg = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     match store.list_mcp_servers().await {
                         Ok(configs) => {
+                            let allowed_commands = crate::config::load_config(&app_for_cfg)
+                                .map(|c| c.mcp_allowed_commands)
+                                .unwrap_or_default();
                             mgr.load_configs(configs).await;
                             let registry = crate::assistant_manager::assistant_registry();
                             let mut reg = registry.write().await;
-                            let connected = mgr.connect_all_into_registry(&mut *reg).await;
+                            let connected = mgr.connect_all_into_registry(&mut *reg, &allowed_commands).await;
                             if !connected.is_empty() {
                                 tracing::info!("[mcp] connected: {}", connected.join(", "));
                             }
