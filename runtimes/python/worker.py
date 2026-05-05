@@ -39,7 +39,7 @@ def apply_resource_limits(max_cpu_seconds: int, max_memory_mb: int) -> None:
             import resource
 
             memory_bytes = max_memory_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_CPU, (max_cpu_seconds, max_cpu_seconds))
+            resource.setrlimit(resource.RLIMIT_CPU, (max_cpu_secs, max_cpu_seconds))
             resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
         except Exception as exc:
             print(f"python worker warning: failed to set rlimit: {exc}", file=sys.stderr)
@@ -51,6 +51,11 @@ def apply_resource_limits(max_cpu_seconds: int, max_memory_mb: int) -> None:
             signal.alarm(max_cpu_seconds)
         except Exception as exc:
             print(f"python worker warning: failed to set alarm: {exc}", file=sys.stderr)
+    else:
+        # On Windows, resource.setrlimit is a no-op.
+        # Hard CPU and memory limits are enforced by the Windows Job Object
+        # applied by the Rust launcher (bonsai_runtime::RuntimeManager::start_python_worker).
+        # The Python-level watchdog thread below provides a secondary, best-effort guard.
 
     def watchdog() -> None:
         start_cpu = time.process_time()

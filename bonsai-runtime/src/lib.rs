@@ -14,8 +14,104 @@ pub trait RuntimeController: Send + Sync {
     async fn wait(&mut self) -> Result<Option<i32>>;
 }
 
+// ── Windows Job Object wrapper ────────────────────────────────────────────────
+
+/// RAII wrapper that closes a Windows Job Object handle on drop.
+/// When `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is set, closing this handle
+/// terminates all processes in the job — enforcing resource limits.
+#[cfg(windows)]
+struct JobHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0); }
+    }
+}
+
+// SAFETY: HANDLE is a process-local value; we own it exclusively.
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
+#[cfg(windows)]
+unsafe impl Sync for JobHandle {}
+
+/// Apply Windows Job Object resource limits to an already-spawned process.
+///
+/// Limits applied:
+/// - `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: process is terminated when the
+///   `JobHandle` is dropped (i.e., when `ProcessController` is dropped).
+/// - `JOB_OBJECT_LIMIT_PROCESS_TIME`: per-process CPU time limit.
+/// - `JOB_OBJECT_LIMIT_PROCESS_MEMORY`: per-process virtual memory limit.
+#[cfg(windows)]
+fn create_job_for_pid(pid: u32, max_cpu_secs: u64, max_memory_mb: u64) -> Result<JobHandle> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+                JobObjectExtendedLimitInformation,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOB_OBJECT_LIMIT_PROCESS_TIME,
+                JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+            },
+            Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+        },
+    };
+
+    unsafe {
+        let process: HANDLE = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+        if process.is_null() {
+            anyhow::bail!("OpenProcess failed: {}", std::io::Error::last_os_error());
+        }
+
+        let job: HANDLE = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            CloseHandle(process);
+            anyhow::bail!("CreateJobObjectW failed: {}", std::io::Error::last_os_error());
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_PROCESS_TIME
+            | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        // CPU time in 100-nanosecond intervals.
+        info.BasicLimitInformation.PerProcessUserTimeLimit = (max_cpu_secs * 10_000_000) as i64;
+        // Virtual memory limit in bytes.
+        info.ProcessMemoryLimit = max_memory_mb as usize * 1024 * 1024;
+
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            CloseHandle(process);
+            anyhow::bail!("SetInformationJobObject failed: {}", std::io::Error::last_os_error());
+        }
+
+        let ok = AssignProcessToJobObject(job, process);
+        CloseHandle(process);
+        if ok == 0 {
+            CloseHandle(job);
+            anyhow::bail!("AssignProcessToJobObject failed: {}", std::io::Error::last_os_error());
+        }
+
+        Ok(JobHandle(job))
+    }
+}
+
+// ── ProcessController ─────────────────────────────────────────────────────────
+
 pub struct ProcessController {
     child: tokio::process::Child,
+    /// On Windows, holds the Job Object handle alive so `KILL_ON_JOB_CLOSE`
+    /// terminates the worker process if `ProcessController` is dropped.
+    #[cfg(windows)]
+    _job: Option<JobHandle>,
 }
 
 #[async_trait]
@@ -84,7 +180,32 @@ impl RuntimeManager {
             .arg("--max-memory-mb")
             .arg(Self::DEFAULT_SKILL_MAX_MEMORY_MB.to_string());
         let child = cmd.spawn()?;
-        Ok(Box::new(ProcessController { child }))
+
+        #[cfg(windows)]
+        let _job = {
+            // Give the OS a moment to schedule the new process so its PID is valid.
+            if let Some(pid) = child.id() {
+                match create_job_for_pid(
+                    pid,
+                    Self::DEFAULT_SKILL_MAX_CPU_SECONDS as u64,
+                    Self::DEFAULT_SKILL_MAX_MEMORY_MB as u64,
+                ) {
+                    Ok(job) => Some(job),
+                    Err(e) => {
+                        tracing::warn!("Windows Job Object setup failed for pid {pid}: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
+        Ok(Box::new(ProcessController {
+            child,
+            #[cfg(windows)]
+            _job,
+        }))
     }
 
     /// Start a Babashka (Clojure) worker by spawning `bb` with the given script.
@@ -116,7 +237,7 @@ impl RuntimeManager {
         }
 
         let child = cmd.spawn()?;
-        Ok(Box::new(ProcessController { child }))
+        Ok(Box::new(ProcessController { child, #[cfg(windows)] _job: None }))
     }
 
     /// Start a ClojureWasm (Wasm/WASI) module.
@@ -129,7 +250,7 @@ impl RuntimeManager {
             let mut cmd = tokio::process::Command::new("wasmtime");
             cmd.arg(module_path);
             let child = cmd.spawn()?;
-            return Ok(Box::new(ProcessController { child }));
+            return Ok(Box::new(ProcessController { child, #[cfg(windows)] _job: None }));
         }
 
         // Try in-process wasmtime if feature is enabled
@@ -216,7 +337,7 @@ impl RuntimeManager {
             let mut cmd = tokio::process::Command::new("wasmtime");
             cmd.arg(module_path);
             let child = cmd.spawn()?;
-            return Ok(Box::new(ProcessController { child }));
+            return Ok(Box::new(ProcessController { child, #[cfg(windows)] _job: None }));
         }
     }
 }

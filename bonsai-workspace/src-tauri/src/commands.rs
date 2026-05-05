@@ -20,6 +20,7 @@ use crate::action_parser::handle_agent_response;
 use crate::api_server;
 use crate::agent_connect::{AgentConnectEvent, AgentConnectSession};
 use crate::bootstrap;
+use crate::error::BonsaiError;
 use crate::cluster_orchestrator::{
     ClusterNode,
     ClusterPolicy,
@@ -577,7 +578,7 @@ pub async fn submit_chat(
     messages:       Vec<ChatMessagePayload>,
     workspace_path: Option<String>,
     enabled_tools:  Option<Vec<String>>,
-) -> Result<ChatResponse, String> {
+) -> Result<ChatResponse, BonsaiError> {
     state.chat_cancel.store(false, Ordering::Relaxed);
 
     let last_user_text = messages
@@ -693,7 +694,7 @@ pub async fn submit_chat(
                         continue;
                     }
                 }
-                return Err(e);
+                return Err(e.into());
             }
         };
         final_stats       = stats;
@@ -1209,7 +1210,7 @@ pub async fn resume_tool_call(
     approved: bool,
     workspace_path: Option<String>,
     enabled_tools: Option<Vec<String>>,
-) -> Result<ChatResponse, String> {
+) -> Result<ChatResponse, BonsaiError> {
     let tool = tool_name_from_action(&action);
 
     if !approved {
@@ -1969,9 +1970,9 @@ pub async fn list_available_models(state: State<'_, AppState>) -> Result<Vec<ser
 pub async fn load_model(
     model_id: String,
     state: State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<(), BonsaiError> {
     let rx = state.orchestrator.load(model_id);
-    rx.await.map_err(|_| "Orchestrator offline".to_string())?
+    rx.await.map_err(|_| BonsaiError::Orchestrator("Orchestrator offline".to_string()))?.map_err(BonsaiError::Orchestrator)
 }
 
 /// Unload a specific slot by index.
@@ -1986,9 +1987,11 @@ pub async fn unload_slot(slot: usize, state: State<'_, AppState>) -> Result<(), 
 pub async fn switch_model(
     model_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<String, BonsaiError> {
     let rx = state.orchestrator.load(model_id.clone());
-    rx.await.map_err(|_| "Orchestrator offline".to_string())??;
+    rx.await
+        .map_err(|_| BonsaiError::Orchestrator("Orchestrator offline".to_string()))?
+        .map_err(BonsaiError::Orchestrator)?;
 
     let models = state.orchestrator.list_models().await;
     let model_name = models
@@ -5034,8 +5037,8 @@ pub async fn submit_swarm_chat(
     workspace_path: Option<String>,
     enabled_tools:  Option<Vec<String>>,
     swarm_settings: Option<SwarmRuntimeSettings>,
-) -> Result<SwarmChatResponse, String> {
-    let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
+) -> Result<SwarmChatResponse, BonsaiError> {
+    let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| BonsaiError::Orchestrator(e.to_string()))?;
     let leader = resolved
         .iter()
         .find(|a| a.config.slot_index == 0)
@@ -5070,10 +5073,10 @@ pub async fn submit_swarm_chat(
     // Resource gate
     let estimate = estimate_swarm_resources(state.clone()).await?;
     if !estimate.fits {
-        return Err(format!(
+        return Err(BonsaiError::Orchestrator(format!(
             "Not enough RAM: need {} MB, only {} MB available. Disable an agent or choose a smaller model.",
             estimate.total_ram_required_mb, estimate.free_ram_mb
-        ));
+        )));
     }
 
     let user_prompt = messages.iter().rev()
