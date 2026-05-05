@@ -169,29 +169,27 @@ try {
     Write-Info "Tauri CLI not detected; will use cargo build --release fallback for local exe."
   }
 
-  Push-Location $FrontendDir
-  try {
-    Run-Step "Installing frontend dependencies (npm install)" { npm install }
-    Run-Step "Building frontend assets (npm run build)" { npm run build }
-  } finally {
-    Pop-Location
+  if (Get-Command sccache -ErrorAction SilentlyContinue) {
+    $env:RUSTC_WRAPPER = "sccache"
+    Write-Success "sccache enabled"
+  } else {
+    Write-Host "[builder] Tip: install sccache for faster rebuilds (cargo install sccache)" -ForegroundColor DarkYellow
   }
-
-  $distCandidates = @(
-    (Join-Path $WorkspaceRoot "bonsai-workspace\dist"),
-    (Join-Path $FrontendDir "dist")
-  )
-  $distPath = $distCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-  if (-not $distPath) {
-    Write-FailAndExit "Frontend build finished, but dist/ was not found in bonsai-workspace."
-  }
-  Write-Success "Frontend dist found: $distPath"
 
   $tauriBuildOk = $false
+  if ($tauriBuildMethod -eq "cargo-tauri" -or $tauriBuildMethod -eq "npx-tauri") {
+    Push-Location $FrontendDir
+    try {
+      Run-Step "Installing frontend dependencies (npm install)" { npm install --prefer-offline --no-audit --no-fund --loglevel=error }
+    } finally {
+      Pop-Location
+    }
+  }
+
   if ($tauriBuildMethod -eq "cargo-tauri") {
     Push-Location $TauriDir
     try {
-      Write-Info "Building Tauri application with cargo tauri build"
+      Write-Info "Building with cargo tauri build (includes frontend via beforeBuildCommand)"
       & cargo tauri build
       if ($LASTEXITCODE -eq 0) {
         $tauriBuildOk = $true
@@ -206,7 +204,7 @@ try {
   if (-not $tauriBuildOk -and $tauriBuildMethod -eq "npx-tauri") {
     Push-Location $FrontendDir
     try {
-      Write-Info "Building Tauri application with npx tauri build"
+      Write-Info "Building with npx tauri build (includes frontend via beforeBuildCommand)"
       $npxArgs = @()
       if ($npxNoInstall) { $npxArgs += "--no-install" }
       $npxArgs += @("tauri", "build")
@@ -222,6 +220,24 @@ try {
   }
 
   if (-not $tauriBuildOk) {
+    Push-Location $FrontendDir
+    try {
+      Run-Step "Installing frontend dependencies (npm install)" { npm install --prefer-offline --no-audit --no-fund --loglevel=error }
+      Run-Step "Building frontend assets (npm run build)" { npm run build }
+    } finally {
+      Pop-Location
+    }
+
+    $distCandidates = @(
+      (Join-Path $WorkspaceRoot "bonsai-workspace\dist"),
+      (Join-Path $FrontendDir "dist")
+    )
+    $distPath = $distCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $distPath) {
+      Write-FailAndExit "Frontend build finished, but dist/ was not found in bonsai-workspace."
+    }
+    Write-Success "Frontend dist found: $distPath"
+
     Push-Location $TauriDir
     try {
       Run-Step "Building release executable with cargo build --release (fallback)" { cargo build --release }

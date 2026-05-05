@@ -77,9 +77,7 @@
       {/if}
     </details>
   {:else if html !== null}
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
-    <div class="bubble markdown" role="region" aria-label="Message content" on:click={handleBubbleClick}>{@html html}</div>
+    <button class="bubble markdown bubble-button" type="button" aria-label="Message content" on:click={handleBubbleClick}>{@html html}</button>
   {:else}
     <div class="bubble">{message.content}</div>
   {/if}
@@ -89,6 +87,15 @@
   .msg { display: flex; margin: 4px 8px; }
   .user      { justify-content: flex-end; }
   .assistant, .tool { justify-content: flex-start; }
+
+  .bubble-button {
+    all: unset;
+    display: block;
+    width: 100%;
+    text-align: left;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
 
   .bubble {
     max-width: 82%;

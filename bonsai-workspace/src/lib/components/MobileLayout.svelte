@@ -19,7 +19,6 @@
   import SessionPanel from './SessionPanel.svelte';
   import MobileViewPanel from './MobileViewPanel.svelte';
   import CodeCanvas from './CodeCanvas.svelte';
-  import AgentVisionPanel from './AgentVisionPanel.svelte';
   import MobileHome from './MobileHome.svelte';
   import { initMobileDisplaySettings, mobileDisplayStyle } from '$lib/stores/mobileDisplay';
   import { showTerminal } from '$lib/stores/terminal';
@@ -31,6 +30,8 @@
   let activeTab: Tab = 'home';
   let monacoEditorComponent: any = null;
   let monacoLoadError = '';
+  let agentVisionPanelComponent: any = null;
+  let agentVisionLoadError = '';
   let visitedTabs: Record<Tab, boolean> = {
     home: true,
     chat: false,
@@ -81,6 +82,22 @@
     } catch (error) {
       monacoLoadError = String(error);
     }
+  }
+
+  async function ensureAgentVisionPanelLoaded() {
+    if (agentVisionPanelComponent) return;
+    try {
+      const mod = await import('./AgentVisionPanel.svelte');
+      agentVisionPanelComponent = mod.default;
+      agentVisionLoadError = '';
+    } catch (error) {
+      agentVisionLoadError = String(error);
+    }
+  }
+
+  function openVisionPanel() {
+    showVision = true;
+    void ensureAgentVisionPanelLoaded();
   }
 
   function onTabKeyDown(event: KeyboardEvent) {
@@ -135,7 +152,7 @@
           on:openSession={() => (showSession = true)}
           on:openMobileView={() => (showMobileView = true)}
           on:openTerminal={() => showTerminal.set(true)}
-          on:openVision={() => (showVision = true)}
+          on:openVision={openVisionPanel}
           on:openCanvas={() => (showCanvas = true)}
         />
       {/if}
@@ -194,7 +211,13 @@
     <MobileViewPanel on:close={() => (showMobileView = false)} />
   {/if}
   {#if showVision}
-    <AgentVisionPanel on:close={() => (showVision = false)} on:openChat={() => setActiveTab('chat')} />
+    {#if agentVisionPanelComponent}
+      <svelte:component this={agentVisionPanelComponent} on:close={() => (showVision = false)} on:openChat={() => setActiveTab('chat')} />
+    {:else if agentVisionLoadError}
+      <div class="panel-state panel-state-error">Agent Vision failed to load: {agentVisionLoadError}</div>
+    {:else}
+      <div class="panel-state">Loading Agent Vision...</div>
+    {/if}
   {/if}
   {#if showCanvas}
     <CodeCanvas onClose={() => (showCanvas = false)} />

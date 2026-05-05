@@ -43,8 +43,8 @@
   let pointerStartX = 0;
   let pointerStartWidth = 0;
   let monacoEditorComponent: any = null;
+  let monacoLoading = false;
   let monacoLoadError = '';
-  let monacoLoadQueued = false;
   let agentVisionPanelComponent: any = null;
   let agentVisionLoadError = '';
 
@@ -118,22 +118,17 @@
   }
 
   async function loadMonacoEditorComponent() {
-    if (monacoEditorComponent) return;
+    if (monacoEditorComponent || monacoLoading) return;
+    monacoLoading = true;
     try {
       const mod = await import('$lib/components/MonacoEditor.svelte');
       monacoEditorComponent = mod.default;
       monacoLoadError = '';
     } catch (error) {
       monacoLoadError = String(error);
+    } finally {
+      monacoLoading = false;
     }
-  }
-
-  function queueMonacoEditorLoad() {
-    if (monacoLoadQueued) return;
-    monacoLoadQueued = true;
-    window.setTimeout(() => {
-      void loadMonacoEditorComponent();
-    }, 0);
   }
 
   async function loadAgentVisionPanelComponent() {
@@ -215,7 +210,6 @@
       showChat = true;
       chatWidth = Math.min(chatWidth, Math.max(240, Math.floor(window.innerWidth * 0.92)));
     }
-    queueMonacoEditorLoad();
   });
 
   onDestroy(() => {
@@ -319,7 +313,11 @@
         {:else if monacoLoadError}
           <div class="pane-state pane-state-error">Editor failed to load: {monacoLoadError}</div>
         {:else}
-          <div class="pane-state">Loading editor...</div>
+          <div class="pane-state">
+            <button class="btn-icon" type="button" on:click={() => void loadMonacoEditorComponent()} disabled={monacoLoading}>
+              {monacoLoading ? 'Loading editor...' : 'Open editor'}
+            </button>
+          </div>
         {/if}
       </div>
 
