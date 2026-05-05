@@ -252,15 +252,36 @@ try {
     Write-FailAndExit "Could not locate built bonsai-workspace.exe under src-tauri/target/release or bundle output."
   }
 
-  Copy-Item -Path $builtExe -Destination $OutputExe -Force
-  if (-not (Test-Path $OutputExe)) {
-    Write-FailAndExit "Copy step failed; output exe not found at $OutputExe"
+  $finalOutputPath = $OutputExe
+  if (Test-Path $OutputExe) {
+    try {
+      $fs = [System.IO.File]::Open($OutputExe, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+      $fs.Close()
+    } catch {
+      $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+      $fallbackPath = Join-Path $WorkspaceRoot ("BonsaiWorkspace-{0}.exe" -f $timestamp)
+      Write-Host "[builder] Target .exe is locked (app running). Copying to fallback: $fallbackPath" -ForegroundColor Yellow
+      Copy-Item -Path $builtExe -Destination $fallbackPath -Force
+      if (-not (Test-Path $fallbackPath)) {
+        Write-FailAndExit "Copy step failed; fallback output exe not found at $fallbackPath"
+      }
+      $finalOutputPath = $fallbackPath
+    }
   }
 
-  $outputInfo = Get-Item $OutputExe
+  if ($finalOutputPath -eq $OutputExe) {
+    Copy-Item -Path $builtExe -Destination $OutputExe -Force
+    if (-not (Test-Path $OutputExe)) {
+      Write-FailAndExit "Copy step failed; output exe not found at $OutputExe"
+    }
+  }
+
+  $outputInfo = Get-Item $finalOutputPath
+  $sourceInfo = Get-Item $builtExe
   $sizeMb = [Math]::Round($outputInfo.Length / 1MB, 2)
   Write-Success "Build complete."
-  Write-Success "Output: $($outputInfo.FullName)"
+  Write-Success "Source build output: $($sourceInfo.FullName)"
+  Write-Success "Final output: $($outputInfo.FullName)"
   Write-Success "Size: $sizeMb MB"
   exit 0
 }
