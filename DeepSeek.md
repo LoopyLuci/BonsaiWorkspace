@@ -67,6 +67,7 @@ These scripts standardize frontend plus Tauri build orchestration and artifact o
 | #22 | Clojure/Python P1 hardening (4 commits) | ✅ Merged |
 | #23 | GPU crash auto-fallback to CPU | ✅ Merged |
 | #24 | Inference mode system + notification UX + terminal fix | ✅ Merged |
+| #29 | Build optimization closeout (7 issues fixed) | ✅ Merged |
 
 ### Build Status
 - `cargo check -p bonsai-workspace` - clean
@@ -74,6 +75,12 @@ These scripts standardize frontend plus Tauri build orchestration and artifact o
 
 ### Unstaged Artifacts
 - latest.json, preflight-cache.json, BonsaiWorkspace.exe, .kotlin/
+
+### Build Optimization Results (PR #29)
+- Builder pipeline optimized to a single frontend pass (no duplicate `npm run build`), with timed runs around ~50s.
+- Monaco editor lazy-loading implemented, deferring the ~3.6MB Monaco chunk until the editor is explicitly opened.
+- `npm audit fix --force` incompatibility documented in `bonsai-workspace/src/package.json` and `README.md` (Svelte 4 and Vite 5 compatibility preserved).
+- Builder output copy hardened: when `BonsaiWorkspace.exe` is locked, builder now writes `BonsaiWorkspace-<timestamp>.exe` fallback and reports both source/final output paths.
 
 ---
 
