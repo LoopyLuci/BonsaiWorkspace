@@ -273,7 +273,7 @@ pub fn run() {
                 let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
                 let _ = tracing_subscriber::registry()
-                    .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+                    .with(tracing_subscriber::fmt::layer().json().with_writer(non_blocking).with_ansi(false))
                     .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
                     .with(filter)
                     .try_init();
