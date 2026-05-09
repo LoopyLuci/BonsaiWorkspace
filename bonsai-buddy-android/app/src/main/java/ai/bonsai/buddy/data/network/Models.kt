@@ -34,3 +34,54 @@ data class ToolDescriptor(
     val name: String,
     val description: String? = null
 )
+
+@Serializable
+data class ToolInvocationRequest(
+    val tool: String,
+    val params: Map<String, String> = emptyMap()
+)
+
+@Serializable
+data class ToolInvocationResponse(
+    val result: String? = null,
+    val output: String? = null,
+    val error: String? = null
+)
+
+@Serializable
+data class ModelDescriptor(
+    val id: String,
+    val name: String = id,
+    val tier: String? = null,
+    val quant: String? = null,
+    val ram: String? = null,
+    val progress: Int? = null,
+    val loaded: Boolean = false
+)
+
+@Serializable
+data class ModelActionRequest(
+    val model: String
+)
+
+@Serializable
+data class InferenceModeRequest(
+    val mode: InferenceMode
+)
+
+@Serializable
+enum class InferenceMode {
+    AUTO,
+    CPU_ONLY,
+    GPU_ONLY,
+    HYBRID
+}
+
+@Serializable
+data class ActivityEventDto(
+    val id: String,
+    val type: String,
+    val message: String,
+    val level: String? = null,
+    val timestamp: Long
+)
