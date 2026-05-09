@@ -47,6 +47,15 @@ class SecureConfigStore @Inject constructor(
         prefs.edit { putString(KEY_TOKEN, token) }
     }
 
+    fun getThemeMode(): ThemeMode {
+        val raw = prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
+        return ThemeMode.entries.firstOrNull { it.name == raw } ?: ThemeMode.SYSTEM
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        prefs.edit { putString(KEY_THEME_MODE, mode.name) }
+    }
+
     companion object {
         private const val PREF_FILE = "bonsai_buddy_secure"
         private const val KEY_HOST = "host"
@@ -54,5 +63,12 @@ class SecureConfigStore @Inject constructor(
         private const val KEY_WORKSPACE_PORT = "workspace_port"
         private const val KEY_USE_HTTPS = "use_https"
         private const val KEY_TOKEN = "desktop_connection_token"
+        private const val KEY_THEME_MODE = "theme_mode"
     }
+}
+
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK
 }
