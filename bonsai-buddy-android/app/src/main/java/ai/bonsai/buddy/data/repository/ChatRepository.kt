@@ -2,38 +2,28 @@ package ai.bonsai.buddy.data.repository
 
 import ai.bonsai.buddy.data.db.ChatDao
 import ai.bonsai.buddy.data.db.ChatMessageEntity
-import ai.bonsai.buddy.data.network.BonsaiApiClient
-import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class ChatRepository @Inject constructor(
-    private val apiClient: BonsaiApiClient,
     private val chatDao: ChatDao
 ) {
-    fun streamMessages(): Flow<List<ChatMessageEntity>> = chatDao.streamMessages()
+    suspend fun getMessagesPage(limit: Int, offset: Int): List<ChatMessageEntity> =
+        chatDao.getMessagesPage(limit = limit, offset = offset)
 
-    suspend fun sendUserMessage(text: String): Result<Unit> = runCatching {
+    suspend fun appendMessage(role: String, content: String): Long {
         val now = System.currentTimeMillis()
-        chatDao.insert(
+        return chatDao.insert(
             ChatMessageEntity(
-                role = "user",
-                content = text,
+                role = role,
+                content = content,
                 timestamp = now
             )
         )
+    }
 
-        val response = apiClient.sendChatMessage(text).getOrElse {
-            "Buddy is unreachable. Check LAN connection and desktop token."
-        }
-
-        chatDao.insert(
-            ChatMessageEntity(
-                role = "assistant",
-                content = response,
-                timestamp = now + 1
-            )
-        )
+    suspend fun updateMessage(id: Long, content: String) {
+        chatDao.updateContent(id = id, content = content, timestamp = System.currentTimeMillis())
     }
 }

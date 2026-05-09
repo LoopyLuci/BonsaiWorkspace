@@ -112,6 +112,7 @@ private fun AppContent(
             uiState = chatState,
             widthSizeClass = widthSizeClass,
             onSend = chatViewModel::sendMessage,
+            onLoadOlder = chatViewModel::loadOlderMessages,
             modifier = modifier
         )
 

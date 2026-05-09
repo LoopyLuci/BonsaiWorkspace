@@ -5,15 +5,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +24,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,15 +34,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ai.bonsai.buddy.data.db.ChatMessageEntity
+import com.halilibo.richtext.markdown.Markdown
+import com.halilibo.richtext.ui.material3.Material3RichText
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+private sealed interface TimelineItem {
+    data class DateDivider(val label: String) : TimelineItem
+    data class Message(val data: ChatMessageEntity) : TimelineItem
+}
 
 @Composable
 fun ChatScreen(
     uiState: ChatUiState,
     widthSizeClass: WindowWidthSizeClass,
     onSend: (String) -> Unit,
+    onLoadOlder: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var input by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val timelineItems = remember(uiState.messages) { buildTimelineItems(uiState.messages) }
 
     val horizontalPadding = when (widthSizeClass) {
         WindowWidthSizeClass.Compact -> 12.dp
@@ -56,15 +73,33 @@ fun ChatScreen(
     ) {
         ConnectionBanner(status = uiState.connectionStatus)
 
+        if (uiState.hasMoreHistory) {
+            AssistChip(onClick = onLoadOlder, label = { Text("Load older messages") })
+        }
+
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            reverseLayout = true
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(uiState.messages.reversed(), key = { it.id }) { message ->
-                MessageBubble(message = message)
+            items(timelineItems, key = {
+                when (it) {
+                    is TimelineItem.DateDivider -> "d-${it.label}"
+                    is TimelineItem.Message -> "m-${it.data.id}"
+                }
+            }) { item ->
+                when (item) {
+                    is TimelineItem.DateDivider -> DateSeparator(item.label)
+                    is TimelineItem.Message -> MessageBubble(message = item.data)
+                }
+            }
+
+            if (uiState.isStreaming) {
+                item(key = "typing") {
+                    TypingIndicator()
+                }
             }
         }
 
@@ -101,6 +136,18 @@ fun ChatScreen(
                     Text("Send")
                 }
             }
+        }
+    }
+
+    LaunchedEffect(uiState.messages.size, uiState.isStreaming) {
+        if (timelineItems.isNotEmpty()) {
+            listState.animateScrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    LaunchedEffect(listState.firstVisibleItemIndex) {
+        if (listState.firstVisibleItemIndex < 2 && uiState.hasMoreHistory) {
+            onLoadOlder()
         }
     }
 }
@@ -161,12 +208,69 @@ private fun MessageBubble(message: ChatMessageEntity) {
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                Material3RichText(modifier = Modifier.padding(top = 4.dp)) {
+                    Markdown(message.content)
+                }
             }
         }
     }
+}
+
+@Composable
+private fun DateSeparator(label: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicator() {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Text(
+            text = "Buddy is typing...",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        )
+    }
+}
+
+private fun buildTimelineItems(messages: List<ChatMessageEntity>): List<TimelineItem> {
+    if (messages.isEmpty()) return emptyList()
+    val zone = ZoneId.systemDefault()
+    val today = LocalDate.now(zone)
+    val yesterday = today.minusDays(1)
+    val formatter = DateTimeFormatter.ofPattern("MMM d, yyyy")
+
+    val result = mutableListOf<TimelineItem>()
+    var lastDay: LocalDate? = null
+
+    messages.forEach { msg ->
+        val day = Instant.ofEpochMilli(msg.timestamp).atZone(zone).toLocalDate()
+        if (day != lastDay) {
+            val label = when (day) {
+                today -> "Today"
+                yesterday -> "Yesterday"
+                else -> day.format(formatter)
+            }
+            result.add(TimelineItem.DateDivider(label))
+            lastDay = day
+        }
+        result.add(TimelineItem.Message(msg))
+    }
+    return result
 }

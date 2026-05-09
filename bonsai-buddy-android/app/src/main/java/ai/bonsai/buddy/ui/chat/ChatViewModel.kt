@@ -3,54 +3,123 @@ package ai.bonsai.buddy.ui.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import ai.bonsai.buddy.data.db.ChatMessageEntity
+import ai.bonsai.buddy.data.network.BonsaiApiClient
 import ai.bonsai.buddy.data.repository.ChatRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val apiClient: BonsaiApiClient
 ) : ViewModel() {
-    private val sending = MutableStateFlow(false)
-    private val status = MutableStateFlow("Connected")
+    private val _uiState = MutableStateFlow(ChatUiState())
+    val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    val uiState: StateFlow<ChatUiState> = combine(
-        chatRepository.streamMessages(),
-        sending,
-        status
-    ) { messages, isSending, connectionStatus ->
-        ChatUiState(
-            messages = messages,
-            isSending = isSending,
-            connectionStatus = connectionStatus
-        )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = ChatUiState()
-    )
+    private val pageSize = 30
+    private var loadedCount = 0
+    private var loadingOlder = false
+    private var streamJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            loadInitialMessages()
+        }
+    }
+
+    fun loadOlderMessages() {
+        if (loadingOlder || !_uiState.value.hasMoreHistory) return
+        viewModelScope.launch {
+            loadingOlder = true
+            val page = chatRepository.getMessagesPage(limit = pageSize, offset = loadedCount)
+            val oldestFirst = page.reversed()
+            val merged = oldestFirst + _uiState.value.messages
+            loadedCount += page.size
+            _uiState.value = _uiState.value.copy(
+                messages = merged.distinctBy { it.id },
+                hasMoreHistory = page.size == pageSize
+            )
+            loadingOlder = false
+        }
+    }
 
     fun sendMessage(text: String) {
-        if (text.isBlank()) return
-        viewModelScope.launch {
-            sending.value = true
-            status.value = "Syncing with desktop..."
-            chatRepository.sendUserMessage(text)
-                .onFailure { status.value = "Disconnected" }
-                .onSuccess { status.value = "Connected" }
-            sending.value = false
+        val prompt = text.trim()
+        if (prompt.isBlank()) return
+
+        streamJob?.cancel()
+        streamJob = viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSending = true,
+                isStreaming = true,
+                connectionStatus = "Streaming from desktop..."
+            )
+
+            chatRepository.appendMessage(role = "user", content = prompt)
+            val assistantId = chatRepository.appendMessage(role = "assistant", content = "")
+
+            var fullResponse = ""
+            val streamResult = runCatching {
+                apiClient.chatStream(prompt).collect { token ->
+                    fullResponse += token
+                    chatRepository.updateMessage(id = assistantId, content = fullResponse)
+                    replaceMessageContent(id = assistantId, content = fullResponse)
+                }
+            }
+
+            if (streamResult.isFailure || fullResponse.isBlank()) {
+                val fallback = apiClient.sendChatMessage(prompt).getOrElse {
+                    "Buddy is unreachable. Check LAN connection and desktop token."
+                }
+                fullResponse = fallback
+                chatRepository.updateMessage(id = assistantId, content = fallback)
+                replaceMessageContent(id = assistantId, content = fallback)
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isSending = false,
+                isStreaming = false,
+                connectionStatus = if (fullResponse.isNotBlank()) "Connected" else "Disconnected"
+            )
+            refreshLatestWindow()
         }
+    }
+
+    private suspend fun loadInitialMessages() {
+        val page = chatRepository.getMessagesPage(limit = pageSize, offset = 0)
+        loadedCount = page.size
+        _uiState.value = _uiState.value.copy(
+            messages = page.reversed(),
+            hasMoreHistory = page.size == pageSize,
+            connectionStatus = "Connected"
+        )
+    }
+
+    private suspend fun refreshLatestWindow() {
+        val page = chatRepository.getMessagesPage(limit = loadedCount.coerceAtLeast(pageSize), offset = 0)
+        _uiState.value = _uiState.value.copy(
+            messages = page.reversed(),
+            hasMoreHistory = page.size >= loadedCount
+        )
+    }
+
+    private fun replaceMessageContent(id: Long, content: String) {
+        val updated = _uiState.value.messages.map { msg ->
+            if (msg.id == id) msg.copy(content = content, timestamp = System.currentTimeMillis()) else msg
+        }
+        _uiState.value = _uiState.value.copy(messages = updated)
     }
 }
 
 data class ChatUiState(
     val messages: List<ChatMessageEntity> = emptyList(),
     val isSending: Boolean = false,
+    val isStreaming: Boolean = false,
+    val hasMoreHistory: Boolean = false,
     val connectionStatus: String = "Disconnected"
 )
