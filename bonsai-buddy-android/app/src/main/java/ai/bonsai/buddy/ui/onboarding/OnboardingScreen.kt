@@ -1,5 +1,15 @@
 package ai.bonsai.buddy.ui.onboarding
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +24,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,6 +37,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,10 +46,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import ai.bonsai.buddy.data.discovery.DiscoveredWorkspace
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 @Composable
 fun OnboardingRoute(
@@ -43,7 +67,7 @@ fun OnboardingRoute(
     modifier: Modifier = Modifier,
     viewModel: OnboardingViewModel = hiltViewModel()
 ) {
-    val state = viewModel.uiState.value
+    val state by viewModel.uiState.collectAsState()
     OnboardingScreen(
         state = state,
         onSelectWorkspace = viewModel::selectWorkspace,
@@ -70,7 +94,14 @@ fun OnboardingScreen(
     modifier: Modifier = Modifier
 ) {
     var manualEndpoint by remember { mutableStateOf("") }
-    var mockQrToken by remember { mutableStateOf("") }
+    var showScanner by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
+    val requestCameraPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        showScanner = granted
+    }
 
     Column(
         modifier = modifier
@@ -123,13 +154,18 @@ fun OnboardingScreen(
                     label = { Text("Desktop token") },
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = mockQrToken,
-                    onValueChange = { mockQrToken = it },
-                    label = { Text("QR payload (temporary until CameraX setup)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(onClick = { onQrToken(mockQrToken) }) {
+                Button(onClick = {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (granted) {
+                        showScanner = true
+                    } else {
+                        requestCameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                }) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null)
                     Text("  Scan QR Code")
                 }
@@ -191,7 +227,110 @@ fun OnboardingScreen(
                     .alpha(0.95f)
             )
         }
+
+        if (showScanner) {
+            QrScannerDialog(
+                onDismiss = { showScanner = false },
+                onTokenScanned = { token ->
+                    onQrToken(token)
+                    showScanner = false
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun QrScannerDialog(
+    onDismiss: () -> Unit,
+    onTokenScanned: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = null)
+                Text(" Close")
+            }
+        },
+        title = { Text("Scan Desktop Token QR") },
+        text = {
+            Box(modifier = Modifier.height(320.dp)) {
+                QrScannerPreview(onTokenScanned = onTokenScanned)
+            }
+        }
+    )
+}
+
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
+@Composable
+private fun QrScannerPreview(onTokenScanned: (String) -> Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scanner = remember {
+        val options = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .build()
+        BarcodeScanning.getClient(options)
+    }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            scanner.close()
+            executor.shutdown()
+        }
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            val previewView = PreviewView(ctx)
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+
+            cameraProviderFuture.addListener({
+                val cameraProvider = cameraProviderFuture.get()
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(previewView.surfaceProvider)
+                }
+
+                val analysis = ImageAnalysis.Builder().build().also { imageAnalysis ->
+                    imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                        val mediaImage = imageProxy.image
+                        if (mediaImage == null) {
+                            imageProxy.close()
+                            return@setAnalyzer
+                        }
+
+                        val inputImage = InputImage.fromMediaImage(
+                            mediaImage,
+                            imageProxy.imageInfo.rotationDegrees
+                        )
+
+                        scanner.process(inputImage)
+                            .addOnSuccessListener { barcodes ->
+                                val token = barcodes.firstOrNull()?.rawValue?.trim()
+                                if (!token.isNullOrBlank()) {
+                                    onTokenScanned(token)
+                                }
+                            }
+                            .addOnCompleteListener {
+                                imageProxy.close()
+                            }
+                    }
+                }
+
+                cameraProvider.unbindAll()
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis
+                )
+            }, ContextCompat.getMainExecutor(ctx))
+
+            previewView
+        }
+    )
 }
 
 @Composable
