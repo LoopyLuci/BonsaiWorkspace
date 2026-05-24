@@ -977,7 +977,7 @@ pub async fn execute_built_in(
             if let Some(parent) = std::path::Path::new(path).parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(path, content).map_err(|e| format!("write_file error: {e}"))?;
+            crate::atomic_write(std::path::Path::new(path), content.as_bytes()).map_err(|e| format!("write_file error: {e}"))?;
             Ok(format!("✅ Written: {path}"))
         }
 
@@ -998,7 +998,7 @@ pub async fn execute_built_in(
             }
 
             let updated = content.replacen(old_string, new_string, 1);
-            std::fs::write(path, updated).map_err(|e| format!("edit_file write error: {e}"))?;
+            crate::atomic_write(std::path::Path::new(path), updated.as_bytes()).map_err(|e| format!("edit_file write error: {e}"))?;
             Ok(format!("✅ Edited: {path}"))
         }
 

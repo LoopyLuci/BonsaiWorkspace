@@ -51,7 +51,7 @@ impl FeatureFlags {
     pub fn set_global(flags: FeatureFlags) {
         *FEATURES.write().unwrap() = flags;
         if let Ok(yaml) = serde_yaml::to_string(&*FEATURES.read().unwrap()) {
-            let _ = std::fs::write("features.yaml", yaml);
+            let _ = crate::atomic_write(std::path::Path::new("features.yaml"), yaml.as_bytes());
         }
     }
 

@@ -70,7 +70,7 @@ pub async fn handle_agent_response(app_handle: &AppHandle, raw_json: String) -> 
             if let Some(parent) = safe_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+            crate::atomic_write(std::path::Path::new(&path), content.as_bytes()).map_err(|e| e.to_string())?;
             let _ = app_handle.emit(
                 "agent-response",
                 serde_json::json!({

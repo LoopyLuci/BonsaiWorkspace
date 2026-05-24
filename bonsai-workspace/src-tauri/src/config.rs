@@ -91,6 +91,6 @@ pub fn load_config(app_handle: &AppHandle) -> Result<AppConfig, String> {
 pub fn save_config(app_handle: &AppHandle, config: &AppConfig) -> Result<AppConfig, String> {
     let path = config_path(app_handle)?;
     let content = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    fs::write(&path, content).map_err(|e| e.to_string())?;
+    crate::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     Ok(config.clone())
 }

@@ -5380,8 +5380,8 @@ fn read_bot_cfg(path: &std::path::Path) -> Value {
 }
 
 fn write_bot_cfg(path: &std::path::Path, cfg: &Value) -> Result<(), String> {
-    fs::write(path, serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    crate::atomic_write(path, s.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Fetch live status from the bot admin API.

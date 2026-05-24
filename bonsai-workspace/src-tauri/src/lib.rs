@@ -47,12 +47,29 @@ pub mod rag_store;
 mod remote;
 mod remote_input;
 mod sidecar_manager;
+mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
 mod tools;
 mod user_skills;
 mod wal;
 mod ws_router;
+
+/// Write `content` to `path` atomically: write to a `.tmp` sibling then rename.
+/// Ensures the file is either fully written or unchanged on crash.
+pub fn atomic_write(path: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(content)?;
+        f.flush()?;
+    }
+    std::fs::rename(&tmp, path)
+}
 
 use std::collections::HashMap;
 use std::sync::{
