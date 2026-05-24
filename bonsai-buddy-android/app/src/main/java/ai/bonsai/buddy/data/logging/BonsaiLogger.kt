@@ -21,7 +21,7 @@ class BonsaiLogger @Inject constructor(
     private val logsDir: File by lazy {
         File(context.filesDir, "logs").apply { mkdirs() }
     }
-    private val logFile: File by lazy { File(logsDir, "bonsai-mobile.log") }
+    private val _logFile: File by lazy { File(logsDir, "bonsai-mobile.log") }
 
     fun d(tag: String, message: String) = write("D", tag, message)
     fun i(tag: String, message: String) = write("I", tag, message)
@@ -29,7 +29,7 @@ class BonsaiLogger @Inject constructor(
     fun e(tag: String, message: String, tr: Throwable? = null) =
         write("E", tag, "$message${tr?.let { " | ${it.message}" } ?: ""}")
 
-    fun getLogFile(): File = logFile
+    fun getLogFile(): File = _logFile
 
     fun shareLogAuthority(): String = "${context.packageName}.fileprovider"
 
@@ -42,7 +42,7 @@ class BonsaiLogger @Inject constructor(
             else -> Log.e(tag, message)
         }
         runCatching {
-            logFile.appendText(line + "\n")
+            _logFile.appendText(line + "\n")
         }
     }
 }

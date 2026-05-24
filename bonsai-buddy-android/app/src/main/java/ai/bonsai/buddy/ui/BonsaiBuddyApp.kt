@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
@@ -58,7 +57,7 @@ fun BonsaiBuddyApp(
     NavigationSuiteScaffold(
         navigationSuiteItems = {
             AppTab.entries.forEach { tab ->
-                NavigationSuiteItem(
+                item(
                     selected = selectedTab == tab,
                     onClick = { selectedTab = tab },
                     icon = {
@@ -71,20 +70,18 @@ fun BonsaiBuddyApp(
                 )
             }
         }
-    ) { padding ->
+    ) {
         if (compact) {
             CompactContent(
                 selectedTab = selectedTab,
-                widthSizeClass = width,
-                modifier = Modifier.padding(padding)
+                widthSizeClass = width
             )
         } else {
             ExpandedContent(
                 selectedTab = selectedTab,
                 widthSizeClass = width,
                 configStore = configStore,
-                logger = logger,
-                modifier = Modifier.padding(padding)
+                logger = logger
             )
         }
     }
