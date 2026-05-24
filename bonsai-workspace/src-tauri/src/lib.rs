@@ -51,6 +51,7 @@ mod management_api;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
+pub mod bonsai_core;
 mod tools;
 mod user_skills;
 mod wal;
