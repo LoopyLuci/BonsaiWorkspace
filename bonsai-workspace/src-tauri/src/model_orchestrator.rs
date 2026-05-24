@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use crate::bootstrap;
 use crate::inference_mode::InferenceMode;
 use crate::model_registry::{ModelInfo, ModelRegistry};
+use crate::sidecar_supervisor::{SidecarConfig, SidecarStatus, SidecarSupervisor};
 
 const MODEL_LOAD_POLL_INTERVAL_MS: u64 = 500;
 #[cfg(target_os = "android")]
@@ -79,6 +80,7 @@ struct Slot {
     base_url:       String,
     state:          SlotState,
     process:        Option<std::process::Child>,
+    supervisor:     Option<SidecarSupervisor>,
     last_used:      Instant,
     total_requests: u64,
     load_started:   Option<Instant>,
@@ -108,6 +110,7 @@ impl Slot {
             base_url: format!("http://127.0.0.1:{}", port),
             state: SlotState::Empty,
             process: None,
+            supervisor: None,
             last_used: Instant::now(),
             total_requests: 0,
             load_started: None,
@@ -121,9 +124,12 @@ impl Slot {
     }
 
     fn kill(&mut self) {
-        if let Some(mut child) = self.process.take() {
+        if let Some(sup) = self.supervisor.take() {
+            sup.kill();
+        } else if let Some(mut child) = self.process.take() {
             let _ = child.kill();
         }
+        self.process = None;
         self.state = SlotState::Empty;
         self.current_model = None;
         self.load_attempt = 0;
@@ -703,7 +709,15 @@ fn spawn_model_with_layers(
 
     match cmd.spawn() {
         Ok(child) => {
-            slot.process = Some(child);
+            let cfg = SidecarConfig {
+                base_url:      slot.base_url.clone(),
+                health_path:   "/health".into(),
+                load_timeout:  Duration::from_secs(MODEL_LOAD_TIMEOUT_SECS + MODEL_LOAD_TIMEOUT_GRACE_SECS),
+                poll_interval: Duration::from_millis(MODEL_LOAD_POLL_INTERVAL_MS),
+                log_path:      Some(stderr_log.clone()),
+            };
+            slot.supervisor = Some(SidecarSupervisor::start(child, cfg));
+            slot.process = None;
         }
         Err(e) => {
             slot.state = SlotState::Crashed {
@@ -762,57 +776,62 @@ async fn maybe_start_load(
 async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHandle) {
     for slot in slots.iter_mut() {
         if let SlotState::Loading { model_id, .. } = &slot.state.clone() {
-            // Check if the process has exited unexpectedly
-            if let Some(ref mut child) = slot.process {
-                if let Ok(Some(status)) = child.try_wait() {
-                    let log_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    let log_path = log_dir.join(format!("llama-slot-{}.log", slot.index));
-                    let detail = std::fs::read_to_string(&log_path)
-                        .ok()
-                        .and_then(|s| s.lines().filter(|l| !l.trim().is_empty()).last().map(|l| l.to_owned()))
-                        .unwrap_or_default();
-                    let code = status.code();
+            // Check if the process has exited unexpectedly via supervisor or raw child
+            let exited = if let Some(sup) = &slot.supervisor {
+                sup.try_wait()
+            } else if let Some(ref mut child) = slot.process {
+                child.try_wait().ok().flatten()
+            } else {
+                None
+            };
+            if let Some(status) = exited {
+                let log_dir = app.path().app_log_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let log_path = log_dir.join(format!("llama-slot-{}.log", slot.index));
+                let detail = std::fs::read_to_string(&log_path)
+                    .ok()
+                    .and_then(|s| s.lines().filter(|l| !l.trim().is_empty()).last().map(|l| l.to_owned()))
+                    .unwrap_or_default();
+                let code = status.code();
 
-                    if should_retry_cpu_fallback(slot, code, &detail) {
-                        let exit_code = code.unwrap_or_default();
-                        let note = format!(
-                            "GPU unstable (exit code {exit_code:#010X}) — switching to CPU mode"
-                        );
-                        tracing::warn!(
-                            slot=%slot.index,
-                            exit_code=%format!("{exit_code:#010X}"),
-                            "[orchestrator] GPU crash detected, retrying with CPU-only"
-                        );
-                        let _ = app.emit("model-load-fallback", json!({
-                            "slot": slot.index,
-                            "model_id": model_id,
-                            "message": note,
-                            "exit_code": format!("{exit_code:#010X}"),
-                        }));
+                if should_retry_cpu_fallback(slot, code, &detail) {
+                    let exit_code = code.unwrap_or_default();
+                    let note = format!(
+                        "GPU unstable (exit code {exit_code:#010X}) — switching to CPU mode"
+                    );
+                    tracing::warn!(
+                        slot=%slot.index,
+                        exit_code=%format!("{exit_code:#010X}"),
+                        "[orchestrator] GPU crash detected, retrying with CPU-only"
+                    );
+                    let _ = app.emit("model-load-fallback", json!({
+                        "slot": slot.index,
+                        "model_id": model_id,
+                        "message": note,
+                        "exit_code": format!("{exit_code:#010X}"),
+                    }));
 
-                        if let Some(info) = slot.current_model.clone() {
-                            let next_attempt = (slot.load_attempt + 1).min(MAX_MODEL_LOAD_ATTEMPTS);
-                            spawn_model_with_layers(
-                                slot,
-                                &info,
-                                app,
-                                0,
-                                next_attempt,
-                                slot.inference_mode.clone(),
-                                Some(note),
-                            );
-                            continue;
-                        }
+                    if let Some(info) = slot.current_model.clone() {
+                        let next_attempt = (slot.load_attempt + 1).min(MAX_MODEL_LOAD_ATTEMPTS);
+                        spawn_model_with_layers(
+                            slot,
+                            &info,
+                            app,
+                            0,
+                            next_attempt,
+                            slot.inference_mode.clone(),
+                            Some(note),
+                        );
+                        continue;
                     }
-
-                    let error = classify_model_load_error(code, &detail, status.to_string());
-                    slot.state = SlotState::Crashed {
-                        model_id: model_id.clone(),
-                        error,
-                    };
-                    slot.load_started = None;
-                    continue;
                 }
+
+                let error = classify_model_load_error(code, &detail, status.to_string());
+                slot.state = SlotState::Crashed {
+                    model_id: model_id.clone(),
+                    error,
+                };
+                slot.load_started = None;
+                continue;
             }
 
             // Parse load progress from log: "llama_model_load: loaded N of M tensors (P%)"
@@ -843,8 +862,12 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                 }
             }
 
-            // Probe readiness endpoints (/health and /v1/models fallback).
-            let ok = probe_model_ready(client, &slot.base_url).await;
+            // Check readiness via supervisor watch channel; fall back to direct HTTP probe.
+            let ok = if let Some(sup) = &slot.supervisor {
+                matches!(sup.status(), SidecarStatus::Ready)
+            } else {
+                probe_model_ready(client, &slot.base_url).await
+            };
             if ok {
                 slot.state = SlotState::Ready { model_id: model_id.clone() };
                 slot.load_started = None;
