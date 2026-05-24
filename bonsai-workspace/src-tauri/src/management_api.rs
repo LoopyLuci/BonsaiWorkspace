@@ -198,27 +198,49 @@ async fn mgmt_swarm_submit(
         rand::thread_rng().sample_iter(&Alphanumeric).take(12).map(char::from).collect()
     };
 
-    let enabled_workers: Vec<_> = resolved.iter()
+    // Use configured DB agents if present; fall back to built-in analyst+critic roles
+    // so the REST swarm always runs real workers even with no agents configured in the UI.
+    let db_workers: Vec<_> = resolved.iter()
         .filter(|a| a.config.slot_index != 0 && a.config.enabled)
         .cloned()
         .collect();
 
-    // For each worker call the model directly
+    #[derive(Clone)]
+    struct WorkerSpec { slot: i64, label: String, system: String }
+
+    let worker_specs: Vec<WorkerSpec> = if db_workers.is_empty() {
+        vec![
+            WorkerSpec {
+                slot: 1,
+                label: "Analyst".into(),
+                system: "You are an analytical expert. Carefully examine the request, identify key issues, strengths, and weaknesses, and provide a detailed technical analysis.".into(),
+            },
+            WorkerSpec {
+                slot: 2,
+                label: "Critic".into(),
+                system: "You are a constructive critic. Look for edge cases, potential problems, missing considerations, and suggest concrete improvements with examples.".into(),
+            },
+        ]
+    } else {
+        db_workers.iter().map(|a| WorkerSpec {
+            slot:   a.config.slot_index,
+            label:  a.config.label.clone(),
+            system: a.system_prompt.clone(),
+        }).collect()
+    };
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .unwrap_or_default();
 
-    let system = "You are an expert assistant. Analyse the request carefully and provide a thorough, high-quality response.";
-
     let mut worker_outputs: Vec<Value> = Vec::new();
 
-    // Run workers (sequentially for simplicity; parallel would need join_all)
-    for worker in &enabled_workers {
+    for spec in &worker_specs {
         let worker_url = format!("{}/v1/chat/completions", model_url.trim_end_matches('/'));
         let req_body = json!({
             "messages": [
-                {"role": "system", "content": system},
+                {"role": "system", "content": &spec.system},
                 {"role": "user",   "content": &user_prompt}
             ],
             "temperature": 0.4,
@@ -237,8 +259,8 @@ async fn mgmt_swarm_submit(
             Err(e) => format!("(worker error: {e})"),
         };
         worker_outputs.push(json!({
-            "slot":    worker.config.slot_index,
-            "agent":   worker.config.label,
+            "slot":    spec.slot,
+            "agent":   spec.label,
             "content": content,
         }));
     }
@@ -293,7 +315,7 @@ async fn mgmt_swarm_submit(
         "run_id":         run_id,
         "final_content":  final_content,
         "worker_outputs": worker_outputs,
-        "worker_count":   enabled_workers.len(),
+        "worker_count":   worker_specs.len(),
     })).into_response()
 }
 
