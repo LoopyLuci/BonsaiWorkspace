@@ -326,8 +326,13 @@
 
   let showAdvanced = false;
 
+  function getFlagValue(key: string): boolean {
+    return !!($featureFlags as unknown as Record<string, boolean>)[key];
+  }
+
   async function toggleFlag(key: string, value: boolean) {
-    $featureFlags[key as keyof typeof $featureFlags] = value;
+    const flags = $featureFlags as unknown as Record<string, boolean>;
+    flags[key] = value;
     featureFlags.set($featureFlags);
     await invoke('set_feature_flags', { flags: $featureFlags });
   }
@@ -1542,7 +1547,7 @@
               <span class="flag-key">{key.replace(/_/g, ' ')}</span>
               <input
                 type="checkbox"
-                checked={$featureFlags[key as keyof typeof $featureFlags]}
+                checked={getFlagValue(key)}
                 on:change={(e) => toggleFlag(key, (e.currentTarget as HTMLInputElement).checked)}
               />
             </label>

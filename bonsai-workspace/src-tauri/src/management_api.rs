@@ -439,10 +439,20 @@ async fn mgmt_get_features(
 async fn mgmt_set_features(
     State(s): State<MgmtState>,
     headers: HeaderMap,
-    Json(flags): Json<crate::features::FeatureFlags>,
+    Json(patch): Json<Value>,
 ) -> impl IntoResponse {
     auth!(s, headers);
-    crate::features::FeatureFlags::set_global(flags);
+    let mut current = match serde_json::to_value(crate::features::FeatureFlags::global()) {
+        Ok(v) => v,
+        Err(e) => return err500(e).into_response(),
+    };
+    if let (Some(obj), Some(patch_obj)) = (current.as_object_mut(), patch.as_object()) {
+        for (k, v) in patch_obj { obj.insert(k.clone(), v.clone()); }
+    }
+    match serde_json::from_value::<crate::features::FeatureFlags>(current) {
+        Ok(flags) => { crate::features::FeatureFlags::set_global(flags); }
+        Err(e) => return err400(e).into_response(),
+    }
     Json(json!({ "ok": true })).into_response()
 }
 

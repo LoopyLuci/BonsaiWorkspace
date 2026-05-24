@@ -378,6 +378,7 @@ pub fn run() {
                 .map(char::from)
                 .collect();
 
+            tracing::info!("[api] pair_token={pair_token}");
             let ws_router = Arc::new(ws_router::WsRouter::new());
 
             let policy_engine = Arc::new(assistant_policy::PolicyEngine::new());
