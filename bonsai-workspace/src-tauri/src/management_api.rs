@@ -103,6 +103,7 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/agents/message", post(mgmt_agent_message))
         .route("/api/v1/features",       get(mgmt_get_features).post(mgmt_set_features))
         .route("/api/v1/tools/run",      post(mgmt_run_tool))
+        .route("/api/v1/core/stats",     get(mgmt_core_stats))
         .with_state(state)
 }
 
@@ -515,4 +516,23 @@ async fn mgmt_run_tool(
         Ok(result) => Json(json!({ "ok": true, "result": result })).into_response(),
         Err(e)     => err400(e).into_response(),
     }
+}
+
+// ── Core stats ────────────────────────────────────────────────────────────────
+
+async fn mgmt_core_stats(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let queue = s.task_queue.status().await;
+    Json(json!({
+        "adapter_loaded": false,
+        "avg_latency_ms": 0.0,
+        "fallback_rate": 0.0,
+        "memory_entries": 0,
+        "queue_depth": queue.pending_total,
+        "active_tasks": queue.active_total,
+    }))
+    .into_response()
 }
