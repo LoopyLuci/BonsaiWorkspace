@@ -2021,6 +2021,9 @@ pub async fn get_task_queue_status(state: State<'_, AppState>) -> Result<TaskQue
 
 #[tauri::command]
 pub async fn cluster_list_nodes(state: State<'_, AppState>) -> Result<Vec<ClusterNode>, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let cluster = state.cluster_orchestrator.lock().await;
     Ok(cluster.list_nodes())
 }
@@ -2030,6 +2033,9 @@ pub async fn cluster_upsert_node(
     node: ClusterNode,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let mut cluster = state.cluster_orchestrator.lock().await;
     cluster.upsert_node(node.clone());
     Ok(serde_json::json!({
@@ -2043,6 +2049,9 @@ pub async fn cluster_remove_node(
     node_id: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let mut cluster = state.cluster_orchestrator.lock().await;
     let removed = cluster.remove_node(node_id.trim());
     Ok(serde_json::json!({
@@ -2057,6 +2066,9 @@ pub async fn cluster_update_node_metrics(
     metrics: NodeRuntimeMetrics,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -2076,6 +2088,9 @@ pub async fn cluster_set_policy(
     policy: ClusterPolicy,
     state: State<'_, AppState>,
 ) -> Result<ClusterPolicy, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let mut cluster = state.cluster_orchestrator.lock().await;
     cluster.set_policy(policy);
     Ok(cluster.policy().clone())
@@ -2083,6 +2098,9 @@ pub async fn cluster_set_policy(
 
 #[tauri::command]
 pub async fn cluster_get_policy(state: State<'_, AppState>) -> Result<ClusterPolicy, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let cluster = state.cluster_orchestrator.lock().await;
     Ok(cluster.policy().clone())
 }
@@ -2092,6 +2110,9 @@ pub async fn cluster_plan_workload(
     workload: ClusterWorkload,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("cluster_orchestrator") {
+        return Err("Cluster orchestrator feature is disabled".into());
+    }
     let cluster = state.cluster_orchestrator.lock().await;
     let plan = cluster.plan_workload(&workload);
     Ok(serde_json::to_value(plan).map_err(|e| e.to_string())?)
@@ -4976,6 +4997,9 @@ pub async fn delete_agent_config(state: State<'_, AppState>, id: String) -> Resu
 
 #[tauri::command]
 pub async fn estimate_swarm_resources(state: State<'_, AppState>) -> Result<SwarmResourceEstimate, String> {
+    if !crate::features::FeatureFlags::is_enabled("swarm") {
+        return Err("Swarm feature is disabled".into());
+    }
     let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| e.to_string())?;
     let enabled: Vec<&ResolvedAgent> = resolved.iter().filter(|a| a.config.enabled).collect();
 
@@ -5038,6 +5062,9 @@ pub async fn submit_swarm_chat(
     enabled_tools:  Option<Vec<String>>,
     swarm_settings: Option<SwarmRuntimeSettings>,
 ) -> Result<SwarmChatResponse, BonsaiError> {
+    if !crate::features::FeatureFlags::is_enabled("swarm") {
+        return Err(BonsaiError::Config("Swarm feature is disabled".into()));
+    }
     let resolved = state.agent_store.resolve_agents(&state.orchestrator).await.map_err(|e| BonsaiError::Orchestrator(e.to_string()))?;
     let leader = resolved
         .iter()
@@ -5144,6 +5171,9 @@ pub async fn submit_swarm_chat(
 
 #[tauri::command]
 pub async fn cancel_swarm(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    if !crate::features::FeatureFlags::is_enabled("swarm") {
+        return Err("Swarm feature is disabled".into());
+    }
     let cancels = state.swarm_cancels.lock().map_err(|_| "lock poisoned")?;
     if let Some(flags) = cancels.get(&run_id) {
         for f in flags { f.store(true, Ordering::Relaxed); }
@@ -5152,8 +5182,11 @@ pub async fn cancel_swarm(state: State<'_, AppState>, run_id: String) -> Result<
 }
 
 #[tauri::command]
-pub async fn get_swarm_metrics() -> Vec<crate::swarm_orchestrator::SwarmRunRecord> {
-    crate::swarm_orchestrator::recent_swarm_runs()
+pub async fn get_swarm_metrics() -> Result<Vec<crate::swarm_orchestrator::SwarmRunRecord>, String> {
+    if !crate::features::FeatureFlags::is_enabled("swarm") {
+        return Err("Swarm feature is disabled".into());
+    }
+    Ok(crate::swarm_orchestrator::recent_swarm_runs())
 }
 
 #[tauri::command]
@@ -5355,6 +5388,9 @@ fn write_bot_cfg(path: &std::path::Path, cfg: &Value) -> Result<(), String> {
 /// Returns the raw JSON status object, or an error string if the bot is not running.
 #[tauri::command]
 pub async fn get_bot_server_status(_state: State<'_, AppState>) -> Result<Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     let token = bot_admin_token();
     let (v, _p) = fetch_from_bot_path("status", &token).await?;
     Ok(v)
@@ -5363,6 +5399,9 @@ pub async fn get_bot_server_status(_state: State<'_, AppState>) -> Result<Value,
 /// Fetch live metrics counters from the bot admin API.
 #[tauri::command]
 pub async fn get_bot_metrics(_state: State<'_, AppState>) -> Result<Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     let token = bot_admin_token();
     let (v, _p) = fetch_from_bot_path("metrics", &token).await?;
     Ok(v)
@@ -5379,6 +5418,9 @@ pub async fn save_discord_bot_config(
     allowed_channel_ids: Vec<String>,
     allowed_user_ids:    Vec<String>,
 ) -> Result<(), String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     if !token.is_empty() {
         state.secrets_store.store("discord_token", &token)
             .map_err(|e| e.to_string())?;
@@ -5402,6 +5444,9 @@ pub async fn save_telegram_bot_config(
     token: String,
     allowed_chat_ids: Vec<i64>,
 ) -> Result<(), String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     if !token.is_empty() {
         state.secrets_store.store("telegram_token", &token)
             .map_err(|e| e.to_string())?;
@@ -5426,6 +5471,9 @@ pub async fn save_matrix_bot_config(
     allowed_rooms:  Vec<String>,
     allowed_users:  Vec<String>,
 ) -> Result<(), String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     if !password.is_empty() {
         state.secrets_store.store("matrix_password", &password)
             .map_err(|e| e.to_string())?;
@@ -5458,6 +5506,9 @@ pub async fn save_email_bot_config(
     subject_prefix:     String,
     allowed_from_addrs: Vec<String>,
 ) -> Result<(), String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     if !imap_password.is_empty() {
         state.secrets_store.store("email_imap_password", &imap_password)
             .map_err(|e| e.to_string())?;
@@ -5488,6 +5539,9 @@ pub async fn test_bot_platform(
     state: State<'_, AppState>,
     platform: String,
 ) -> Result<Value, String> {
+    if !crate::features::FeatureFlags::is_enabled("bot") {
+        return Err("Bot feature is disabled".into());
+    }
     let status = get_bot_server_status(state).await?;
     Ok(status.get("platforms")
         .and_then(|p| p.get(&platform))
