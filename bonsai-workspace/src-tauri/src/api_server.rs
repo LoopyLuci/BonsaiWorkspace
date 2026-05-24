@@ -103,6 +103,7 @@ pub async fn start(
     host: String,
     port: u16,
     app_handle: AppHandle,
+    mgmt_state: crate::management_api::MgmtState,
 ) -> Result<ApiServerHandle, String> {
     let state = ApiState {
         orchestrator,
@@ -125,7 +126,7 @@ pub async fn start(
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(Any);
 
-    let app = Router::new()
+    let legacy_router = Router::new()
         // OpenAI-compatible
         .route("/v1/models",            get(list_models))
         .route("/v1/chat/completions",  post(chat_completions))
@@ -151,8 +152,11 @@ pub async fn start(
         .route("/api/version",          get(ollama_version))
         // WebSocket — bidirectional relay for Android app + VSCode extension
         .route("/ws",                   get(ws_handler))
-        .layer(cors)
         .with_state(state);
+
+    let app = crate::management_api::router(mgmt_state)
+        .merge(legacy_router)
+        .layer(cors);
 
     let addr = format!("{host}:{port}");
 
@@ -218,6 +222,7 @@ pub async fn start_with_fallback(
     preferred_port: u16,
     max_extra_attempts: u16,
     app_handle: AppHandle,
+    mgmt_state: crate::management_api::MgmtState,
 ) -> Result<ApiServerHandle, String> {
     let mut ports = Vec::with_capacity(max_extra_attempts as usize + 1);
     ports.push(preferred_port);
@@ -239,6 +244,7 @@ pub async fn start_with_fallback(
             host.clone(),
             p,
             app_handle.clone(),
+            mgmt_state.clone(),
         )
         .await
         {

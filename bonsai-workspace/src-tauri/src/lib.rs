@@ -47,6 +47,7 @@ pub mod rag_store;
 mod remote;
 mod remote_input;
 mod sidecar_manager;
+mod management_api;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
@@ -441,42 +442,6 @@ pub fn run() {
                 }
             }
 
-            let api_runtime = {
-                let orch   = orchestrator.clone();
-                let remote = remote_manager.clone();
-                let ws     = ws_router.clone();
-                let token  = pair_token.clone();
-                let host   = api_config.api_host.clone();
-                let port   = api_config.api_port;
-                // Try the preferred port and a small range of fallback ports if binding fails.
-                // This avoids hard failures when the preferred port is briefly unavailable
-                // (e.g., stale listeners or other local tools). We attempt +1..+4 as fallbacks.
-                match tauri::async_runtime::block_on(api_server::start_with_fallback(
-                    orch,
-                    remote,
-                    ws,
-                    token,
-                    host,
-                    port,
-                    4u16,
-                    app_handle.clone(),
-                )) {
-                    Ok(handle) => Some(handle),
-                    Err(e) => {
-                        tracing::error!("[api] failed to start API server: {e}");
-                        None
-                    }
-                }
-            };
-
-            if let Some(ref handle) = api_runtime {
-                if handle.host != api_config.api_host || handle.port != api_config.api_port {
-                    api_config.api_host = handle.host.clone();
-                    api_config.api_port = handle.port;
-                    let _ = config::save_config(&app_handle, &api_config);
-                }
-            }
-
             // ── Buddy API server (port 11420) ─────────────────────────────────
             let buddy_preferred = api_config.buddy_api_port;
             let (buddy_handle, buddy_port) = {
@@ -513,6 +478,51 @@ pub fn run() {
                 });
             }
 
+            let swarm_cancels = Arc::new(StdMutex::new(HashMap::new()));
+
+            let api_runtime = {
+                let orch   = orchestrator.clone();
+                let remote = remote_manager.clone();
+                let ws     = ws_router.clone();
+                let token  = pair_token.clone();
+                let host   = api_config.api_host.clone();
+                let port   = api_config.api_port;
+                let mgmt = management_api::MgmtState {
+                    orchestrator:  orchestrator.clone(),
+                    agent_host:    agent_host.clone(),
+                    agent_store:   agent_store.clone(),
+                    task_queue:    task_queue.clone(),
+                    swarm_cancels: swarm_cancels.clone(),
+                    app_handle:    app_handle.clone(),
+                    pair_token:    token.clone(),
+                };
+                match tauri::async_runtime::block_on(api_server::start_with_fallback(
+                    orch,
+                    remote,
+                    ws,
+                    token,
+                    host,
+                    port,
+                    4u16,
+                    app_handle.clone(),
+                    mgmt,
+                )) {
+                    Ok(handle) => Some(handle),
+                    Err(e) => {
+                        tracing::error!("[api] failed to start API server: {e}");
+                        None
+                    }
+                }
+            };
+
+            if let Some(ref handle) = api_runtime {
+                if handle.host != api_config.api_host || handle.port != api_config.api_port {
+                    api_config.api_host = handle.host.clone();
+                    api_config.api_port = handle.port;
+                    let _ = config::save_config(&app_handle, &api_config);
+                }
+            }
+
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),
                 whisper:          whisper.clone(),
@@ -527,7 +537,7 @@ pub fn run() {
                 pair_token:         pair_token.clone(),
                 agent_store,
                 swarm_orchestrator: swarm_orch,
-                swarm_cancels:      Arc::new(StdMutex::new(HashMap::new())),
+                swarm_cancels,
                 api_server:         Arc::new(Mutex::new(api_runtime)),
                 cluster_orchestrator,
                 policy_engine,

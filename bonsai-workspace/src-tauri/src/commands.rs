@@ -2240,6 +2240,16 @@ pub async fn set_api_config(
         running.stop().await;
     }
 
+    let mgmt = crate::management_api::MgmtState {
+        orchestrator:  state.orchestrator.clone(),
+        agent_host:    state.agent_host.clone(),
+        agent_store:   state.agent_store.clone(),
+        task_queue:    state.task_queue.clone(),
+        swarm_cancels: state.swarm_cancels.clone(),
+        app_handle:    app_handle.clone(),
+        pair_token:    state.pair_token.clone(),
+    };
+
     let started = api_server::start(
         state.orchestrator.clone(),
         remote_manager,
@@ -2248,6 +2258,7 @@ pub async fn set_api_config(
         api_host.clone(),
         api_port,
         app_handle.clone(),
+        mgmt.clone(),
     )
     .await;
 
@@ -2264,6 +2275,7 @@ pub async fn set_api_config(
                 old_config.api_host.clone(),
                 old_config.api_port,
                 app_handle.clone(),
+                mgmt,
             )
             .await
             {
