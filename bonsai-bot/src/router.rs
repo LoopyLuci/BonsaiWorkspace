@@ -11,6 +11,7 @@ use crate::buddy_client::BuddyClient;
 use crate::config::BotConfig;
 use crate::dedup::DedupCache;
 use crate::metrics::SharedMetrics;
+use crate::mgmt_client::MgmtClient;
 use crate::platforms::{InboundMessage, MessagingPlatform};
 use crate::sanitizer::sanitize;
 use crate::session;
@@ -26,6 +27,7 @@ type LimiterEntry = (UserLimiter, Arc<AtomicU64>);
 #[allow(dead_code)]
 pub struct Router {
     pub buddy:   Arc<BuddyClient>,
+    pub mgmt:    Arc<MgmtClient>,
     pub dedup:   Arc<DedupCache>,
     pub db:      Db,
     pub metrics: SharedMetrics,
@@ -37,12 +39,13 @@ pub struct Router {
 impl Router {
     pub fn new(
         buddy: Arc<BuddyClient>,
+        mgmt: Arc<MgmtClient>,
         dedup: Arc<DedupCache>,
         db: Db,
         metrics: SharedMetrics,
         config: BotConfig,
     ) -> Self {
-        Self { buddy, dedup, db, metrics, config, rate_limiters: DashMap::new() }
+        Self { buddy, mgmt, dedup, db, metrics, config, rate_limiters: DashMap::new() }
     }
 
     /// Remove rate limiter entries not accessed in the last `stale_secs` seconds.
@@ -110,6 +113,14 @@ impl Router {
                 return;
             }
         };
+
+        // Stage 4b: Slash command dispatch
+        if clean_text.starts_with('/') {
+            let reply = self.handle_slash(&clean_text, &msg).await;
+            let _ = platform.send_reply(&msg.platform_id, &msg.user_id, &reply, msg.reply_to.as_deref()).await;
+            self.metrics.messages_processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
 
         // Stage 5: Session resolution
         let buddy_session = match session::find_active_session(
@@ -329,6 +340,117 @@ impl Router {
             } else {
                 "❌ Denied. No action taken.".to_string()
             }),
+        }
+    }
+
+    // ── Slash commands ─────────────────────────────────────────────────────────
+
+    async fn handle_slash(&self, text: &str, _msg: &InboundMessage) -> String {
+        let parts: Vec<&str> = text.splitn(3, ' ').collect();
+        let cmd  = parts[0].to_lowercase();
+        let arg1 = parts.get(1).copied().unwrap_or("").trim();
+        let rest = parts.get(2).copied().unwrap_or("").trim();
+
+        match cmd.as_str() {
+            "/swarm" => {
+                let prompt = if arg1.is_empty() {
+                    return "Usage: /swarm <your prompt>".to_string();
+                } else if rest.is_empty() {
+                    arg1.to_string()
+                } else {
+                    format!("{arg1} {rest}")
+                };
+                match self.mgmt.swarm_submit(&prompt).await {
+                    Ok(v) => v["final_content"].as_str().unwrap_or("(no response)").to_string(),
+                    Err(e) => format!("⚠️ Swarm error: {e}"),
+                }
+            }
+
+            "/agents" => match self.mgmt.list_agents().await {
+                Err(e) => format!("⚠️ Could not reach workspace: {e}"),
+                Ok(v) => {
+                    let agents = v["agents"].as_array().cloned().unwrap_or_default();
+                    if agents.is_empty() {
+                        return "No agents registered.".to_string();
+                    }
+                    let lines: Vec<String> = agents.iter().map(|a| {
+                        let id   = a["id"].as_str().unwrap_or("?");
+                        let name = a["name"].as_str().unwrap_or(id);
+                        let desc = a["description"].as_str().unwrap_or("");
+                        format!("• {name} ({id}) — {desc}")
+                    }).collect();
+                    format!("Registered agents:\n{}", lines.join("\n"))
+                }
+            }
+
+            "/agent" => {
+                if arg1.is_empty() || rest.is_empty() {
+                    return "Usage: /agent <agent-id> <message>".to_string();
+                }
+                match self.mgmt.agent_message(arg1, rest).await {
+                    Ok(v) => v["content"].as_str().unwrap_or("(no content)").to_string(),
+                    Err(e) => format!("⚠️ Agent error: {e}"),
+                }
+            }
+
+            "/features" => match self.mgmt.get_features().await {
+                Err(e) => format!("⚠️ Could not reach workspace: {e}"),
+                Ok(v) => {
+                    let obj = v.as_object().cloned().unwrap_or_default();
+                    if obj.is_empty() {
+                        return "No feature flags found.".to_string();
+                    }
+                    let mut flags: Vec<String> = obj.iter().map(|(k, v)| {
+                        let on = v.as_bool().unwrap_or(false);
+                        format!("{} {}", if on { "✅" } else { "❌" }, k.replace('_', " "))
+                    }).collect();
+                    flags.sort();
+                    format!("Feature flags:\n{}", flags.join("\n"))
+                }
+            }
+
+            "/model" | "/models" => match self.mgmt.list_models().await {
+                Err(e) => format!("⚠️ Could not reach workspace: {e}"),
+                Ok(v) => {
+                    let models = v["models"].as_array().cloned().unwrap_or_default();
+                    if models.is_empty() {
+                        return "No models found.".to_string();
+                    }
+                    let lines: Vec<String> = models.iter()
+                        .filter(|m| m["valid"].as_bool().unwrap_or(false))
+                        .map(|m| {
+                            let name = m["name"].as_str().unwrap_or("?");
+                            let ram  = m["ram_required_mb"].as_u64().unwrap_or(0);
+                            format!("• {name} (~{ram} MB)")
+                        })
+                        .collect();
+                    format!("Available models ({}):\n{}", lines.len(), lines.join("\n"))
+                }
+            }
+
+            "/queue" => match self.mgmt.queue_status().await {
+                Err(e) => format!("⚠️ Could not reach workspace: {e}"),
+                Ok(v) => {
+                    let active  = v["active_total"].as_u64().unwrap_or(0);
+                    let pending = v["pending_total"].as_u64().unwrap_or(0);
+                    let cpu     = v["cpu_pct"].as_f64().unwrap_or(0.0);
+                    let ram_mb  = v["free_ram_mb"].as_u64().unwrap_or(0);
+                    format!("Queue: {active} active, {pending} pending | CPU {cpu:.0}% | Free RAM {ram_mb} MB")
+                }
+            }
+
+            "/help" => concat!(
+                "Bonsai workspace commands:\n",
+                "  /swarm <prompt>       — multi-agent swarm task\n",
+                "  /agent <id> <msg>     — message a specific agent\n",
+                "  /agents               — list registered agents\n",
+                "  /model                — list available models\n",
+                "  /features             — show feature flags\n",
+                "  /queue                — task queue status\n",
+                "  /help                 — this message",
+            ).to_string(),
+
+            _ => format!("Unknown command '{cmd}'. Try /help."),
         }
     }
 

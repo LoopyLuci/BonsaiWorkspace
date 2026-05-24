@@ -12,6 +12,10 @@ pub struct BotConfig {
     /// Bonsai Workspace API base URL — used for direct llama-server slot fallback.
     #[serde(default = "default_workspace_api_url")]
     pub workspace_api_url: String,
+    /// Pair token shown in Settings → Desktop Connection. Required for /api/v1/* endpoints.
+    /// Leave empty to disable slash commands (bot will warn on first use).
+    #[serde(default)]
+    pub workspace_pair_token: String,
     #[serde(default = "default_admin_port")]
     pub admin_port: u16,
     /// Model tags to prefer when selecting a model from the workspace registry.
@@ -74,8 +78,9 @@ impl Default for BotConfig {
         Self {
             schema_version: 1,
             buddy_api_url:       "http://127.0.0.1:11420".to_string(),
-            workspace_api_url:   "http://127.0.0.1:11369".to_string(),
-            admin_port:          11666,
+            workspace_api_url:    "http://127.0.0.1:11369".to_string(),
+            workspace_pair_token: String::new(),
+            admin_port:           11666,
             preferred_model_tags: default_preferred_model_tags(),
             reclaim_allowed_ports: Vec::new(),
             allowed_script_paths: Vec::new(),

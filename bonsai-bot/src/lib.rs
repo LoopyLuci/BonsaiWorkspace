@@ -11,6 +11,7 @@ pub mod router;
 pub mod sanitizer;
 pub mod scheduler;
 pub mod session;
+pub mod mgmt_client;
 pub mod swarm_client;
 
 pub mod port_manager;
