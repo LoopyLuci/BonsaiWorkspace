@@ -6019,3 +6019,24 @@ mod tests {
         }
     }
 }
+
+// ── Agent Host commands ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_agents(
+    state: State<'_, crate::AppState>,
+) -> Result<Vec<crate::agent::AgentMetadata>, String> {
+    Ok(state.agent_host.list().await)
+}
+
+#[tauri::command]
+pub async fn send_agent_message(
+    state:    State<'_, crate::AppState>,
+    agent_id: String,
+    message:  crate::agent::AgentMessage,
+) -> Result<crate::agent::AgentOutput, String> {
+    let ctx = crate::agent::AgentContext {
+        model_url: state.orchestrator.active_slot_url().await,
+    };
+    state.agent_host.handle(&agent_id, ctx, message).await.map_err(|e| e.to_string())
+}

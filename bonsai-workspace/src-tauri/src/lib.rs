@@ -3,6 +3,9 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 
+mod agent;
+mod agent_host;
+mod agents;
 mod features;
 mod action_parser;
 mod error;
@@ -133,6 +136,8 @@ pub struct AppState {
     pub model_data_store:  Arc<model_data_store::ModelDataStore>,
     /// Shared inference task queue with fairness/resource gating.
     pub task_queue:       Arc<task_queue::TaskQueue>,
+    /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
+    pub agent_host:       Arc<agent_host::AgentHost>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -480,6 +485,17 @@ pub fn run() {
                 }
             };
 
+            // ── Agent Host — built-in agent registry ──────────────────────────
+            let agent_host = Arc::new(agent_host::AgentHost::new());
+            {
+                let host = agent_host.clone();
+                tauri::async_runtime::spawn(async move {
+                    host.register(Arc::new(agents::code_writer::CodeWriter)).await;
+                    host.register(Arc::new(agents::code_reviewer::CodeReviewer)).await;
+                    tracing::info!("[agent-host] Built-in agents registered (code-writer, code-reviewer)");
+                });
+            }
+
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),
                 whisper:          whisper.clone(),
@@ -511,6 +527,7 @@ pub fn run() {
                 buddy_api_port:   buddy_port,
                 model_data_store: model_data_store.clone(),
                 task_queue,
+                agent_host,
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1046,6 +1063,9 @@ pub fn run() {
             // ── Feature flags ─────────────────────────────────────────────────
             features::get_feature_flags,
             features::set_feature_flags,
+            // ── Agent Host ────────────────────────────────────────────────────
+            commands::list_agents,
+            commands::send_agent_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
