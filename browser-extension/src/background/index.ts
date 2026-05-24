@@ -129,7 +129,29 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
 
       case 'CONNECT': {
         try {
-          await BonsaiClient.getStatus();
+          // Try the configured port first; if that fails probe 11369-11374 to
+          // handle cases where the workspace bound to a non-default port.
+          let didConnect = false;
+          try {
+            await BonsaiClient.getStatus();
+            didConnect = true;
+          } catch {
+            const settings = await getSettings();
+            const host = settings.apiHost ?? '127.0.0.1';
+            const PROBE_PORTS = [11369, 11370, 11371, 11372, 11373, 11374];
+            for (const port of PROBE_PORTS) {
+              if (port === settings.apiPort) continue; // already tried
+              try {
+                const r = await fetch(`http://${host}:${port}/health`, { signal: AbortSignal.timeout(1000) });
+                if (r.ok) {
+                  await saveSettings({ apiPort: port });
+                  didConnect = true;
+                  break;
+                }
+              } catch { /* keep probing */ }
+            }
+            if (!didConnect) throw new Error(`Bonsai not found on ports ${PROBE_PORTS.join(', ')}`);
+          }
           connected = true;
           await emit({ type: 'CONNECTION_STATUS', connected: true });
           return { ok: true, data: { connected: true } };
