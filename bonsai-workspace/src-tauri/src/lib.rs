@@ -3,6 +3,7 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 
+mod features;
 mod action_parser;
 mod error;
 mod memory_store;
@@ -512,6 +513,7 @@ pub fn run() {
                 task_queue,
             });
             app.manage(remote_manager.clone());
+            app.manage(features::FeatureFlags::global());
 
             // ── Startup health gate ────────────────────────────────────────────
             // Check whether each major subsystem initialised. Emit a single event
@@ -1041,6 +1043,9 @@ pub fn run() {
             commands::list_model_directories,
             commands::add_model_directory,
             commands::remove_model_directory,
+            // ── Feature flags ─────────────────────────────────────────────────
+            features::get_feature_flags,
+            features::set_feature_flags,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
