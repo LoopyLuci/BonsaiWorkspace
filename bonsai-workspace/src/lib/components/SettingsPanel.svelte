@@ -37,6 +37,7 @@
     BONSAI_CATALOG, findRegistryModel,
     downloadCatalogModel, downloadingId, downloadPct, downloadError,
   } from '$lib/stores/catalog';
+  import { featureFlags, loadFeatureFlags } from '$lib/stores/features';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -80,6 +81,7 @@
     try { await refreshAndroidUsbDevices(); } catch {}
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
+    try { await loadFeatureFlags(); } catch {}
   });
 
   function sliderValue(event: Event): number {
@@ -320,6 +322,14 @@
     } catch (e) {
       remoteInputResult = `Remote input failed: ${String(e)}`;
     }
+  }
+
+  let showAdvanced = false;
+
+  async function toggleFlag(key: string, value: boolean) {
+    $featureFlags[key as keyof typeof $featureFlags] = value;
+    featureFlags.set($featureFlags);
+    await invoke('set_feature_flags', { flags: $featureFlags });
   }
 
   onDestroy(() => {
@@ -1520,6 +1530,27 @@
       </details>
     </section>
 
+    <section class="section feature-flags-section">
+      <button class="section-title feature-flags-toggle" type="button" on:click={() => (showAdvanced = !showAdvanced)}>
+        Advanced {showAdvanced ? '▲' : '▼'}
+      </button>
+      {#if showAdvanced}
+        <h4 class="flags-heading">Feature Flags</h4>
+        <div class="flags-grid">
+          {#each Object.keys($featureFlags) as key}
+            <label class="flag-row">
+              <span class="flag-key">{key.replace(/_/g, ' ')}</span>
+              <input
+                type="checkbox"
+                checked={$featureFlags[key as keyof typeof $featureFlags]}
+                on:change={(e) => toggleFlag(key, (e.currentTarget as HTMLInputElement).checked)}
+              />
+            </label>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
   </div>
 </div>
 
@@ -2026,5 +2057,50 @@
     font-size: 12px;
     color: var(--green, #4caf50);
     padding: 4px 0;
+  }
+
+  .feature-flags-toggle {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-dim);
+    padding: 0;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    width: 100%;
+    text-align: left;
+  }
+  .feature-flags-toggle:hover { color: var(--text); }
+
+  .flags-heading {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin: 10px 0 6px;
+    font-weight: 600;
+  }
+
+  .flags-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .flag-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .flag-key {
+    color: var(--text);
+    text-transform: capitalize;
   }
 </style>
