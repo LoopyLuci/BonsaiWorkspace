@@ -6136,3 +6136,33 @@ pub async fn start_training_cycle(
     state.bonsai_core.load_adapter(&adapter);
     Ok(adapter.to_string_lossy().to_string())
 }
+
+
+// ── Native GPU engine commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn load_model_native(
+    state: State<'_, AppState>,
+    model_path: String,
+    n_gpu_layers: i32,
+) -> Result<String, String> {
+    state.hybrid_engine.load_model(&model_path, n_gpu_layers).await?;
+    Ok(format!("model loaded with {} GPU layers", n_gpu_layers))
+}
+
+#[tauri::command]
+pub async fn apply_lora_native(
+    state: State<'_, AppState>,
+    lora_path: String,
+    scale: Option<f32>,
+) -> Result<String, String> {
+    state.hybrid_engine.apply_lora(&lora_path, scale.unwrap_or(1.0)).await?;
+    Ok(format!("LoRA applied: {}", lora_path))
+}
+
+#[tauri::command]
+pub async fn get_memory_status(
+    state: State<'_, AppState>,
+) -> Result<crate::hybrid_engine::NativeEngineStatus, String> {
+    Ok(state.hybrid_engine.status().await)
+}

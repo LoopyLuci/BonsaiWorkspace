@@ -52,6 +52,7 @@ pub mod bonsai_core;
 pub mod data_curator;
 pub mod telemetry;
 mod trainer;
+mod hybrid_engine;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
@@ -164,6 +165,8 @@ pub struct AppState {
     pub bonsai_core:      Arc<bonsai_core::BonsaiCore>,
     /// Telemetry store — training runs + inference metrics.
     pub telemetry:        Arc<telemetry::TelemetryStore>,
+    /// Native llama.cpp Vulkan engine (AMD 7900 XTX GPU inference).
+    pub hybrid_engine:    Arc<hybrid_engine::HybridEngineState>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -619,6 +622,7 @@ pub fn run() {
                 agent_host,
                 bonsai_core: shared_bonsai_core,
                 telemetry:   telemetry_store,
+                hybrid_engine: Arc::new(hybrid_engine::HybridEngineState::new()),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1159,6 +1163,10 @@ pub fn run() {
             commands::send_agent_message,
             // ── BonsAI-Core ───────────────────────────────────────────────────
             commands::start_training_cycle,
+            // ── Native GPU engine ─────────────────────────────────────────────
+            commands::load_model_native,
+            commands::apply_lora_native,
+            commands::get_memory_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

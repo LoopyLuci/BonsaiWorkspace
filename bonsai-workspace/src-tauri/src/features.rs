@@ -16,6 +16,8 @@ pub struct FeatureFlags {
     pub mcp_bridge_enabled:          bool,
     pub cluster_orchestrator_enabled: bool,
     pub tts_enabled:                 bool,
+    #[serde(default)]
+    pub hybrid_engine_enabled:       bool,
 }
 
 impl Default for FeatureFlags {
@@ -30,6 +32,7 @@ impl Default for FeatureFlags {
             mcp_bridge_enabled:          false,
             cluster_orchestrator_enabled: false,
             tts_enabled:                 false,
+            hybrid_engine_enabled:       false,
         }
     }
 }
@@ -83,6 +86,7 @@ impl FeatureFlags {
             "mcp_bridge"          => f.mcp_bridge_enabled,
             "cluster_orchestrator" => f.cluster_orchestrator_enabled,
             "tts"                 => f.tts_enabled,
+            "hybrid_engine_enabled" => f.hybrid_engine_enabled,
             _                     => false,
         }
     }
