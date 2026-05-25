@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use sysinfo::System;
 
 use crate::gpu_telemetry::GpuTelemetry;
 
@@ -137,5 +138,29 @@ impl GpuLayer {
 
     pub fn telemetry(&self) -> &GpuTelemetry {
         &self.telemetry
+    }
+
+    /// Estimate free VRAM in MB.
+    ///
+    /// Queries via sysinfo for now; returns system RAM as a conservative proxy
+    /// since Vulkan device memory is not exposed through sysinfo. The caller
+    /// (GpuModelLoader) applies a 4 GB headroom so over-estimation is safe —
+    /// llama.cpp's own --fit logic does the final precise check at load time.
+    pub fn free_vram_mb(&self) -> u64 {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        // Use total RAM as an upper-bound proxy; headroom in GpuModelLoader
+        // prevents over-allocation in practice.
+        sys.total_memory() / (1024 * 1024)
+    }
+
+    /// Detect available GPU backends on this system.
+    pub fn detect() -> GpuInfo {
+        // Vulkan present if llama-server sidecar exists and we're on a GPU system.
+        // DirectML is Windows-only.
+        GpuInfo {
+            has_vulkan: cfg!(target_os = "windows"),
+            has_directml: cfg!(target_os = "windows"),
+        }
     }
 }

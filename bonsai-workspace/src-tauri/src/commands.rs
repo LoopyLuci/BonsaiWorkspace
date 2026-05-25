@@ -6224,3 +6224,36 @@ pub async fn get_memory_status(
 ) -> Result<crate::hybrid_engine::NativeEngineStatus, String> {
     Ok(state.hybrid_engine.status().await)
 }
+
+#[tauri::command]
+pub async fn load_model_gpu(
+    state: State<'_, AppState>,
+    model_path: String,
+    force_cpu: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    use crate::gpu_model_loader::{GpuModelConfig, GpuModelLoader};
+    use std::time::Duration;
+
+    let loader = GpuModelLoader::new(state.gpu.clone());
+    let mut config = GpuModelConfig::new(&model_path);
+    config.force_cpu_fallback = force_cpu.unwrap_or(false);
+
+    let (pid, gpu_layers) = loader.launch(&config)?;
+
+    // Give the server a moment to bind its port before health-checking.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let health_url = format!("http://127.0.0.1:{}/health", config.port);
+    let healthy = reqwest::get(&health_url)
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    Ok(serde_json::json!({
+        "pid": pid,
+        "gpu_layers": gpu_layers,
+        "healthy": healthy,
+        "port": config.port,
+        "model": model_path,
+    }))
+}

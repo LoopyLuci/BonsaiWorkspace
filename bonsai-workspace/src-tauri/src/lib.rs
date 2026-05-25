@@ -55,6 +55,7 @@ mod trainer;
 mod hybrid_engine;
 mod gpu_layer;
 mod gpu_telemetry;
+mod gpu_model_loader;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
@@ -169,6 +170,8 @@ pub struct AppState {
     pub telemetry:        Arc<telemetry::TelemetryStore>,
     /// Native llama.cpp Vulkan engine (AMD 7900 XTX GPU inference).
     pub hybrid_engine:    Arc<hybrid_engine::HybridEngineState>,
+    /// GPU layer health tracker + VRAM estimator.
+    pub gpu:              Arc<gpu_layer::GpuLayer>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -625,6 +628,7 @@ pub fn run() {
                 bonsai_core: shared_bonsai_core,
                 telemetry:   telemetry_store,
                 hybrid_engine: Arc::new(hybrid_engine::HybridEngineState::new()),
+                gpu: Arc::new(gpu_layer::GpuLayer::new(&gpu_layer::GpuLayer::detect())),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1171,6 +1175,7 @@ pub fn run() {
             commands::load_model_native,
             commands::apply_lora_native,
             commands::get_memory_status,
+            commands::load_model_gpu,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
