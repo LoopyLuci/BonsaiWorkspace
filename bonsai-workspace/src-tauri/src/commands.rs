@@ -6312,3 +6312,18 @@ pub async fn get_training_loop_status(
 ) -> Result<crate::training_loop::LoopStatus, String> {
     Ok(state.training_loop.status().await)
 }
+
+#[tauri::command]
+pub async fn get_gpu_crash_flag(app_handle: AppHandle) -> Result<bool, String> {
+    Ok(crate::config::load_config(&app_handle)
+        .map(|c| c.gpu_crash_fallback)
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub async fn clear_gpu_crash_flag(app_handle: AppHandle) -> Result<(), String> {
+    let mut cfg = crate::config::load_config(&app_handle)?;
+    cfg.gpu_crash_fallback = false;
+    crate::config::save_config(&app_handle, &cfg)?;
+    Ok(())
+}

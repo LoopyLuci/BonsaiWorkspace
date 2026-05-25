@@ -174,6 +174,7 @@
   // Until 'bonsai:services-ready' fires, the backend may not be listening.
   let servicesReady = false;
   let servicesFailed = '';
+  let serviceLostName = '';
   let launchComponents: Array<{name: string; state: string; message: string}> = [];
 
   function globalKey(e: KeyboardEvent) {
@@ -231,7 +232,7 @@
 
     // Wire up supervisor events. These are resolved Promises — store the
     // unlisten functions so we can clean up in onDestroy.
-    const [unlistenReady, unlistenFailed, unlistenProgress] = await Promise.all([
+    const [unlistenReady, unlistenFailed, unlistenProgress, unlistenLost] = await Promise.all([
       listen<void>('bonsai:services-ready', () => { void onServicesReady(); }),
       listen<string>('bonsai:services-failed', (ev) => {
         servicesFailed = ev.payload ?? 'A required service failed to start.';
@@ -242,6 +243,11 @@
           if (ev.payload.all_ready) void onServicesReady();
         }
       ),
+      listen<{component: string}>('bonsai:service-lost', (ev) => {
+        serviceLostName = ev.payload.component;
+        // Auto-clear after 10 s
+        setTimeout(() => { serviceLostName = ''; }, 10_000);
+      }),
     ]);
 
     // Fallback: if the supervisor event never fires (dev/browser mode or very fast start),
@@ -253,6 +259,7 @@
       unlistenReady();
       unlistenFailed();
       unlistenProgress();
+      unlistenLost();
       window.removeEventListener('keydown', globalKey, true);
       window.removeEventListener('open-session', openSessionEvent);
       window.removeEventListener('open-agents', openAgentsEvent);
@@ -309,6 +316,14 @@
     <DownloadProgress />
     {#if $isBootstrapping}<BootstrapScreen />{/if}
   {:else}
+
+  <!-- Runtime service-lost banner -->
+  {#if serviceLostName}
+    <div class="service-lost-banner">
+      ⚠ Service "{serviceLostName}" became unreachable — reconnecting…
+      <button class="banner-dismiss" on:click={() => serviceLostName = ''}>✕</button>
+    </div>
+  {/if}
 
   <!-- Top toolbar -->
   <header class="toolbar">
@@ -477,6 +492,20 @@
 </div>
 
 <style>
+  /* ── Runtime service-lost banner ── */
+  .service-lost-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9000;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 8px 16px;
+    background: rgba(234,179,8,0.92);
+    color: #1a1a1a;
+    font-size: 13px; font-weight: 500;
+  }
+  .banner-dismiss {
+    background: none; border: none; cursor: pointer;
+    font-size: 14px; color: #1a1a1a; padding: 0 4px;
+  }
+
   /* ── Launch splash ── */
   .launch-splash {
     position: fixed; inset: 0; z-index: 9999;

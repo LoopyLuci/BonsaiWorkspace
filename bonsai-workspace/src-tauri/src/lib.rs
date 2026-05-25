@@ -696,10 +696,16 @@ pub fn run() {
                     use std::sync::Arc;
                     let specs = launcher::bonsai_specs::bonsai_components(api_port, buddy_port);
                     let sup   = Arc::new(launcher::LaunchSupervisor::new(specs));
-                    match sup.probe_all(Some(ah.clone())).await {
+                    match sup.clone().probe_all(Some(ah.clone())).await {
                         Ok(()) => {
                             tracing::info!("[launcher] all services ready");
                             let _ = ah.emit("bonsai:services-ready", ());
+                            // Start background health monitor (30-second interval)
+                            let mon_sup = sup.clone();
+                            let mon_ah  = ah.clone();
+                            tauri::async_runtime::spawn(async move {
+                                mon_sup.monitor(mon_ah, std::time::Duration::from_secs(30)).await;
+                            });
                         }
                         Err(e) => {
                             tracing::error!(error=%e, "[launcher] startup probe failed");
@@ -1336,6 +1342,9 @@ pub fn run() {
             // Tool registry
             tool_registry::list_tools,
             tool_registry::run_tool,
+            // GPU crash flag
+            commands::get_gpu_crash_flag,
+            commands::clear_gpu_crash_flag,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

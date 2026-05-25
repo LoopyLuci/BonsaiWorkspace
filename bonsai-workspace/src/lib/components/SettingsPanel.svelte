@@ -53,6 +53,8 @@
   let defaultInferenceModeKey: 'auto' | 'cpu_only' | 'gpu_only' | 'hybrid' = 'hybrid';
   let defaultHybridLayers = 20;
   let inferenceDefaultsMsg = '';
+  let gpuCrashFallback = false;
+  let gpuCrashMsg = '';
 
   let remoteSessionId  = '';
   let remoteState      = 'inactive';
@@ -83,6 +85,7 @@
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
     try { await loadFeatureFlags(); } catch {}
+    try { gpuCrashFallback = await invoke<boolean>('get_gpu_crash_flag'); } catch {}
   });
 
   function sliderValue(event: Event): number {
@@ -214,6 +217,16 @@
       : 'No models were updated';
     await refreshModels();
     await refreshStatus();
+  }
+
+  async function clearGpuCrashFlag() {
+    try {
+      await invoke('clear_gpu_crash_flag');
+      gpuCrashFallback = false;
+      gpuCrashMsg = 'GPU re-enabled. Restart the app and reload your model to use GPU acceleration.';
+    } catch (e) {
+      gpuCrashMsg = `Failed: ${e}`;
+    }
   }
 
   function disconnectRemotePreview() {
@@ -1579,6 +1592,18 @@
       {#if inferenceDefaultsMsg}
         <div class="api-test-result">{inferenceDefaultsMsg}</div>
       {/if}
+
+      {#if gpuCrashFallback}
+        <div class="gpu-crash-banner">
+          <span>⚠ GPU crash detected — running CPU-only mode</span>
+          <button class="action-btn blue" type="button" on:click={clearGpuCrashFlag}>
+            Re-enable GPU
+          </button>
+        </div>
+        {#if gpuCrashMsg}
+          <div class="api-test-result">{gpuCrashMsg}</div>
+        {/if}
+      {/if}
     </section>
 
     <!-- ── Connection / Pairing ──────────────────────────────────────────── -->
@@ -2278,6 +2303,23 @@
     font-size: 12px;
     color: var(--text-dim);
     background: var(--bg2);
+  }
+  .gpu-crash-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(234,179,8,0.12);
+    border: 1px solid rgba(234,179,8,0.35);
+    color: #fde68a;
+    font-size: 13px;
+  }
+  .gpu-crash-banner .action-btn {
+    margin: 0;
+    padding: 4px 12px;
+    font-size: 12px;
   }
   .api-test-result {
     margin-top: 10px;

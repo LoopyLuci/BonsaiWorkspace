@@ -52,6 +52,11 @@ pub struct AppConfig {
     /// Regenerated each launch and persisted here so bonsai-bot can read it.
     #[serde(default)]
     pub pair_token: String,
+    /// Set to true when the GPU driver crashed (0xC0000409 / STATUS_STACK_BUFFER_OVERRUN).
+    /// When true, models load CPU-only by default. Cleared when the user explicitly
+    /// enables GPU layers from Settings.
+    #[serde(default)]
+    pub gpu_crash_fallback: bool,
 }
 
 impl Default for AppConfig {
@@ -74,6 +79,7 @@ impl Default for AppConfig {
             mcp_allowed_commands: Vec::new(),
             default_inference_mode: InferenceMode::default(),
             pair_token: String::new(),
+            gpu_crash_fallback: false,
         }
     }
 }

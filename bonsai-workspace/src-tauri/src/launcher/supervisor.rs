@@ -161,6 +161,43 @@ impl LaunchSupervisor {
             let _ = h.emit("bonsai:launch-progress", &status);
         }
     }
+
+    /// Run a continuous background health-check loop after startup.
+    /// When a previously-Ready component fails its health probe, emits
+    /// `bonsai:service-lost` and marks it Failed so the frontend can show
+    /// a reconnecting overlay.
+    pub async fn monitor(
+        self: Arc<Self>,
+        app_handle: tauri::AppHandle,
+        interval: Duration,
+    ) {
+        loop {
+            sleep(interval).await;
+
+            let states = self.states.read().await;
+            let ready_names: Vec<String> = states
+                .iter()
+                .filter(|(_, s)| matches!(s, ComponentState::Ready))
+                .map(|(n, _)| n.clone())
+                .collect();
+            drop(states);
+
+            for name in ready_names {
+                let spec = match self.specs.iter().find(|s| s.name == name) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if probe_health(spec).await.is_err() {
+                    warn!(component=%name, "[launcher] component became unhealthy");
+                    self.set_state(&name, ComponentState::Failed("health check failed".into())).await;
+                    let _ = app_handle.emit(
+                        "bonsai:service-lost",
+                        serde_json::json!({ "component": name }),
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ── Health probe ──────────────────────────────────────────────────────────────

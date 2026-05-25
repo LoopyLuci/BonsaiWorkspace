@@ -625,12 +625,24 @@ async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
 // ── Slot management ───────────────────────────────────────────────────────────
 
 fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &InferenceMode) {
+    // If a previous session recorded a GPU driver crash, start CPU-only to avoid
+    // immediately crashing again. The user can re-enable GPU from Settings.
+    let gpu_crash_recorded = crate::config::load_config(app)
+        .map(|c| c.gpu_crash_fallback)
+        .unwrap_or(false);
+
     let exe = bootstrap::llama_exe(app);
     let exe_name = exe.file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let gpu_preferred_layers = if exe_name.contains("vulkan") || has_discrete_gpu() { 20 } else { 0 };
+    let gpu_preferred_layers = if gpu_crash_recorded {
+        0
+    } else if exe_name.contains("vulkan") || has_discrete_gpu() {
+        20
+    } else {
+        0
+    };
     let initial_gpu_layers = mode.gpu_layers(gpu_preferred_layers);
     spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, mode.clone(), None);
 }
@@ -803,6 +815,13 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                         exit_code=%format!("{exit_code:#010X}"),
                         "[orchestrator] GPU crash detected, retrying with CPU-only"
                     );
+
+                    // Persist flag so next launch skips GPU automatically
+                    if let Ok(mut cfg) = crate::config::load_config(app) {
+                        cfg.gpu_crash_fallback = true;
+                        let _ = crate::config::save_config(app, &cfg);
+                    }
+
                     let _ = app.emit("model-load-fallback", json!({
                         "slot": slot.index,
                         "model_id": model_id,
