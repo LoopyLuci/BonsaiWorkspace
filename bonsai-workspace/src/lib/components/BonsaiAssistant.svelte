@@ -13,6 +13,7 @@
   import AssistantSessionHistory from './AssistantSessionHistory.svelte';
   import { currentSessionId } from '$lib/stores/assistantSessions';
   import { initModelStores } from '$lib/stores/models';
+  import { loadApiSettings } from '$lib/stores/settings';
   import { invoke } from '@tauri-apps/api/core';
 
   let ready = false;
@@ -28,6 +29,7 @@
 
   onMount(async () => {
     try {
+      await loadApiSettings();   // resolve actual port before any fetch
       initModelStores();
       await initAssistantStores();
     } finally {
