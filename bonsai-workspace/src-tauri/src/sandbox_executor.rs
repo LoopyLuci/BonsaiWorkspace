@@ -150,6 +150,11 @@ fn uuid_short() -> String {
         .unwrap_or_else(|_| "0".into())
 }
 
+/// Public entry point for plugin_host: run Python code in the sandbox venv.
+pub async fn execute_plugin_code(code: &str) -> Result<SandboxResult, String> {
+    execute_in_venv("python", code, std::time::Duration::from_secs(30)).await
+}
+
 // ── WASM stub ─────────────────────────────────────────────────────────────────
 
 fn execute_wasm_stub(_code: &str) -> Result<SandboxResult, String> {
