@@ -6118,21 +6118,36 @@ pub async fn send_agent_message(
 #[tauri::command]
 pub async fn start_training_cycle(
     state: State<'_, AppState>,
+    model_path: Option<String>,
     data_path: Option<String>,
     output_path: Option<String>,
 ) -> Result<String, String> {
+    // Require an explicit local GGUF path — refuse vague/missing model specs
+    if let Some(ref p) = model_path {
+        if p.trim().is_empty() {
+            return Err("model_path is empty — provide a local .gguf file path".into());
+        }
+        if !std::path::Path::new(p).exists() {
+            return Err(format!("GGUF model not found on disk: {p}"));
+        }
+    }
+
     let data = data_path.unwrap_or_else(|| {
-        "data/bonsai_core/bonsai_core_train.jsonl".into()
+        "data/bonsai_core/bonsai_core_train_v2.jsonl".into()
     });
     let output = output_path.unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".bonsai/adapters/bonsai-core-v2")
+            .join(".bonsai/adapters/bonsai-core-v3")
             .to_string_lossy()
             .to_string()
     });
 
-    let adapter = crate::trainer::Trainer::run(&data, &output)?;
+    let adapter = crate::trainer::Trainer::run(
+        model_path.as_deref(),
+        &data,
+        &output,
+    )?;
     state.bonsai_core.load_adapter(&adapter);
     Ok(adapter.to_string_lossy().to_string())
 }

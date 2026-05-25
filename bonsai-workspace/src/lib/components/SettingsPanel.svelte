@@ -328,6 +328,24 @@
   let showAdvanced = false;
   let showTrainingDashboard = false;
 
+  // ── Training: local model selection ──────────────────────────────────────
+  let selectedGgufPath = '';
+
+  async function browseGguf(): Promise<void> {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        title: 'Select local GGUF model',
+        filters: [{ name: 'GGUF model', extensions: ['gguf'] }],
+        multiple: false,
+        directory: false,
+      });
+      if (typeof selected === 'string') selectedGgufPath = selected;
+    } catch {
+      // plugin-dialog unavailable in some build configs — let user type path
+    }
+  }
+
   // ── Training Monitor state ────────────────────────────────────────────────
   type TrainingStatus = 'idle' | 'running' | 'completed' | 'failed';
   interface TrainProgress {
@@ -396,12 +414,17 @@
   }
 
   async function startTrainingMonitor(): Promise<void> {
+    if (!selectedGgufPath) {
+      trainingLog = '[error] Select a local .gguf model file first.';
+      return;
+    }
     trainingStatus = 'running';
-    trainingLog = '';
+    trainingLog = `[offline] model=${selectedGgufPath}\n`;
     trainProgress = { ...trainProgress, status: 'running', step: 0, pct: 0, loss: '—', eta: '—' };
     startStatsPoll();
     try {
       const adapterPath = await invoke<string>('start_training_cycle', {
+        modelPath: selectedGgufPath,
         dataPath: 'data/bonsai_core/bonsai_core_train_v2.jsonl',
         outputPath: null,
       });
@@ -1742,11 +1765,33 @@
             <pre class="training-log tm-log">{trainingLog.split('\n').slice(-20).join('\n')}</pre>
           {/if}
 
+          <!-- Model picker -->
+          <div class="tm-model-row">
+            <button class="btn-training tm-browse-btn" on:click={browseGguf}
+              title="Browse for a local .gguf model file">
+              📁 Model
+            </button>
+            <input class="tm-model-input"
+              type="text"
+              placeholder="D:\Models\...\Bonsai-1.7B-Q2_K.gguf"
+              bind:value={selectedGgufPath}
+              title="Local GGUF path — no downloads" />
+          </div>
+          {#if selectedGgufPath}
+            <div class="tm-model-hint">
+              🔒 Offline — local model only, no network calls
+            </div>
+          {:else}
+            <div class="tm-model-hint tm-model-warn">
+              ⚠ Select a local .gguf file to enable training
+            </div>
+          {/if}
+
           <!-- Action buttons -->
           <div class="training-actions" style="margin-top:10px">
             <button class="btn-training btn-primary-training"
               on:click={startTrainingMonitor}
-              disabled={trainingStatus === 'running'}>
+              disabled={trainingStatus === 'running' || !selectedGgufPath}>
               {trainingStatus === 'running' ? '⏳ Training…' : '▶ Train New Adapter'}
             </button>
             <button class="btn-training" on:click={() => { showTrainingDashboard = true; }}>
@@ -2493,6 +2538,34 @@
     font-size: 0.68rem;
     color: var(--text-dim, #888);
   }
+  .tm-model-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .tm-browse-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .tm-model-input {
+    background: var(--bg3, #25253a);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    flex: 1;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.72rem;
+    padding: 5px 8px;
+    min-width: 0;
+  }
+  .tm-model-input:focus { outline: 1px solid var(--accent, #6c63ff); }
+  .tm-model-hint {
+    font-size: 0.68rem;
+    color: #4caf50;
+    margin-top: 3px;
+  }
+  .tm-model-warn { color: #ffa726; }
 
   .dashboard-overlay {
     position: fixed;
