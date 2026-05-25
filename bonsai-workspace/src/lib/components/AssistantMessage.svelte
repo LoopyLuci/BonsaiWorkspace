@@ -73,7 +73,15 @@
       <summary>{message.tool_name ?? 'tool'}</summary>
       <pre>{message.content}</pre>
       {#if message.tool_result}
-        <pre class="result">{message.tool_result}</pre>
+        {#if message.tool_result?.content_type === 'image/png'}
+          <img src="data:image/png;base64,{btoa(String.fromCharCode(...(message.tool_result.data ?? [])))}" alt="Generated" class="max-w-full rounded mt-1"/>
+        {:else if message.tool_result?.content_type === 'audio/wav'}
+          <button class="play-btn" on:click={() => { const a = new Audio(URL.createObjectURL(new Blob([new Uint8Array(message.tool_result.data ?? [])], {type:'audio/wav'}))); a.play(); }}>🔊 Play audio</button>
+        {:else if message.tool_result?.content_type === 'application/json'}
+          <pre class="result json">{JSON.stringify(JSON.parse(new TextDecoder().decode(new Uint8Array(message.tool_result.data ?? []))), null, 2)}</pre>
+        {:else}
+          <pre class="result">{typeof message.tool_result === 'string' ? message.tool_result : JSON.stringify(message.tool_result)}</pre>
+        {/if}
       {/if}
     </details>
   {:else if html !== null}
@@ -127,6 +135,8 @@
   .bubble.markdown :global(li)         { margin-bottom: 2px; }
   .bubble.markdown :global(code)       { font-family: monospace; font-size: 0.85em; background: var(--bg, #1e1e1e); padding: 1px 4px; border-radius: 3px; }
   .bubble.markdown :global(pre)        { margin: 0.5em 0; overflow-x: auto; }
+  .play-btn { background: var(--accent, #5ca4ea); color: #fff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 0.82rem; margin-top: 4px; }
+  .result.json { font-size: 0.78rem; max-height: 200px; overflow-y: auto; }
   .bubble.markdown :global(pre code)   { background: none; padding: 0; }
   .bubble.markdown :global(blockquote) { border-left: 3px solid var(--accent, #5ca4ea); margin: 0.5em 0; padding-left: 0.75em; opacity: 0.8; }
   .bubble.markdown :global(a)          { color: var(--accent, #5ca4ea); text-decoration: underline; }
