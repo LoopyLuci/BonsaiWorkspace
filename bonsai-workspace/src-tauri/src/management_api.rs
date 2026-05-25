@@ -107,6 +107,7 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/core/stats",     get(mgmt_core_stats))
         .route("/api/v1/bonsai/process", post(mgmt_bonsai_process))
         .route("/api/v1/core/shadow",    post(mgmt_set_shadow))
+        .route("/api/v1/curator/flush",  post(mgmt_curator_flush))
         .with_state(state)
 }
 
@@ -529,15 +530,31 @@ async fn mgmt_core_stats(
 ) -> impl IntoResponse {
     auth!(s, headers);
     let queue = s.task_queue.status().await;
+    let memory_entries = s.bonsai_core.memory.count().await;
+    let curator_buffered = s.bonsai_core.curator.buffered().await;
+    let curator_total = s.bonsai_core.curator.total_seen().await;
+    let adapter_loaded = s.bonsai_core.adapter_loaded().await;
     Json(json!({
-        "adapter_loaded": false,
+        "adapter_loaded": adapter_loaded,
         "avg_latency_ms": 0.0,
         "fallback_rate": 0.0,
-        "memory_entries": 0,
+        "memory_entries": memory_entries,
         "queue_depth": queue.pending_total,
         "active_tasks": queue.active_total,
+        "curator_buffered": curator_buffered,
+        "curator_total_seen": curator_total,
     }))
     .into_response()
+}
+
+async fn mgmt_curator_flush(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    s.bonsai_core.curator.flush().await;
+    let total = s.bonsai_core.curator.total_seen().await;
+    Json(json!({ "ok": true, "total_seen": total })).into_response()
 }
 
 // ── BonsaiCore process ────────────────────────────────────────────────────────

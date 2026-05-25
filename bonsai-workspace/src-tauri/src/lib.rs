@@ -48,6 +48,9 @@ mod remote;
 mod remote_input;
 mod sidecar_manager;
 mod management_api;
+pub mod bonsai_core;
+pub mod data_curator;
+mod trainer;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
@@ -156,6 +159,8 @@ pub struct AppState {
     pub task_queue:       Arc<task_queue::TaskQueue>,
     /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
     pub agent_host:       Arc<agent_host::AgentHost>,
+    /// BonsAI-Core orchestrator — plan, execute, curate.
+    pub bonsai_core:      Arc<bonsai_core::BonsaiCore>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -472,6 +477,41 @@ pub fn run() {
                 }
             };
 
+            // ── BonsAI-Core — orchestrator + data curator ─────────────────────
+            let bonsai_inference_url = format!(
+                "http://127.0.0.1:{}/v1/chat/completions",
+                api_config.api_port
+            );
+            let prompt_template = concat!(
+                "You are BonsAI-Core. Tools: list_files, read_file, write_file, grep_files, run_command, search_files.\n",
+                "Output JSON only: {{\"intent\":\"...\",\"reasoning\":\"...\",\"plan\":[{{\"tool\":\"...\",\"args\":{{}}}}],",
+                "\"final_response\":null,\"confidence\":0.9}}\n",
+                "Example: {{\"intent\":\"list workspace files\",\"reasoning\":\"user wants directory listing\",",
+                "\"plan\":[{{\"tool\":\"list_files\",\"args\":{{\"path\":\".\",\"recursive\":false}}}}],",
+                "\"final_response\":null,\"confidence\":0.95}}\n",
+                "User request: {request}\nMemory: {memory}\nJSON:"
+            ).to_string();
+            let bonsai_home = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".bonsai");
+            let memory_path = bonsai_home.join("core_memory.jsonl");
+            let curator_path = bonsai_home.join("curated_examples.jsonl");
+            let workspace_root = app_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let bonsai_memory = bonsai_core::CoreMemory::new(Some(memory_path));
+            let bonsai_curator = data_curator::DataCurator::new(curator_path, prompt_template.clone());
+            let shared_bonsai_core = Arc::new(bonsai_core::BonsaiCore::new(
+                None,
+                bonsai_inference_url,
+                bonsai_memory,
+                bonsai_curator,
+                prompt_template,
+                workspace_root,
+                false,
+            ));
+
             // ── Agent Host — built-in agent registry ──────────────────────────
             let agent_host = Arc::new(agent_host::AgentHost::new());
             {
@@ -500,6 +540,7 @@ pub fn run() {
                     swarm_cancels: swarm_cancels.clone(),
                     app_handle:    app_handle.clone(),
                     pair_token:    token.clone(),
+                    bonsai_core:   shared_bonsai_core.clone(),
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
@@ -560,6 +601,7 @@ pub fn run() {
                 model_data_store: model_data_store.clone(),
                 task_queue,
                 agent_host,
+                bonsai_core: shared_bonsai_core,
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1098,6 +1140,8 @@ pub fn run() {
             // ── Agent Host ────────────────────────────────────────────────────
             commands::list_agents,
             commands::send_agent_message,
+            // ── BonsAI-Core ───────────────────────────────────────────────────
+            commands::start_training_cycle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

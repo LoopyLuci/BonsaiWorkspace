@@ -2246,6 +2246,7 @@ pub async fn set_api_config(
         swarm_cancels: state.swarm_cancels.clone(),
         app_handle:    app_handle.clone(),
         pair_token:    state.pair_token.clone(),
+        bonsai_core:   state.bonsai_core.clone(),
     };
 
     let started = api_server::start(

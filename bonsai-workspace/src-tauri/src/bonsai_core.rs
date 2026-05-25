@@ -67,7 +67,8 @@ impl CoreMemory {
         });
         // Truncate beyond 10k to bound memory usage
         if entries.len() > 10_000 {
-            entries.drain(0..entries.len() - 10_000);
+            let excess = entries.len() - 10_000;
+            entries.drain(0..excess);
         }
         // Auto-save every 100 entries
         if entries.len() % 100 == 0 {
@@ -148,6 +149,7 @@ pub struct BonsaiCore {
     adapter_path: RwLock<Option<PathBuf>>,
     inference_url: String,
     pub memory: CoreMemory,
+    pub curator: crate::data_curator::DataCurator,
     prompt_template: String,
     fallback_router: KeywordRouter,
     allowed_commands: Vec<String>,
@@ -165,6 +167,7 @@ impl BonsaiCore {
         adapter_path: Option<PathBuf>,
         inference_url: String,
         memory: CoreMemory,
+        curator: crate::data_curator::DataCurator,
         prompt_template: String,
         workspace_root: PathBuf,
         shadow_mode: bool,
@@ -173,6 +176,7 @@ impl BonsaiCore {
             adapter_path: RwLock::new(adapter_path),
             inference_url,
             memory,
+            curator,
             prompt_template,
             fallback_router: KeywordRouter::new(),
             allowed_commands: vec![
@@ -212,7 +216,7 @@ impl BonsaiCore {
 
         // Shadow mode: log model plan, return keyword fallback instead
         if *self.shadow_mode.read().await {
-            log::info!("[shadow] model plan: {:?}", plan);
+            tracing::info!("[shadow] model plan: {:?}", plan);
             if let Some(resp) = self.fallback_router.try_high_confidence(request) {
                 return Ok(resp);
             }
@@ -226,6 +230,9 @@ impl BonsaiCore {
 
         // 7. Record in memory
         self.memory.record(request, &plan, &result).await?;
+
+        // 7b. Curate as training example (non-blocking; failures are silently dropped)
+        self.curator.ingest(request, &plan, &result).await;
 
         // 8. Update latency stats
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
