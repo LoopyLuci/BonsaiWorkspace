@@ -330,6 +330,10 @@
     return !!($featureFlags as unknown as Record<string, boolean>)[key];
   }
 
+  function onFlagChange(key: string, e: Event): void {
+    toggleFlag(key, (e.currentTarget as HTMLInputElement).checked);
+  }
+
   async function toggleFlag(key: string, value: boolean) {
     const flags = $featureFlags as unknown as Record<string, boolean>;
     flags[key] = value;
@@ -1548,7 +1552,7 @@
               <input
                 type="checkbox"
                 checked={getFlagValue(key)}
-                on:change={(e) => toggleFlag(key, (e.currentTarget as HTMLInputElement).checked)}
+                on:change={(e) => onFlagChange(key, e)}
               />
             </label>
           {/each}
