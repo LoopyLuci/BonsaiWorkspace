@@ -341,6 +341,17 @@ impl BonsaiCore {
         *self.adapter_path.write().await = path;
     }
 
+    /// Hot-swap adapter after training; alias for set_adapter_path(Some(path)).
+    pub fn load_adapter(&self, path: &PathBuf) {
+        // Blocking write — only called from sync Trainer context
+        let rt = tokio::runtime::Handle::try_current();
+        if let Ok(handle) = rt {
+            handle.block_on(async {
+                *self.adapter_path.write().await = Some(path.clone());
+            });
+        }
+    }
+
     pub async fn fallback_rate(&self) -> f64 {
         let total = *self.request_count.read().await;
         if total == 0 {

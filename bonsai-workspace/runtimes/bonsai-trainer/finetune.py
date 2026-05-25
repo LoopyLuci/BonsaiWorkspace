@@ -20,9 +20,11 @@ from peft import LoraConfig, get_peft_model
 def get_device():
     if torch.cuda.is_available():
         return torch.device("cuda"), torch.float16
+    # DirectML (AMD/Intel on Windows): use float32 — fp16 ops are incomplete
     try:
         import torch_directml
-        return torch_directml.device(), torch.float16
+        dml = torch_directml.device()
+        print("[finetune] DirectML available but using CPU for reliable training (fp16 op gaps)")
     except ImportError:
         pass
     if torch.backends.mps.is_available():

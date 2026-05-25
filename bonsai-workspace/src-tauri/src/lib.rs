@@ -52,6 +52,7 @@ mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
 pub mod bonsai_core;
+pub mod trainer;
 mod tools;
 mod user_skills;
 mod wal;
@@ -159,6 +160,8 @@ pub struct AppState {
     pub agent_host:       Arc<agent_host::AgentHost>,
     /// BonsAI-Core orchestrator (few-shot + optional LoRA adapter).
     pub bonsai_core:      Arc<bonsai_core::BonsaiCore>,
+    /// Stateless training lifecycle helper.
+    pub trainer:          trainer::Trainer,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -599,6 +602,7 @@ pub fn run() {
                 task_queue,
                 agent_host,
                 bonsai_core: shared_bonsai_core,
+                trainer: trainer::Trainer,
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());

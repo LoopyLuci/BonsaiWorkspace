@@ -4,6 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { scan } from '@tauri-apps/plugin-barcode-scanner';
   import { addAssistantMessage } from '$lib/stores/chat';
+  import { addToast } from '$lib/stores/toast';
   import DOMPurify from 'dompurify';
   import ClusterControlPanel from '$lib/components/ClusterControlPanel.svelte';
   import { DEFAULT_API_PORT } from '$lib/constants/network';
@@ -341,10 +342,15 @@
     trainingAdapter = true;
     trainingLog = '';
     try {
-      const out = await invoke<string>('start_training_cycle');
-      trainingLog = out || 'Training complete.';
+      const adapterPath = await invoke<string>('start_training_cycle', {
+        dataPath: 'data/bonsai_core/bonsai_core_train.jsonl',
+        outputPath: null,  // uses default ~/.bonsai/adapters/bonsai-core-v2
+      });
+      trainingLog = `Done: ${adapterPath}`;
+      addToast(`Adapter saved: ${adapterPath}`, 'success');
     } catch (e) {
       trainingLog = `Error: ${e}`;
+      addToast(`Training failed: ${e}`, 'error');
     } finally {
       trainingAdapter = false;
     }

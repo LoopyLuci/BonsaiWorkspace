@@ -6114,31 +6114,23 @@ pub async fn send_agent_message(
 // ── BonsAI-Core training lifecycle ───────────────────────────────────────────
 
 #[tauri::command]
-pub async fn start_training_cycle(state: State<'_, AppState>) -> Result<String, String> {
-    let adapter_dir = dirs::home_dir()
-        .ok_or("Cannot resolve home directory")?
-        .join(".bonsai")
-        .join("adapters")
-        .join("bonsai-core-v2");
+pub async fn start_training_cycle(
+    state: State<'_, AppState>,
+    data_path: Option<String>,
+    output_path: Option<String>,
+) -> Result<String, String> {
+    let data = data_path.unwrap_or_else(|| {
+        "data/bonsai_core/bonsai_core_train.jsonl".into()
+    });
+    let output = output_path.unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".bonsai/adapters/bonsai-core-v2")
+            .to_string_lossy()
+            .to_string()
+    });
 
-    let script = std::env::current_dir()
-        .map(|d| d.join("runtimes/bonsai-trainer/finetune.py"))
-        .map_err(|e| e.to_string())?;
-
-    let output = std::process::Command::new("py")
-        .args([
-            script.to_str().unwrap_or("runtimes/bonsai-trainer/finetune.py"),
-            "--data", "data/bonsai_core/bonsai_core_train.jsonl",
-            "--output", adapter_dir.to_str().unwrap_or(".bonsai/adapters/bonsai-core-v2"),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to launch finetune.py: {e}"))?;
-
-    if output.status.success() {
-        // Hot-swap adapter path on the shared BonsaiCore instance
-        state.bonsai_core.set_adapter_path(Some(adapter_dir)).await;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
+    let adapter = crate::trainer::Trainer::run(&data, &output)?;
+    state.bonsai_core.load_adapter(&adapter);
+    Ok(adapter.to_string_lossy().to_string())
 }
