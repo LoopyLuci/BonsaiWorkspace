@@ -65,6 +65,10 @@ impl CoreMemory {
             request: request.to_string(),
             plan_summary: plan.intent.clone(),
         });
+        // Truncate beyond 10k to bound memory usage
+        if entries.len() > 10_000 {
+            entries.drain(0..entries.len() - 10_000);
+        }
         // Auto-save every 100 entries
         if entries.len() % 100 == 0 {
             if let Some(ref p) = self.persist_path {
@@ -72,6 +76,13 @@ impl CoreMemory {
             }
         }
         Ok(())
+    }
+
+    pub async fn save_to_disk(&self) {
+        if let Some(ref p) = self.persist_path {
+            let entries = self.entries.read().await;
+            let _ = save_jsonl(p, &entries);
+        }
     }
 
     pub async fn count(&self) -> usize {
@@ -141,8 +152,8 @@ pub struct BonsaiCore {
     fallback_router: KeywordRouter,
     allowed_commands: Vec<String>,
     workspace_root: PathBuf,
-    /// Shadow mode: log both keyword and model plans; use keyword plan only.
-    pub shadow_mode: bool,
+    /// Shadow mode: log model plan but execute keyword/fallback plan only.
+    pub shadow_mode: RwLock<bool>,
     latency_sum_ms: RwLock<f64>,
     latency_count: RwLock<u64>,
     fallback_count: RwLock<u64>,
@@ -168,7 +179,7 @@ impl BonsaiCore {
                 "python".into(), "py".into(), "ls".into(), "cat".into(), "echo".into(),
             ],
             workspace_root,
-            shadow_mode,
+            shadow_mode: RwLock::new(shadow_mode),
             latency_sum_ms: RwLock::new(0.0),
             latency_count: RwLock::new(0),
             fallback_count: RwLock::new(0),
@@ -198,6 +209,14 @@ impl BonsaiCore {
 
         // 4. Infer plan
         let plan = self.infer_plan(&prompt).await?;
+
+        // Shadow mode: log model plan, return keyword fallback instead
+        if *self.shadow_mode.read().await {
+            log::info!("[shadow] model plan: {:?}", plan);
+            if let Some(resp) = self.fallback_router.try_high_confidence(request) {
+                return Ok(resp);
+            }
+        }
 
         // 5. Policy check
         self.policy_validate(&plan)?;
@@ -249,8 +268,19 @@ impl BonsaiCore {
         Ok(plan)
     }
 
-    fn build_prompt(&self, request: &str, _history: &[ChatMessage], _memory: &[MemoryEntry]) -> String {
-        self.prompt_template.replace("{request}", request)
+    fn build_prompt(&self, request: &str, _history: &[ChatMessage], memory: &[MemoryEntry]) -> String {
+        let memory_str = if memory.is_empty() {
+            "None".to_string()
+        } else {
+            memory
+                .iter()
+                .map(|e| format!("- {}: {}", e.request, e.plan_summary))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        self.prompt_template
+            .replace("{request}", request)
+            .replace("{memory}", &memory_str)
     }
 
     fn policy_validate(&self, plan: &BonsaiPlan) -> Result<(), BonsaiError> {
@@ -300,6 +330,10 @@ impl BonsaiCore {
             return 0.0;
         }
         *self.latency_sum_ms.read().await / count as f64
+    }
+
+    pub async fn set_shadow_mode(&self, enabled: bool) {
+        *self.shadow_mode.write().await = enabled;
     }
 
     pub async fn fallback_rate(&self) -> f64 {
