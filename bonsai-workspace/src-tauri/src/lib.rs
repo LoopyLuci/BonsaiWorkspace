@@ -493,6 +493,25 @@ pub fn run() {
                 let token  = pair_token.clone();
                 let host   = api_config.api_host.clone();
                 let port   = api_config.api_port;
+                // BonsaiCore: load adapter path + prompt template from well-known location.
+                let adapter_dir = dirs::home_dir()
+                    .map(|h| h.join(".bonsai").join("adapters").join("bonsai-core-v1"));
+                let prompt_template = adapter_dir.as_ref()
+                    .and_then(|d| std::fs::read_to_string(d.join("prompt_template.txt")).ok())
+                    .unwrap_or_else(|| {
+                        "You are BonsAI-Core.\nUser request: {request}\nMemory: {memory}\nJSON:".into()
+                    });
+                let memory_path = adapter_dir.as_ref().map(|d| d.join("memory_index.jsonl"));
+                let core_memory = bonsai_core::CoreMemory::new(memory_path);
+                let inference_url = format!("http://127.0.0.1:{}/v1/chat/completions", api_config.api_port);
+                let bonsai_core_instance = Arc::new(bonsai_core::BonsaiCore::new(
+                    adapter_dir.filter(|d| d.exists()),
+                    inference_url,
+                    core_memory,
+                    prompt_template,
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                    false,
+                ));
                 let mgmt = management_api::MgmtState {
                     orchestrator:  orchestrator.clone(),
                     agent_host:    agent_host.clone(),
@@ -501,6 +520,7 @@ pub fn run() {
                     swarm_cancels: swarm_cancels.clone(),
                     app_handle:    app_handle.clone(),
                     pair_token:    token.clone(),
+                    bonsai_core:   bonsai_core_instance,
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,

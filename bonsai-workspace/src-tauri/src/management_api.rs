@@ -51,6 +51,7 @@ pub struct MgmtState {
     pub swarm_cancels:   Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Arc<std::sync::atomic::AtomicBool>>>>>,
     pub app_handle:      tauri::AppHandle,
     pub pair_token:      String,
+    pub bonsai_core:     Arc<crate::bonsai_core::BonsaiCore>,
 }
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
@@ -104,6 +105,8 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/features",       get(mgmt_get_features).post(mgmt_set_features))
         .route("/api/v1/tools/run",      post(mgmt_run_tool))
         .route("/api/v1/core/stats",     get(mgmt_core_stats))
+        .route("/api/v1/bonsai/process", post(mgmt_bonsai_process))
+        .route("/api/v1/core/shadow",    post(mgmt_set_shadow))
         .with_state(state)
 }
 
@@ -535,4 +538,42 @@ async fn mgmt_core_stats(
         "active_tasks": queue.active_total,
     }))
     .into_response()
+}
+
+// ── BonsaiCore process ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BonsaiProcessBody {
+    request: String,
+    #[serde(default)]
+    history: Vec<crate::bonsai_core::ChatMessage>,
+}
+
+async fn mgmt_bonsai_process(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<BonsaiProcessBody>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    match s.bonsai_core.process(&body.request, &body.history).await {
+        Ok(resp) => Json(json!({ "ok": true, "result": resp })).into_response(),
+        Err(e)   => err500(e).into_response(),
+    }
+}
+
+// ── Shadow mode toggle ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ShadowBody {
+    enabled: bool,
+}
+
+async fn mgmt_set_shadow(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<ShadowBody>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    s.bonsai_core.set_shadow_mode(body.enabled).await;
+    Json(json!({ "shadow_mode": body.enabled })).into_response()
 }
