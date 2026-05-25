@@ -38,6 +38,7 @@
     downloadCatalogModel, downloadingId, downloadPct, downloadError,
   } from '$lib/stores/catalog';
   import { featureFlags, loadFeatureFlags } from '$lib/stores/features';
+  import TrainingDashboard from '$lib/components/TrainingDashboard.svelte';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -325,6 +326,25 @@
   }
 
   let showAdvanced = false;
+  let showTrainingDashboard = false;
+  let trainingBusy = false;
+  let trainingLog = '';
+
+  async function startTrainingCycle(): Promise<void> {
+    trainingBusy = true;
+    trainingLog = '';
+    try {
+      const adapterPath = await invoke<string>('start_training_cycle', {
+        dataPath: 'data/bonsai_core/bonsai_core_train.jsonl',
+        outputPath: null,
+      });
+      trainingLog = `Done: ${adapterPath}`;
+    } catch (e: unknown) {
+      trainingLog = `Error: ${e}`;
+    } finally {
+      trainingBusy = false;
+    }
+  }
 
   function getFlagValue(key: string): boolean {
     return !!($featureFlags as unknown as Record<string, boolean>)[key];
@@ -1557,11 +1577,32 @@
             </label>
           {/each}
         </div>
+
+        <div class="training-section">
+          <h4 class="flags-heading">BonsAI-Core Training</h4>
+          <div class="training-actions">
+            <button class="btn-training" on:click={startTrainingCycle} disabled={trainingBusy}>
+              {trainingBusy ? 'Training…' : 'Train New Adapter'}
+            </button>
+            <button class="btn-training" on:click={() => (showTrainingDashboard = true)}>
+              Training Dashboard
+            </button>
+          </div>
+          {#if trainingLog}
+            <pre class="training-log">{trainingLog}</pre>
+          {/if}
+        </div>
       {/if}
     </section>
 
   </div>
 </div>
+
+{#if showTrainingDashboard}
+  <div class="dashboard-overlay" role="dialog" aria-modal="true">
+    <TrainingDashboard onClose={() => (showTrainingDashboard = false)} />
+  </div>
+{/if}
 
 <style>
   .settings-overlay {
@@ -2111,5 +2152,51 @@
   .flag-key {
     color: var(--text);
     text-transform: capitalize;
+  }
+
+  .training-section {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .training-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .btn-training {
+    background: var(--bg3, #25253a);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.82rem;
+    padding: 6px 14px;
+  }
+  .btn-training:hover:not(:disabled) { background: var(--bg4, #30304a); }
+  .btn-training:disabled { opacity: 0.45; cursor: default; }
+
+  .training-log {
+    background: var(--bg3, #25253a);
+    border-radius: 4px;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+    margin-top: 8px;
+    padding: 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .dashboard-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 32px;
   }
 </style>
