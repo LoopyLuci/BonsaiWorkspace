@@ -113,6 +113,9 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/telemetry/training/:id",get(mgmt_telemetry_training_run))
         .route("/api/v1/telemetry/inference",   get(mgmt_telemetry_inference))
         .route("/api/v1/telemetry/curated",     get(mgmt_telemetry_curated))
+        // training control — mirrors Tauri commands for web clients
+        .route("/api/v1/training/status",  get(mgmt_training_status))
+        .route("/api/v1/training/history", get(mgmt_training_history))
         .with_state(state)
 }
 
@@ -651,5 +654,35 @@ async fn mgmt_telemetry_curated(
             content,
         ).into_response(),
         Err(_) => Json(json!({ "examples": [] })).into_response(),
+    }
+}
+
+// ── Training control endpoints ────────────────────────────────────────────────
+
+async fn mgmt_training_status(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    match s.telemetry.get_latest_run().await {
+        Ok(Some(run)) => Json(run).into_response(),
+        Ok(None)      => Json(serde_json::json!({ "status": "idle" })).into_response(),
+        Err(e)        => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn mgmt_training_history(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let limit = uri.query()
+        .and_then(|q| q.split('&').find(|p| p.starts_with("limit=")))
+        .and_then(|p| p.trim_start_matches("limit=").parse::<i64>().ok())
+        .unwrap_or(20);
+    match s.telemetry.get_training_runs(limit).await {
+        Ok(runs) => Json(runs).into_response(),
+        Err(e)   => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

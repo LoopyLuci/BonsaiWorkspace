@@ -177,6 +177,29 @@ impl TelemetryStore {
         }))
     }
 
+    pub async fn get_latest_run(&self) -> Result<Option<TrainingRun>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id, started_at, finished_at, base_model, data_path, adapter_path,
+                    status, metrics, total_examples, curated_examples
+             FROM training_runs ORDER BY started_at DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| TrainingRun {
+            id:               r.get("id"),
+            started_at:       r.get("started_at"),
+            finished_at:      r.get("finished_at"),
+            base_model:       r.get("base_model"),
+            data_path:        r.get("data_path"),
+            adapter_path:     r.get("adapter_path"),
+            status:           r.get("status"),
+            metrics:          r.get("metrics"),
+            total_examples:   r.get("total_examples"),
+            curated_examples: r.get("curated_examples"),
+        }))
+    }
+
     // ── Inference telemetry ───────────────────────────────────────────────────
 
     pub async fn log_inference(&self, rec: &InferenceRecord) -> Result<(), sqlx::Error> {

@@ -6143,15 +6143,58 @@ pub async fn start_training_cycle(
             .to_string()
     });
 
-    let adapter = crate::trainer::Trainer::run(
+    // Log training start to telemetry
+    let run_id = crate::telemetry::new_run_id();
+    let _ = state.telemetry.log_training_start(&crate::telemetry::TrainingRun {
+        id:               run_id.clone(),
+        started_at:       std::time::SystemTime::now()
+                              .duration_since(std::time::UNIX_EPOCH)
+                              .unwrap_or_default()
+                              .as_secs() as i64,
+        finished_at:      None,
+        base_model:       model_path.clone().unwrap_or_else(|| "local".into()),
+        data_path:        Some(data.clone()),
+        adapter_path:     None,
+        status:           "running".into(),
+        metrics:          None,
+        total_examples:   None,
+        curated_examples: None,
+    }).await;
+
+    let result = crate::trainer::Trainer::run(
         model_path.as_deref(),
         &data,
         &output,
-    )?;
+    );
+
+    // Log outcome
+    match &result {
+        Ok(_)    => { let _ = state.telemetry.log_training_end(&run_id, "completed", None, Some(&output)).await; }
+        Err(e)   => { let _ = state.telemetry.log_training_end(&run_id, "failed", Some(e.as_str()), None).await; }
+    }
+
+    let adapter = result?;
     state.bonsai_core.load_adapter(&adapter);
     Ok(adapter.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+pub async fn get_training_status(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::telemetry::TrainingRun>, String> {
+    state.telemetry.get_latest_run().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_training_history(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<crate::telemetry::TrainingRun>, String> {
+    state.telemetry
+        .get_training_runs(limit.unwrap_or(20) as i64)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 // ── Native GPU engine commands ─────────────────────────────────────────────────
 

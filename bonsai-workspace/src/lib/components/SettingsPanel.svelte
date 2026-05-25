@@ -347,6 +347,9 @@
   }
 
   // ── Training Monitor state ────────────────────────────────────────────────
+  let lossHistory: { step: number; loss: number }[] = [];
+  const MAX_LOSS_POINTS = 50;
+
   type TrainingStatus = 'idle' | 'running' | 'completed' | 'failed';
   interface TrainProgress {
     status: TrainingStatus;
@@ -381,8 +384,10 @@
   let runHistory: HistoryRun[] = [];
   let showHistory = false;
 
+  let lastCheckpoint = '';
+
   function parseTrainLine(line: string): void {
-    // Parse structured [tag] key=val lines emitted by finetune.py
+    trainingLog += line + '\n';
     const m = line.match(/^\[(\w+)\]\s+(.+)$/);
     if (!m) return;
     const [, tag, rest] = m;
@@ -391,13 +396,23 @@
 
     if (tag === 'device') {
       trainProgress = { ...trainProgress, device: kv.using ?? '—', dtype: kv.dtype ?? '—' };
+    } else if (tag === 'offline') {
+      trainProgress = { ...trainProgress, device: 'offline-lock' };
+    } else if (tag === 'resume') {
+      lastCheckpoint = kv.checkpoint ?? '';
     } else if (tag === 'train' && kv.status === 'starting') {
+      lossHistory = [];
       trainProgress = { ...trainProgress, examples: Number(kv.examples ?? 0),
         curatedMerged: 0, step: 0, pct: 0, loss: '—' };
     } else if (tag === 'progress') {
+      const step = Number(kv.step ?? 0);
+      const loss = parseFloat(kv.loss ?? '0');
+      if (!isNaN(loss) && kv.loss !== '?') {
+        lossHistory = [...lossHistory, { step, loss }].slice(-MAX_LOSS_POINTS);
+      }
       trainProgress = {
         ...trainProgress,
-        step: Number(kv.step ?? 0),
+        step,
         totalSteps: Number(kv.total ?? trainProgress.totalSteps),
         epoch: kv.epoch ?? trainProgress.epoch,
         loss: kv.loss ?? trainProgress.loss,
@@ -405,12 +420,75 @@
         elapsed: kv.elapsed ?? trainProgress.elapsed,
         eta: kv.eta ?? trainProgress.eta,
       };
+      drawLossChart();
     } else if (tag === 'save') {
       trainProgress = { ...trainProgress, pct: 100, eta: '0s', status: 'completed' };
       trainingStatus = 'completed';
+      drawLossChart();
     } else if (tag === 'data') {
       if (kv.curated) trainProgress = { ...trainProgress, curatedMerged: Number(kv.curated) };
     }
+  }
+
+  let lossCanvas: HTMLCanvasElement | null = null;
+
+  function drawLossChart(): void {
+    const canvas = lossCanvas;
+    if (!canvas || lossHistory.length < 2) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const losses = lossHistory.map(p => p.loss);
+    const maxL = Math.max(...losses, 0.01);
+    const minL = Math.min(...losses, 0);
+    const range = maxL - minL || 1;
+    const pad = { t: 6, b: 18, l: 36, r: 8 };
+    const cw = W - pad.l - pad.r;
+    const ch = H - pad.t - pad.b;
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + (ch * i) / 4;
+      ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+      const label = (maxL - (range * i) / 4).toFixed(3);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(label, pad.l - 3, y + 3);
+    }
+
+    // Loss curve
+    const gradient = ctx.createLinearGradient(pad.l, 0, W - pad.r, 0);
+    gradient.addColorStop(0, '#6c63ff');
+    gradient.addColorStop(1, '#a78bfa');
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    lossHistory.forEach((pt, i) => {
+      const x = pad.l + (i / (lossHistory.length - 1)) * cw;
+      const y = pad.t + ch - ((pt.loss - minL) / range) * ch;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // Fill under curve
+    const lastX = pad.l + cw, lastY = pad.t + ch;
+    ctx.lineTo(lastX, lastY); ctx.lineTo(pad.l, lastY); ctx.closePath();
+    ctx.fillStyle = 'rgba(108,99,255,0.12)';
+    ctx.fill();
+
+    // Latest loss label
+    const lastPt = lossHistory[lossHistory.length - 1];
+    const lx = pad.l + cw, ly = pad.t + ch - ((lastPt.loss - minL) / range) * ch;
+    ctx.fillStyle = '#a78bfa';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(lastPt.loss.toFixed(4), lx, ly - 4);
   }
 
   async function startTrainingMonitor(): Promise<void> {
@@ -419,25 +497,34 @@
       return;
     }
     trainingStatus = 'running';
-    trainingLog = `[offline] model=${selectedGgufPath}\n`;
+    trainingLog = '';
+    lossHistory = [];
+    lastCheckpoint = '';
     trainProgress = { ...trainProgress, status: 'running', step: 0, pct: 0, loss: '—', eta: '—' };
     startStatsPoll();
+    // Refresh history so resume checkpoint shows up
+    await loadRunHistory();
     try {
       const adapterPath = await invoke<string>('start_training_cycle', {
         modelPath: selectedGgufPath,
         dataPath: 'data/bonsai_core/bonsai_core_train_v2.jsonl',
         outputPath: null,
       });
-      trainingLog += `\n[save] path=${adapterPath}`;
       parseTrainLine(`[save] path=${adapterPath}`);
       trainingStatus = 'completed';
+      await loadRunHistory();
     } catch (e: unknown) {
-      trainingLog += `\n[error] ${String(e)}`;
+      trainingLog += `[error] ${String(e)}\n`;
       trainingStatus = 'failed';
       trainProgress = { ...trainProgress, status: 'failed' };
     } finally {
       stopStatsPoll();
     }
+  }
+
+  async function resumeTraining(): Promise<void> {
+    // Re-uses the same GGUF — trainer.rs will find the latest checkpoint automatically
+    await startTrainingMonitor();
   }
 
   function startStatsPoll(): void {
@@ -459,12 +546,8 @@
 
   async function loadRunHistory(): Promise<void> {
     try {
-      const cfg = await invoke<{ api_port: number; pair_token: string }>('get_api_config');
-      const res = await fetch(`http://127.0.0.1:${cfg.api_port}/api/v1/telemetry/training`, {
-        headers: { Authorization: `Bearer ${cfg.pair_token}` },
-      });
-      if (res.ok) runHistory = await res.json();
-    } catch { /* offline */ }
+      runHistory = await invoke<HistoryRun[]>('get_training_history', { limit: 20 });
+    } catch { /* telemetry DB not yet ready */ }
   }
 
   function fmtTs(ms: number): string {
@@ -1745,6 +1828,20 @@
             {/if}
           {/if}
 
+          <!-- Loss chart -->
+          {#if lossHistory.length >= 2}
+            <div class="tm-chart-wrap">
+              <canvas bind:this={lossCanvas} width="420" height="80" class="tm-loss-canvas"></canvas>
+            </div>
+          {/if}
+
+          <!-- Checkpoint indicator -->
+          {#if lastCheckpoint}
+            <div class="tm-checkpoint-row">
+              ↩ Resuming from <span class="tm-ckpt-path">{lastCheckpoint.split(/[\\/]/).pop()}</span>
+            </div>
+          {/if}
+
           <!-- Live stats from /core/stats poll -->
           {#if trainingStatus === 'running' && Object.keys(coreStats).length > 0}
             <div class="tm-stats-grid">
@@ -1794,6 +1891,12 @@
               disabled={trainingStatus === 'running' || !selectedGgufPath}>
               {trainingStatus === 'running' ? '⏳ Training…' : '▶ Train New Adapter'}
             </button>
+            {#if trainingStatus === 'completed' || trainingStatus === 'failed'}
+              <button class="btn-training" on:click={resumeTraining}
+                disabled={!selectedGgufPath} title="Resume from last checkpoint">
+                ↩ Resume
+              </button>
+            {/if}
             <button class="btn-training" on:click={() => { showTrainingDashboard = true; }}>
               Dashboard
             </button>
@@ -2566,6 +2669,27 @@
     margin-top: 3px;
   }
   .tm-model-warn { color: #ffa726; }
+  .tm-chart-wrap {
+    margin: 8px 0 4px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg3, #25253a);
+    border: 1px solid var(--border);
+  }
+  .tm-loss-canvas {
+    display: block;
+    width: 100%;
+    height: 80px;
+  }
+  .tm-checkpoint-row {
+    font-size: 0.71rem;
+    color: #64b5f6;
+    margin: 4px 0;
+  }
+  .tm-ckpt-path {
+    font-family: var(--font-mono, monospace);
+    color: #90caf9;
+  }
 
   .dashboard-overlay {
     position: fixed;

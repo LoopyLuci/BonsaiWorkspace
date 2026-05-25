@@ -1163,6 +1163,8 @@ pub fn run() {
             commands::send_agent_message,
             // ── BonsAI-Core ───────────────────────────────────────────────────
             commands::start_training_cycle,
+            commands::get_training_status,
+            commands::get_training_history,
             // ── Native GPU engine ─────────────────────────────────────────────
             commands::load_model_native,
             commands::apply_lora_native,

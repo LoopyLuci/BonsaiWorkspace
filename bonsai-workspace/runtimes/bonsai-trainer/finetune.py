@@ -46,7 +46,7 @@ os.environ["HF_DATASETS_OFFLINE"]   = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 # ── END OFFLINE LOCK ──────────────────────────────────────────────────────────
 
-import argparse, json, shutil, struct, time
+import argparse, glob, json, shutil, struct, time
 from pathlib import Path
 
 import torch
@@ -385,6 +385,17 @@ def main():
     dataset.set_format("torch")
     emit("data", tokenized=len(dataset))
 
+    # ── Checkpoint/resume ─────────────────────────────────────────────────────
+    last_checkpoint = None
+    ckpt_dir = Path(args.output)
+    if ckpt_dir.exists() and any(ckpt_dir.iterdir()):
+        checkpoints = sorted(glob.glob(str(ckpt_dir / "checkpoint-*")),
+                             key=lambda p: int(p.rsplit("-", 1)[-1]))
+        if checkpoints:
+            last_checkpoint = checkpoints[-1]
+            ckpt_step = last_checkpoint.rsplit("-", 1)[-1]
+            emit("resume", checkpoint=last_checkpoint, step=ckpt_step)
+
     # ── Train ─────────────────────────────────────────────────────────────────
     training_args = TrainingArguments(
         output_dir=args.output,
@@ -395,12 +406,14 @@ def main():
         fp16=False,
         bf16=False,
         logging_steps=5,
-        save_strategy="epoch",
+        save_strategy="steps",
+        save_steps=5,
+        save_total_limit=3,            # keep last 3 checkpoints
         report_to="none",
         remove_unused_columns=False,
         use_cpu=(dev_str == "cpu"),
         no_cuda=(dev_str == "cpu"),
-        push_to_hub=False,                 # explicit: never push to HF Hub
+        push_to_hub=False,
         hub_token=None,
     )
 
@@ -414,9 +427,10 @@ def main():
     )
 
     emit("train", status="starting", examples=len(dataset),
-         epochs=args.epochs, backend=dev_str)
+         epochs=args.epochs, backend=dev_str,
+         resuming=bool(last_checkpoint))
     _TRAIN_START = time.time()
-    result       = trainer.train()
+    result       = trainer.train(resume_from_checkpoint=last_checkpoint)
     elapsed      = time.time() - _TRAIN_START
 
     emit("train", status="complete",
