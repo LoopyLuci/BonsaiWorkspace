@@ -138,6 +138,7 @@ impl Tool for SystemInfoTool {
 
 // ── Shared state wrapper ──────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct ToolRegistryState {
     pub registry: Arc<ToolRegistry>,
 }

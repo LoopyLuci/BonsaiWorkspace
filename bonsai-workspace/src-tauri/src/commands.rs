@@ -2250,6 +2250,9 @@ pub async fn set_api_config(
         telemetry:     state.telemetry.clone(),
         dual_session:  state.dual_session.clone(),
         training_loop: state.training_loop.clone(),
+        self_play:     state.self_play.clone(),
+        plugin_host:   state.plugin_host.clone(),
+        tool_registry: state.tool_registry.clone(),
     };
 
     let started = api_server::start(

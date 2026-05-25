@@ -575,6 +575,20 @@ pub fn run() {
             // Build the shared SessionManager before api_runtime and AppState so both reuse it.
             let shared_dual_session = Arc::new(dual_inference::SessionManager::new());
 
+            // Build new subsystems early so MgmtState and AppState share the same Arcs.
+            let early_self_play = Arc::new(self_play::SelfPlayState::new(
+                orchestrator.clone(),
+                self_play::SelfPlayConfig::default(),
+            ));
+            let early_plugin_host = Arc::new(plugin_host::PluginHost::new());
+            {
+                let ph = early_plugin_host.clone();
+                tauri::async_runtime::spawn(async move { ph.load_all().await; });
+            }
+            let early_tool_registry = tauri::async_runtime::block_on(
+                tool_registry::ToolRegistryState::new_with_defaults()
+            );
+
             let api_runtime = {
                 let orch   = orchestrator.clone();
                 let remote = remote_manager.clone();
@@ -597,6 +611,9 @@ pub fn run() {
                         orchestrator.clone(),
                         telemetry_store.clone(),
                     )),
+                    self_play:     early_self_play.clone(),
+                    plugin_host:   early_plugin_host.clone(),
+                    tool_registry: early_tool_registry.clone(),
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
@@ -625,19 +642,11 @@ pub fn run() {
                 }
             }
 
-            // ── New subsystems (self-play, plugins, tools, cross-training) ────────
-            let self_play_state = Arc::new(self_play::SelfPlayState::new(
-                orchestrator.clone(),
-                self_play::SelfPlayConfig::default(),
-            ));
-            let plugin_host = Arc::new(plugin_host::PluginHost::new());
-            {
-                let ph = plugin_host.clone();
-                tauri::async_runtime::spawn(async move { ph.load_all().await; });
-            }
-            let tool_registry = tauri::async_runtime::block_on(
-                tool_registry::ToolRegistryState::new_with_defaults()
-            );
+            // Use the early-built instances (shared with MgmtState).
+            let self_play_state = early_self_play;
+            let plugin_host     = early_plugin_host;
+            let tool_registry   = early_tool_registry;
+
             let (cross_pipeline, cross_tx) = cross_training::CrossTrainingPipeline::new(
                 cross_training::CrossTrainingConfig::default(),
             );

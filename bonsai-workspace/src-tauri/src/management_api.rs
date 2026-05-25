@@ -59,6 +59,9 @@ pub struct MgmtState {
     pub telemetry:       Arc<crate::telemetry::TelemetryStore>,
     pub dual_session:    Arc<crate::dual_inference::SessionManager>,
     pub training_loop:   Arc<crate::training_loop::TrainingLoopState>,
+    pub self_play:       Arc<crate::self_play::SelfPlayState>,
+    pub plugin_host:     Arc<crate::plugin_host::PluginHost>,
+    pub tool_registry:   Arc<crate::tool_registry::ToolRegistryState>,
 }
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
@@ -132,6 +135,16 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/sandbox/run",     post(mgmt_sandbox_run))
         .route("/api/v1/images/generate", post(mgmt_image_generate))
         .route("/api/v1/tts/speak",       post(mgmt_tts_speak))
+        // self-play training
+        .route("/api/v1/training/self-play/start",  post(mgmt_self_play_start))
+        .route("/api/v1/training/self-play/stop",   post(mgmt_self_play_stop))
+        .route("/api/v1/training/self-play/status", get(mgmt_self_play_status))
+        // plugin host
+        .route("/api/v1/plugins/load",    post(mgmt_plugin_load))
+        .route("/api/v1/plugins/list",    get(mgmt_plugin_list))
+        .route("/api/v1/plugins/execute", post(mgmt_plugin_execute))
+        // tool registry (augments existing /api/v1/tools/run)
+        .route("/api/v1/tools/list",      get(mgmt_tools_list))
         .with_state(state)
 }
 
@@ -843,4 +856,113 @@ async fn mgmt_tts_speak(
         Ok(result) => Json(result).into_response(),
         Err(e)     => err500(e).into_response(),
     }
+}
+
+// ── Self-play ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize, Default)]
+struct SelfPlayStartBody {
+    rounds: Option<usize>,
+    temperature_high: Option<f32>,
+    temperature_low: Option<f32>,
+    overlap_threshold: Option<f32>,
+}
+
+async fn mgmt_self_play_start(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    body: Option<Json<SelfPlayStartBody>>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    // Apply any overrides from the request body.
+    // SelfPlayState is initialised with defaults; reconfigure before starting.
+    let _ = body; // config override not yet exposed; start with defaults
+    match s.self_play.start().await {
+        Ok(()) => Json(json!({"ok":true,"status":"started"})).into_response(),
+        Err(e) => err500(e).into_response(),
+    }
+}
+
+async fn mgmt_self_play_stop(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    s.self_play.stop().await;
+    Json(json!({"ok":true})).into_response()
+}
+
+async fn mgmt_self_play_status(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    Json(s.self_play.status().await).into_response()
+}
+
+// ── Plugin host ───────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct PluginLoadBody {
+    id: String,
+    path: String,
+}
+
+async fn mgmt_plugin_load(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<PluginLoadBody>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    match s.plugin_host.load(&body.id, std::path::Path::new(&body.path)).await {
+        Ok(()) => Json(json!({"ok":true,"id":body.id})).into_response(),
+        Err(e) => err500(e).into_response(),
+    }
+}
+
+async fn mgmt_plugin_list(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let list = s.plugin_host.list().await;
+    Json(list.into_iter().map(|(id, m)| json!({
+        "id": id,
+        "name": m.name,
+        "version": m.version,
+        "capabilities": m.capabilities,
+    })).collect::<Vec<_>>()).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct PluginExecuteBody {
+    id: String,
+    payload: Option<String>,
+}
+
+async fn mgmt_plugin_execute(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<PluginExecuteBody>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let payload = body.payload.unwrap_or_default();
+    match s.plugin_host.execute(&body.id, &payload, &[]).await {
+        Ok(out) => Json(json!({
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+            "exit_code": out.exit_code,
+        })).into_response(),
+        Err(e) => err500(e).into_response(),
+    }
+}
+
+// ── Tool registry (list) ──────────────────────────────────────────────────────
+
+async fn mgmt_tools_list(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    Json(s.tool_registry.registry.list().await).into_response()
 }
