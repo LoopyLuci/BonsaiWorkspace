@@ -236,15 +236,16 @@ impl BonsaiCore {
     }
 
     async fn infer_plan(&self, prompt: &str) -> Result<BonsaiPlan, BonsaiError> {
-        let adapter = self.adapter_path.read().await;
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "max_tokens": 512,
             "stop": ["</s>", "```"],
-            "lora_path": adapter.as_ref().map(|p| p.to_string_lossy().to_string()),
         });
-        drop(adapter);
+        // Attach LoRA adapter path only when one is configured
+        if let Some(ref path) = *self.adapter_path.read().await {
+            body["lora_path"] = serde_json::json!(path.to_string_lossy());
+        }
 
         let client = reqwest::Client::new();
         let resp = client

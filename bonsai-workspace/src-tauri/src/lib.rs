@@ -499,7 +499,18 @@ pub fn run() {
                 let prompt_template = adapter_dir.as_ref()
                     .and_then(|d| std::fs::read_to_string(d.join("prompt_template.txt")).ok())
                     .unwrap_or_else(|| {
-                        "You are BonsAI-Core.\nUser request: {request}\nMemory: {memory}\nJSON:".into()
+                        concat!(
+                            "You are BonsAI-Core, an orchestration AI. ",
+                            "Output ONLY a JSON object with keys: intent, reasoning, plan (array of {tool,args}), ",
+                            "final_response (string or null), confidence (0-1).\n",
+                            "Available tools: read_file, write_file, list_files, grep_files, run_command, search_knowledge.\n",
+                            "Example: {\"intent\":\"tool_use\",\"reasoning\":\"user wants files\",",
+                            "\"plan\":[{\"tool\":\"list_files\",\"args\":{\"path\":\"src\"}}],",
+                            "\"final_response\":null,\"confidence\":0.95}\n",
+                            "Memory: {memory}\n",
+                            "User request: {request}\n",
+                            "JSON:"
+                        ).into()
                     });
                 let memory_path = adapter_dir.as_ref().map(|d| d.join("memory_index.jsonl"));
                 let core_memory = bonsai_core::CoreMemory::new(memory_path);
