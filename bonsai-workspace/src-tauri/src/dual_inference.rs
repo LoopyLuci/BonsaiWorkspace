@@ -176,8 +176,8 @@ impl SharedServer {
             .spawn()
             .map_err(|e| format!("Failed to start llama-server: {e}"))?;
 
-        // Poll health for up to 60 s
-        for attempt in 0..30 {
+        // Poll health for up to 120 s
+        for attempt in 0..60 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             match reqwest::get(format!("http://127.0.0.1:{}/health", port)).await {
                 Ok(r) if r.status().is_success() => {
@@ -193,7 +193,7 @@ impl SharedServer {
         }
 
         let _ = child.kill().await;
-        Err(format!("Server on port {port} did not become healthy within 60s"))
+        Err(format!("Server on port {port} did not become healthy within 120s"))
     }
 
     pub fn port(&self) -> u16 {

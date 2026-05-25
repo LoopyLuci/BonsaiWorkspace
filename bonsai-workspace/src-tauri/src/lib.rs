@@ -559,6 +559,9 @@ pub fn run() {
 
             let swarm_cancels = Arc::new(StdMutex::new(HashMap::new()));
 
+            // Build the shared SessionManager before api_runtime and AppState so both reuse it.
+            let shared_dual_session = Arc::new(dual_inference::SessionManager::new());
+
             let api_runtime = {
                 let orch   = orchestrator.clone();
                 let remote = remote_manager.clone();
@@ -576,9 +579,9 @@ pub fn run() {
                     pair_token:    token.clone(),
                     bonsai_core:   shared_bonsai_core.clone(),
                     telemetry:     telemetry_store.clone(),
-                    dual_session:  Arc::new(dual_inference::SessionManager::new()),
+                    dual_session:  shared_dual_session.clone(),
                     training_loop: Arc::new(training_loop::TrainingLoopState::new(
-                        Arc::new(dual_inference::SessionManager::new()),
+                        shared_dual_session.clone(),
                         telemetry_store.clone(),
                     )),
                 };
@@ -645,9 +648,9 @@ pub fn run() {
                 telemetry:   telemetry_store.clone(),
                 hybrid_engine: Arc::new(hybrid_engine::HybridEngineState::new()),
                 gpu: Arc::new(gpu_layer::GpuLayer::new(&gpu_layer::GpuLayer::detect())),
-                dual_session: Arc::new(dual_inference::SessionManager::new()),
+                dual_session: shared_dual_session.clone(),
                 training_loop: Arc::new(training_loop::TrainingLoopState::new(
-                    Arc::new(dual_inference::SessionManager::new()),
+                    shared_dual_session.clone(),
                     telemetry_store,
                 )),
             });
