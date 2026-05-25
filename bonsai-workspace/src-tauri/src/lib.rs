@@ -53,6 +53,8 @@ pub mod data_curator;
 pub mod telemetry;
 mod trainer;
 mod hybrid_engine;
+mod gpu_layer;
+mod gpu_telemetry;
 mod sidecar_supervisor;
 mod swarm_orchestrator;
 mod task_queue;
