@@ -85,12 +85,13 @@ pub async fn generate_image(request: ImageGenRequest) -> Result<ImageGenResult, 
         args.push(neg.clone());
     }
 
-    info!(prompt = %request.prompt, output = %output_path, "[image_gen] starting generation");
+    let python = find_sd_python();
+    info!(prompt = %request.prompt, output = %output_path, python = %python, "[image_gen] starting generation");
     let t0 = std::time::Instant::now();
 
     let out = tokio::time::timeout(
         Duration::from_secs(300),
-        tokio::process::Command::new("python")
+        tokio::process::Command::new(&python)
             .args(&args)
             .output(),
     )
@@ -130,6 +131,33 @@ fn find_sd_script() -> Result<PathBuf, String> {
         }
     }
     Err("sd_generate.py not found. Place it in AppData/com.bonsai.workspace/scripts/ or set BONSAI_SD_SCRIPT.".into())
+}
+
+fn find_sd_python() -> String {
+    // Prefer the dedicated SD venv installed by install-sd.ps1
+    let venv_py = dirs::data_local_dir()
+        .unwrap_or_default()
+        .join("com.bonsai.workspace")
+        .join("sd_venv")
+        .join(if cfg!(windows) { "Scripts" } else { "bin" })
+        .join(if cfg!(windows) { "python.exe" } else { "python" });
+    if venv_py.exists() {
+        return venv_py.to_string_lossy().into_owned();
+    }
+    // Fall back to system Python candidates
+    for candidate in &["py", "python3", "python"] {
+        if std::process::Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return candidate.to_string();
+        }
+    }
+    "python".to_string()
 }
 
 fn find_default_sd_model() -> Option<String> {
