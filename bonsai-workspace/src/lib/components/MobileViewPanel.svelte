@@ -390,6 +390,10 @@
 
   onMount(async () => {
     try {
+      // Load actual api_port before anything that makes HTTP calls.
+      const cfg = await invoke<{ api_port: number; pair_token: string }>('get_api_config');
+      runtimeApiPort = cfg.api_port;
+      pairToken = cfg.pair_token;
       await refreshDevices();
       if (selectedSerial) {
         await refreshDisplayInfo();

@@ -301,6 +301,32 @@ fn persist_assistant_visibility(app: &tauri::AppHandle, visible: bool) {
     }
 }
 
+/// Kill any llama-server or piper sidecar processes left over from a
+/// previous session that crashed or was force-killed. This prevents
+/// port accumulation and "connection refused" errors on restart.
+fn sweep_stale_sidecars() {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let mut sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::new()),
+    );
+    sys.refresh_processes();
+    let sidecar_names = ["llama-server", "piper", "stable-diffusion"];
+    let mut killed = 0u32;
+    for (pid, proc) in sys.processes() {
+        let name = proc.name().to_string();
+        if sidecar_names.iter().any(|s| name.contains(s)) {
+            if proc.kill() {
+                killed += 1;
+                tracing::info!(pid=%pid, name=%name, "[startup] swept stale sidecar");
+            }
+        }
+    }
+    if killed > 0 {
+        // Give OS a moment to release ports before we try to bind.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -345,6 +371,11 @@ pub fn run() {
                     .try_init();
                 tracing::info!("Bonsai Workspace starting — logs: {}", log_dir.display());
             }
+
+            // Kill any stale llama-server processes from previous sessions.
+            // These accumulate when the app crashes or is force-killed without
+            // triggering Drop on SharedServer.
+            sweep_stale_sidecars();
 
             // WAL — must be ready before any command runs
             let wal = Arc::new(

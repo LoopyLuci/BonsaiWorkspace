@@ -291,7 +291,7 @@ export async function loadModel(modelId: string) {
   } catch (e) {
     // Fallback: try HTTP trigger
     try {
-      const base = get(apiBaseUrl) || 'http://127.0.0.1:11369';
+      const base = get(apiBaseUrl) || `http://${DEFAULT_API_HOST}:${DEFAULT_API_PORT}`;
       await fetch(`${base}/v1/models/load`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId }) });
     } catch (err) {
       console.error('[models] loadModel failed:', err);

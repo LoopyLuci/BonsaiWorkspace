@@ -21,6 +21,7 @@
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
   import { restorePersistentSession } from '$lib/stores/chat';
   import { loadAgentConfigs, loadPersonas } from '$lib/stores/agents';
+  import { loadApiSettings } from '$lib/stores/settings';
   import Toasts from '$lib/components/Toast.svelte';
 
   // ── Layout toggles ────────────────────────────────────────────────────────
@@ -200,59 +201,62 @@
     showAgents = true;
   }
 
-  onMount(() => {
+  /** Called once all services are confirmed healthy. Always awaits loadApiSettings first. */
+  async function onServicesReady() {
+    if (servicesReady) return;        // idempotent — supervisor may fire multiple times
+    await loadApiSettings();          // update apiPort store BEFORE any fetch
+    servicesReady = true;
+    servicesFailed = '';
+    initModelStores();
+    void restorePersistentSession();
+    void loadAgentConfigs();
+    void loadPersonas();
+  }
+
+  onMount(async () => {
     document.documentElement.dataset.theme = theme;
 
-    // Gate: wait for supervisor to confirm all services are bound.
-    const unlistenReady = listen<void>('bonsai:services-ready', () => {
-      servicesReady = true;
-      servicesFailed = '';
-      initModelStores();
-      void restorePersistentSession();
-      void loadAgentConfigs();
-      void loadPersonas();
-    });
-    const unlistenFailed = listen<string>('bonsai:services-failed', (ev) => {
-      servicesFailed = ev.payload ?? 'A required service failed to start.';
-    });
-    const unlistenProgress = listen<{all_ready: boolean; components: typeof launchComponents}>(
-      'bonsai:launch-progress', (ev) => {
-        launchComponents = ev.payload.components;
-        if (ev.payload.all_ready) servicesReady = true;
-      }
-    );
-
-    // Fallback: if supervisor never fires (e.g., in web dev mode), proceed after 3s.
-    const fallback = setTimeout(() => {
-      if (!servicesReady) {
-        servicesReady = true;
-        initModelStores();
-        void restorePersistentSession();
-        void loadAgentConfigs();
-        void loadPersonas();
-      }
-    }, 3000);
-
-    window.addEventListener('keydown', globalKey, true);
-    window.addEventListener('open-session', openSessionEvent);
-    window.addEventListener('open-agents', openAgentsEvent);
-
-    return () => {
-      clearTimeout(fallback);
-      unlistenReady.then(fn => fn());
-      unlistenFailed.then(fn => fn());
-      unlistenProgress.then(fn => fn());
-    };
-
-    // Detect Android — works both in Tauri mobile and browser dev preview.
+    // Detect Android before any conditional logic.
     isMobile = /android/i.test(navigator.userAgent);
     if (isMobile) {
-      // Keep the desktop shell on mobile, but start with a cleaner viewport.
       showFileTree = false;
       showVscode = false;
       showChat = true;
       chatWidth = Math.min(chatWidth, Math.max(240, Math.floor(window.innerWidth * 0.92)));
     }
+
+    window.addEventListener('keydown', globalKey, true);
+    window.addEventListener('open-session', openSessionEvent);
+    window.addEventListener('open-agents', openAgentsEvent);
+
+    // Wire up supervisor events. These are resolved Promises — store the
+    // unlisten functions so we can clean up in onDestroy.
+    const [unlistenReady, unlistenFailed, unlistenProgress] = await Promise.all([
+      listen<void>('bonsai:services-ready', () => { void onServicesReady(); }),
+      listen<string>('bonsai:services-failed', (ev) => {
+        servicesFailed = ev.payload ?? 'A required service failed to start.';
+      }),
+      listen<{all_ready: boolean; components: typeof launchComponents}>(
+        'bonsai:launch-progress', (ev) => {
+          launchComponents = ev.payload.components;
+          if (ev.payload.all_ready) void onServicesReady();
+        }
+      ),
+    ]);
+
+    // Fallback: if the supervisor event never fires (dev/browser mode or very fast start),
+    // call onServicesReady after 3 s so the app doesn't stay gated forever.
+    const fallback = window.setTimeout(() => { void onServicesReady(); }, 3000);
+
+    return () => {
+      window.clearTimeout(fallback);
+      unlistenReady();
+      unlistenFailed();
+      unlistenProgress();
+      window.removeEventListener('keydown', globalKey, true);
+      window.removeEventListener('open-session', openSessionEvent);
+      window.removeEventListener('open-agents', openAgentsEvent);
+    };
   });
 
   onDestroy(() => {

@@ -224,18 +224,22 @@ pub async fn start_with_fallback(
     app_handle: AppHandle,
     mgmt_state: crate::management_api::MgmtState,
 ) -> Result<ApiServerHandle, String> {
-    let mut ports = Vec::with_capacity(max_extra_attempts as usize + 1);
-    ports.push(preferred_port);
-    for i in 1..=max_extra_attempts {
-        if let Some(p) = preferred_port.checked_add(i) {
-            ports.push(p);
-        } else {
-            break;
-        }
+    // Try the preferred port with up to 8 seconds of TIME_WAIT patience before
+    // falling back to higher ports. This prevents port drift across restarts.
+    match try_start_with_wait(
+        &orchestrator, &remote_manager, &ws_router, &pair_token, &host,
+        preferred_port, &app_handle, &mgmt_state, 8,
+    ).await {
+        Ok(h) => return Ok(h),
+        Err(_) => {}
     }
 
-    let mut last_err = String::new();
-    for p in ports {
+    let mut last_err = format!("Failed to bind preferred port {preferred_port}");
+    for i in 1..=max_extra_attempts {
+        let p = match preferred_port.checked_add(i) {
+            Some(p) => p,
+            None => break,
+        };
         match start(
             orchestrator.clone(),
             remote_manager.clone(),
@@ -253,14 +257,45 @@ pub async fn start_with_fallback(
         }
     }
 
-    Err(if last_err.is_empty() {
-        format!(
-            "Failed to start API server on {}:{} and fallback ports",
-            host, preferred_port
+    Err(last_err)
+}
+
+/// Try to bind `port`, waiting up to `wait_secs` for TIME_WAIT to clear before giving up.
+async fn try_start_with_wait(
+    orchestrator: &Arc<ModelOrchestrator>,
+    remote_manager: &Arc<RemoteManager>,
+    ws_router: &Arc<WsRouter>,
+    pair_token: &str,
+    host: &str,
+    port: u16,
+    app_handle: &AppHandle,
+    mgmt_state: &crate::management_api::MgmtState,
+    wait_secs: u64,
+) -> Result<ApiServerHandle, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
+    loop {
+        match start(
+            orchestrator.clone(),
+            remote_manager.clone(),
+            ws_router.clone(),
+            pair_token.to_string(),
+            host.to_string(),
+            port,
+            app_handle.clone(),
+            mgmt_state.clone(),
         )
-    } else {
-        last_err
-    })
+        .await
+        {
+            Ok(h) => return Ok(h),
+            Err(e) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                // Port likely in TIME_WAIT; wait 500ms and retry.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
 }
 
 async fn is_api_healthy(host: &str, port: u16) -> bool {
