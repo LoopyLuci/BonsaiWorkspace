@@ -157,6 +157,8 @@ pub struct AppState {
     pub task_queue:       Arc<task_queue::TaskQueue>,
     /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
     pub agent_host:       Arc<agent_host::AgentHost>,
+    /// BonsAI-Core orchestrator (few-shot + optional LoRA adapter).
+    pub bonsai_core:      Arc<bonsai_core::BonsaiCore>,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -486,14 +488,9 @@ pub fn run() {
 
             let swarm_cancels = Arc::new(StdMutex::new(HashMap::new()));
 
-            let api_runtime = {
-                let orch   = orchestrator.clone();
-                let remote = remote_manager.clone();
-                let ws     = ws_router.clone();
-                let token  = pair_token.clone();
-                let host   = api_config.api_host.clone();
-                let port   = api_config.api_port;
-                // BonsaiCore: load adapter path + prompt template from well-known location.
+            // BonsaiCore: constructed before api_runtime so both MgmtState and AppState
+            // can hold an Arc to the same instance.
+            let shared_bonsai_core = {
                 let adapter_dir = dirs::home_dir()
                     .map(|h| h.join(".bonsai").join("adapters").join("bonsai-core-v1"));
                 let prompt_template = adapter_dir.as_ref()
@@ -515,14 +512,23 @@ pub fn run() {
                 let memory_path = adapter_dir.as_ref().map(|d| d.join("memory_index.jsonl"));
                 let core_memory = bonsai_core::CoreMemory::new(memory_path);
                 let inference_url = format!("http://127.0.0.1:{}/v1/chat/completions", api_config.api_port);
-                let bonsai_core_instance = Arc::new(bonsai_core::BonsaiCore::new(
+                Arc::new(bonsai_core::BonsaiCore::new(
                     adapter_dir.filter(|d| d.exists()),
                     inference_url,
                     core_memory,
                     prompt_template,
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
                     false,
-                ));
+                ))
+            };
+
+            let api_runtime = {
+                let orch   = orchestrator.clone();
+                let remote = remote_manager.clone();
+                let ws     = ws_router.clone();
+                let token  = pair_token.clone();
+                let host   = api_config.api_host.clone();
+                let port   = api_config.api_port;
                 let mgmt = management_api::MgmtState {
                     orchestrator:  orchestrator.clone(),
                     agent_host:    agent_host.clone(),
@@ -531,7 +537,7 @@ pub fn run() {
                     swarm_cancels: swarm_cancels.clone(),
                     app_handle:    app_handle.clone(),
                     pair_token:    token.clone(),
-                    bonsai_core:   bonsai_core_instance,
+                    bonsai_core:   shared_bonsai_core.clone(),
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
@@ -592,6 +598,7 @@ pub fn run() {
                 model_data_store: model_data_store.clone(),
                 task_queue,
                 agent_host,
+                bonsai_core: shared_bonsai_core,
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1130,6 +1137,8 @@ pub fn run() {
             // ── Agent Host ────────────────────────────────────────────────────
             commands::list_agents,
             commands::send_agent_message,
+            // ── BonsAI-Core training lifecycle ────────────────────────────────
+            commands::start_training_cycle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -89,11 +89,8 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
     if has_parent_dir_component(&path) {
         return Err("Path not allowed: traversal sequences are forbidden".to_string());
     }
-    let p = std::path::Path::new(&path);
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::write(&path, content).map_err(|e| e.to_string())
+    crate::atomic_write(std::path::Path::new(&path), content.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1907,7 +1904,8 @@ pub async fn accept_diff_hunk(
     let new_content =
         diffy::apply(&original, &patch).map_err(|e| format!("Patch apply error: {e}"))?;
 
-    fs::write(&file_path, new_content).map_err(|e| e.to_string())
+    crate::atomic_write(std::path::Path::new(&file_path), new_content.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -6111,4 +6109,36 @@ pub async fn send_agent_message(
         let _ = app.emit("agent-output", &payload);
     });
     Ok(output)
+}
+
+// ── BonsAI-Core training lifecycle ───────────────────────────────────────────
+
+#[tauri::command]
+pub async fn start_training_cycle(state: State<'_, AppState>) -> Result<String, String> {
+    let adapter_dir = dirs::home_dir()
+        .ok_or("Cannot resolve home directory")?
+        .join(".bonsai")
+        .join("adapters")
+        .join("bonsai-core-v2");
+
+    let script = std::env::current_dir()
+        .map(|d| d.join("runtimes/bonsai-trainer/finetune.py"))
+        .map_err(|e| e.to_string())?;
+
+    let output = std::process::Command::new("py")
+        .args([
+            script.to_str().unwrap_or("runtimes/bonsai-trainer/finetune.py"),
+            "--data", "data/bonsai_core/bonsai_core_train.jsonl",
+            "--output", adapter_dir.to_str().unwrap_or(".bonsai/adapters/bonsai-core-v2"),
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch finetune.py: {e}"))?;
+
+    if output.status.success() {
+        // Hot-swap adapter path on the shared BonsaiCore instance
+        state.bonsai_core.set_adapter_path(Some(adapter_dir)).await;
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
 }

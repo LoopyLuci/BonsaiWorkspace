@@ -330,6 +330,26 @@
     return !!($featureFlags as unknown as Record<string, boolean>)[key];
   }
 
+  function onFlagChange(key: string, e: Event): void {
+    toggleFlag(key, (e.currentTarget as HTMLInputElement).checked);
+  }
+
+  let trainingAdapter = false;
+  let trainingLog = '';
+
+  async function startTrainingCycle() {
+    trainingAdapter = true;
+    trainingLog = '';
+    try {
+      const out = await invoke<string>('start_training_cycle');
+      trainingLog = out || 'Training complete.';
+    } catch (e) {
+      trainingLog = `Error: ${e}`;
+    } finally {
+      trainingAdapter = false;
+    }
+  }
+
   async function toggleFlag(key: string, value: boolean) {
     const flags = $featureFlags as unknown as Record<string, boolean>;
     flags[key] = value;
@@ -1548,11 +1568,26 @@
               <input
                 type="checkbox"
                 checked={getFlagValue(key)}
-                on:change={(e) => toggleFlag(key, (e.currentTarget as HTMLInputElement).checked)}
+                on:change={(e) => onFlagChange(key, e)}
               />
             </label>
           {/each}
         </div>
+
+        <h4 class="flags-heading" style="margin-top:1rem">BonsAI-Core Adapter</h4>
+        <div class="flags-grid" style="align-items:center">
+          <span class="flag-key">Train new adapter (Qwen2.5-1.5B · AMD/CPU)</span>
+          <button
+            class="btn-sm"
+            disabled={trainingAdapter}
+            on:click={startTrainingCycle}
+          >
+            {trainingAdapter ? 'Training…' : 'Train New Adapter'}
+          </button>
+        </div>
+        {#if trainingLog}
+          <pre class="training-log">{trainingLog}</pre>
+        {/if}
       {/if}
     </section>
 

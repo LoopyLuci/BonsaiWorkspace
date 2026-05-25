@@ -337,6 +337,10 @@ impl BonsaiCore {
         *self.shadow_mode.write().await = enabled;
     }
 
+    pub async fn set_adapter_path(&self, path: Option<PathBuf>) {
+        *self.adapter_path.write().await = path;
+    }
+
     pub async fn fallback_rate(&self) -> f64 {
         let total = *self.request_count.read().await;
         if total == 0 {
