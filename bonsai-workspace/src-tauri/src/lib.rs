@@ -53,6 +53,7 @@ pub mod data_curator;
 pub mod telemetry;
 mod trainer;
 mod hybrid_engine;
+mod launcher;
 mod gpu_layer;
 mod gpu_telemetry;
 mod gpu_model_loader;
@@ -652,6 +653,30 @@ pub fn run() {
             );
             tauri::async_runtime::spawn(cross_pipeline.start());
             let cross_training_sender = cross_training::CrossTrainingSender(cross_tx);
+
+            // ── Launch supervisor ─────────────────────────────────────────────
+            // Runs in the background after servers bind; emits bonsai:launch-progress
+            // events so the frontend never calls endpoints before they're ready.
+            {
+                let api_port   = api_config.api_port;
+                let buddy_port = api_config.buddy_api_port;
+                let ah         = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use std::sync::Arc;
+                    let specs = launcher::bonsai_specs::bonsai_components(api_port, buddy_port);
+                    let sup   = Arc::new(launcher::LaunchSupervisor::new(specs));
+                    match sup.probe_all(Some(ah.clone())).await {
+                        Ok(()) => {
+                            tracing::info!("[launcher] all services ready");
+                            let _ = ah.emit("bonsai:services-ready", ());
+                        }
+                        Err(e) => {
+                            tracing::error!(error=%e, "[launcher] startup probe failed");
+                            let _ = ah.emit("bonsai:services-failed", e);
+                        }
+                    }
+                });
+            }
 
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),

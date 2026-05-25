@@ -166,6 +166,14 @@
   // Sync theme on mount; initialise model/bootstrap listeners
   import { invoke } from '@tauri-apps/api/core';
   import { onMount, onDestroy } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+
+  // ── Services readiness gate ───────────────────────────────────────────────
+  // The launch supervisor emits these events after health-probing all servers.
+  // Until 'bonsai:services-ready' fires, the backend may not be listening.
+  let servicesReady = false;
+  let servicesFailed = '';
+  let launchComponents: Array<{name: string; state: string; message: string}> = [];
 
   function globalKey(e: KeyboardEvent) {
     if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || e.key === 'F1') {
@@ -194,13 +202,48 @@
 
   onMount(() => {
     document.documentElement.dataset.theme = theme;
-    initModelStores();
-    void restorePersistentSession();
-    void loadAgentConfigs();
-    void loadPersonas();
+
+    // Gate: wait for supervisor to confirm all services are bound.
+    const unlistenReady = listen<void>('bonsai:services-ready', () => {
+      servicesReady = true;
+      servicesFailed = '';
+      initModelStores();
+      void restorePersistentSession();
+      void loadAgentConfigs();
+      void loadPersonas();
+    });
+    const unlistenFailed = listen<string>('bonsai:services-failed', (ev) => {
+      servicesFailed = ev.payload ?? 'A required service failed to start.';
+    });
+    const unlistenProgress = listen<{all_ready: boolean; components: typeof launchComponents}>(
+      'bonsai:launch-progress', (ev) => {
+        launchComponents = ev.payload.components;
+        if (ev.payload.all_ready) servicesReady = true;
+      }
+    );
+
+    // Fallback: if supervisor never fires (e.g., in web dev mode), proceed after 3s.
+    const fallback = setTimeout(() => {
+      if (!servicesReady) {
+        servicesReady = true;
+        initModelStores();
+        void restorePersistentSession();
+        void loadAgentConfigs();
+        void loadPersonas();
+      }
+    }, 3000);
+
     window.addEventListener('keydown', globalKey, true);
     window.addEventListener('open-session', openSessionEvent);
     window.addEventListener('open-agents', openAgentsEvent);
+
+    return () => {
+      clearTimeout(fallback);
+      unlistenReady.then(fn => fn());
+      unlistenFailed.then(fn => fn());
+      unlistenProgress.then(fn => fn());
+    };
+
     // Detect Android — works both in Tauri mobile and browser dev preview.
     isMobile = /android/i.test(navigator.userAgent);
     if (isMobile) {
@@ -227,8 +270,34 @@
   }
 </script>
 
+<!-- Launch splash — shown until supervisor confirms all services are bound -->
+{#if !servicesReady || servicesFailed}
+  <div class="launch-splash">
+    {#if servicesFailed}
+      <div class="launch-error">
+        <span class="launch-icon">⚠</span>
+        <p class="launch-title">Service startup failed</p>
+        <p class="launch-detail">{servicesFailed}</p>
+        <p class="launch-hint">Check that port 11369 is free and restart Bonsai.</p>
+      </div>
+    {:else}
+      <div class="launch-loading">
+        <span class="launch-logo">🌿</span>
+        <p class="launch-title">Starting Bonsai…</p>
+        {#each launchComponents as c}
+          <div class="launch-row" class:ready={c.state === 'ready'} class:failed={c.state.startsWith('failed')}>
+            <span class="launch-dot"></span>
+            <span class="launch-name">{c.name}</span>
+            <span class="launch-msg">{c.message}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/if}
+
 <!-- Root shell -->
-<div class="root" class:mobile-shell={isMobile}>
+<div class="root" class:mobile-shell={isMobile} class:services-pending={!servicesReady}>
 
   {#if isMobile}
     <MobileLayout />
@@ -404,6 +473,32 @@
 </div>
 
 <style>
+  /* ── Launch splash ── */
+  .launch-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: #0a0f1a;
+    color: #e2e8f0;
+  }
+  .launch-loading, .launch-error {
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    max-width: 340px;
+  }
+  .launch-logo, .launch-icon { font-size: 2.5rem; margin-bottom: 0.25rem; }
+  .launch-title { font-size: 1.1rem; font-weight: 600; margin: 0; }
+  .launch-detail { color: #f87171; font-size: 0.85rem; margin: 0; text-align: center; }
+  .launch-hint { color: #64748b; font-size: 0.78rem; margin: 0; }
+  .launch-row {
+    display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem;
+    color: #64748b; width: 100%;
+  }
+  .launch-row.ready { color: #4ade80; }
+  .launch-row.failed { color: #f87171; }
+  .launch-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .launch-name { min-width: 90px; font-weight: 500; }
+  .launch-msg { flex: 1; }
+  .services-pending { pointer-events: none; opacity: 0.4; }
+
   /* ── CSS custom properties ── */
   :global(:root) {
     --z-canvas:   10;
