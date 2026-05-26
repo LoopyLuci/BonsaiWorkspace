@@ -439,6 +439,227 @@ impl Router {
                 }
             }
 
+            // ── Chess commands ─────────────────────────────────────────────────
+            "/chess" => {
+                match arg1 {
+                    "new" | "" => {
+                        // /chess new [white|black] [normal|strong]
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let color    = parts2.first().copied().unwrap_or("white");
+                        let strength = parts2.get(1).copied().unwrap_or("interactive");
+                        let color    = if color == "black" { "black" } else { "white" };
+                        let strength = if strength == "strong" { "strong" } else { "interactive" };
+                        match self.mgmt.chess_new(&msg.display_name, color, strength).await {
+                            Ok(v) => {
+                                let id = v["game_id"].as_str().unwrap_or("?");
+                                format!("♟ New chess game started!\nGame ID: `{id}`\nYou play as **{color}** ({strength}).\nMake moves with: /chess move {id} <notation> (e.g. e2e4)")
+                            }
+                            Err(e) => format!("⚠️ Chess error: {e}"),
+                        }
+                    }
+                    "move" => {
+                        // /chess move <game-id> <notation>
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let game_id  = parts2.first().copied().unwrap_or("");
+                        let notation = parts2.get(1).copied().unwrap_or("").trim();
+                        if game_id.is_empty() || notation.is_empty() {
+                            return "/chess move <game-id> <uci-move>  e.g. /chess move abc123 e2e4".to_string();
+                        }
+                        match self.mgmt.chess_move(game_id, notation).await {
+                            Ok(v) => {
+                                let fen    = v["fen"].as_str().unwrap_or("?");
+                                let ai_mv  = v["ai_move"].as_str().unwrap_or("(thinking…)");
+                                let result = v["result"].as_str().unwrap_or("ongoing");
+                                if result != "ongoing" {
+                                    format!("Game over — **{result}**\nPosition: `{fen}`")
+                                } else {
+                                    format!("✅ You played **{notation}** → BonsAI replied **{ai_mv}**\n`{fen}`")
+                                }
+                            }
+                            Err(e) => format!("⚠️ Chess error: {e}"),
+                        }
+                    }
+                    "resign" => {
+                        let game_id = rest.trim();
+                        if game_id.is_empty() {
+                            return "/chess resign <game-id>".to_string();
+                        }
+                        match self.mgmt.chess_resign(game_id).await {
+                            Ok(_) => "🏳 You resigned. Better luck next time!".to_string(),
+                            Err(e) => format!("⚠️ Chess error: {e}"),
+                        }
+                    }
+                    "status" => {
+                        let game_id = rest.trim();
+                        if game_id.is_empty() {
+                            return "/chess status <game-id>".to_string();
+                        }
+                        match self.mgmt.chess_status(game_id).await {
+                            Ok(v) => {
+                                let fen    = v["fen"].as_str().unwrap_or("?");
+                                let turn   = v["turn"].as_str().unwrap_or("?");
+                                let result = v["result"].as_str().unwrap_or("ongoing");
+                                format!("Chess game `{game_id}`\nTurn: **{turn}** | Result: {result}\n`{fen}`")
+                            }
+                            Err(e) => format!("⚠️ Chess error: {e}"),
+                        }
+                    }
+                    _ => "Chess commands:\n  /chess new [white|black] [normal|strong]\n  /chess move <id> <uci>\n  /chess resign <id>\n  /chess status <id>".to_string(),
+                }
+            }
+
+            // ── Go commands ────────────────────────────────────────────────────
+            "/go" => {
+                match arg1 {
+                    "new" | "" => {
+                        // /go new [9|13|19] [black|white]
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let size_str = parts2.first().copied().unwrap_or("19");
+                        let color    = parts2.get(1).copied().unwrap_or("black");
+                        let size: u8 = size_str.parse().unwrap_or(19);
+                        let size     = if [9, 13, 19].contains(&size) { size } else { 19 };
+                        let color    = if color == "white" { "white" } else { "black" };
+                        match self.mgmt.go_new(&msg.display_name, color, size, 7.5).await {
+                            Ok(v) => {
+                                let id = v["game_id"].as_str().unwrap_or("?");
+                                format!("⚫ New {size}×{size} Go game started!\nGame ID: `{id}`\nYou play as **{color}** (komi 7.5).\nMake moves with: /go move {id} <GTP> (e.g. D4)")
+                            }
+                            Err(e) => format!("⚠️ Go error: {e}"),
+                        }
+                    }
+                    "move" => {
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let game_id = parts2.first().copied().unwrap_or("");
+                        let gtp     = parts2.get(1).copied().unwrap_or("").trim();
+                        if game_id.is_empty() || gtp.is_empty() {
+                            return "/go move <game-id> <GTP>  e.g. /go move abc123 D4".to_string();
+                        }
+                        match self.mgmt.go_move(game_id, gtp).await {
+                            Ok(v) => {
+                                let ai_mv  = v["ai_move"].as_str().unwrap_or("(thinking…)");
+                                let result = v["result"].as_str().unwrap_or("ongoing");
+                                if result != "ongoing" {
+                                    format!("Game over — **{result}**")
+                                } else {
+                                    format!("✅ You played **{gtp}** → BonsAI replied **{ai_mv}**")
+                                }
+                            }
+                            Err(e) => format!("⚠️ Go error: {e}"),
+                        }
+                    }
+                    "pass" => {
+                        let game_id = rest.trim();
+                        if game_id.is_empty() {
+                            return "/go pass <game-id>".to_string();
+                        }
+                        match self.mgmt.go_move(game_id, "pass").await {
+                            Ok(v) => {
+                                let ai_mv = v["ai_move"].as_str().unwrap_or("(thinking…)");
+                                format!("⏸ You passed → BonsAI played **{ai_mv}**")
+                            }
+                            Err(e) => format!("⚠️ Go error: {e}"),
+                        }
+                    }
+                    "resign" => {
+                        let game_id = rest.trim();
+                        if game_id.is_empty() {
+                            return "/go resign <game-id>".to_string();
+                        }
+                        match self.mgmt.go_resign(game_id).await {
+                            Ok(_) => "🏳 You resigned. Better luck next time!".to_string(),
+                            Err(e) => format!("⚠️ Go error: {e}"),
+                        }
+                    }
+                    _ => "Go commands:\n  /go new [9|13|19] [black|white]\n  /go move <id> <GTP>\n  /go pass <id>\n  /go resign <id>".to_string(),
+                }
+            }
+
+            // ── Puzzle commands ────────────────────────────────────────────────
+            "/puzzle" => {
+                match arg1 {
+                    "" | "daily" => {
+                        match self.mgmt.puzzle_daily().await {
+                            Ok(v) => {
+                                let id    = v["id"].as_str().unwrap_or("?");
+                                let desc  = v["description"].as_str().unwrap_or("Find the best move.");
+                                let fen   = v["fen"].as_str().unwrap_or("");
+                                let hint  = v["hint"].as_str().unwrap_or("");
+                                format!("🧩 Daily Puzzle (ID: {id})\n{desc}\n`{fen}`\nHint: _{hint}_\nGuess with: /puzzle guess {id} <uci-move>")
+                            }
+                            Err(e) => format!("⚠️ Puzzle error: {e}"),
+                        }
+                    }
+                    "guess" => {
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let puzzle_id = parts2.first().copied().unwrap_or("");
+                        let uci_move  = parts2.get(1).copied().unwrap_or("").trim();
+                        if puzzle_id.is_empty() || uci_move.is_empty() {
+                            return "/puzzle guess <puzzle-id> <uci-move>".to_string();
+                        }
+                        match self.mgmt.puzzle_check(puzzle_id, uci_move).await {
+                            Ok(v) => {
+                                let status = v["status"].as_str().unwrap_or("?");
+                                let msg_txt = v["message"].as_str().unwrap_or("");
+                                match status {
+                                    "solved"  => format!("🎉 Solved! {msg_txt}"),
+                                    "correct" => format!("✅ Correct! {msg_txt}"),
+                                    "wrong"   => {
+                                        let hint = v["hint"].as_str().unwrap_or("Keep trying!");
+                                        format!("❌ Not quite. Hint: _{hint}_")
+                                    }
+                                    _ => "⚠️ Error checking move.".to_string(),
+                                }
+                            }
+                            Err(e) => format!("⚠️ Puzzle error: {e}"),
+                        }
+                    }
+                    _ => "Puzzle commands:\n  /puzzle daily\n  /puzzle guess <id> <uci-move>".to_string(),
+                }
+            }
+
+            // ── Tournament commands ────────────────────────────────────────────
+            "/tournament" | "/tourney" => {
+                match arg1 {
+                    "" | "list" => {
+                        match self.mgmt.tournament_list().await {
+                            Ok(v) => {
+                                let list = v.as_array().cloned().unwrap_or_default();
+                                if list.is_empty() {
+                                    "No tournaments yet. Create one with: /tournament new <name> <agent1,agent2>".to_string()
+                                } else {
+                                    let lines: Vec<String> = list.iter().map(|t| {
+                                        let name  = t["name"].as_str().unwrap_or("?");
+                                        let state = t["state"].as_str().unwrap_or("?");
+                                        let n     = t["participants"].as_array().map(|a| a.len()).unwrap_or(0);
+                                        format!("• **{name}** — {state} ({n} players)")
+                                    }).collect();
+                                    format!("Tournaments:\n{}", lines.join("\n"))
+                                }
+                            }
+                            Err(e) => format!("⚠️ Tournament error: {e}"),
+                        }
+                    }
+                    "new" | "create" => {
+                        // /tournament new <name> <agent1,agent2,...>
+                        let parts2: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let name   = parts2.first().copied().unwrap_or("").trim();
+                        let agents = parts2.get(1).copied().unwrap_or("").trim();
+                        if name.is_empty() || agents.is_empty() {
+                            return "/tournament new <name> <agent1,agent2,...>".to_string();
+                        }
+                        let agent_list: Vec<&str> = agents.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+                        match self.mgmt.tournament_create(name, &agent_list).await {
+                            Ok(v) => {
+                                let id = v["tournament_id"].as_str().unwrap_or("?");
+                                format!("🏆 Tournament **{name}** created (ID: `{id}`) with {} participants!", agent_list.len())
+                            }
+                            Err(e) => format!("⚠️ Tournament error: {e}"),
+                        }
+                    }
+                    _ => "Tournament commands:\n  /tournament list\n  /tournament new <name> <agent1,agent2>".to_string(),
+                }
+            }
+
             "/help" => concat!(
                 "Bonsai workspace commands:\n",
                 "  /swarm <prompt>       — multi-agent swarm task\n",
@@ -447,6 +668,14 @@ impl Router {
                 "  /model                — list available models\n",
                 "  /features             — show feature flags\n",
                 "  /queue                — task queue status\n",
+                "  /chess new …          — start a chess game vs BonsAI\n",
+                "  /chess move <id> <mv> — make a chess move\n",
+                "  /go new …             — start a Go game vs BonsAI\n",
+                "  /go move <id> <GTP>   — make a Go move\n",
+                "  /puzzle daily         — get today's chess puzzle\n",
+                "  /puzzle guess <id> <mv> — submit a puzzle answer\n",
+                "  /tournament list      — list tournaments\n",
+                "  /tournament new …     — create a tournament\n",
                 "  /help                 — this message",
             ).to_string(),
 

@@ -52,6 +52,10 @@
   let botOnline = false;
   let gpuHealth: GpuHealthReport | null = null;
   let gpuResetting = false;
+  let gpuPct = 0;
+  $: gpuPct = gpuHealth && gpuHealth.vram_total_mb > 0
+    ? Math.min(100, Math.round((gpuHealth.total_vram_reserved_mb / gpuHealth.vram_total_mb) * 100))
+    : 0;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let botStatusUnlisten: (() => void) | null = null;
 
@@ -310,10 +314,7 @@
                 <div class="card-label">VRAM Free</div>
                 <div class="card-value" style="font-size:14px">{gpuHealth.vram_free_mb} MB</div>
                 <div class="meter">
-                  {@const pct = gpuHealth.vram_total_mb > 0
-                    ? Math.min(100, Math.round((gpuHealth.total_vram_reserved_mb / gpuHealth.vram_total_mb) * 100))
-                    : 0}
-                  <div class="fill {pct > 80 ? 'red' : pct > 60 ? 'amber' : ''}" style:width={`${pct}%`}></div>
+                  <div class="fill {gpuPct > 80 ? 'red' : gpuPct > 60 ? 'amber' : ''}" style:width={`${gpuPct}%`}></div>
                 </div>
                 <div class="card-sub">Reserved {gpuHealth.total_vram_reserved_mb} MB</div>
               </article>

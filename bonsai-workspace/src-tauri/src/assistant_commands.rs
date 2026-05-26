@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use std::sync::atomic::Ordering;
 
 use crate::AppState;
@@ -259,6 +259,40 @@ pub async fn submit_assistant_chat(
     session_id: String,
     user_message: String,
 ) -> Result<String, String> {
+    // ── Slash-command fast path (chess/go/puzzle) ─────────────────────────────
+    if let Some(cmd) = crate::games::parse_slash_command(&user_message) {
+        // Persist user message first
+        let user_msg = AssistantMessage {
+            id: String::new(), session_id: session_id.clone(), role: "user".into(),
+            content: user_message.clone(), tool_name: None, tool_result: None,
+            tts_synthesized: false, created_at: 0, tool_call_id: None, game_state: None,
+        };
+        state.assistant_store.append_message(user_msg).await?;
+
+        let profile = state.assistant_store.get_active_profile().await?
+            .ok_or("No active assistant profile")?;
+        let player_name = profile.name.clone();
+
+        let (reply, game_state) = crate::games::execute_slash_command(
+            cmd, &state.game_sessions, &player_name, None, None,
+        ).await;
+
+        let asst_msg = AssistantMessage {
+            id: String::new(), session_id: session_id.clone(), role: "assistant".into(),
+            content: reply.clone(), tool_name: None, tool_result: None,
+            tts_synthesized: false, created_at: 0, tool_call_id: None,
+            game_state,
+        };
+        state.assistant_store.append_message(asst_msg).await?;
+
+        // Emit game state event so frontend can update
+        if let Err(e) = app.emit("game-state-update", &reply) {
+            tracing::warn!("game-state-update emit failed: {e}");
+        }
+        return Ok(reply);
+    }
+    // ── Normal ReAct path ────────────────────────────────────────────────────
+
     // Persist user message
     let user_msg = AssistantMessage {
         id: String::new(),
@@ -270,6 +304,7 @@ pub async fn submit_assistant_chat(
         tts_synthesized: false,
         created_at: 0,
         tool_call_id: None,
+        game_state: None,
     };
     state.assistant_store.append_message(user_msg).await?;
 
@@ -350,6 +385,7 @@ pub async fn submit_assistant_chat(
         tts_synthesized: false,
         created_at: 0,
         tool_call_id: None,
+        game_state: None,
     };
     state.assistant_store.append_message(asst_msg).await?;
 

@@ -88,7 +88,7 @@ impl ContinuousTrainer {
 // NOTE: avoid `get_training_status` — conflicts with commands.rs.
 
 #[tauri::command]
-pub async fn ingest_feedback(
+pub async fn ingest_feedback_continuous(
     state: tauri::State<'_, crate::AppState>,
     prompt: String,
     response: String,

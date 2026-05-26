@@ -10,7 +10,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use regex::RegexBuilder;
+use bonsai_capability_registry::EffectRow;
 pub mod demo_streaming;
+pub mod ai_code_tools;
+pub mod data_science_tools;
+pub mod security_tools;
+pub mod creative_ext_tools;
+pub mod web_ext_tools;
 
 // ── Tool schema types ─────────────────────────────────────────────────────────
 
@@ -36,6 +42,20 @@ pub struct ToolDef {
     pub is_custom:         bool,
     /// Path to custom script (non-null for is_custom = true)
     pub script_path:       Option<String>,
+    /// Trigger phrases useful for capability indexing/search
+    #[serde(default)]
+    pub trigger_phrases:   Vec<String>,
+    /// Tags describing capability (tool, io, model, gpu, safety, etc.)
+    #[serde(default)]
+    pub capability_tags:   Vec<String>,
+    /// Example invocations or JSON examples
+    #[serde(default)]
+    pub examples:          Vec<serde_json::Value>,
+    /// If this tool requires a particular model or runtime component
+    pub requires_model:    Option<String>,
+    /// Declared effects (FileIO, NetworkIO, ShellExec, etc.)
+    #[serde(default)]
+    pub effect_row:        EffectRow,
 }
 
 // ── Built-in tools ────────────────────────────────────────────────────────────
@@ -51,6 +71,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             }],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["read_file".into(), "read file".into(), "open file".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "list_files".into(),
@@ -83,6 +108,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["list_files".into(), "list files".into(), "directory listing".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "list_all_files".into(),
@@ -107,6 +137,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["list_all_files".into(), "list all files".into(), "recursive list".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "search_files".into(),
@@ -117,6 +152,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["search_files".into(), "search files".into(), "find text".into()],
+            capability_tags: vec!["tool".into(), "search".into(), "io".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "grep_files".into(),
@@ -129,6 +169,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["grep_files".into(), "grep".into(), "regex search".into()],
+            capability_tags: vec!["tool".into(), "search".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "write_file".into(),
@@ -139,6 +184,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: true,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["write_file".into(), "write file".into(), "save file".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow { effects: vec![bonsai_capability_registry::BonsaiEffect::FileIO] },
         },
         ToolDef {
             name: "edit_file".into(),
@@ -150,6 +200,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: true,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["edit_file".into(), "replace string".into(), "edit file".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow { effects: vec![bonsai_capability_registry::BonsaiEffect::FileIO] },
         },
         ToolDef {
             name: "create_dir".into(),
@@ -160,6 +215,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             }],
             requires_approval: true,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["create_dir".into(), "make directory".into(), "mkdir".into()],
+            capability_tags: vec!["tool".into(), "io".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "delete_file".into(),
@@ -170,16 +230,43 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             }],
             requires_approval: true,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["delete_file".into(), "remove file".into(), "delete".into()],
+            capability_tags: vec!["tool".into(), "danger".into(), "file".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "run_command".into(),
-            description: "Execute a shell command and return its stdout/stderr output. ALWAYS REQUIRES USER APPROVAL. Supports aliases: 'specs', 'computer specs', 'system specs', and 'hardware info'.".into(),
+            description: "Execute an arbitrary shell command and return its stdout/stderr output. ALWAYS REQUIRES USER APPROVAL. For system information queries (specs, RAM, CPU, hardware), use get_system_stats instead — it requires no approval.".into(),
             args: vec![ToolArg {
                 name: "command".into(), arg_type: "string".into(),
                 description: "Shell command to execute.".into(), required: true,
             }],
             requires_approval: true,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["run_command".into(), "execute".into(), "shell".into()],
+            capability_tags: vec!["tool".into(), "shell".into(), "danger".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow { effects: vec![bonsai_capability_registry::BonsaiEffect::ShellExec] },
+        },
+        ToolDef {
+            name: "get_system_stats".into(),
+            description: "Returns full system specifications: OS name/version, CPU model/cores/usage, RAM, swap, disk space per drive, and hostname. Use this INSTEAD OF run_command for any system information queries (specs, RAM, CPU, GPU, hardware).".into(),
+            args: vec![],
+            requires_approval: false,
+            is_custom: false, script_path: None,
+            trigger_phrases: vec![
+                "get_system_stats".into(), "system specs".into(), "computer specs".into(),
+                "hardware info".into(), "system info".into(), "specs".into(),
+                "what are my specs".into(), "cpu info".into(), "ram info".into(),
+                "how much ram".into(), "how much memory".into(),
+            ],
+            capability_tags: vec!["tool".into(), "system".into(), "info".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
         ToolDef {
             name: "generate_music".into(),
@@ -204,6 +291,11 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             ],
             requires_approval: false,
             is_custom: false, script_path: None,
+            trigger_phrases: vec!["generate_music".into(), "music".into(), "create music".into()],
+            capability_tags: vec!["tool".into(), "creative".into(), "audio".into()],
+            examples: vec![],
+            requires_model: None,
+            effect_row: EffectRow::default(),
         },
     ]
 }
@@ -245,6 +337,11 @@ pub fn load_custom_tools(workspace_path: &Path) -> Vec<ToolDef> {
             requires_approval: manifest.requires_approval.unwrap_or(true),
             is_custom:         true,
             script_path:       Some(script_path.to_string_lossy().into_owned()),
+            trigger_phrases:   vec![],
+            capability_tags:   vec!["tool".into()],
+            examples:          vec![],
+            requires_model:    None,
+            effect_row:        EffectRow::default(),
         });
     }
     tools
@@ -266,20 +363,35 @@ fn bridge_def_to_tool_def(b: crate::tool_core::ReactBridgeDef) -> ToolDef {
         requires_approval: b.requires_approval,
         is_custom:         false,
         script_path:       None,
+        trigger_phrases:   vec![],
+        capability_tags:   vec!["tool".into()],
+        examples:          vec![],
+        requires_model:    None,
+        effect_row:        EffectRow::default(),
     }
 }
 
 /// Merge built-in tools with workspace custom tools.
 pub fn all_tools(workspace_path: Option<&str>) -> Vec<ToolDef> {
-    all_tools_with_registry(workspace_path, None)
+    all_tools_full(workspace_path, None, None)
 }
 
-/// Full merge: built-ins + custom workspace tools + any `tool_core::ToolRegistry` tools.
-/// This is the single function all call-sites should use — it ensures every registry
-/// tool is visible to every model regardless of whether it supports native function calling.
+/// Merge with the `tool_core::ToolRegistry` (compile-time registered tools).
 pub fn all_tools_with_registry(
     workspace_path: Option<&str>,
     registry: Option<&crate::tool_core::ToolRegistry>,
+) -> Vec<ToolDef> {
+    all_tools_full(workspace_path, registry, None)
+}
+
+/// Full merge: built-ins + workspace customs + tool_core registry + async ToolRegistryState.
+/// This is the authoritative function that all inference call-sites should use.
+/// Passing `state_registry` ensures every dynamically-registered tool is visible
+/// to the ReAct loop without any additional hardcoding.
+pub fn all_tools_full(
+    workspace_path: Option<&str>,
+    core_registry:  Option<&crate::tool_core::ToolRegistry>,
+    state_registry: Option<&crate::tool_registry::ToolRegistryState>,
 ) -> Vec<ToolDef> {
     let mut tools = built_in_tools();
 
@@ -288,19 +400,46 @@ pub fn all_tools_with_registry(
         tools.extend(load_custom_tools(Path::new(ws)));
     }
 
-    // Auto-bridge: every Arc<dyn Tool> in the core registry becomes a ToolDef
-    if let Some(reg) = registry {
-        let existing_names: std::collections::HashSet<String> =
+    // Bridge tools from the compile-time tool_core::ToolRegistry
+    if let Some(reg) = core_registry {
+        let existing: std::collections::HashSet<String> =
             tools.iter().map(|t| t.name.clone()).collect();
-        let bridge: Vec<ToolDef> = reg.react_bridge_defs()
-            .into_iter()
-            .filter(|d| !existing_names.contains(&d.name))
-            .map(bridge_def_to_tool_def)
-            .collect();
-        tools.extend(bridge);
+        tools.extend(
+            reg.react_bridge_defs()
+                .into_iter()
+                .filter(|d| !existing.contains(&d.name))
+                .map(bridge_def_to_tool_def),
+        );
+    }
+
+    // Bridge tools from the async ToolRegistryState (dynamically registered at runtime)
+    if let Some(state) = state_registry {
+        let existing: std::collections::HashSet<String> =
+            tools.iter().map(|t| t.name.clone()).collect();
+        tools.extend(
+            state.to_tool_defs()
+                .into_iter()
+                .filter(|d| !existing.contains(&d.name)),
+        );
     }
 
     tools
+}
+
+/// Find the first tool in `tools` whose capability_tags contain `tag`, or whose
+/// trigger_phrases contain `phrase`.  Returns the tool name if found.
+pub fn find_tool_by_tag<'a>(tools: &'a [ToolDef], tag: &str) -> Option<&'a str> {
+    tools.iter()
+        .find(|t| t.capability_tags.iter().any(|ct| ct == tag))
+        .map(|t| t.name.as_str())
+}
+
+/// Find the first tool whose trigger_phrases include `phrase` (case-insensitive substring).
+pub fn find_tool_by_trigger<'a>(tools: &'a [ToolDef], phrase: &str) -> Option<&'a str> {
+    let lower = phrase.to_lowercase();
+    tools.iter()
+        .find(|t| t.trigger_phrases.iter().any(|p| p.to_lowercase().contains(&lower)))
+        .map(|t| t.name.as_str())
 }
 
 // ── System prompt generation ──────────────────────────────────────────────────
@@ -443,7 +582,7 @@ pub fn system_prompt_for(tools: &[ToolDef], workspace_path: Option<&str>, user_p
     s.push_str(
         "## Mandatory execution behavior\n\n\
          - When a user asks for factual machine/system information (CPU, RAM, GPU, OS, computer specs), execute a tool call instead of giving manual instructions.\n\
-         - Prefer `run_command` with `command: \"specs\"` for this request category.\n\
+         - Use `get_system_stats` (no approval required) for all system specification queries — never use run_command for specs.\n\
             - When a user asks to create/build/write a script or file, use `write_file` (and `create_dir` if needed) instead of returning pseudo-code only.\n\
             - For shell script requests, write syntactically valid script content for the requested shell and path.\n\
          - Do not return hypothetical example hardware values.\n\
@@ -1104,6 +1243,37 @@ pub async fn execute_built_in(
                 std::fs::remove_file(path).map_err(|e| format!("delete_file error: {e}"))?;
             }
             Ok(format!("🗑️ Deleted: {path}"))
+        }
+
+        "get_system_stats" => {
+            use sysinfo::{Disks, System};
+            let mut sys = System::new_all();
+            sys.refresh_all();
+            let cpu_model   = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+            let cpu_logical = sys.cpus().len();
+            let cpu_physical = System::physical_core_count(&sys).unwrap_or(cpu_logical);
+            let mem_total_gb = (sys.total_memory() as f64 / 1_073_741_824.0 * 10.0).round() / 10.0;
+            let mem_avail_gb = (sys.available_memory() as f64 / 1_073_741_824.0 * 10.0).round() / 10.0;
+            let os_name     = System::name().unwrap_or_else(|| "Unknown".into());
+            let os_version  = System::os_version().unwrap_or_default();
+            let hostname    = System::host_name().unwrap_or_default();
+            let arch        = std::env::consts::ARCH;
+            let disks       = Disks::new_with_refreshed_list();
+            let disk_summary: Vec<String> = disks.iter().map(|d| {
+                let total = d.total_space() as f64 / 1_073_741_824.0;
+                let avail = d.available_space() as f64 / 1_073_741_824.0;
+                format!("{} {:.0}GB total / {:.0}GB free", d.mount_point().display(), total, avail)
+            }).collect();
+            Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "os": format!("{os_name} {os_version}"),
+                "architecture": arch,
+                "hostname": hostname,
+                "cpu": cpu_model,
+                "cpu_cores": format!("{cpu_physical} physical / {cpu_logical} logical"),
+                "ram_total_gb": mem_total_gb,
+                "ram_available_gb": mem_avail_gb,
+                "disks": disk_summary,
+            })).unwrap_or_default())
         }
 
         "run_command" => {

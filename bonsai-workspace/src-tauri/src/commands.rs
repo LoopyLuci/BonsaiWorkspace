@@ -403,6 +403,9 @@ fn is_system_info_request(text: &str) -> bool {
         || t.contains("computer specs")
         || t.contains("hardware info")
         || t.contains("system info")
+        || t.contains("what are my specs")
+        || t.contains("my specs")
+        || t.contains("machine specs")
         || (t.contains("cpu") && t.contains("gpu"))
 }
 
@@ -597,7 +600,11 @@ pub async fn submit_chat(
         }),
     );
 
-    let mut tools = tools::all_tools(workspace_path.as_deref());
+    let mut tools = tools::all_tools_full(
+        workspace_path.as_deref(),
+        None,
+        Some(&state.tool_registry),
+    );
     if let Some(enabled) = enabled_tools {
         let allow: std::collections::HashSet<String> = enabled.into_iter().collect();
         tools.retain(|t| allow.contains(&t.name));
@@ -615,13 +622,34 @@ pub async fn submit_chat(
     let greeting_only = is_greeting_message(&last_user_text);
 
     if is_system_info_request(&last_user_text) {
-        sys_prompt.push_str(
-            "\n\n## Immediate instruction for this request\n\
-             - The user is asking for machine/system facts (for example RAM).\n\
-             - You MUST call run_command before answering.\n\
-             - Output ONLY this tool call first (no prose):\n\
-               <tool_call>{\"tool\":\"run_command\",\"args\":{\"command\":\"specs\"}}</tool_call>\n"
-        );
+        // Resolve the best system-info tool at runtime from the merged tool list.
+        // Prefer a tool with trigger phrase "specs" (get_system_stats), fall back to "system_info".
+        let sysinfo_tool = tools::find_tool_by_trigger(&tools, "specs")
+            .or_else(|| tools::find_tool_by_trigger(&tools, "system_info"))
+            .or_else(|| tools::find_tool_by_tag(&tools, "system"))
+            .unwrap_or("get_system_stats");
+        let no_approval = tools.iter().find(|t| t.name == sysinfo_tool).map_or(false, |t| !t.requires_approval);
+
+        // Skip re-injection if context already has a tool result (post-approval continuation).
+        let already_has_tool_result = messages.iter().any(|m| {
+            m.role == "user" && (
+                m.content.contains("<tool_result>") ||
+                m.content.contains("cpu_cores") ||
+                m.content.contains("ram_total_gb") ||
+                m.content.contains("os_name") ||
+                m.content.contains("total_ram")
+            )
+        });
+        if !already_has_tool_result {
+            let approval_note = if no_approval { "(no approval needed)" } else { "(requires approval)" };
+            sys_prompt.push_str(&format!(
+                "\n\n## Immediate instruction for this request\n\
+                 - The user is asking for machine/system facts.\n\
+                 - You MUST call `{sysinfo_tool}` before answering {approval_note}.\n\
+                 - Output ONLY this tool call first (no prose):\n\
+                   <tool_call>{{\"tool\":\"{sysinfo_tool}\",\"args\":{{}}}}</tool_call>\n"
+            ));
+        }
     }
     if greeting_only {
         sys_prompt.push_str(
@@ -723,53 +751,51 @@ pub async fn submit_chat(
             }
 
             if is_system_info_request(&last_user_text) {
-                let run_command_available = tools.iter().any(|t| t.name == "run_command");
-                if !run_command_available {
-                    final_content = "I need the run_command tool enabled to retrieve machine specs. Please enable command execution tools and retry.".to_string();
-                    loop_limit_reached = false;
-                    break;
-                }
+                // Resolve the best available system-info tool at runtime.
+                let sysinfo_tool_name = tools::find_tool_by_trigger(&tools, "specs")
+                    .or_else(|| tools::find_tool_by_trigger(&tools, "system_info"))
+                    .or_else(|| tools::find_tool_by_tag(&tools, "system"))
+                    .unwrap_or("get_system_stats");
+                let sysinfo_tool_def = tools.iter().find(|t| t.name == sysinfo_tool_name);
+                let no_approval = sysinfo_tool_def.map_or(true, |t| !t.requires_approval);
 
                 if !system_info_retry_used {
                     system_info_retry_used = true;
+                    if no_approval {
+                        // Execute directly — no approval needed.
+                        let result = tools::execute_built_in(sysinfo_tool_name, &json!({}), workspace_path.as_deref()).await
+                            .unwrap_or_else(|e| format!("Error: {e}"));
+                        emit_agent_connect_event(&state, &app_handle, "tool.auto_executed",
+                            "System info tool executed automatically",
+                            json!({ "tool": sysinfo_tool_name, "source": "system_info_fallback" }));
+                        ctx.push(json!({"role": "assistant", "content": &response}));
+                        ctx.push(json!({
+                            "role": "user",
+                            "content": format!("<tool_result>\n{result}\n</tool_result>\nNow summarise these system specifications for the user.")
+                        }));
+                        continue;
+                    }
+                    // Tool requires approval — give the model one more chance with an explicit prompt.
                     ctx.push(json!({"role": "assistant", "content": &response}));
                     ctx.push(json!({
                         "role": "user",
-                        "content": "Tool required for this request. Call run_command with command 'specs' before answering. Return only a <tool_call> block."
+                        "content": format!("Call `{sysinfo_tool_name}` before answering. Return only a <tool_call> block.")
                     }));
                     continue;
                 }
 
-                // Deterministic fallback: trigger approval flow directly so system facts are gathered.
-                let fallback_args = json!({ "command": "specs" });
-                let payload = json!({
-                    "type":          "tool_approval",
-                    "tool":          "run_command",
-                    "args":          fallback_args,
-                    "description":   "Run command: specs",
-                    "rationale":     "System information request requires factual command output.",
-                    "paths_affected": [],
-                    "action":        json!({"tool": "run_command", "args": {"command": "specs"}}),
-                    "raw_response":  &response,
-                    "ctx_snapshot":  &ctx,
-                });
-                let _ = app_handle.emit("permission-request", payload);
-                emit_agent_connect_event(
-                    &state,
-                    &app_handle,
-                    "hitl.requested",
-                    "Tool approval required (system-info fallback)",
-                    json!({
-                        "tool": "run_command",
-                        "args": {"command": "specs"},
-                        "source": "system_info_fallback",
-                    }),
-                );
-
-                final_content = "I need to run a local system command to answer this accurately. Please approve the request.".to_string();
-                action_handled = true;
-                loop_limit_reached = false;
-                break;
+                // Second deterministic fallback: always execute if possible.
+                let result = tools::execute_built_in(sysinfo_tool_name, &json!({}), workspace_path.as_deref()).await
+                    .unwrap_or_else(|e| format!("Error: {e}"));
+                emit_agent_connect_event(&state, &app_handle, "tool.auto_executed",
+                    "System info fallback (second attempt)",
+                    json!({ "tool": sysinfo_tool_name, "source": "system_info_fallback_2" }));
+                ctx.push(json!({"role": "assistant", "content": &response}));
+                ctx.push(json!({
+                    "role": "user",
+                    "content": format!("<tool_result>\n{result}\n</tool_result>\nNow summarise these system specifications for the user.")
+                }));
+                continue;
             }
 
             // No tool calls — this is the final prose response.
@@ -1012,8 +1038,9 @@ Do not include markdown fences, explanations, or repeated context. Keep completi
 #[tauri::command]
 pub async fn list_available_chat_tools(
     workspace_path: Option<String>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let tools = tools::all_tools(workspace_path.as_deref());
+    let tools = tools::all_tools_full(workspace_path.as_deref(), None, Some(&state.tool_registry));
     Ok(tools
         .into_iter()
         .map(|t| {

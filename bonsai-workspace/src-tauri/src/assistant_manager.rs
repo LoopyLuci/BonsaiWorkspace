@@ -1092,6 +1092,7 @@ pub async fn run_assistant_turn(
                     tts_synthesized: false,
                     created_at: 0,
                     tool_call_id: Some(outcome.tool_call_id.clone()),
+                    game_state: None,
                 }).await;
 
                 messages.push(outcome.to_context_message());

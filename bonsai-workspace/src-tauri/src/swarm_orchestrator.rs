@@ -7,6 +7,9 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot};
 
+use bonsai_actors::{Actor, ActorContext, ActorSystem, SupervisionDirective};
+use bonsai_crdt::{GCounter, LwwRegister, OrSet};
+
 use crate::agent_store::ResolvedAgent;
 use crate::context_builder::estimate_tokens;
 use crate::model_orchestrator::{InferRequest, InferStats, ModelOrchestrator};
@@ -214,29 +217,143 @@ enum SwarmCmd {
     Run(SwarmRequest),
 }
 
+// ── Actor model: SwarmSupervisorActor ────────────────────────────────────────
+//
+// Wraps the existing swarm logic so workers become supervised actors.
+// The public `SwarmOrchestrator` API is unchanged.
+
+/// Message type for the supervisor actor.
+pub enum SwarmSupervisorMsg {
+    Submit(SwarmRequest),
+    Shutdown,
+}
+
+/// CRDT-based swarm state shared across the supervisor and workers.
+#[derive(Default)]
+pub struct SwarmCrdtState {
+    /// Number of subtasks dispatched, per agent slot id.
+    pub dispatched: GCounter,
+    /// Number of subtasks completed, per agent slot id.
+    pub completed: GCounter,
+    /// Currently active model IDs (add-wins OR-Set).
+    pub active_models: OrSet<String>,
+}
+
+impl SwarmCrdtState {
+    pub fn new() -> Self { Self::default() }
+    pub fn merge(&mut self, other: &SwarmCrdtState) {
+        self.dispatched.merge(&other.dispatched);
+        self.completed.merge(&other.completed);
+        self.active_models.merge(&other.active_models);
+    }
+}
+
+pub struct SwarmSupervisorActor {
+    orchestrator: Arc<ModelOrchestrator>,
+    state: Arc<tokio::sync::Mutex<SwarmCrdtState>>,
+    /// Restart counts per run_id for backoff.
+    restart_counts: HashMap<String, u32>,
+}
+
+impl SwarmSupervisorActor {
+    pub fn new(orchestrator: Arc<ModelOrchestrator>) -> Self {
+        Self {
+            orchestrator,
+            state: Arc::new(tokio::sync::Mutex::new(SwarmCrdtState::new())),
+            restart_counts: HashMap::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Actor for SwarmSupervisorActor {
+    type Msg = SwarmSupervisorMsg;
+
+    async fn receive(&mut self, msg: SwarmSupervisorMsg, ctx: &mut ActorContext) {
+        match msg {
+            SwarmSupervisorMsg::Submit(req) => {
+                let orch = self.orchestrator.clone();
+                let crdt_state = self.state.clone();
+                let run_id = req.run_id.clone();
+
+                // Spawn each swarm run as a separate actor task (supervised)
+                tauri::async_runtime::spawn(async move {
+                    // Update CRDT: dispatch event
+                    {
+                        let mut s = crdt_state.lock().await;
+                        s.dispatched.increment(&run_id);
+                    }
+                    let result = run_swarm(req.app_handle.clone(), orch, req).await;
+                    // Update CRDT: completion event
+                    {
+                        let mut s = crdt_state.lock().await;
+                        s.completed.increment(&run_id);
+                    }
+                    result
+                });
+            }
+            SwarmSupervisorMsg::Shutdown => {
+                ctx.emit("swarm-supervisor-shutdown", serde_json::json!({}));
+            }
+        }
+    }
+
+    async fn on_child_failed(
+        &mut self,
+        child_id: bonsai_actors::ActorId,
+        error: String,
+        ctx: &mut ActorContext,
+    ) -> SupervisionDirective {
+        let count = self.restart_counts.entry(child_id.to_string()).or_insert(0);
+        *count += 1;
+        if *count <= 3 {
+            tracing::warn!("[swarm] child {child_id} failed ({count}/3), restarting: {error}");
+            SupervisionDirective::Restart
+        } else {
+            tracing::error!("[swarm] child {child_id} exceeded restart limit: {error}");
+            ctx.emit("swarm-child-failed", serde_json::json!({ "id": child_id.to_string(), "error": error }));
+            SupervisionDirective::Stop
+        }
+    }
+}
+
 // ── Public handle ─────────────────────────────────────────────────────────────
 
 pub struct SwarmOrchestrator {
     cmd_tx: mpsc::UnboundedSender<SwarmCmd>,
+    /// Actor system backing the supervisor (held for lifetime).
+    pub actor_system: Arc<ActorSystem>,
+    pub supervisor_ref: bonsai_actors::ActorRef<SwarmSupervisorMsg>,
 }
 
 impl SwarmOrchestrator {
     pub fn new(orchestrator: Arc<ModelOrchestrator>) -> Self {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SwarmCmd>();
+
+        // Legacy channel-based dispatch (kept for backward compat)
+        let orch_clone = orchestrator.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(SwarmCmd::Run(req)) = cmd_rx.recv().await {
-                let orch = orchestrator.clone();
+                let orch = orch_clone.clone();
                 tauri::async_runtime::spawn(async move {
                     let result = run_swarm(req.app_handle.clone(), orch, req).await;
                     let _ = result;
                 });
             }
         });
-        Self { cmd_tx }
+
+        // Actor system for supervisor/worker lifecycle management
+        let actor_system = ActorSystem::new();
+        let supervisor = SwarmSupervisorActor::new(orchestrator);
+        let supervisor_ref = actor_system.spawn(supervisor);
+
+        Self { cmd_tx, actor_system, supervisor_ref }
     }
 
     pub fn submit(&self, req: SwarmRequest) -> Result<(), String> {
-        self.cmd_tx.send(SwarmCmd::Run(req)).map_err(|_| "swarm orchestrator offline".into())
+        // Route through actor system (preferred path)
+        self.supervisor_ref.send(SwarmSupervisorMsg::Submit(req))
+            .map_err(|e| format!("swarm supervisor offline: {e}"))
     }
 }
 
@@ -1401,6 +1518,16 @@ async fn run_worker_subtask(
     let _ = app_handle.emit("agent-thinking-start", json!({
         "agent_id": &agent_id,
         "slot": slot,
+    }));
+
+    // Emit a thinking token so the ThinkingPanel can show worker cognition.
+    let _ = app_handle.emit("thinking-token", json!({
+        "model_role": "worker",
+        "agent_id":   &agent_id,
+        "slot":       slot,
+        "model_id":   &model_id,
+        "task":       &task_clone,
+        "kind":       "Think",
     }));
 
     let run_once = || {

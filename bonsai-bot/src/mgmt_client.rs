@@ -99,4 +99,68 @@ impl MgmtClient {
     pub async fn is_reachable(&self) -> bool {
         self.get("features").await.is_ok()
     }
+
+    // ── Chess / Go game commands ────────────────────────────────────────────────
+
+    pub async fn chess_new(&self, player_name: &str, human_color: &str, strength: &str) -> Result<Value, String> {
+        self.post("chess/new", json!({
+            "player_name": player_name,
+            "human_color": human_color,
+            "ai_strength": strength,
+        })).await
+    }
+
+    pub async fn chess_move(&self, game_id: &str, notation: &str) -> Result<Value, String> {
+        self.post("chess/move", json!({ "game_id": game_id, "notation": notation })).await
+    }
+
+    pub async fn chess_resign(&self, game_id: &str) -> Result<Value, String> {
+        self.post("chess/resign", json!({ "game_id": game_id })).await
+    }
+
+    pub async fn chess_status(&self, game_id: &str) -> Result<Value, String> {
+        self.get(&format!("chess/game/{game_id}")).await
+    }
+
+    pub async fn go_new(&self, player_name: &str, human_color: &str, board_size: u8, komi: f32) -> Result<Value, String> {
+        self.post("go/new", json!({
+            "player_name": player_name,
+            "human_color": human_color,
+            "board_size": board_size,
+            "komi": komi,
+        })).await
+    }
+
+    pub async fn go_move(&self, game_id: &str, gtp: &str) -> Result<Value, String> {
+        self.post("go/move", json!({ "game_id": game_id, "gtp": gtp })).await
+    }
+
+    pub async fn go_resign(&self, game_id: &str) -> Result<Value, String> {
+        self.post("go/resign", json!({ "game_id": game_id })).await
+    }
+
+    pub async fn go_status(&self, game_id: &str) -> Result<Value, String> {
+        self.get(&format!("go/game/{game_id}")).await
+    }
+
+    pub async fn puzzle_daily(&self) -> Result<Value, String> {
+        self.get("puzzle/daily").await
+    }
+
+    pub async fn puzzle_check(&self, puzzle_id: &str, uci_move: &str) -> Result<Value, String> {
+        self.post("puzzle/check", json!({ "puzzle_id": puzzle_id, "uci_move": uci_move })).await
+    }
+
+    pub async fn tournament_list(&self) -> Result<Value, String> {
+        self.get("tournament/list").await
+    }
+
+    pub async fn tournament_create(&self, name: &str, agents: &[&str]) -> Result<Value, String> {
+        self.post("tournament/create", json!({
+            "name": name,
+            "game_type": "chess",
+            "agent_ids": agents,
+            "agent_names": agents,
+        })).await
+    }
 }

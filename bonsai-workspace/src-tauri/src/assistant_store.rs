@@ -67,6 +67,9 @@ pub struct AssistantMessage {
     pub created_at:      i64,
     #[serde(default)]
     pub tool_call_id:    Option<String>,
+    /// Embedded game state for inline board rendering in chat.
+    #[serde(default)]
+    pub game_state:      Option<crate::games::ChatGameState>,
 }
 
 // ── AssistantStore ────────────────────────────────────────────────────────────
@@ -682,5 +685,7 @@ fn row_to_message(r: &sqlx::sqlite::SqliteRow) -> AssistantMessage {
         tts_synthesized: r.get::<i64, _>("tts_synthesized") != 0,
         created_at:      r.get("created_at"),
         tool_call_id:    r.try_get("tool_call_id").ok().flatten(),
+        game_state:      r.try_get::<Option<String>, _>("game_state").ok().flatten()
+            .and_then(|s| serde_json::from_str(&s).ok()),
     }
 }

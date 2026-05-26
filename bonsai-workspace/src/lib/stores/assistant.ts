@@ -35,6 +35,20 @@ export interface AvatarAsset {
   updated_at: number;
 }
 
+export interface ChatGameState {
+  game_type: string;        // "chess" | "go"
+  session_id: string;
+  position: string;         // FEN for chess, JSON stones array for Go
+  last_move: string | null;
+  legal_moves: string[];
+  turn: string;
+  orientation: string;
+  interactive: boolean;
+  result: string;
+  board_size: number | null;
+  score_estimate: number | null;
+}
+
 export interface AssistantMessage {
   id: string;
   session_id: string;
@@ -44,6 +58,7 @@ export interface AssistantMessage {
   tool_result: string | null;
   tts_synthesized: boolean;
   created_at: number;
+  game_state?: ChatGameState | null;
 }
 
 // ── Stores ────────────────────────────────────────────────────────────────────

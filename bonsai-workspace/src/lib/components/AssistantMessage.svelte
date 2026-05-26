@@ -3,6 +3,8 @@
   import DOMPurify from 'dompurify';
   import type { AssistantMessage } from '$lib/stores/assistant';
   import { onMount } from 'svelte';
+  import ChessBoard from './ChessBoard.svelte';
+  import GoBoard from './GoBoard.svelte';
 
   export let message: AssistantMessage;
 
@@ -89,6 +91,26 @@
         {/if}
       {/if}
     </details>
+  {:else if message.game_state}
+    <div class="bubble game-bubble">
+      {#if message.content}
+        <div class="game-caption">{message.content}</div>
+      {/if}
+      {#if message.game_state.game_type === 'chess'}
+        <ChessBoard
+          gameId={message.game_state.session_id}
+          humanColor={message.game_state.orientation === 'black' ? 'black' : 'white'}
+          playerName="Player"
+        />
+      {:else if message.game_state.game_type === 'go'}
+        <GoBoard
+          gameId={message.game_state.session_id}
+          humanColor={message.game_state.orientation === 'black' ? 'black' : 'white'}
+          playerName="Player"
+          boardSize={(message.game_state.board_size ?? 19) as 9 | 13 | 19}
+        />
+      {/if}
+    </div>
   {:else if html !== null}
     <button class="bubble markdown bubble-button" type="button" aria-label="Message content" on:click={handleBubbleClick}>{@html html}</button>
   {:else}
@@ -100,6 +122,9 @@
   .msg { display: flex; margin: 4px 8px; }
   .user      { justify-content: flex-end; }
   .assistant, .tool { justify-content: flex-start; }
+
+  .game-bubble { background: none !important; border: none !important; padding: 0 !important; max-width: 100%; }
+  .game-caption { font-size: 13px; color: var(--subtext, #888); margin-bottom: 6px; padding: 0 4px; }
 
   .bubble-button {
     all: unset;

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::warn;
+use bonsai_capability_registry::{CapabilityEntry, CapabilitySource, EffectRow};
 
 // ── Tool trait ────────────────────────────────────────────────────────────────
 
@@ -111,6 +112,59 @@ impl ToolRegistry {
     }
 }
 
+// Expose the tool registry state as a CapabilitySource for the Universal Capability Registry.
+impl CapabilitySource for ToolRegistryState {
+    fn source_id(&self) -> &str { "tool_registry" }
+    fn source_type(&self) -> &str { "tool_registry" }
+
+    fn generate_entries(&self) -> Vec<CapabilityEntry> {
+        let infos = self.list_tools();
+        let mut out = Vec::new();
+        for info in infos {
+            // Build trigger phrases from tool name + meaningful words in description
+            let mut triggers = vec![info.name.clone()];
+            let desc_words: Vec<String> = info.description.split_whitespace()
+                .filter(|w| w.len() > 3)
+                .take(8)
+                .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
+            if !desc_words.is_empty() {
+                triggers.push(desc_words.join(" "));
+            }
+            // Extra triggers for well-known tools
+            match info.name.as_str() {
+                "system_info" | "get_system_stats" => {
+                    triggers.extend(["specs".into(), "system specs".into(), "hardware info".into(),
+                        "cpu info".into(), "ram info".into(), "what are my specs".into()]);
+                }
+                "execute_code" => {
+                    triggers.extend(["run code".into(), "execute python".into()]);
+                }
+                _ => {}
+            }
+            let entry = CapabilityEntry {
+                name: info.name.clone(),
+                id: info.name.clone(),
+                category: "tools".to_string(),
+                description: Some(info.description.clone()),
+                trigger_phrases: triggers,
+                capability_tags: vec!["tool".to_string(), "registry".to_string()],
+                parameters: serde_json::Value::Null,
+                examples: vec![],
+                requires_model: None,
+                effect_row: EffectRow::default(),
+                trust_level: "L2".to_string(),
+                availability: None,
+                version: None,
+                content_hash: None,
+            };
+            out.push(entry);
+        }
+        out
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ToolInfo {
     pub name: String,
@@ -181,6 +235,26 @@ impl ToolRegistryState {
         let state = Arc::new(Self { registry });
         // Register Phase-1 multi-modal tools (Kokoro TTS, Depth, YOLO).
         crate::multimodal::register_all(&state).await;
+        // Register expanded tool library (60+ tools across all categories).
+        for tool in crate::expanded_tools::all_expanded_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
+        // Register tools submodules.
+        for tool in crate::tools::ai_code_tools::all_ai_code_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
+        for tool in crate::tools::data_science_tools::all_data_science_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
+        for tool in crate::tools::security_tools::all_security_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
+        for tool in crate::tools::creative_ext_tools::all_creative_ext_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
+        for tool in crate::tools::web_ext_tools::all_web_ext_tools() {
+            state.registry.register(Box::new(ExpandedToolWrapper(tool))).await;
+        }
         state
     }
 
@@ -191,7 +265,45 @@ impl ToolRegistryState {
         rt.block_on(async { self.registry.list().await })
     }
 
+    /// Convert all registered tools to `ToolDef` for the ReAct prompt and tool resolution.
+    /// Derived metadata: `requires_approval = false` (registry tools are sandboxed or safe),
+    /// trigger phrases built from name + lowercase description words.
+    pub fn to_tool_defs(&self) -> Vec<crate::tools::ToolDef> {
+        use bonsai_capability_registry::EffectRow;
+        self.list_tools().into_iter().map(|info| {
+            // Derive trigger phrases: tool name + first few lowercase words of description
+            let mut triggers = vec![info.name.clone()];
+            let desc_words: Vec<String> = info.description.split_whitespace()
+                .take(6)
+                .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+                .filter(|w| w.len() > 2)
+                .collect();
+            if !desc_words.is_empty() {
+                triggers.push(desc_words.join(" "));
+            }
+            crate::tools::ToolDef {
+                name:              info.name,
+                description:       info.description,
+                args:              vec![],
+                requires_approval: false,
+                is_custom:         false,
+                script_path:       None,
+                trigger_phrases:   triggers,
+                capability_tags:   vec!["tool".into(), "registry".into()],
+                examples:          vec![],
+                requires_model:    None,
+                effect_row:        EffectRow::default(),
+            }
+        }).collect()
+    }
+
+    /// Check whether a tool name is present in this registry (sync, non-blocking).
+    pub fn contains_tool(&self, name: &str) -> bool {
+        self.list_tools().iter().any(|t| t.name == name)
+    }
+
     /// Invoke a tool by name and return a JSON-ish Value result or an error.
+
     pub async fn invoke_by_name(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
         match self.registry.execute(name, &args).await {
             Some(res) => {
@@ -210,6 +322,17 @@ impl ToolRegistryState {
             None => Err(format!("tool '{}' not found or failed", name)),
         }
     }
+}
+
+// ── Arc<dyn Tool> → Box<dyn Tool> adapter ────────────────────────────────────
+
+struct ExpandedToolWrapper(Arc<dyn Tool>);
+
+#[async_trait]
+impl Tool for ExpandedToolWrapper {
+    fn name(&self) -> &str { self.0.name() }
+    fn description(&self) -> &str { self.0.description() }
+    async fn run(&self, args: &Value) -> Result<ToolResult, String> { self.0.run(args).await }
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────

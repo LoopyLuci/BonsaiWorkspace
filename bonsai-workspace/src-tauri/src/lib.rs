@@ -36,6 +36,9 @@ mod bootstrap;
 mod chat_sessions;
 mod cluster_orchestrator;
 mod commands;
+mod capability_commands;
+mod thoughts;
+mod thoughts_commands;
 mod config;
 mod inference_mode;
 mod model_data;
@@ -95,6 +98,9 @@ mod music_engine;
 mod user_skills;
 mod wal;
 mod ws_router;
+mod skill_registry;
+mod expanded_tools;
+mod skill_compiler_commands;
 
 /// Write `content` to `path` atomically: write to a `.tmp` sibling then rename.
 /// Ensures the file is either fully written or unchanged on crash.
@@ -133,6 +139,16 @@ mod auth_commands;
 mod marketplace_commands;
 mod meeting_agent;
 mod continuous_training;
+mod unified_training_collector;
+mod evaluation_harness;
+mod promotion_gate;
+mod forgetting_prevention;
+mod eternal_training_loop;
+mod training_commands;
+mod orchestrator;
+mod sylva;
+mod federated_trainer;
+mod games;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -230,10 +246,16 @@ pub struct AppState {
     pub training_loop:    Arc<training_loop::TrainingLoopState>,
     /// Self-play training loop (generate → critique → correct → curate).
     pub self_play:        Arc<self_play::SelfPlayState>,
+    /// Unified training container (collector, loop engine, adapter registry).
+    pub training:         Arc<training_commands::TrainingState>,
     /// Secure WASM/Python plugin host with capability enforcement.
     pub plugin_host:      Arc<plugin_host::PluginHost>,
     /// Pluggable tool registry (execute_code, system_info, …).
     pub tool_registry:    Arc<tool_registry::ToolRegistryState>,
+    /// Universal Capability Registry (UCR) — aggregated capability manifest
+    pub capability_registry: Arc<bonsai_capability_registry::UniversalCapabilityRegistry>,
+    /// Thoughts DB store — persistent model thinking capture
+    pub thoughts_db: Arc<thoughts::ThoughtsStore>,
     /// Cross-training event sender — feed chat/plugin/tool events for passive data collection.
     pub cross_training:   cross_training::CrossTrainingSender,
     /// MCP server port (0 if startup failed). Exposes all tools to Claude Desktop, Cursor, etc.
@@ -248,6 +270,20 @@ pub struct AppState {
     pub swarm_config_store: Arc<swarm_config::SwarmConfigStore>,
     /// Unified GPU controller — layer allocation, health, invisible crash recovery.
     pub gpu_controller:    Arc<gpu_controller::GpuController>,
+    /// Skills.sh-backed skill registry with custom-rebuild, security scanning, prompt injection.
+    pub skill_registry:    Arc<skill_registry::SkillRegistryState>,
+    /// Thinking settings — per-role visibility toggles, max tokens.
+    pub thinking_settings: Arc<tokio::sync::RwLock<serde_json::Value>>,
+    /// CAS (Content-Addressed Store) — Blake3-keyed deduplicating blob store.
+    pub cas_store: Arc<bonsai_cas::CasStore>,
+    /// Sylva scripting runtime — hot-reloadable Lua scripts as UCR tools.
+    pub sylva: crate::sylva::SylvaState,
+    /// Federated training coordinator — CRDT-backed multi-peer state.
+    pub federated_trainer: Arc<crate::federated_trainer::FederatedTrainer>,
+    /// Actor system — supervisor trees for swarm workers and background agents.
+    pub actor_system: Arc<bonsai_actors::ActorSystem>,
+    /// Chess and Go game session store.
+    pub game_sessions: Arc<crate::games::GameSessionStore>,
 }
 
 
@@ -841,6 +877,9 @@ pub fn run() {
                 panic!("[swarm_config] Failed to init store: {e}");
             });
 
+            // ── Skill registry (skills.sh + local + Bonsai-native) ────────────
+            let skill_registry = Arc::new(skill_registry::SkillRegistryState::new());
+
             // ── Unified GPU controller ─────────────────────────────────────────
             let gpu_ctrl_inst = Arc::new(gpu_layer::GpuLayer::new(&gpu_layer::GpuLayer::detect()));
             let gpu_controller = gpu_controller::GpuController::new(
@@ -888,6 +927,98 @@ pub fn run() {
                 });
             }
 
+            // ── Continuous training subsystems (collector, evaluation, self-play) ──
+            let training_collector = unified_training_collector::UnifiedTrainingCollector::new(20_000);
+            let eval_harness = evaluation_harness::EvaluationHarness::new(orchestrator.clone());
+            let forgetting = forgetting_prevention::ForgettingPrevention::new(eval_harness.clone(), orchestrator.clone());
+            let adapters_dir = bonsai_home.join("adapters");
+            let adapter_registry = promotion_gate::AdapterRegistry::new(adapters_dir.clone());
+            let promotion_gate = promotion_gate::PromotionGate::new(eval_harness.clone(), adapter_registry.clone(), orchestrator.clone());
+            let self_play_trainer = eternal_training_loop::SelfPlayTrainer::new(orchestrator.clone(), training_collector.clone());
+            let eternal_loop = eternal_training_loop::EternalTrainingLoop::new(
+                training_collector.clone(),
+                eval_harness.clone(),
+                forgetting.clone(),
+                promotion_gate.clone(),
+                self_play_trainer.clone(),
+            );
+            // Start background eternal training loop
+            eternal_loop.clone().spawn();
+            let training_state = Arc::new(training_commands::TrainingState::new(
+                training_collector.clone(),
+                eternal_loop.clone(),
+                adapter_registry.clone(),
+            ));
+
+            // Initialize Universal Capability Registry (UCR) and register tool registry
+            let capability_registry = bonsai_capability_registry::UniversalCapabilityRegistry::new();
+            // Register the current ToolRegistry snapshot as a capability source
+            tauri::async_runtime::block_on(capability_registry.register(Box::new((*tool_registry).clone())));
+
+            // ── UCR startup validation ────────────────────────────────────────────
+            // Verify every tool in built_in_tools() is present in the merged tool list.
+            // This catches future "invisible tool" bugs at startup rather than at runtime.
+            {
+                let builtin_names: Vec<String> = crate::tools::built_in_tools()
+                    .into_iter().map(|t| t.name).collect();
+                let registry_names: std::collections::HashSet<String> =
+                    tool_registry.list_tools().into_iter().map(|t| t.name).collect();
+                let merged = crate::tools::all_tools_full(None, None, Some(&tool_registry));
+                let merged_names: std::collections::HashSet<String> =
+                    merged.iter().map(|t| t.name.clone()).collect();
+                for name in &builtin_names {
+                    if !merged_names.contains(name.as_str()) {
+                        tracing::warn!("[UCR] built-in tool '{}' is NOT in the merged tool list — it will be invisible to the ReAct loop", name);
+                    }
+                }
+                for name in &registry_names {
+                    if !merged_names.contains(name.as_str()) {
+                        tracing::warn!("[UCR] registry tool '{}' is NOT in the merged tool list — it will be invisible to the ReAct loop", name);
+                    }
+                }
+                tracing::info!("[UCR] startup validation: {} built-ins + {} registry tools → {} merged tools",
+                    builtin_names.len(), registry_names.len(), merged_names.len());
+            }
+
+            // Thoughts DB — persist model "thought" segments for auditing and UI
+            let thoughts_db = Arc::new(
+                tauri::async_runtime::block_on(thoughts::ThoughtsStore::new(wal.pool()))
+                    .expect("Thoughts DB init failed"),
+            );
+
+            // CAS — content-addressed blob store backed by SQLite + flat files
+            let cas_data_dir = app_handle.path().app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let cas_store = Arc::new(
+                tauri::async_runtime::block_on(
+                    bonsai_cas::CasStore::open(
+                        &cas_data_dir.join("cas.db"),
+                        &cas_data_dir.join("cas_blobs"),
+                    )
+                ).expect("CAS store init failed")
+            );
+
+            // Actor system — supervision trees for swarm and background agents
+            let actor_system = bonsai_actors::ActorSystem::new();
+
+            // Federated training coordinator
+            let machine_id = format!("local-{}", uuid::Uuid::new_v4().simple());
+            let federated_trainer = crate::federated_trainer::FederatedTrainer::new(machine_id);
+
+            // Sylva scripting runtime — hot-reloadable Lua tools
+            let scripts_dir = cas_data_dir.join("scripts");
+            let sylva = tauri::async_runtime::block_on(
+                crate::sylva::SylvaState::new(
+                    tool_registry.clone(),
+                    scripts_dir,
+                    app_handle.clone(),
+                )
+            ).unwrap_or_else(|e| {
+                tracing::warn!("[sylva] init failed (Lua unavailable?): {e}");
+                // Return a dummy state so the app still starts
+                panic!("Sylva init failed: {e}")
+            });
+
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),
                 whisper:          whisper.clone(),
@@ -899,6 +1030,7 @@ pub fn run() {
                 market_state: market_state.clone(),
                 meeting_agent: meeting_agent.clone(),
                 continuous_trainer: continuous_trainer.clone(),
+                training: training_state.clone(),
                 bootstrap_cancel: bootstrap_cancel.clone(),
                 chat_cancel:      chat_cancel.clone(),
                 voice_cancel:     voice_cancel.clone(),
@@ -937,16 +1069,44 @@ pub fn run() {
                 self_play:     self_play_state,
                 plugin_host,
                 tool_registry,
+                capability_registry: capability_registry.clone(),
+                thoughts_db: thoughts_db.clone(),
+                thinking_settings: Arc::new(tokio::sync::RwLock::new(serde_json::json!({
+                    "show_primary_thinking": true,
+                    "show_draft_thinking": true,
+                    "show_micro_thinking": false,
+                    "show_critic_thinking": true,
+                    "show_tool_rationale": true,
+                    "show_swarm_thinking": false,
+                    "max_thinking_tokens": 2048
+                }))),
                 cross_training: cross_training_sender,
                 mcp_port,
                 tool_watcher: tool_watcher_state,
                 shared_arena,
                 micro_bonsai,
                 swarm_config_store,
-                gpu_controller,
+                gpu_controller: gpu_controller.clone(),
+                skill_registry,
+                cas_store,
+                sylva,
+                federated_trainer,
+                actor_system,
+                game_sessions: crate::games::GameSessionStore::new(),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
+
+            // ── Start Copilot Orchestrator (local REST control) ─────────────
+            {
+                let ah = app_handle.clone();
+                let gc = gpu_controller.clone();
+                let mo = orchestrator.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Best-effort: start the local orchestrator on 127.0.0.1:11380
+                    orchestrator::start_orchestrator(ah, gc, mo).await;
+                });
+            }
 
             // ── Forward training-loop progress events to the frontend ─────────
             {
@@ -1324,10 +1484,40 @@ pub fn run() {
             marketplace_commands::install_asset,
             meeting_agent::start_meeting_agent,
             meeting_agent::stop_meeting_agent,
+            meeting_agent::pause_meeting_agent,
             meeting_agent::ask_meeting_agent,
-            continuous_training::ingest_feedback,
+            meeting_agent::get_meeting_transcript,
+            meeting_agent::get_meeting_notes,
+            meeting_agent::get_meeting_action_items,
+            meeting_agent::update_action_item,
+            meeting_agent::get_meeting_summary,
+            meeting_agent::is_meeting_running,
+            continuous_training::ingest_feedback_continuous,
             continuous_training::continuous_training_status,
             continuous_training::trigger_training,
+            // Training UI / loop commands
+            training_commands::get_training_stats,
+            training_commands::get_training_examples,
+            training_commands::delete_training_example,
+            training_commands::edit_training_example,
+            training_commands::boost_training_example,
+            training_commands::bulk_delete_training_data,
+            training_commands::export_training_data,
+            training_commands::wipe_training_database,
+            training_commands::trigger_training_cycle,
+            training_commands::get_evaluation_results,
+            training_commands::get_ciq_history,
+            training_commands::get_alerts,
+            training_commands::run_core_competency_check,
+            training_commands::get_curriculum_status,
+            training_commands::rollback_adapter,
+            training_commands::set_training_preferences,
+            training_commands::get_training_preferences,
+            training_commands::get_self_play_state,
+            training_commands::get_forgetting_baseline,
+            training_commands::get_training_loop_history,
+            training_commands::ingest_feedback_ui,
+            training_commands::ingest_edit,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,
@@ -1363,6 +1553,46 @@ pub fn run() {
             commands::resize_pty_session,
             commands::close_pty_session,
             commands::open_workspace,
+            // Capability registry queries
+            capability_commands::get_capability_summary,
+            capability_commands::get_capability_manifest,
+            capability_commands::query_capabilities,
+            // Thoughts persistence commands
+            thoughts_commands::add_thought,
+            thoughts_commands::get_thoughts_for_turn,
+            thoughts_commands::clear_thoughts_for_session,
+            thoughts_commands::search_thinking_history,
+            thoughts_commands::record_thinking,
+            thoughts_commands::get_thinking_settings,
+            thoughts_commands::set_thinking_settings,
+            // ── Sylva scripting ───────────────────────────────────────────────
+            sylva::sylva_exec,
+            sylva::sylva_list_scripts,
+            sylva::get_sylva_history,
+            // ── Federated training ────────────────────────────────────────────
+            federated_trainer::federated_stats,
+            federated_trainer::federated_list_adapters,
+            // ── Chess & Go ────────────────────────────────────────────────────
+            games::create_chess_game,
+            games::make_chess_move,
+            games::get_chess_game,
+            games::resign_chess_game,
+            games::list_chess_games,
+            games::create_go_game,
+            games::make_go_move,
+            games::get_go_game,
+            games::resign_go_game,
+            games::list_go_games,
+            games::export_go_sgf,
+            games::create_tournament,
+            games::get_tournament_standings,
+            games::list_tournaments,
+            games::get_daily_puzzle,
+            games::check_puzzle_move,
+            games::chess_ai_move,
+            games::go_ai_move,
+            games::export_chess_pgn,
+            games::spectate_game,
             // ── Diff ─────────────────────────────────────────────────────────
             commands::accept_diff_hunk,
             commands::reject_diff_hunk,
@@ -1603,6 +1833,28 @@ pub fn run() {
             // Vision oracle self-play training loop
             vision_training::start_vision_training,
             vision_training::vision_training_oracles_available,
+            // Skills.sh skill registry
+            skill_registry::list_installed_skills,
+            skill_registry::install_skill_local,
+            skill_registry::install_skill_content,
+            skill_registry::install_skill_from_skills_sh,
+            skill_registry::toggle_skill,
+            skill_registry::uninstall_skill,
+            skill_registry::search_skills_marketplace,
+            skill_registry::export_tool_as_skill,
+            skill_registry::get_skill_context_for_prompt,
+            skill_registry::verify_skill_integrity,
+            skill_compiler_commands::compile_skill_from_path,
+            skill_compiler_commands::compile_skill_from_content,
+            skill_compiler_commands::compile_and_register_skill,
+            skill_compiler_commands::verify_compiled_skill,
+            skill_compiler_commands::list_compiled_skills,
+            skill_compiler_commands::invoke_skill,
+            skill_compiler_commands::distill_skill_to_lora,
+            skill_compiler_commands::uninstall_compiled_skill,
+            marketplace_commands::publish_compiled_skill_to_marketplace,
+            marketplace_commands::discover_peer_skills,
+            marketplace_commands::install_skill_from_marketplace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

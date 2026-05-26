@@ -39,6 +39,7 @@
   } from '$lib/stores/catalog';
   import { featureFlags, loadFeatureFlags } from '$lib/stores/features';
   import TrainingDashboard from '$lib/components/TrainingDashboard.svelte';
+  import { thinkingSettings } from '$lib/stores/thinkingSettings';
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
@@ -1808,6 +1809,50 @@
           <button class="save-btn" on:click={saveEmailConfig}>Save Email</button>
         </div>
       </details>
+    </section>
+
+    <section class="section thinking-section">
+      <h3 class="section-title">Model Thinking Visibility</h3>
+      <p class="section-hint">Choose which reasoning layers are shown in the Thinking Panel.</p>
+      <div class="flags-grid">
+        <label class="flag-row">
+          <span class="flag-key">Primary model thinking</span>
+          <input type="checkbox" checked={$thinkingSettings.show_primary_thinking}
+            on:change={() => thinkingSettings.toggle('show_primary_thinking')} />
+        </label>
+        <label class="flag-row">
+          <span class="flag-key">Draft model thinking</span>
+          <input type="checkbox" checked={$thinkingSettings.show_draft_thinking}
+            on:change={() => thinkingSettings.toggle('show_draft_thinking')} />
+        </label>
+        <label class="flag-row">
+          <span class="flag-key">Micro-BonsAI (router) thinking</span>
+          <input type="checkbox" checked={$thinkingSettings.show_micro_thinking}
+            on:change={() => thinkingSettings.toggle('show_micro_thinking')} />
+        </label>
+        <label class="flag-row">
+          <span class="flag-key">Critic model thinking</span>
+          <input type="checkbox" checked={$thinkingSettings.show_critic_thinking}
+            on:change={() => thinkingSettings.toggle('show_critic_thinking')} />
+        </label>
+        <label class="flag-row">
+          <span class="flag-key">Tool call rationale</span>
+          <input type="checkbox" checked={$thinkingSettings.show_tool_rationale}
+            on:change={() => thinkingSettings.toggle('show_tool_rationale')} />
+        </label>
+        <label class="flag-row">
+          <span class="flag-key">Swarm worker thinking</span>
+          <input type="checkbox" checked={$thinkingSettings.show_swarm_thinking}
+            on:change={() => thinkingSettings.toggle('show_swarm_thinking')} />
+        </label>
+      </div>
+      <label class="section-slider-row">
+        <span>Max thinking tokens displayed</span>
+        <input type="range" min="256" max="8192" step="256"
+          value={$thinkingSettings.max_thinking_tokens}
+          on:change={(e) => thinkingSettings.save({ ...$thinkingSettings, max_thinking_tokens: Number((e.target as HTMLInputElement).value) })} />
+        <span class="slider-val">{$thinkingSettings.max_thinking_tokens}</span>
+      </label>
     </section>
 
     <section class="section feature-flags-section">
