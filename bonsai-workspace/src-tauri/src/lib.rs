@@ -128,6 +128,18 @@ use tauri::Manager;
 use tauri::{PhysicalPosition, PhysicalSize, Position, Size, Window};
 use tokio::sync::Mutex;
 
+// Workstream modules (scaffolds)
+mod auth_commands;
+mod marketplace_commands;
+mod meeting_agent;
+mod continuous_training;
+
+// Workstream types
+use crate::auth_commands::AuthState;
+use crate::marketplace_commands::MarketState;
+use crate::meeting_agent::MeetingAgent;
+use crate::continuous_training::ContinuousTrainer;
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub struct PtySession {
     pub writer: Box<dyn std::io::Write + Send>,
@@ -144,6 +156,14 @@ pub struct AppState {
     pub wal:              Arc<wal::WAL>,
     pub chat_sessions:    Arc<chat_sessions::ChatSessionStore>,
     pub pty_sessions:     Arc<Mutex<std::collections::HashMap<String, PtySession>>>,
+    /// Workstream: multi-user auth & encrypted workspace state.
+    pub auth_state:       Arc<AuthState>,
+    /// Workstream: marketplace state.
+    pub market_state:     Arc<MarketState>,
+    /// Workstream: meeting/conference agent.
+    pub meeting_agent:    Arc<MeetingAgent>,
+    /// Workstream: continuous fine-tuning trainer.
+    pub continuous_trainer: Arc<ContinuousTrainer>,
     /// Set to `true` to cancel an in-progress bootstrap download.
     pub bootstrap_cancel: Arc<AtomicBool>,
     /// Set to `true` to cancel in-flight chat generation.
@@ -457,6 +477,26 @@ pub fn run() {
 
             let pty_sessions: Arc<Mutex<std::collections::HashMap<String, PtySession>>> =
                 Arc::new(Mutex::new(std::collections::HashMap::new()));
+
+            // Initialize workstream scaffolds (A-D)
+            let auth_state    = Arc::new(AuthState::new());
+            let market_state  = Arc::new(MarketState::new());
+
+            let (meeting_agent_inst, meeting_rx) = MeetingAgent::new();
+            let meeting_agent = Arc::new(meeting_agent_inst);
+
+            let continuous_trainer = Arc::new(ContinuousTrainer::new());
+
+            // Forward meeting agent progress events to the frontend
+            {
+                let bh = app_handle.clone();
+                let mut mrx = meeting_rx;
+                tauri::async_runtime::spawn(async move {
+                    while let Ok(progress) = mrx.recv().await {
+                        let _ = bh.emit("meeting-progress", progress);
+                    }
+                });
+            }
 
             let agent_store = Arc::new(
                 tauri::async_runtime::block_on(agent_store::AgentStore::new(wal.pool()))
@@ -854,6 +894,11 @@ pub fn run() {
                 wal,
                 chat_sessions:    chat_sessions.clone(),
                 pty_sessions,
+                // Workstream states (A-D)
+                auth_state: auth_state.clone(),
+                market_state: market_state.clone(),
+                meeting_agent: meeting_agent.clone(),
+                continuous_trainer: continuous_trainer.clone(),
                 bootstrap_cancel: bootstrap_cancel.clone(),
                 chat_cancel:      chat_cancel.clone(),
                 voice_cancel:     voice_cancel.clone(),
@@ -1267,6 +1312,22 @@ pub fn run() {
             commands::agent_connect_list_sessions,
             commands::agent_connect_get_timeline,
             commands::agent_connect_end_session,
+            // ── Workstreams (Auth, Marketplace, Meeting, Training) ─────────────
+            auth_commands::create_profile,
+            auth_commands::unlock_profile,
+            auth_commands::lock_profile,
+            auth_commands::create_workspace,
+            auth_commands::share_workspace,
+            auth_commands::list_workspaces,
+            marketplace_commands::publish_asset,
+            marketplace_commands::search_marketplace,
+            marketplace_commands::install_asset,
+            meeting_agent::start_meeting_agent,
+            meeting_agent::stop_meeting_agent,
+            meeting_agent::ask_meeting_agent,
+            continuous_training::ingest_feedback,
+            continuous_training::continuous_training_status,
+            continuous_training::trigger_training,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,

@@ -131,8 +131,19 @@ fn adsr(t: f32, duration: f32, attack: f32, decay: f32, sustain: f32, release: f
 }
 
 fn sine(phase: f32) -> f32 { (2.0 * PI * phase).sin() }
-fn saw(phase: f32) -> f32 { 2.0 * (phase - phase.floor()) - 1.0 }
+fn saw(phase: f32)    -> f32 { 2.0 * (phase - phase.floor()) - 1.0 }
 fn square(phase: f32) -> f32 { if (phase % 1.0) < 0.5 { 1.0 } else { -1.0 } }
+
+/// Blend waveforms based on brightness: sine → saw → square.
+fn osc(phase: f32, brightness: f32) -> f32 {
+    if brightness < 0.4 {
+        sine(phase)
+    } else if brightness < 0.7 {
+        sine(phase) * (1.0 - brightness) + saw(phase) * brightness
+    } else {
+        saw(phase) * (1.0 - brightness) + square(phase) * brightness
+    }
+}
 
 fn generate_wav(prompt: &str, duration: f32) -> Vec<u8> {
     let sr = 44100u32;
@@ -179,9 +190,7 @@ fn generate_wav(prompt: &str, duration: f32) -> Vec<u8> {
             let mut s = 0.0f32;
             for (k, &deg) in degrees.iter().enumerate() {
                 let freq = p.root_hz * semitone_to_ratio(scale[deg]) * if k < 2 { 1.0 } else { 2.0 };
-                let osc = if p.brightness > 0.6 { saw(phases[k]) * 0.5 + sine(phases[k]) * 0.5 }
-                    else { sine(phases[k]) };
-                s += osc;
+                s += osc(phases[k], p.brightness);
                 phases[k] += freq / sr as f32;
                 if phases[k] >= 1.0 { phases[k] -= 1.0; }
             }
@@ -201,8 +210,7 @@ fn generate_wav(prompt: &str, duration: f32) -> Vec<u8> {
             let freq = p.root_hz * 2.0 * semitone_to_ratio(scale[deg]);
             let note_t = t % mel_note_dur;
             let env = adsr(note_t, mel_note_dur * 0.85, 0.005, 0.05, 0.6, 0.1);
-            let osc = sine(phase) * (1.0 - p.brightness * 0.3) + saw(phase) * p.brightness * 0.3;
-            mix[i] += osc * env * 0.18;
+            mix[i] += osc(phase, p.brightness) * env * 0.18;
             phase += freq / sr as f32;
             if phase >= 1.0 { phase -= 1.0; }
         }

@@ -41,11 +41,17 @@ fn worker_binary_path() -> Option<std::path::PathBuf> {
         });
         if sibling.exists() { return Some(sibling); }
     }
-    // 2. Cargo target/debug (dev workflow)
-    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target").join("debug")
-        .join(if cfg!(target_os = "windows") { "bonsai-music-worker.exe" } else { "bonsai-music-worker" });
-    if dev.exists() { return Some(dev); }
+    // 2. Workspace target/debug (dev workflow — Cargo places workspace binaries here)
+    let bin_name = if cfg!(target_os = "windows") { "bonsai-music-worker.exe" } else { "bonsai-music-worker" };
+    // Walk up from CARGO_MANIFEST_DIR until we find a target/ dir (handles workspace layout)
+    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for _ in 0..4 {
+        for profile in &["debug", "release"] {
+            let candidate = dir.join("target").join(profile).join(bin_name);
+            if candidate.exists() { return Some(candidate); }
+        }
+        if !dir.pop() { break; }
+    }
     None
 }
 
