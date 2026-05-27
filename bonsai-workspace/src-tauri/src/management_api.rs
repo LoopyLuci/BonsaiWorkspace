@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -62,6 +62,11 @@ pub struct MgmtState {
     pub self_play:       Arc<crate::self_play::SelfPlayState>,
     pub plugin_host:     Arc<crate::plugin_host::PluginHost>,
     pub tool_registry:   Arc<crate::tool_registry::ToolRegistryState>,
+    pub game_sessions:   Arc<crate::games::GameSessionStore>,
+    pub knowledge:       Arc<bonsai_knowledge::KnowledgeGraph>,
+    pub reasoning:       Arc<crate::reasoning_engine::ReasoningEngine>,
+    pub belief_reviser:  Arc<tokio::sync::RwLock<crate::belief_reviser::BeliefReviser>>,
+    pub metacognitive:   Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>>,
 }
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
@@ -145,6 +150,30 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/plugins/execute", post(mgmt_plugin_execute))
         // tool registry (augments existing /api/v1/tools/run)
         .route("/api/v1/tools/list",      get(mgmt_tools_list))
+        // ── Chess ──────────────────────────────────────────────────────────────
+        .route("/api/v1/chess/new",              post(mgmt_chess_new))
+        .route("/api/v1/chess/move",             post(mgmt_chess_move))
+        .route("/api/v1/chess/resign",           post(mgmt_chess_resign))
+        .route("/api/v1/chess/game/:id",         get(mgmt_chess_status))
+        // ── Go ─────────────────────────────────────────────────────────────────
+        .route("/api/v1/go/new",                 post(mgmt_go_new))
+        .route("/api/v1/go/move",                post(mgmt_go_move))
+        .route("/api/v1/go/resign",              post(mgmt_go_resign))
+        .route("/api/v1/go/game/:id",            get(mgmt_go_status))
+        // ── Puzzle ─────────────────────────────────────────────────────────────
+        .route("/api/v1/puzzle/daily",           get(mgmt_puzzle_daily))
+        .route("/api/v1/puzzle/check",           post(mgmt_puzzle_check))
+        // ── Tournament ─────────────────────────────────────────────────────────
+        .route("/api/v1/tournament/list",        get(mgmt_tournament_list))
+        .route("/api/v1/tournament/create",      post(mgmt_tournament_create))
+        // ── Knowledge & Reasoning (v2) ─────────────────────────────────────────
+        .route("/api/v2/knowledge/search",       get(mgmt_knowledge_search))
+        .route("/api/v2/knowledge/entities",     post(mgmt_knowledge_add_entity))
+        .route("/api/v2/knowledge/beliefs",      post(mgmt_knowledge_add_belief))
+        .route("/api/v2/knowledge/stats",        get(mgmt_knowledge_stats))
+        .route("/api/v2/reason",                 post(mgmt_reason))
+        .route("/api/v2/reason/calibration",     get(mgmt_reason_calibration))
+        .route("/api/v2/beliefs/check",          post(mgmt_belief_check))
         .with_state(state)
 }
 
@@ -965,4 +994,384 @@ async fn mgmt_tools_list(
 ) -> impl IntoResponse {
     auth!(s, headers);
     Json(s.tool_registry.registry.list().await).into_response()
+}
+
+// ── Chess REST handlers ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ChessNewReq { player_name: Option<String>, human_color: Option<String>, ai_strength: Option<String> }
+#[derive(Deserialize)]
+struct ChessMoveReq { game_id: String, notation: String }
+#[derive(Deserialize)]
+struct ChessResignReq { game_id: String }
+
+async fn mgmt_chess_new(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<ChessNewReq>,
+) -> impl IntoResponse {
+    use bonsai_chess::{ChessGameSession, Player as ChessPlayer, PlayerKind as ChessPlayerKind, ChessColor};
+    auth!(s, headers);
+    let player_name = req.player_name.unwrap_or_else(|| "BotPlayer".into());
+    let color       = req.human_color.as_deref().unwrap_or("white");
+    let strength    = req.ai_strength.as_deref().unwrap_or("interactive");
+    let (white, black) = if color == "white" {
+        let h = ChessPlayer { id: "user".into(), name: player_name, kind: ChessPlayerKind::Human, color: ChessColor::White, elo: None };
+        let a = ChessPlayer { id: "bonsai".into(), name: "BonsAI".into(), kind: ChessPlayerKind::BonsAI, color: ChessColor::Black, elo: None };
+        (h, a)
+    } else {
+        let a = ChessPlayer { id: "bonsai".into(), name: "BonsAI".into(), kind: ChessPlayerKind::BonsAI, color: ChessColor::White, elo: None };
+        let h = ChessPlayer { id: "user".into(), name: player_name, kind: ChessPlayerKind::Human, color: ChessColor::Black, elo: None };
+        (a, h)
+    };
+    let mut session = ChessGameSession::new(white, black);
+    if session.needs_ai_move() {
+        crate::games::make_chess_ai_move_inner_pub(&mut session, Some(strength));
+    }
+    let view = crate::games::ChessGameView::from_session_pub(&session);
+    let id = session.id.to_string();
+    s.game_sessions.chess.write().await.insert(session.id, session);
+    Json(json!({ "game_id": id, "human_color": color, "ai_strength": strength, "view": view })).into_response()
+}
+
+async fn mgmt_chess_move(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<ChessMoveReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let id: uuid::Uuid = match req.game_id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid game_id"}))).into_response(),
+    };
+    let mut sessions = s.game_sessions.chess.write().await;
+    let session = match sessions.get_mut(&id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "game not found"}))).into_response(),
+    };
+    if let Err(e) = session.apply_move("user", &req.notation) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response();
+    }
+    if session.needs_ai_move() {
+        crate::games::make_chess_ai_move_inner_pub(session, None);
+    }
+    let view = crate::games::ChessGameView::from_session_pub(session);
+    Json(json!({ "fen": view.fen, "ai_move": view.legal_moves.first(), "result": view.result, "view": view })).into_response()
+}
+
+async fn mgmt_chess_resign(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<ChessResignReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let id: uuid::Uuid = match req.game_id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid game_id"}))).into_response(),
+    };
+    let mut sessions = s.game_sessions.chess.write().await;
+    if let Some(session) = sessions.get_mut(&id) {
+        session.resign("user");
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn mgmt_chess_status(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let uid: uuid::Uuid = match id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid id"}))).into_response(),
+    };
+    let sessions = s.game_sessions.chess.read().await;
+    match sessions.get(&uid) {
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "game not found"}))).into_response(),
+        Some(session) => {
+            let view = crate::games::ChessGameView::from_session_pub(session);
+            Json(json!({ "game_id": id, "fen": view.fen, "turn": view.current_player_id, "result": view.result })).into_response()
+        }
+    }
+}
+
+// ── Go REST handlers ──────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct GoNewReq { player_name: Option<String>, human_color: Option<String>, board_size: Option<u8>, komi: Option<f32> }
+#[derive(Deserialize)]
+struct GoMoveReq { game_id: String, gtp: String }
+#[derive(Deserialize)]
+struct GoResignReq { game_id: String }
+
+async fn mgmt_go_new(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<GoNewReq>,
+) -> impl IntoResponse {
+    use bonsai_go::{GoGameSession, GoPlayer, GoPlayerKind, GoColor};
+    auth!(s, headers);
+    let player_name = req.player_name.unwrap_or_else(|| "BotPlayer".into());
+    let color  = req.human_color.as_deref().unwrap_or("black");
+    let size   = req.board_size.unwrap_or(19);
+    let size   = if [9u8, 13, 19].contains(&size) { size } else { 19 };
+    let komi   = req.komi.unwrap_or(7.5);
+    let (black, white) = if color == "black" {
+        let h = GoPlayer { id: "user".into(), name: player_name, kind: GoPlayerKind::Human, color: GoColor::Black, rank: None };
+        let a = GoPlayer { id: "bonsai".into(), name: "BonsAI".into(), kind: GoPlayerKind::BonsAI, color: GoColor::White, rank: None };
+        (h, a)
+    } else {
+        let a = GoPlayer { id: "bonsai".into(), name: "BonsAI".into(), kind: GoPlayerKind::BonsAI, color: GoColor::Black, rank: None };
+        let h = GoPlayer { id: "user".into(), name: player_name, kind: GoPlayerKind::Human, color: GoColor::White, rank: None };
+        (a, h)
+    };
+    let session = GoGameSession::with_options(black, white, size, komi);
+    let id = session.id.to_string();
+    s.game_sessions.go.write().await.insert(session.id, session);
+    Json(json!({ "game_id": id, "board_size": size, "komi": komi, "human_color": color })).into_response()
+}
+
+async fn mgmt_go_move(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<GoMoveReq>,
+) -> impl IntoResponse {
+    use bonsai_go::mcts::{RandomGoEvaluator, go_search};
+    use bonsai_go::Stone;
+    auth!(s, headers);
+    let id: uuid::Uuid = match req.game_id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid game_id"}))).into_response(),
+    };
+    let mut sessions = s.game_sessions.go.write().await;
+    let session = match sessions.get_mut(&id) {
+        Some(s) => s,
+        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "game not found"}))).into_response(),
+    };
+    if let Err(e) = session.play("user", &req.gtp) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": e.to_string()}))).into_response();
+    }
+    let ai_move = if matches!(session.result, bonsai_go::GoGameResult::Ongoing) {
+        let ai_color: Stone = if session.white.id == "bonsai" { Stone::White } else { Stone::Black };
+        let board = session.board.clone();
+        let eval  = RandomGoEvaluator;
+        let cfg   = bonsai_go::GoMctsConfig::interactive();
+        let r     = go_search(&board, ai_color, &eval, &cfg);
+        let mv    = r.best_move.clone();
+        let _ = session.play("bonsai", &mv);
+        mv
+    } else { String::new() };
+    let result = crate::games::GoGameView::from_session_pub(session).result;
+    Json(json!({ "ai_move": ai_move, "result": result })).into_response()
+}
+
+async fn mgmt_go_resign(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<GoResignReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let id: uuid::Uuid = match req.game_id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid game_id"}))).into_response(),
+    };
+    let mut sessions = s.game_sessions.go.write().await;
+    if let Some(session) = sessions.get_mut(&id) {
+        session.resign("user");
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+async fn mgmt_go_status(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let uid: uuid::Uuid = match id.parse() {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid id"}))).into_response(),
+    };
+    let sessions = s.game_sessions.go.read().await;
+    match sessions.get(&uid) {
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "game not found"}))).into_response(),
+        Some(session) => {
+            let view = crate::games::GoGameView::from_session_pub(session);
+            Json(json!({ "game_id": id, "board_size": view.size, "result": view.result })).into_response()
+        }
+    }
+}
+
+// ── Puzzle REST handlers ──────────────────────────────────────────────────────
+
+async fn mgmt_puzzle_daily(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    match s.game_sessions.puzzles.daily() {
+        None => (StatusCode::NOT_FOUND, Json(json!({"error": "no puzzle available"}))).into_response(),
+        Some(p) => Json(json!({
+            "id": p.id,
+            "fen": p.fen,
+            "theme": p.theme,
+            "difficulty": p.difficulty,
+            "hint": p.hint,
+            "description": p.explanation,
+            "game_type": "chess",
+        })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PuzzleCheckReq { puzzle_id: String, uci_move: String }
+
+async fn mgmt_puzzle_check(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<PuzzleCheckReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    use crate::games::PuzzleCheckResult;
+    let result = s.game_sessions.puzzles.check_move(&req.puzzle_id, &req.uci_move);
+    let body = match result {
+        PuzzleCheckResult::Solved { explanation } => json!({"status": "solved", "message": explanation}),
+        PuzzleCheckResult::CorrectContinue { next_hint } => json!({"status": "correct", "message": next_hint}),
+        PuzzleCheckResult::Wrong { hint } => json!({"status": "wrong", "hint": hint}),
+        PuzzleCheckResult::NotFound => json!({"status": "not_found"}),
+    };
+    Json(body).into_response()
+}
+
+// ── Tournament REST handlers ──────────────────────────────────────────────────
+
+async fn mgmt_tournament_list(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let list = s.game_sessions.tournaments.list().await;
+    Json(serde_json::to_value(&list).unwrap_or_default()).into_response()
+}
+
+#[derive(Deserialize)]
+struct TournamentCreateReq { name: String, game_type: Option<String>, agent_ids: Vec<String>, agent_names: Vec<String> }
+
+async fn mgmt_tournament_create(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(req): Json<TournamentCreateReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let game_type = req.game_type.as_deref().unwrap_or("chess");
+    let t = s.game_sessions.tournaments.create(
+        req.name, game_type.to_string(), req.agent_ids, req.agent_names,
+        crate::games::TournamentFormat::RoundRobin { games_per_pair: 2 },
+    ).await;
+    let id = t.id.clone();
+    Json(json!({ "tournament_id": id.to_string() })).into_response()
+}
+
+// ── Knowledge & Reasoning handlers (v2) ──────────────────────────────────────
+
+async fn mgmt_knowledge_search(
+    State(state): State<MgmtState>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let raw_query = uri.query().unwrap_or("").to_string();
+    let params: std::collections::HashMap<String, String> = raw_query.split('&')
+        .filter_map(|kv| {
+            let mut it = kv.splitn(2, '=');
+            let k = it.next()?.to_string();
+            let v = it.next().unwrap_or("").to_string();
+            if k.is_empty() { None } else { Some((k, v)) }
+        })
+        .collect();
+    let q = params.get("q").map(|s| s.as_str()).unwrap_or("");
+    let top_k = params.get("top_k").and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
+    let results = state.knowledge.text_search(q, top_k);
+    let items: Vec<serde_json::Value> = results.iter().map(|r| match &r.kind {
+        bonsai_knowledge::SearchResultKind::Entity(e) =>
+            json!({ "kind": "entity", "id": e.id, "name": e.name, "confidence": e.confidence, "score": r.score }),
+        bonsai_knowledge::SearchResultKind::Belief(b) =>
+            json!({ "kind": "belief", "id": b.id, "statement": b.statement, "confidence": b.confidence, "score": r.score }),
+    }).collect();
+    Json(json!({ "results": items, "count": items.len() })).into_response()
+}
+
+async fn mgmt_knowledge_add_entity(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let name = body["name"].as_str().unwrap_or("unnamed");
+    let entity = bonsai_knowledge::Entity::new(name, bonsai_knowledge::EntityType::Concept);
+    let id = state.knowledge.upsert_entity(entity);
+    Json(json!({ "entity_id": id })).into_response()
+}
+
+async fn mgmt_knowledge_add_belief(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let statement = body["statement"].as_str().unwrap_or("");
+    let confidence = body["confidence"].as_f64().unwrap_or(0.7) as f32;
+    let belief = bonsai_knowledge::Belief::new(statement, confidence);
+    let id = state.knowledge.add_belief(belief);
+    Json(json!({ "belief_id": id })).into_response()
+}
+
+async fn mgmt_knowledge_stats(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    Json(serde_json::to_value(state.knowledge.stats()).unwrap_or_default()).into_response()
+}
+
+async fn mgmt_reason(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let query = body["query"].as_str().unwrap_or("");
+    let strategy = body["strategy"].as_str().unwrap_or("auto");
+    let result = state.reasoning.reason(query, strategy).await;
+    Json(serde_json::to_value(&result).unwrap_or_default()).into_response()
+}
+
+async fn mgmt_reason_calibration(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let report = state.metacognitive.read().await.reflect();
+    Json(serde_json::to_value(&report).unwrap_or_default()).into_response()
+}
+
+async fn mgmt_belief_check(
+    State(state): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if !authorized(&state, &headers) { return (StatusCode::UNAUTHORIZED, Json(json!({}))).into_response(); }
+    let statement = body["statement"].as_str().unwrap_or("");
+    let all_beliefs = state.knowledge.all_beliefs();
+    let result = state.belief_reviser.read().await.check_consistency(&all_beliefs, statement);
+    let (status, message) = match &result {
+        crate::belief_reviser::ConsistencyResult::Consistent =>
+            ("consistent", "No contradictions found".to_string()),
+        crate::belief_reviser::ConsistencyResult::Contradicts { conflicting, max_conflict_confidence } =>
+            ("contradicts", format!("Contradicts {} beliefs (max confidence {:.2})", conflicting.len(), max_conflict_confidence)),
+        crate::belief_reviser::ConsistencyResult::Uncertain =>
+            ("uncertain", "Cannot determine from available knowledge".to_string()),
+    };
+    Json(json!({ "statement": statement, "status": status, "message": message })).into_response()
 }

@@ -2285,6 +2285,11 @@ pub async fn set_api_config(
         self_play:     state.self_play.clone(),
         plugin_host:   state.plugin_host.clone(),
         tool_registry: state.tool_registry.clone(),
+        game_sessions: state.game_sessions.clone(),
+        knowledge:     state.knowledge.clone(),
+        reasoning:     state.reasoning.clone(),
+        belief_reviser: state.belief_reviser.clone(),
+        metacognitive:  state.metacognitive.clone(),
     };
 
     let started = api_server::start(

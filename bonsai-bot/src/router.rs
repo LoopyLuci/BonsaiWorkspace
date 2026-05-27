@@ -345,7 +345,7 @@ impl Router {
 
     // ── Slash commands ─────────────────────────────────────────────────────────
 
-    async fn handle_slash(&self, text: &str, _msg: &InboundMessage) -> String {
+    async fn handle_slash(&self, text: &str, msg: &InboundMessage) -> String {
         let parts: Vec<&str> = text.splitn(3, ' ').collect();
         let cmd  = parts[0].to_lowercase();
         let arg1 = parts.get(1).copied().unwrap_or("").trim();

@@ -104,7 +104,7 @@ pub fn go_search(
             Stone::Black => if score > 0.0 { 1.0 } else { 0.0 },
             Stone::White => if score < 0.0 { 1.0 } else { 0.0 },
         };
-        return GoSearchResult { best_move: "pass".into(), best_point: None, value: val, simulations: 0 };
+        return GoSearchResult { best_move: "pass".into(), best_point: None, value: val, simulations: 0, move_probs: vec![] };
     }
 
     let mut root = GoMctsNode::default();

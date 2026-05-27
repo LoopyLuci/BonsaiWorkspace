@@ -1,3 +1,9 @@
-//! Axiom kernel placeholder
+//! Axiom verification kernel — Calculus of Constructions with De Bruijn indices.
 
-pub fn hello_verify() -> &'static str { "bonsai-verify: hello" }
+pub mod kernel;
+
+pub use kernel::{
+    AxiomKernel, Term, Sort, Context, Environment, Declaration,
+    ProofWitness, KernelError, KernelResult,
+    lift, subst, normalize, definitionally_equal,
+};

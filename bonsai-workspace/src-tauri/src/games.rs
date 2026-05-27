@@ -508,6 +508,20 @@ fn make_go_ai_move_inner(session: &mut GoGameSession) {
     let _ = session.play("bonsai", &gtp);
 }
 
+// ── Public wrappers for management_api REST handlers ─────────────────────────
+
+pub fn make_chess_ai_move_inner_pub(session: &mut ChessGameSession, strength: Option<&str>) {
+    make_chess_ai_move_inner(session, strength);
+}
+
+impl ChessGameView {
+    pub fn from_session_pub(s: &ChessGameSession) -> Self { Self::from_session(s) }
+}
+
+impl GoGameView {
+    pub fn from_session_pub(s: &GoGameSession) -> Self { Self::from_session(s) }
+}
+
 // ── ChatGameState builders ─────────────────────────────────────────────────────
 
 pub fn chess_to_chat_state(s: &ChessGameSession, interactive: bool, viewer_color: &str) -> ChatGameState {
@@ -1062,6 +1076,13 @@ impl TournamentManager {
         let id = t.id.clone();
         self.tournaments.write().await.insert(id, t.clone());
         t
+    }
+
+    pub async fn list(&self) -> Vec<Tournament> {
+        let ts = self.tournaments.read().await;
+        let mut list: Vec<Tournament> = ts.values().cloned().collect();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list
     }
 
     pub async fn standings(&self, id: &str) -> Option<Vec<TournamentParticipant>> {
