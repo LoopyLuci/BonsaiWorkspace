@@ -159,6 +159,9 @@ mod omnfs;
 mod omni_desktop;
 mod omni_shell;
 mod process_manager;
+mod omni_session;
+mod device_manager;
+mod omni_boot;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -314,6 +317,12 @@ pub struct AppState {
     pub omni_shell: Arc<crate::omni_shell::OmniShellState>,
     /// Process Manager — TrustGuard-enforced process lifecycle, 4-tier sandboxing.
     pub process_manager: Arc<crate::process_manager::ProcessManager>,
+    /// OmniSession — unified user environment: login, snapshot, session summary.
+    pub omni_session: Arc<crate::omni_session::OmniSession>,
+    /// Device Manager — peripheral enumeration, display config, hotplug.
+    pub device_manager: Arc<crate::device_manager::DeviceManager>,
+    /// OmniBoot — self-verifying boot chain with CAS manifest and Axiom proofs.
+    pub omni_boot: Arc<crate::omni_boot::OmniBoot>,
 }
 
 
@@ -1098,6 +1107,19 @@ pub fn run() {
                 early_omnipresent.clone(),
             ));
 
+            // Phase 3 OS: OmniSession, DeviceManager, OmniBoot
+            let early_omni_session = crate::omni_session::OmniSession::new(
+                early_omni_desktop.clone(),
+                early_omni_shell.clone(),
+                early_process_manager.clone(),
+                early_omnipresent.clone(),
+                early_predictive.clone(),
+                cas_store.clone(),
+                auth_state.clone(),
+            );
+            let early_device_manager = crate::device_manager::DeviceManager::new();
+            let early_omni_boot = crate::omni_boot::OmniBoot::new(cas_store.clone());
+
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),
                 whisper:          whisper.clone(),
@@ -1182,6 +1204,9 @@ pub fn run() {
                 omni_desktop: early_omni_desktop.clone(),
                 omni_shell: early_omni_shell,
                 process_manager: early_process_manager.clone(),
+                omni_session: early_omni_session,
+                device_manager: early_device_manager,
+                omni_boot: early_omni_boot,
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1664,6 +1689,25 @@ pub fn run() {
             process_manager::omni_process_optimize,
             process_manager::omni_process_tree,
             process_manager::omni_process_stats,
+            // ── OmniSession ───────────────────────────────────────────────────
+            omni_session::omni_session_login,
+            omni_session::omni_session_logout,
+            omni_session::omni_session_summary,
+            omni_session::omni_session_snapshot,
+            omni_session::omni_session_state,
+            // ── Device Manager ────────────────────────────────────────────────
+            device_manager::omni_devices_list,
+            device_manager::omni_display_config,
+            device_manager::omni_audio_device_set,
+            device_manager::omni_input_device_info,
+            device_manager::omni_device_optimize,
+            device_manager::omni_device_hotplug,
+            // ── OmniBoot ──────────────────────────────────────────────────────
+            omni_boot::omni_boot_verify,
+            omni_boot::omni_boot_manifest,
+            omni_boot::omni_boot_snapshot,
+            omni_boot::omni_boot_report,
+            omni_boot::omni_boot_load_manifest,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,
