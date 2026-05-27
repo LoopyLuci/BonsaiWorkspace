@@ -153,6 +153,9 @@ mod belief_reviser;
 mod metacognitive_monitor;
 mod reasoning_engine;
 mod knowledge_tools;
+mod omnipresent_capture;
+mod predictive_engine;
+mod omnfs;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -296,6 +299,12 @@ pub struct AppState {
     pub belief_reviser: Arc<tokio::sync::RwLock<crate::belief_reviser::BeliefReviser>>,
     /// Metacognitive monitor — calibration and strategy tracking.
     pub metacognitive: Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>>,
+    /// Omnipresent event capture — records every user action.
+    pub omnipresent: Arc<crate::omnipresent_capture::OmnipresentCapture>,
+    /// Predictive engine — Markov + temporal models, automation rules.
+    pub predictive_engine: Arc<crate::predictive_engine::PredictiveEngine>,
+    /// OmnFS — CAS-backed virtual file system with versioning and snapshots.
+    pub omnfs: Arc<crate::omnfs::OmnFS>,
 }
 
 
@@ -1046,6 +1055,15 @@ pub fn run() {
             let machine_id = format!("local-{}", uuid::Uuid::new_v4().simple());
             let federated_trainer = crate::federated_trainer::FederatedTrainer::new(machine_id);
 
+            // OmnAI OS layer
+            let early_omnipresent = crate::omnipresent_capture::OmnipresentCapture::new(
+                cas_store.clone(),
+                training_collector.clone(),
+            );
+            crate::omnipresent_capture::spawn_hardware_sampler(early_omnipresent.clone());
+            let early_predictive = crate::predictive_engine::PredictiveEngine::new();
+            let early_omnfs = crate::omnfs::OmnFS::new(cas_store.clone());
+
             // Sylva scripting runtime — hot-reloadable Lua tools
             let scripts_dir = cas_data_dir.join("scripts");
             let sylva = tauri::async_runtime::block_on(
@@ -1138,6 +1156,9 @@ pub fn run() {
                 reasoning: early_reasoning.clone(),
                 belief_reviser: early_belief_reviser.clone(),
                 metacognitive: early_metacognitive.clone(),
+                omnipresent: early_omnipresent.clone(),
+                predictive_engine: early_predictive.clone(),
+                omnfs: early_omnfs.clone(),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1564,6 +1585,28 @@ pub fn run() {
             training_commands::ingest_feedback_ui,
             training_commands::ingest_edit,
             training_commands::train_reasoning,
+            // ── OmnAI OS ──────────────────────────────────────────────────────
+            omnipresent_capture::omn_record_event,
+            omnipresent_capture::omn_get_recent_events,
+            omnipresent_capture::omn_get_session_summary,
+            omnipresent_capture::omn_update_context,
+            omnipresent_capture::omn_new_session,
+            predictive_engine::get_predictions,
+            predictive_engine::get_automation_rules,
+            predictive_engine::get_pending_suggestions,
+            predictive_engine::approve_automation,
+            predictive_engine::reject_automation,
+            predictive_engine::add_automation_rule,
+            predictive_engine::delete_automation_rule,
+            omnfs::omnfs_read,
+            omnfs::omnfs_write,
+            omnfs::omnfs_delete,
+            omnfs::omnfs_stat,
+            omnfs::omnfs_list_dir,
+            omnfs::omnfs_snapshot,
+            omnfs::omnfs_rollback,
+            omnfs::omnfs_list_snapshots,
+            omnfs::omnfs_stats,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,
