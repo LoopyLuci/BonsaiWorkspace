@@ -479,6 +479,10 @@ impl OmniDesktop {
         windows.sort_by_key(|w| w.z_order);
         windows
     }
+
+    pub fn active_workspace_id(&self) -> u32 {
+        self.active_workspace.load(Ordering::Relaxed)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

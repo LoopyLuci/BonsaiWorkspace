@@ -433,6 +433,19 @@ fn levenshtein(a: &str, b: &str) -> usize {
     dp[m][n]
 }
 
+impl OmnipresentCapture {
+    /// Return all events recorded since `since_ms` (milliseconds epoch).
+    pub async fn get_events_since(&self, since_ms: i64) -> Vec<OmnEvent> {
+        // Events are stored with timestamp in microseconds
+        let since_us = since_ms * 1_000;
+        self.ring.read().await
+            .iter()
+            .filter(|e| e.timestamp >= since_us)
+            .cloned()
+            .collect()
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § 5 — Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
