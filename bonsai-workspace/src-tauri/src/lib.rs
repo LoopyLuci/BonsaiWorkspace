@@ -156,6 +156,9 @@ mod knowledge_tools;
 mod omnipresent_capture;
 mod predictive_engine;
 mod omnfs;
+mod omni_desktop;
+mod omni_shell;
+mod process_manager;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -305,6 +308,12 @@ pub struct AppState {
     pub predictive_engine: Arc<crate::predictive_engine::PredictiveEngine>,
     /// OmnFS — CAS-backed virtual file system with versioning and snapshots.
     pub omnfs: Arc<crate::omnfs::OmnFS>,
+    /// OmniDesktop — GPU-accelerated compositor, window manager, panel engine.
+    pub omni_desktop: Arc<crate::omni_desktop::OmniDesktop>,
+    /// OmniShell — AI-native terminal with prediction, NL translation, auto-fix.
+    pub omni_shell: Arc<crate::omni_shell::OmniShellState>,
+    /// Process Manager — TrustGuard-enforced process lifecycle, 4-tier sandboxing.
+    pub process_manager: Arc<crate::process_manager::ProcessManager>,
 }
 
 
@@ -1064,6 +1073,10 @@ pub fn run() {
             let early_predictive = crate::predictive_engine::PredictiveEngine::new();
             let early_omnfs = crate::omnfs::OmnFS::new(cas_store.clone());
 
+            // OmniDesktop and ProcessManager (don't need Sylva)
+            let early_omni_desktop = crate::omni_desktop::OmniDesktop::new(gpu_ctrl_inst.clone());
+            let early_process_manager = crate::process_manager::ProcessManager::new(gpu_ctrl_inst.clone());
+
             // Sylva scripting runtime — hot-reloadable Lua tools
             let scripts_dir = cas_data_dir.join("scripts");
             let sylva = tauri::async_runtime::block_on(
@@ -1077,6 +1090,13 @@ pub fn run() {
                 // Return a dummy state so the app still starts
                 panic!("Sylva init failed: {e}")
             });
+
+            // OmniShell — needs Sylva runtime
+            let early_omni_shell = Arc::new(crate::omni_shell::OmniShellState::new(
+                early_predictive.clone(),
+                sylva.runtime.clone(),
+                early_omnipresent.clone(),
+            ));
 
             app.manage(AppState {
                 orchestrator:     orchestrator.clone(),
@@ -1159,6 +1179,9 @@ pub fn run() {
                 omnipresent: early_omnipresent.clone(),
                 predictive_engine: early_predictive.clone(),
                 omnfs: early_omnfs.clone(),
+                omni_desktop: early_omni_desktop.clone(),
+                omni_shell: early_omni_shell,
+                process_manager: early_process_manager.clone(),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1607,6 +1630,40 @@ pub fn run() {
             omnfs::omnfs_rollback,
             omnfs::omnfs_list_snapshots,
             omnfs::omnfs_stats,
+            // ── OmniDesktop ───────────────────────────────────────────────────
+            omni_desktop::omni_window_list,
+            omni_desktop::omni_window_open,
+            omni_desktop::omni_window_close,
+            omni_desktop::omni_window_focus,
+            omni_desktop::omni_window_move,
+            omni_desktop::omni_window_minimize,
+            omni_desktop::omni_window_maximize,
+            omni_desktop::omni_window_restore,
+            omni_desktop::omni_desktop_layout,
+            omni_desktop::omni_desktop_wallpaper_set,
+            omni_desktop::omni_panel_list,
+            omni_desktop::omni_panel_add,
+            omni_desktop::omni_panel_widget_add,
+            omni_desktop::omni_desktop_damage,
+            omni_desktop::omni_workspace_switch,
+            // ── OmniShell ─────────────────────────────────────────────────────
+            omni_shell::omni_shell_exec,
+            omni_shell::omni_shell_predict,
+            omni_shell::omni_shell_history,
+            omni_shell::omni_shell_nl,
+            omni_shell::omni_shell_alias_set,
+            omni_shell::omni_shell_alias_delete,
+            omni_shell::omni_shell_aliases,
+            omni_shell::omni_shell_config_set,
+            omni_shell::omni_shell_cwd,
+            // ── Process Manager ───────────────────────────────────────────────
+            process_manager::omni_process_list,
+            process_manager::omni_process_spawn,
+            process_manager::omni_process_kill,
+            process_manager::omni_process_priority,
+            process_manager::omni_process_optimize,
+            process_manager::omni_process_tree,
+            process_manager::omni_process_stats,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,
