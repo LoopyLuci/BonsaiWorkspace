@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 use crate::unified_training_collector::ConvMessage;
+use candle_core::Device;
 
 use crate::evaluation_harness::EvaluationHarness;
 use crate::forgetting_prevention::ForgettingPrevention;
@@ -914,6 +915,34 @@ impl EternalTrainingLoop {
     /// Return the list of CAS keys for training dataset snapshots (cycle, hex_key).
     pub async fn dataset_cas_keys(&self) -> Vec<(u64, String)> {
         self.dataset_keys.read().await.iter().cloned().collect()
+    }
+
+    /// Start an asynchronous Go training loop that repeatedly runs self-play
+    /// cycles and training. Requires `cas_store` to be configured on this loop.
+    pub async fn start_go_training(&self, config: bonsai_go_nn::training_loop::GoTrainingConfig) -> Result<(), String> {
+        let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
+        let cas = match &self.cas_store {
+            Some(c) => c.clone(),
+            None => return Err("CAS store not configured for EternalTrainingLoop".into()),
+        };
+
+        // Create training loop instance
+        let mut loop_inst = match bonsai_go_nn::training_loop::GoTrainingLoop::new(config, device, None, cas.clone()).await {
+            Ok(l) => l,
+            Err(e) => return Err(format!("failed to create GoTrainingLoop: {}", e)),
+        };
+
+        // Spawn a background task to run cycles continuously
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = loop_inst.run_cycle().await {
+                    tracing::error!("Go training cycle failed: {}", e);
+                }
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        });
+
+        Ok(())
     }
 }
 

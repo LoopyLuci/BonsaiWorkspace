@@ -117,6 +117,36 @@ impl GpuController {
         });
     }
 
+    /// Spawn a background task that emits a Tauri event if the GPU becomes
+    /// unavailable.  Runs a lightweight VRAM check every `interval_secs`.
+    pub fn start_health_monitor(self: Arc<Self>, app_handle: tauri::AppHandle, interval_secs: u64) {
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(interval_secs);
+            let mut consecutive_failures: u32 = 0;
+            loop {
+                tokio::time::sleep(interval).await;
+                let vram = self.gpu.free_vram_mb();
+                // Treat 0 MB free as a potential GPU hang (true in practice when driver is gone)
+                if vram == 0 {
+                    consecutive_failures += 1;
+                    warn!("[gpu-health] probe failed (consecutive={})", consecutive_failures);
+                    if consecutive_failures >= 2 {
+                        let _ = tauri::Emitter::emit(&app_handle, "gpu-unhealthy", serde_json::json!({
+                            "consecutive_failures": consecutive_failures,
+                            "vram_free_mb": vram,
+                        }));
+                    }
+                } else {
+                    if consecutive_failures > 0 {
+                        info!("[gpu-health] GPU recovered after {} failures", consecutive_failures);
+                        let _ = tauri::Emitter::emit(&app_handle, "gpu-recovered", serde_json::json!({}));
+                    }
+                    consecutive_failures = 0;
+                }
+            }
+        });
+    }
+
     /// Update last-used timestamp for a model.
     pub async fn touch_model(&self, model_path: &str) {
         self.model_usage.write().await.insert(model_path.to_string(), Instant::now());

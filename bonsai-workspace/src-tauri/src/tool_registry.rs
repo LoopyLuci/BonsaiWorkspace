@@ -302,10 +302,13 @@ impl ToolRegistryState {
         self.list_tools().iter().any(|t| t.name == name)
     }
 
-    /// Invoke a tool by name and return a JSON-ish Value result or an error.
-
+    /// Invoke a tool by name with a 30-second timeout.
     pub async fn invoke_by_name(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
-        match self.registry.execute(name, &args).await {
+        let fut = self.registry.execute(name, &args);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), fut)
+            .await
+            .map_err(|_| format!("tool '{}' timed out after 30s", name))?;
+        match result {
             Some(res) => {
                 if res.content_type.starts_with("text/") {
                     if let Ok(s) = std::str::from_utf8(&res.data) {

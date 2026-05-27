@@ -36,6 +36,13 @@ use crate::model_registry::{ModelInfo, ModelRegistry};
 use crate::sidecar_supervisor::{SidecarConfig, SidecarStatus, SidecarSupervisor};
 
 const MODEL_LOAD_POLL_INTERVAL_MS: u64 = 500;
+/// Maximum number of concurrent `infer_simple` callers.  The slot queue handles
+/// the actual serialisation; this limit prevents runaway callers from piling up
+/// unbounded oneshot channels.
+static INFER_SEMAPHORE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+fn infer_semaphore() -> &'static tokio::sync::Semaphore {
+    INFER_SEMAPHORE.get_or_init(|| tokio::sync::Semaphore::new(8))
+}
 #[cfg(target_os = "android")]
 const MODEL_LOAD_TIMEOUT_SECS: u64 = 420;
 #[cfg(not(target_os = "android"))]
@@ -360,6 +367,10 @@ impl ModelOrchestrator {
         max_tokens: u32,
         source:     &'static str,
     ) -> Result<(String, InferStats), String> {
+        let _permit = infer_semaphore()
+            .acquire()
+            .await
+            .map_err(|_| "inference semaphore closed".to_string())?;
         use serde_json::json;
         let messages = vec![json!({ "role": "user", "content": prompt })];
         let (resp_tx, resp_rx) = oneshot::channel();

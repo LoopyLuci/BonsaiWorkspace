@@ -39,6 +39,7 @@
   } from '$lib/stores/catalog';
   import { featureFlags, loadFeatureFlags } from '$lib/stores/features';
   import TrainingDashboard from '$lib/components/TrainingDashboard.svelte';
+  import ScriptEditor from '$lib/components/ScriptEditor.svelte';
   import { thinkingSettings } from '$lib/stores/thinkingSettings';
 
   const dispatch = createEventDispatcher<{ close: void }>();
@@ -342,6 +343,7 @@
 
   let showAdvanced = false;
   let showTrainingDashboard = false;
+  let showScriptEditor = false;
 
   // ── Vision tool availability ──────────────────────────────────────────────
   let opencvAvail  = false;
@@ -1988,6 +1990,9 @@
             <button class="btn-training" on:click={() => { showTrainingDashboard = true; }}>
               Dashboard
             </button>
+            <button class="btn-training" on:click={() => { showScriptEditor = true; }}>
+              Scripts
+            </button>
             <button class="btn-training" on:click={() => { showHistory = !showHistory; loadRunHistory(); }}>
               History {showHistory ? '▲' : '▼'}
             </button>
@@ -2122,6 +2127,12 @@
 {#if showTrainingDashboard}
   <div class="dashboard-overlay" role="dialog" aria-modal="true">
     <TrainingDashboard onClose={() => (showTrainingDashboard = false)} />
+  </div>
+{/if}
+
+{#if showScriptEditor}
+  <div class="dashboard-overlay" role="dialog" aria-modal="true">
+    <ScriptEditor on:close={() => (showScriptEditor = false)} />
   </div>
 {/if}
 

@@ -3,6 +3,10 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 
+use mimalloc::MiMalloc;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 mod agent;
 mod agent_host;
 mod agents;
@@ -145,6 +149,7 @@ mod promotion_gate;
 mod forgetting_prevention;
 mod eternal_training_loop;
 mod training_commands;
+mod nn_commands;
 mod orchestrator;
 mod sylva;
 mod federated_trainer;
@@ -456,6 +461,15 @@ fn sweep_stale_sidecars() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Write a crash dump on panic so users can report issues.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("{info}");
+        tracing::error!("PANIC: {msg}");
+        let dump_path = std::env::temp_dir().join("bonsai_crash.txt");
+        let _ = std::fs::write(&dump_path, &msg);
+        eprintln!("Bonsai crashed. Dump written to: {}", dump_path.display());
+    }));
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -974,6 +988,12 @@ pub fn run() {
                     // TTL: 5 minutes idle, check every 60 seconds
                     gc.run_ttl_monitor(300, 60).await;
                 });
+            }
+
+            // Start GPU health probe (emits "gpu-unhealthy" event to frontend).
+            {
+                let gc = Arc::clone(&gpu_controller);
+                gc.start_health_monitor(app_handle.clone(), 30);
             }
 
             // Start A2A server for agent interoperability (best-effort)
@@ -1757,8 +1777,13 @@ pub fn run() {
             thoughts_commands::set_thinking_settings,
             // ── Sylva scripting ───────────────────────────────────────────────
             sylva::sylva_exec,
+            sylva::sylva_exec_file,
             sylva::sylva_list_scripts,
             sylva::get_sylva_history,
+            sylva::sylva_clear_history,
+            sylva::sylva_load_script,
+            sylva::sylva_get_script_content,
+            sylva::sylva_save_script,
             // ── Federated training ────────────────────────────────────────────
             federated_trainer::federated_stats,
             federated_trainer::federated_list_adapters,

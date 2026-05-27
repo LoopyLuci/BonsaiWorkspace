@@ -73,8 +73,14 @@ impl SylvaRuntime {
         }))
     }
 
-    /// Inject the `bonsai` global table into the Lua VM.
+    /// Inject the `bonsai` global table and remove dangerous Lua standard libraries.
     fn inject_bonsai_globals(lua: &Lua, registry: &Arc<ToolRegistryState>) -> LuaResult<()> {
+        // Remove modules that could escape the sandbox
+        let globals = lua.globals();
+        for module in &["os", "io", "package", "require", "dofile", "loadfile", "load"] {
+            globals.raw_remove(*module)?;
+        }
+
         let bonsai = lua.create_table()?;
 
         // bonsai.tool(name, args_table) → JSON string result or error
@@ -181,12 +187,25 @@ impl SylvaRuntime {
         Ok(name)
     }
 
-    /// Execute a raw Lua string and return the result as JSON.
+    /// Execute a raw Lua string with a 10-second wall-clock timeout.
     pub fn exec_str(&self, src: &str) -> Result<serde_json::Value, String> {
         let lua = self.lua.lock().map_err(|e| e.to_string())?;
-        let val: LuaValue = lua.load(src).eval()
-            .map_err(|e| e.to_string())?;
+        // Set instruction count limit (~10M ops ≈ a few seconds of pure Lua)
+        lua.set_hook(
+            mlua::HookTriggers::new().every_nth_instruction(10_000_000),
+            |_lua, _debug| Err(mlua::Error::RuntimeError("Sylva execution limit reached (10M instructions)".into())),
+        );
+        let result = lua.load(src).eval::<LuaValue>().map_err(|e| e.to_string());
+        let _ = lua.remove_hook();
+        let val = result?;
         lua_value_to_json(val).map_err(|e| e.to_string())
+    }
+
+    /// Execute a `.lua` file by path and return the result as JSON.
+    pub async fn exec_file(&self, path: &Path) -> Result<serde_json::Value, String> {
+        let source = tokio::fs::read_to_string(path).await
+            .map_err(|e| format!("read error: {e}"))?;
+        self.exec_str(&source)
     }
 
     /// Call a named function defined in any loaded script.
@@ -465,4 +484,52 @@ pub async fn get_sylva_history(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<SylvaCallRecord>, String> {
     Ok(state.sylva.runtime.call_history().await)
+}
+
+#[tauri::command]
+pub async fn sylva_exec_file(
+    state: tauri::State<'_, crate::AppState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    state.sylva.runtime.exec_file(std::path::Path::new(&path)).await
+}
+
+#[tauri::command]
+pub async fn sylva_clear_history(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.sylva.runtime.call_history.write().await.clear();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sylva_load_script(
+    state: tauri::State<'_, crate::AppState>,
+    path: String,
+) -> Result<String, String> {
+    state.sylva.runtime.load_script(std::path::Path::new(&path)).await
+}
+
+#[tauri::command]
+pub async fn sylva_get_script_content(
+    state: tauri::State<'_, crate::AppState>,
+    name: String,
+) -> Result<String, String> {
+    let scripts = state.sylva.runtime.scripts.read().await;
+    scripts.get(&name)
+        .map(|s| s.source.clone())
+        .ok_or_else(|| format!("Script '{}' not found", name))
+}
+
+#[tauri::command]
+pub async fn sylva_save_script(
+    state: tauri::State<'_, crate::AppState>,
+    name: String,
+    source: String,
+) -> Result<String, String> {
+    let scripts_dir = state.sylva.runtime.scripts_dir.clone();
+    let path = scripts_dir.join(format!("{}.lua", name));
+    tokio::fs::write(&path, &source).await
+        .map_err(|e| format!("Failed to write script: {e}"))?;
+    state.sylva.runtime.load_script(&path).await
 }
