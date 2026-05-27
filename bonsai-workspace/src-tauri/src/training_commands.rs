@@ -409,6 +409,19 @@ pub async fn ingest_feedback_ui(
     Ok(())
 }
 
+/// Trigger a focused training cycle on buffered reasoning DPO data.
+#[tauri::command]
+pub async fn train_reasoning(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let collector  = state.training.collector.clone();
+    let orchestrator = state.orchestrator.clone();
+    tokio::spawn(async move {
+        crate::eternal_training_loop::train_reasoning_step(collector, orchestrator).await;
+    });
+    Ok(serde_json::json!({ "status": "started", "message": "Reasoning DPO training cycle queued" }))
+}
+
 /// Record a user edit as a correction signal.
 #[tauri::command]
 pub async fn ingest_edit(

@@ -149,6 +149,10 @@ mod orchestrator;
 mod sylva;
 mod federated_trainer;
 mod games;
+mod belief_reviser;
+mod metacognitive_monitor;
+mod reasoning_engine;
+mod knowledge_tools;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -284,6 +288,14 @@ pub struct AppState {
     pub actor_system: Arc<bonsai_actors::ActorSystem>,
     /// Chess and Go game session store.
     pub game_sessions: Arc<crate::games::GameSessionStore>,
+    /// Knowledge graph — entities, relations, beliefs.
+    pub knowledge: Arc<bonsai_knowledge::KnowledgeGraph>,
+    /// Multi-strategy reasoning engine.
+    pub reasoning: Arc<crate::reasoning_engine::ReasoningEngine>,
+    /// Bayesian belief reviser with contradiction resolution.
+    pub belief_reviser: Arc<tokio::sync::RwLock<crate::belief_reviser::BeliefReviser>>,
+    /// Metacognitive monitor — calibration and strategy tracking.
+    pub metacognitive: Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>>,
 }
 
 
@@ -729,6 +741,17 @@ pub fn run() {
                 tool_registry::ToolRegistryState::new_with_defaults()
             );
 
+            // Build game sessions early so MgmtState and AppState share the same Arc.
+            let early_game_sessions = crate::games::GameSessionStore::new();
+
+            // Build knowledge graph + reasoning engine — shared across MgmtState and AppState.
+            let early_knowledge = Arc::new(bonsai_knowledge::KnowledgeGraph::new());
+            let early_reasoning = Arc::new(crate::reasoning_engine::ReasoningEngine::new(early_knowledge.clone()));
+            let early_belief_reviser: Arc<tokio::sync::RwLock<crate::belief_reviser::BeliefReviser>> =
+                Arc::new(tokio::sync::RwLock::new(crate::belief_reviser::BeliefReviser::new()));
+            let early_metacognitive: Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>> =
+                Arc::new(tokio::sync::RwLock::new(crate::metacognitive_monitor::MetacognitiveMonitor::new()));
+
             let api_runtime = {
                 let orch   = orchestrator.clone();
                 let remote = remote_manager.clone();
@@ -754,6 +777,11 @@ pub fn run() {
                     self_play:     early_self_play.clone(),
                     plugin_host:   early_plugin_host.clone(),
                     tool_registry: early_tool_registry.clone(),
+                    game_sessions: early_game_sessions.clone(),
+                    knowledge:     early_knowledge.clone(),
+                    reasoning:     early_reasoning.clone(),
+                    belief_reviser: early_belief_reviser.clone(),
+                    metacognitive:  early_metacognitive.clone(),
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
@@ -785,6 +813,17 @@ pub fn run() {
             let self_play_state = early_self_play;
             let plugin_host     = early_plugin_host;
             let tool_registry   = early_tool_registry;
+
+            // Register knowledge tools into the tool registry.
+            {
+                let tr = tool_registry.clone();
+                let kg = early_knowledge.clone();
+                let re = early_reasoning.clone();
+                let br = early_belief_reviser.clone();
+                tauri::async_runtime::spawn(async move {
+                    knowledge_tools::register_knowledge_tools(&tr, re, kg, br).await;
+                });
+            }
 
             let (cross_pipeline, cross_tx) = cross_training::CrossTrainingPipeline::new(
                 cross_training::CrossTrainingConfig::default(),
@@ -941,6 +980,8 @@ pub fn run() {
                 forgetting.clone(),
                 promotion_gate.clone(),
                 self_play_trainer.clone(),
+                orchestrator.clone(),
+                early_knowledge.clone(),
             );
             // Start background eternal training loop
             eternal_loop.clone().spawn();
@@ -1092,7 +1133,11 @@ pub fn run() {
                 sylva,
                 federated_trainer,
                 actor_system,
-                game_sessions: crate::games::GameSessionStore::new(),
+                game_sessions: early_game_sessions.clone(),
+                knowledge: early_knowledge.clone(),
+                reasoning: early_reasoning.clone(),
+                belief_reviser: early_belief_reviser.clone(),
+                metacognitive: early_metacognitive.clone(),
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
@@ -1518,6 +1563,7 @@ pub fn run() {
             training_commands::get_training_loop_history,
             training_commands::ingest_feedback_ui,
             training_commands::ingest_edit,
+            training_commands::train_reasoning,
             // ── Models ────────────────────────────────────────────────────────
             commands::list_available_models,
             commands::list_models_registry,

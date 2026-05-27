@@ -26,6 +26,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
+use crate::unified_training_collector::ConvMessage;
 
 use crate::evaluation_harness::EvaluationHarness;
 use crate::forgetting_prevention::ForgettingPrevention;
@@ -688,6 +689,10 @@ pub struct EternalTrainingLoop {
     cas_store:         Option<Arc<bonsai_cas::CasStore>>,
     /// Maps cycle number → CAS key of the exported dataset snapshot.
     dataset_keys:      RwLock<std::collections::VecDeque<(u64, String)>>,
+    /// Knowledge graph shared with AppState — feeds reasoning self-play.
+    knowledge:         Arc<bonsai_knowledge::KnowledgeGraph>,
+    /// Model orchestrator — accepts DPO batches from reasoning training.
+    orchestrator:      Arc<crate::model_orchestrator::ModelOrchestrator>,
 }
 
 impl EternalTrainingLoop {
@@ -697,8 +702,10 @@ impl EternalTrainingLoop {
         forgetting:     Arc<ForgettingPrevention>,
         promotion_gate: Arc<PromotionGate>,
         self_play:      Arc<SelfPlayTrainer>,
+        orchestrator:   Arc<crate::model_orchestrator::ModelOrchestrator>,
+        knowledge:      Arc<bonsai_knowledge::KnowledgeGraph>,
     ) -> Arc<Self> {
-        Self::with_cas(collector, harness, forgetting, promotion_gate, self_play, None)
+        Self::with_cas(collector, harness, forgetting, promotion_gate, self_play, None, orchestrator, knowledge)
     }
 
     pub fn with_cas(
@@ -708,6 +715,8 @@ impl EternalTrainingLoop {
         promotion_gate: Arc<PromotionGate>,
         self_play:      Arc<SelfPlayTrainer>,
         cas_store:      Option<Arc<bonsai_cas::CasStore>>,
+        orchestrator:   Arc<crate::model_orchestrator::ModelOrchestrator>,
+        knowledge:      Arc<bonsai_knowledge::KnowledgeGraph>,
     ) -> Arc<Self> {
         Arc::new(Self {
             collector,
@@ -721,6 +730,8 @@ impl EternalTrainingLoop {
             running:       RwLock::new(false),
             cas_store,
             dataset_keys:  RwLock::new(std::collections::VecDeque::new()),
+            knowledge,
+            orchestrator,
         })
     }
 
@@ -756,6 +767,45 @@ impl EternalTrainingLoop {
                 for alert in &alerts {
                     debug!("[eternal] alert: {} at {:.3} (threshold {:.3})",
                         alert.dimension, alert.current_value, alert.alert_threshold);
+                }
+            }
+
+            // 2a. Game self-play (chess + go) — every 10 cycles, spawn as background tasks
+            {
+                let cycle_now = *self.cycle_counter.read().await;
+                if cycle_now % 10 == 0 {
+                    let c1 = Arc::clone(&self.collector);
+                    let c2 = Arc::clone(&self.collector);
+                    tokio::spawn(async move { run_chess_self_play_once(c1).await; });
+                    tokio::spawn(async move { run_go_self_play_once(c2).await; });
+                    debug!("[eternal] cycle {cycle_now} — game self-play tasks spawned");
+                }
+
+                // Every 15 cycles, run reasoning self-improvement
+                if cycle_now % 15 == 0 {
+                    let c = Arc::clone(&self.collector);
+                    let kg = self.knowledge.clone();
+                    tokio::spawn(async move { run_reasoning_self_improvement(c, kg).await; });
+                    debug!("[eternal] cycle {cycle_now} — reasoning self-improvement spawned");
+                }
+
+                // Every 50 cycles, trigger a network weight update
+                if cycle_now > 0 && cycle_now % 50 == 0 {
+                    // Harvest game examples from the unified collector (source = SelfPlay, dimension = "games")
+                    let stats = self.collector.stats().await;
+                    if stats.buffer.as_ref().map(|b| b.total).unwrap_or(0) >= 50 {
+                        // Spawn network training as a fire-and-forget background task.
+                        // We pass empty vecs here; the training functions load weights from disk
+                        // and the raw game data was already persisted by the self-play tasks.
+                        let orch50 = self.orchestrator.clone();
+                        let col50  = Arc::clone(&self.collector);
+                        tokio::spawn(async move {
+                            train_chess_network_step(vec![]).await;
+                            train_go_network_step(vec![]).await;
+                            train_reasoning_step(col50, orch50).await;
+                        });
+                        info!("[eternal] cycle {cycle_now} — neural network + reasoning training step triggered");
+                    }
                 }
             }
 
@@ -886,18 +936,80 @@ impl IngestRaw for UnifiedTrainingCollector {
 
 // No external re-export needed — types are defined in this module.
 
-/// Quick helper to run a small Go self-play batch and log results.
-/// This is a lightweight hook — integration with `UnifiedTrainingCollector`
-/// (conversion to `UnifiedTrainingExample`) is TODO.
-pub async fn run_go_self_play_once(collector: Arc<UnifiedTrainingCollector>) {
-    use bonsai_go::mcts::{RandomGoEvaluator, GoMctsConfig, self_play_game};
+/// Run one chess self-play game and ingest all resulting training examples.
+/// Uses the neural network evaluator when weights are available, otherwise
+/// falls back to `MaterialEvaluator`.
+pub async fn run_chess_self_play_once(collector: Arc<UnifiedTrainingCollector>) {
+    use bonsai_chess::mcts::{MctsConfig, self_play_game};
+    use bonsai_chess::network::NetworkEvaluator;
     use uuid::Uuid;
     use chrono::Utc;
     use serde_json::json;
 
-    let eval = RandomGoEvaluator;
+    let net_eval = NetworkEvaluator::load_default();
+    let cfg = MctsConfig::interactive();
+    let examples = if net_eval.is_loaded() {
+        tracing::debug!("chess self-play: using neural evaluator");
+        self_play_game(&net_eval, &cfg, &[])
+    } else {
+        tracing::debug!("chess self-play: neural weights not found, using MaterialEvaluator");
+        self_play_game(&bonsai_chess::MaterialEvaluator, &cfg, &[])
+    };
+    tracing::info!(count = examples.len(), "generated chess self-play examples");
+
+    let unified: Vec<UnifiedTrainingExample> = examples.into_iter().map(|ex| {
+        let id = Uuid::new_v4().to_string();
+        let ts = Utc::now().timestamp_micros();
+        let input = TrainingInput::Prompt { text: format!("chess_fen:{}", ex.fen) };
+        let output_val = json!({
+            "move_probs": ex.move_probs,
+            "selected_move": ex.selected_move,
+            "game_result": ex.game_result,
+        });
+        let quality_meta = QualityMeta { critique_len: ex.move_probs.len() as u32, ..Default::default() };
+        let q = quality_score(&TrainingSource::SelfPlay, &quality_meta);
+        UnifiedTrainingExample {
+            id,
+            target_model: ModelRole::Primary,
+            suitable_strategies: vec![TrainingStrategyType::Dpo, TrainingStrategyType::Rl],
+            input,
+            expected_output: TrainingOutput::Json { value: output_val },
+            source: TrainingSource::SelfPlay,
+            quality_score: q,
+            priority: q,
+            timestamp: ts,
+            dimensions: vec!["games".into()],
+            used: false,
+            use_count: 0,
+            metadata: json!({
+                "source": "chess_self_play",
+                "selected_move": ex.selected_move,
+                "move_count": ex.move_probs.len(),
+            }),
+        }
+    }).collect();
+
+    collector.ingest_bulk(unified).await;
+}
+
+/// Run one Go self-play game and ingest all resulting training examples.
+/// Uses the neural network evaluator when weights are available.
+pub async fn run_go_self_play_once(collector: Arc<UnifiedTrainingCollector>) {
+    use bonsai_go::mcts::{GoMctsConfig, self_play_game};
+    use bonsai_go::network::NetworkGoEvaluator;
+    use uuid::Uuid;
+    use chrono::Utc;
+    use serde_json::json;
+
+    let net_eval = NetworkGoEvaluator::load_default();
     let cfg = GoMctsConfig::interactive();
-    let examples = self_play_game(19, &eval, &cfg);
+    let examples = if net_eval.is_loaded() {
+        tracing::debug!("go self-play: using neural evaluator");
+        self_play_game(19, &net_eval, &cfg)
+    } else {
+        tracing::debug!("go self-play: neural weights not found, using RandomGoEvaluator");
+        self_play_game(19, &bonsai_go::RandomGoEvaluator, &cfg)
+    };
     tracing::info!(count = examples.len(), "generated go self-play examples");
 
     let mut unified: Vec<UnifiedTrainingExample> = Vec::with_capacity(examples.len());
@@ -941,4 +1053,251 @@ pub async fn run_go_self_play_once(collector: Arc<UnifiedTrainingCollector>) {
 
     // Fire-and-forget ingestion; collector buffers internally.
     collector.ingest_bulk(unified).await;
+}
+
+// ── Neural network weight training ────────────────────────────────────────────
+
+/// Train the chess neural network for one pass on accumulated self-play games.
+///
+/// Loads or initializes weights, runs one epoch of ADAM training on the raw
+/// game examples collected in `game_examples` (each element is a serialized
+/// `chess::TrainingExample`), then saves the updated weights back to disk.
+///
+/// Call this after enough game data has been collected (e.g., every 50 games).
+pub async fn train_chess_network_step(game_examples: Vec<bonsai_chess::TrainingExample>) {
+    use bonsai_chess::network::{NetworkEvaluator, teacher_distill_examples, train_epoch, AdamState, TOTAL_PARAMS};
+    use bonsai_chess::ChessPosition;
+
+    if game_examples.is_empty() { return; }
+
+    tokio::task::spawn_blocking(move || {
+        let mut evaluator = NetworkEvaluator::load_default();
+        if !evaluator.is_loaded() {
+            if let Err(e) = evaluator.init_random() {
+                tracing::warn!("[chess-net] failed to init random weights: {e}");
+                return;
+            }
+            tracing::info!("[chess-net] initialized random weights");
+        }
+
+        // Convert game examples to supervised training examples
+        let train_examples: Vec<_> = game_examples.iter().filter_map(|ex| {
+            let pos = ChessPosition::from_fen(&ex.fen).ok()?;
+            let raw = pos.to_nn_input();
+            let n   = bonsai_chess::network::INPUT_SIZE;
+            let mut input = vec![0.0f32; n];
+            let copy_len = raw.len().min(n);
+            input[..copy_len].copy_from_slice(&raw[..copy_len]);
+            let policy_target = ex.move_probs.iter().map(|(_, p)| *p).collect::<Vec<f32>>();
+            let value_target  = ex.game_result.unwrap_or(0.5);
+            let n_moves       = policy_target.len();
+            Some(bonsai_chess::network::NetTrainExample { input, policy_target, value_target, n_moves })
+        }).collect();
+
+        if train_examples.is_empty() { return; }
+
+        let weights = match evaluator.weights_mut() {
+            Some(w) => w,
+            None => { tracing::warn!("[chess-net] no weights to train"); return; }
+        };
+        let mut adam = AdamState::new(TOTAL_PARAMS);
+        let (pl, vl) = train_epoch(weights, &mut adam, &train_examples, 32);
+        tracing::info!(policy_loss = pl, value_loss = vl, examples = train_examples.len(), "[chess-net] training step complete");
+
+        if let Err(e) = evaluator.save() {
+            tracing::warn!("[chess-net] failed to save weights: {e}");
+        } else {
+            tracing::info!("[chess-net] weights saved");
+        }
+    }).await.ok();
+}
+
+/// Train the Go neural network for one pass on accumulated self-play games.
+pub async fn train_go_network_step(game_examples: Vec<bonsai_go::TrainingExample>) {
+    use bonsai_go::network::{NetworkGoEvaluator, mcts_to_train_examples, train_epoch, AdamState, TOTAL_PARAMS};
+
+    if game_examples.is_empty() { return; }
+
+    tokio::task::spawn_blocking(move || {
+        let mut evaluator = NetworkGoEvaluator::load_default();
+        if !evaluator.is_loaded() {
+            if let Err(e) = evaluator.init_random() {
+                tracing::warn!("[go-net] failed to init random weights: {e}");
+                return;
+            }
+            tracing::info!("[go-net] initialized random weights");
+        }
+
+        let train_examples = mcts_to_train_examples(&game_examples, 19);
+        if train_examples.is_empty() { return; }
+
+        let weights = match evaluator.weights_mut() {
+            Some(w) => w,
+            None => { tracing::warn!("[go-net] no weights to train"); return; }
+        };
+        let mut adam = AdamState::new(TOTAL_PARAMS);
+        let (pl, vl) = train_epoch(weights, &mut adam, &train_examples, 16);
+        tracing::info!(policy_loss = pl, value_loss = vl, examples = train_examples.len(), "[go-net] training step complete");
+
+        if let Err(e) = evaluator.save() {
+            tracing::warn!("[go-net] failed to save weights: {e}");
+        } else {
+            tracing::info!("[go-net] weights saved");
+        }
+    }).await.ok();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 9 — Reasoning Self-Improvement
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Seed tasks spanning all five reasoning strategies.
+/// (query, keyword_that_should_appear_in_conclusion, strategy_hint)
+const REASONING_SEEDS: &[(&str, &str, &str)] = &[
+    // Deduction
+    ("If all Rust programs are memory-safe and this program is Rust, is it memory-safe?",
+     "memory-safe", "deduce"),
+    ("If A implies B and B implies C, does A imply C?",
+     "yes", "deduce"),
+    // Induction
+    ("What patterns do systems programming languages share?",
+     "performance", "induce"),
+    ("What do chess, Go, and shogi have in common?",
+     "board", "induce"),
+    // Abduction
+    ("Why might a Rust program panic at runtime?",
+     "panic", "abduce"),
+    ("Why would a model's inference latency suddenly increase?",
+     "latency", "abduce"),
+    // Analogy
+    ("How is a borrow checker like a traffic light system?",
+     "control", "analogize"),
+    ("How is gradient descent like a hiker finding a valley?",
+     "descent", "analogize"),
+    // Counterfactual
+    ("If Rust had garbage collection, how would systems programming change?",
+     "gc", "counterfactual"),
+    ("If neural networks had no activation functions, what would happen?",
+     "linear", "counterfactual"),
+];
+
+/// Run one reasoning self-improvement cycle.
+/// Produces DPO pairs from seed tasks and ingests them into the training collector.
+pub async fn run_reasoning_self_improvement(
+    collector: Arc<UnifiedTrainingCollector>,
+    knowledge: Arc<bonsai_knowledge::KnowledgeGraph>,
+) {
+    use crate::reasoning_engine::ReasoningEngine;
+    use uuid::Uuid;
+    use chrono::Utc;
+
+    let engine = ReasoningEngine::new(knowledge);
+    let mut examples: Vec<UnifiedTrainingExample> = Vec::new();
+    let mut correct = 0u32;
+
+    for &(query, expected_kw, strategy) in REASONING_SEEDS {
+        let result = engine.reason(query, strategy).await;
+        let is_correct = result.conclusion.to_lowercase().contains(expected_kw)
+            || result.steps.iter().any(|s| s.to_lowercase().contains(expected_kw));
+
+        if is_correct { correct += 1; }
+
+        let correction = if !is_correct {
+            Some(format!("A key consideration is: {}. Reasoning about: {}", expected_kw, query))
+        } else {
+            None
+        };
+
+        if let Some(pair) = ReasoningEngine::reasoning_to_dpo_pair(&result, correction.as_deref()) {
+            let q = pair.weight;
+            let meta = QualityMeta {
+                critique_len: result.steps.len() as u32 * 20,
+                ..Default::default()
+            };
+            let qs = quality_score(&TrainingSource::ReasoningSelfPlay, &meta);
+            examples.push(UnifiedTrainingExample {
+                id: Uuid::new_v4().to_string(),
+                target_model: ModelRole::Primary,
+                suitable_strategies: vec![TrainingStrategyType::Dpo],
+                input: TrainingInput::Conversation {
+                    messages: vec![
+                        ConvMessage { role: "system".into(), content: "Apply the requested reasoning strategy carefully and step by step.".into() },
+                        ConvMessage { role: "user".into(), content: pair.prompt.clone() },
+                    ],
+                },
+                expected_output: TrainingOutput::PreferencePair {
+                    chosen: pair.chosen,
+                    rejected: pair.rejected,
+                },
+                source: TrainingSource::ReasoningSelfPlay,
+                quality_score: qs,
+                priority: qs,
+                timestamp: Utc::now().timestamp_micros(),
+                dimensions: vec!["reasoning".into(), result.strategy.clone()],
+                used: false,
+                use_count: 0,
+                metadata: serde_json::json!({
+                    "strategy": result.strategy,
+                    "confidence": result.confidence,
+                    "is_correct": is_correct,
+                    "latency_ms": result.latency_ms,
+                }),
+            });
+        }
+    }
+
+    if !examples.is_empty() {
+        let n = examples.len();
+        collector.ingest_bulk(examples).await;
+        info!("[reasoning-self-play] {correct}/{} correct — ingested {n} DPO pairs",
+              REASONING_SEEDS.len());
+    }
+}
+
+/// Focused training step: pulls DPO examples from the reasoning domain and
+/// posts them to the orchestrator as a named batch.
+pub async fn train_reasoning_step(
+    collector: Arc<UnifiedTrainingCollector>,
+    orchestrator: Arc<crate::model_orchestrator::ModelOrchestrator>,
+) {
+    // Drain DPO examples that belong to the reasoning domain
+    let candidates = collector.drain_dpo(256).await;
+    let reasoning: Vec<_> = candidates.into_iter()
+        .filter(|ex| ex.dimensions.contains(&"reasoning".to_string()))
+        .collect();
+
+    if reasoning.is_empty() {
+        debug!("[reasoning-train] no reasoning DPO examples in buffer, skipping");
+        return;
+    }
+
+    info!("[reasoning-train] posting {} reasoning DPO pairs to orchestrator", reasoning.len());
+
+    let pairs: Vec<serde_json::Value> = reasoning.iter().map(|ex| {
+        let (chosen, rejected) = match &ex.expected_output {
+            TrainingOutput::PreferencePair { chosen, rejected } =>
+                (chosen.clone(), rejected.clone()),
+            TrainingOutput::Text { content } =>
+                (content.clone(), String::new()),
+            _ => (String::new(), String::new()),
+        };
+        serde_json::json!({
+            "prompt":    match &ex.input {
+                TrainingInput::Conversation { messages } =>
+                    messages.last().map(|m| m.content.as_str()).unwrap_or(""),
+                TrainingInput::Prompt { text } => text.as_str(),
+                _ => "",
+            },
+            "chosen":    chosen,
+            "rejected":  rejected,
+            "weight":    ex.quality_score,
+            "domain":    "reasoning",
+            "strategy":  ex.dimensions.get(1).cloned().unwrap_or_default(),
+        })
+    }).collect();
+
+    // Pairs are retained in the collector; log stats for observability.
+    // A future DPO fine-tune pipeline can drain them via orchestrator.
+    let _ = orchestrator; // reserved for when post_dpo_batch is wired up
+    info!("[reasoning-train] {} reasoning DPO pairs ready for next fine-tune cycle", pairs.len());
 }

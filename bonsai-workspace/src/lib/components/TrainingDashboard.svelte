@@ -205,6 +205,33 @@
   $: qualityThreshold = stats?.collector?.buffer?.quality_threshold ?? 0.4;
   $: loopRunning = stats?.loop_running ?? false;
   $: currentCiq = stats?.ciq;
+
+  // ── Reasoning performance ─────────────────────────────────────────────────
+  let reasoningReport: any = null;
+  let reasoningTraining = false;
+
+  async function loadReasoningReport() {
+    try {
+      reasoningReport = await invoke('get_metacognitive_report').catch(() => null);
+    } catch (_) { /* not available yet */ }
+  }
+
+  async function triggerReasoningTraining() {
+    reasoningTraining = true;
+    try {
+      await invoke('train_reasoning');
+      showToast('Reasoning training cycle queued');
+    } catch (e: any) {
+      showToast('Error: ' + e);
+    } finally {
+      reasoningTraining = false;
+    }
+  }
+
+  onMount(async () => { loadReasoningReport(); });
+  $: strategyRows = reasoningReport?.strategy_stats
+    ? Object.entries(reasoningReport.strategy_stats as Record<string, any>)
+    : [];
 </script>
 
 <!-- ── Layout ──────────────────────────────────────────────────────────────── -->
@@ -342,6 +369,76 @@
             {/each}
           </div>
         </div>
+      </div>
+
+      <!-- Reasoning Performance card -->
+      <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+          <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Reasoning Performance</span>
+          <button
+            class="px-2.5 py-1 text-xs bg-violet-700 hover:bg-violet-600 text-white rounded transition disabled:opacity-50"
+            on:click={triggerReasoningTraining}
+            disabled={reasoningTraining}>
+            {reasoningTraining ? 'Queuing…' : '⚡ Train Reasoning'}
+          </button>
+        </div>
+        {#if reasoningReport}
+          <div class="p-4 space-y-4">
+            <!-- ECE + overall stats -->
+            <div class="grid grid-cols-3 gap-3">
+              <div class="bg-gray-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-gray-400 mb-1">Calibration Error (ECE)</div>
+                <div class="text-2xl font-bold {(reasoningReport.ece ?? 1) < 0.1 ? 'text-green-400' : (reasoningReport.ece ?? 1) < 0.2 ? 'text-yellow-400' : 'text-red-400'}">
+                  {((reasoningReport.ece ?? 0) * 100).toFixed(1)}%
+                </div>
+                <div class="text-xs text-gray-500 mt-1">lower is better</div>
+              </div>
+              <div class="bg-gray-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-gray-400 mb-1">Total Evaluations</div>
+                <div class="text-2xl font-bold text-white">{reasoningReport.total_evaluations ?? 0}</div>
+              </div>
+              <div class="bg-gray-800 rounded-lg p-3 text-center">
+                <div class="text-xs text-gray-400 mb-1">Overall Accuracy</div>
+                <div class="text-2xl font-bold text-white">{pct(reasoningReport.overall_accuracy)}</div>
+              </div>
+            </div>
+            <!-- Per-strategy table -->
+            {#if strategyRows.length > 0}
+              <table class="w-full text-sm">
+                <thead class="text-xs text-gray-400 uppercase bg-gray-800">
+                  <tr>
+                    <th class="px-3 py-2 text-left">Strategy</th>
+                    <th class="px-3 py-2 text-right">Attempts</th>
+                    <th class="px-3 py-2 text-right">Accuracy</th>
+                    <th class="px-3 py-2 text-right">Avg Confidence</th>
+                    <th class="px-3 py-2 text-right">Overconfident?</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800">
+                  {#each strategyRows as [strat, s]}
+                    <tr class="hover:bg-gray-800/50">
+                      <td class="px-3 py-2 text-gray-200 capitalize">{strat.toLowerCase().replace(/_/g,' ')}</td>
+                      <td class="px-3 py-2 text-right text-gray-300">{s.total_attempts ?? 0}</td>
+                      <td class="px-3 py-2 text-right font-mono {(s.rolling_accuracy ?? 0) >= 0.7 ? 'text-green-400' : 'text-yellow-400'}">{pct(s.rolling_accuracy)}</td>
+                      <td class="px-3 py-2 text-right font-mono text-gray-300">{pct(s.avg_confidence)}</td>
+                      <td class="px-3 py-2 text-right {s.is_overconfident ? 'text-red-400' : 'text-gray-500'}">{s.is_overconfident ? '⚠ Yes' : 'No'}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {:else}
+              <p class="text-sm text-gray-500 text-center py-2">No strategy data yet — reasoning self-play runs every 15 training cycles.</p>
+            {/if}
+            <!-- Recommended strategy -->
+            {#if reasoningReport.recommended_strategy}
+              <div class="text-xs text-gray-400">
+                Recommended strategy: <span class="text-violet-300 font-medium">{reasoningReport.recommended_strategy}</span>
+              </div>
+            {/if}
+          </div>
+        {:else}
+          <div class="px-4 py-8 text-center text-gray-500 text-sm">Reasoning metrics not available yet.</div>
+        {/if}
       </div>
 
     <!-- ── Data tab ────────────────────────────────────────────────────────── -->

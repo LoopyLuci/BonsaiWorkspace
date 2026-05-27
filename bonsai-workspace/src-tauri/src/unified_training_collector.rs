@@ -305,6 +305,7 @@ pub enum TrainingSource {
     FederatedDiffs,
     AdversarialProbes,
     ConstitutionalSelfPlay,
+    ReasoningSelfPlay,
 }
 
 impl TrainingSource {
@@ -316,6 +317,7 @@ impl TrainingSource {
             Self::MeetingTranscripts | Self::AudioTranscription => "audio",
             Self::Swarm => "swarm",
             Self::AdversarialProbes => "safety",
+            Self::ReasoningSelfPlay => "reasoning",
             _ => "general",
         }
     }
@@ -390,7 +392,11 @@ pub fn quality_score(source: &TrainingSource, meta: &QualityMeta) -> f32 {
         TrainingSource::FederatedDiffs => {
             meta.peer_reputation * 0.6 + meta.eval_improvement * 0.4
         }
-        TrainingSource::AdversarialProbes => 0.92, // adversarial examples are high-value
+        TrainingSource::AdversarialProbes => 0.92,
+        TrainingSource::ReasoningSelfPlay => {
+            let specificity = (meta.critique_len as f32 / 200.0).min(1.0);
+            0.55 + specificity * 0.35
+        }
     }
 }
 
