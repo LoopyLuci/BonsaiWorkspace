@@ -11,6 +11,8 @@ use bonsai_query::sql::SqlEngine;
 use bonsai_transfer_core::transfer::{TransferStatus, TransferHandle};
 use bonsai_ci::OrchestratorActor;
 use bonsai_tool_registry::ToolRegistry;
+use bonsai_transfer_core::lane::TransportLane;
+use bonsai_p2p::WebRtcLane;
 
 pub struct DaemonState {
     /// Auth token — compared on every WebSocket connection handshake.
@@ -31,6 +33,10 @@ pub struct DaemonState {
     pub sql: Mutex<SqlEngine>,
     /// Hot-swappable tool/skill registry.
     pub tools: Arc<ToolRegistry>,
+    /// Active P2P transport lanes (keyed by lane name).
+    pub p2p_lanes: Mutex<HashMap<String, Arc<dyn TransportLane>>>,
+    /// WebRTC-specific lane handles (for SDP signaling after offer creation).
+    pub webrtc_lanes: Mutex<HashMap<String, Arc<WebRtcLane>>>,
 }
 
 impl DaemonState {
@@ -48,6 +54,8 @@ impl DaemonState {
             orchestrator: Mutex::new(None),
             sql: Mutex::new(sql),
             tools: Arc::new(ToolRegistry::new()),
+            p2p_lanes: Mutex::new(HashMap::new()),
+            webrtc_lanes: Mutex::new(HashMap::new()),
         }
     }
 }

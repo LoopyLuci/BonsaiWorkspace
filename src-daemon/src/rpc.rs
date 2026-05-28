@@ -14,7 +14,7 @@ use bonsai_transfer_crypto::{
     session::SessionKey,
 };
 use bonsai_transfer_core::{
-    lane::InProcessLane,
+    lane::{InProcessLane, TransportLane},
     scheduler::EcfRgScheduler,
     transfer::{Transfer, TransferStatus, TransferHandle},
 };
@@ -462,6 +462,83 @@ pub async fn dispatch(
                 })),
                 None => Err(format!("tool not found: {name}")),
             }
+        }
+
+        // ── P2P lanes ─────────────────────────────────────────────────────────
+
+        "p2p.start_webrtc" => {
+            let name  = params.get("name").and_then(|v| v.as_str()).unwrap_or("webrtc:default");
+            let stuns: Vec<String> = params.get("stun_urls")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                .unwrap_or_else(|| vec!["stun:stun.l.google.com:19302".into()]);
+
+            let (lane, offer_sdp) = bonsai_p2p::WebRtcLane::new_offer(name, stuns).await
+                .map_err(|e| e.to_string())?;
+
+            let lane_name = lane.name().to_string();
+            state.webrtc_lanes.lock().await.insert(lane_name.clone(), lane.clone());
+            state.p2p_lanes.lock().await.insert(lane_name.clone(), lane);
+            Ok(serde_json::json!({ "lane": lane_name, "offer_sdp": offer_sdp }))
+        }
+
+        "p2p.accept_webrtc_answer" => {
+            let name       = params.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+            let answer_sdp = params.get("answer_sdp").and_then(|v| v.as_str()).ok_or("missing answer_sdp")?;
+            let lane = state.webrtc_lanes.lock().await
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("no WebRTC lane: {name}"))?;
+            bonsai_p2p::WebRtcLane::accept_answer(&lane, answer_sdp).await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
+
+        "p2p.start_swarm" => {
+            let name      = params.get("name").and_then(|v| v.as_str()).unwrap_or("swarm:default");
+            let peer_addr = params.get("peer_addr").and_then(|v| v.as_str())
+                .ok_or("missing peer_addr")?;
+            let lane = bonsai_p2p::SwarmLane::connect(name, peer_addr).await
+                .map_err(|e| e.to_string())?;
+            let lane_name = lane.name().to_string();
+            state.p2p_lanes.lock().await.insert(lane_name.clone(), lane);
+            Ok(serde_json::json!({ "lane": lane_name }))
+        }
+
+        "p2p.start_onion" => {
+            let name       = params.get("name").and_then(|v| v.as_str()).unwrap_or("onion:default");
+            let target     = params.get("target").and_then(|v| v.as_str()).ok_or("missing target")?;
+            let port       = params.get("port").and_then(|v| v.as_u64()).ok_or("missing port")? as u16;
+            let proxy_addr = params.get("proxy_addr").and_then(|v| v.as_str())
+                .unwrap_or("127.0.0.1:9050");
+            let lane = bonsai_p2p::OnionLane::connect(name, proxy_addr, target, port).await
+                .map_err(|e| e.to_string())?;
+            let lane_name = lane.name().to_string();
+            state.p2p_lanes.lock().await.insert(lane_name.clone(), lane);
+            Ok(serde_json::json!({ "lane": lane_name }))
+        }
+
+        "p2p.list_lanes" => {
+            let lanes = state.p2p_lanes.lock().await;
+            let list: Vec<serde_json::Value> = lanes.values().map(|l| {
+                let h = l.health();
+                serde_json::json!({
+                    "name":      l.name(),
+                    "kind":      format!("{:?}", l.kind()),
+                    "available": h.available,
+                    "rtt_ms":    h.rtt_ms,
+                    "bw_bps":    h.bandwidth_bps,
+                })
+            }).collect();
+            Ok(serde_json::json!({ "lanes": list }))
+        }
+
+        "p2p.close_lane" => {
+            let name = params.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+            let lane = state.p2p_lanes.lock().await.remove(name)
+                .ok_or_else(|| format!("no lane: {name}"))?;
+            lane.close().await;
+            Ok(serde_json::json!({ "ok": true }))
         }
 
         "daemon.update_binary" => {

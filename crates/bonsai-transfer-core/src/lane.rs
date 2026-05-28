@@ -31,6 +31,10 @@ pub enum LaneKind {
     Mqtt,
     /// In-process channel (for testing and intra-process IPC).
     InProcess,
+    /// WebRTC DataChannel (browser-compatible, NAT-traversing).
+    WebRtc,
+    /// Tor onion-routing (anonymous, censorship-resistant).
+    Onion,
 }
 
 impl std::fmt::Display for LaneKind {
@@ -44,6 +48,8 @@ impl std::fmt::Display for LaneKind {
             Self::Swarm     => write!(f, "Swarm"),
             Self::Mqtt      => write!(f, "MQTT"),
             Self::InProcess => write!(f, "InProcess"),
+            Self::WebRtc    => write!(f, "WebRTC"),
+            Self::Onion     => write!(f, "Onion"),
         }
     }
 }
