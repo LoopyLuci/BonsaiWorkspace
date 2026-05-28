@@ -123,6 +123,7 @@ impl Parser {
     fn parse_item(&mut self) -> ParseResult<Item> {
         match self.peek().clone() {
             Token::Fn => {
+                self.advance(); // consume `fn`
                 let fndef = self.parse_fn_def(false)?;
                 Ok(Item::FnDef(fndef))
             }
@@ -278,6 +279,15 @@ impl Parser {
 
     pub fn parse_expr(&mut self) -> ParseResult<Expr> {
         let line = self.line();
+        // `let` binding expression
+        if self.at(&Token::Let) {
+            self.advance();
+            let name = self.expect_ident()?;
+            let ty = if self.eat(&Token::Colon) { Some(self.parse_type()?) } else { None };
+            self.expect(&Token::Assign)?;
+            let value = self.parse_expr()?;
+            return Ok(Expr::new(ExprKind::Let { name, ty, value: Box::new(value), mutable: false }, line));
+        }
         let lhs = self.parse_assign()?;
         // Pipeline operator |>
         if self.eat(&Token::Pipe) {

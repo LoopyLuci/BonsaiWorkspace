@@ -206,17 +206,32 @@ impl TacticEngine {
 
     /// `assumption` — close the goal if it appears in the local context.
     pub fn assumption(&self, state: &mut ProofState) -> TacticResult<()> {
-        let goal = state.current_goal()?;
-        for i in 0..goal.ctx.len() {
-            if let Some((_, ty)) = goal.ctx.lookup(i) {
-                if self.kernel.definitionally_equal(ty, &goal.ty, &goal.ctx) {
-                    let _ = state.pop_goal()?;
-                    state.close_with(Term::var(i));
-                    return Ok(());
-                }
-            }
+        // Extract what we need before any mutable borrow.
+        let (goal_ty, ctx_len, matching_idx) = {
+            let goal = state.current_goal()?;
+            let goal_ty = goal.ty.clone();
+            let ctx_len = goal.ctx.len();
+            // Fast path: goal is a direct variable reference to a hypothesis.
+            let fast = if let Term::Var(j) = &goal_ty { if *j < ctx_len { Some(*j) } else { None } } else { None };
+            // Slow path: definitional equality.
+            let slow = if fast.is_none() {
+                (0..ctx_len).find(|&i| {
+                    goal.ctx.lookup(i)
+                        .map(|(_, ty)| self.kernel.definitionally_equal(ty, &goal_ty, &goal.ctx))
+                        .unwrap_or(false)
+                })
+            } else { None };
+            (goal_ty, ctx_len, fast.or(slow))
+        };
+        let _ = ctx_len; // suppress warning
+        let _ = goal_ty;
+        if let Some(i) = matching_idx {
+            let _ = state.pop_goal()?;
+            state.close_with(Term::var(i));
+            Ok(())
+        } else {
+            Err(TacticError::Failed("assumption: no matching hypothesis".into()))
         }
-        Err(TacticError::Failed("assumption: no matching hypothesis".into()))
     }
 
     /// `simp(lemmas)` — simplify goal using β-δ-ζ normalisation and optionally

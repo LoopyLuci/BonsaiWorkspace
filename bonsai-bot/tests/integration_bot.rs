@@ -64,7 +64,7 @@ async fn start_mock_buddy(response_text: &'static str) -> (String, Arc<AtomicU32
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async fn make_router(buddy_url: String) -> Arc<bonsai_bot::router::Router> {
-    use bonsai_bot::{buddy_client::BuddyClient, dedup::DedupCache, health::CircuitBreaker, metrics::Metrics};
+    use bonsai_bot::{buddy_client::BuddyClient, dedup::DedupCache, health::CircuitBreaker, metrics::Metrics, mgmt_client::MgmtClient};
     use bonsai_bot::config::{BotConfig, CircuitBreakerConfig};
     use std::sync::Arc;
     use tokio_rusqlite::Connection;
@@ -78,13 +78,14 @@ async fn make_router(buddy_url: String) -> Arc<bonsai_bot::router::Router> {
         breaker,
         metrics.clone(),
     ));
+    let mgmt  = MgmtClient::new("http://127.0.0.1:11369", String::new());
     let dedup = Arc::new(DedupCache::new(1_000, 60));
 
     // In-memory SQLite for tests
     let db = Arc::new(Connection::open_in_memory().await.unwrap());
     bonsai_bot::session::migrate(&db).await.unwrap();
 
-    Arc::new(bonsai_bot::router::Router::new(buddy, dedup, db, metrics, BotConfig::default()))
+    Arc::new(bonsai_bot::router::Router::new(buddy, mgmt, dedup, db, metrics, BotConfig::default()))
 }
 
 fn make_inbound(text: &str) -> InboundMessage {
@@ -135,7 +136,7 @@ async fn dedup_drops_duplicate_event() {
 
 #[tokio::test]
 async fn circuit_breaker_opens_after_failures() {
-    use bonsai_bot::{buddy_client::BuddyClient, dedup::DedupCache, health::CircuitBreaker, metrics::Metrics};
+    use bonsai_bot::{buddy_client::BuddyClient, dedup::DedupCache, health::CircuitBreaker, metrics::Metrics, mgmt_client::MgmtClient};
     use bonsai_bot::config::{BotConfig, CircuitBreakerConfig};
     use tokio_rusqlite::Connection;
 
@@ -149,10 +150,11 @@ async fn circuit_breaker_opens_after_failures() {
         breaker.clone(),
         metrics.clone(),
     ));
+    let mgmt  = MgmtClient::new("http://127.0.0.1:11369", String::new());
     let dedup = Arc::new(DedupCache::new(100, 60));
     let db    = Arc::new(Connection::open_in_memory().await.unwrap());
     bonsai_bot::session::migrate(&db).await.unwrap();
-    let router   = Arc::new(bonsai_bot::router::Router::new(buddy, dedup, db, metrics, BotConfig::default()));
+    let router   = Arc::new(bonsai_bot::router::Router::new(buddy, mgmt, dedup, db, metrics, BotConfig::default()));
     let platform = MockPlatform::new();
     let plat: Arc<dyn MessagingPlatform> = platform.clone();
 

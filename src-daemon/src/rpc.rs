@@ -23,6 +23,8 @@ use bonsai_verify_lean::{LeanSidecar, LeanRequest};
 use bonsai_verify_coq::{CoqSidecar, CoqRequest};
 use bonsai_verify_agda::{AgdaSidecar, AgdaRequest};
 use bonsai_verify_isabelle::{IsabelleSidecar, IsabelleRequest};
+use bonsai_verify_fstar::{FStarSidecar, FStarRequest};
+use bonsai_verify_tla::{TlaSidecar, TlaRequest};
 use bonsai_capability_registry::{TrustScore, DeploymentGate};
 use bonsai_sylva::SylvaVm;
 use uuid::Uuid;
@@ -382,6 +384,33 @@ pub async fn dispatch(
             match sidecar.verify(&req) {
                 Ok(resp)  => Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?),
                 Err(e)    => Err(e.to_string()),
+            }
+        }
+
+        "verify.check_fstar" | "verify.verify_fstar" => {
+            let src = params.get("code").or_else(|| params.get("source")).and_then(|v| v.as_str()).ok_or("missing code")?;
+            let extra_flags = params.get("options").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
+            let req = FStarRequest { source: src.to_string(), extra_flags, timeout_secs };
+            let sidecar = FStarSidecar::new();
+            match sidecar.verify(&req) {
+                Ok(resp) => Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?),
+                Err(e)   => Err(e.to_string()),
+            }
+        }
+
+        "verify.check_tla" | "verify.verify_tla" => {
+            let spec = params.get("spec").and_then(|v| v.as_str()).ok_or("missing spec")?;
+            let config = params.get("config").and_then(|v| v.as_str()).map(str::to_string);
+            let spec_name = params.get("spec_name").and_then(|v| v.as_str()).map(str::to_string);
+            let timeout_secs = params.get("timeout_secs").and_then(|v| v.as_u64());
+            let req = TlaRequest { spec: spec.to_string(), config, spec_name, timeout_secs, extra_flags: vec![] };
+            let sidecar = TlaSidecar::new();
+            match sidecar.verify(&req) {
+                Ok(resp) => Ok(serde_json::to_value(&resp).map_err(|e| e.to_string())?),
+                Err(e)   => Err(e.to_string()),
             }
         }
 

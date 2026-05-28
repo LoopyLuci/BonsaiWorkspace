@@ -10,9 +10,7 @@
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
 //! use bonsai_p2p::SwarmLane;
-//! use libp2p::Multiaddr;
-//! let peer_addr: Multiaddr = "/ip4/1.2.3.4/tcp/7001".parse()?;
-//! let lane = SwarmLane::connect("swarm:peer1", peer_addr).await?;
+//! let lane = SwarmLane::connect("swarm:peer1", "/ip4/1.2.3.4/tcp/7001").await?;
 //! # Ok(()) }
 //! ```
 

@@ -16,6 +16,9 @@
   import MobileViewPanel from '$lib/components/MobileViewPanel.svelte';
   import MobileLayout from '$lib/components/MobileLayout.svelte';
   import AndroidUsbLab from '$lib/components/AndroidUsbLab.svelte';
+  import PeersPanel         from '$lib/components/PeersPanel.svelte';
+  import DataWorkbench      from '$lib/components/DataWorkbench.svelte';
+  import VerificationPanel  from '$lib/components/VerificationPanel.svelte';
 
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
@@ -38,6 +41,9 @@
   let showTools = false;
   let showAndroidUsbModal = false;
   let showVscode    = false;
+  let showPeers         = false;
+  let showDataWorkbench = false;
+  let showVerification  = false;
   let sidebarWidth  = 280;
   let chatWidth     = 360;
   let resizingPane: 'sidebar' | 'chat' | null = null;
@@ -343,6 +349,12 @@
         on:click={() => (showAgents = true)}>⚡ Agents</button>
       <button class="btn-icon" class:active={showResources} title="Open Resources"
         on:click={() => (showResources = true)}>Resources</button>
+      <button class="btn-icon" class:active={showPeers} title="P2P Peers"
+        on:click={() => (showPeers = !showPeers)}>Peers</button>
+      <button class="btn-icon" class:active={showDataWorkbench} title="Data Workbench"
+        on:click={() => (showDataWorkbench = !showDataWorkbench)}>Data</button>
+      <button class="btn-icon" class:active={showVerification} title="Formal Verification"
+        on:click={() => (showVerification = !showVerification)}>Verify</button>
       <button class="btn-icon" title="Settings"
         on:click={() => (showSettings = !showSettings)}>⚙</button>
 
@@ -484,6 +496,9 @@
   {#if showAndroidUsbModal}
     <AndroidUsbLab on:close={() => (showAndroidUsbModal = false)} />
   {/if}
+  {#if showPeers}<PeersPanel on:close={() => (showPeers = false)} />{/if}
+  {#if showDataWorkbench}<DataWorkbench on:close={() => (showDataWorkbench = false)} />{/if}
+  {#if showVerification}<VerificationPanel on:close={() => (showVerification = false)} />{/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
 

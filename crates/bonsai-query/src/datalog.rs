@@ -259,7 +259,7 @@ mod tests {
             ],
         });
         let r = db.query("grandparent");
-        assert_eq!(r, vec![vec!["alice".into(), "carol".into()]]);
+        assert_eq!(r, vec![vec!["alice".to_string(), "carol".to_string()]]);
     }
 
     #[test]
@@ -275,6 +275,6 @@ mod tests {
             ],
         });
         let r = db.query("blue_things");
-        assert_eq!(r, vec![vec!["sky".into()]]);
+        assert_eq!(r, vec![vec!["sky".to_string()]]);
     }
 }

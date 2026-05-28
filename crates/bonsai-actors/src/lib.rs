@@ -214,12 +214,6 @@ impl ActorSystem {
         let (tx, mut rx) = mpsc::unbounded_channel::<ActorEnvelope<A::Msg>>();
         let system = self.clone();
 
-        // Register stopper
-        let stop_tx = tx.clone();
-        {
-            let stoppers = self.inner.stoppers.blocking_write();
-            // Can't use blocking_write in an async context reliably — use try_write
-        }
         let stopper_tx = tx.clone();
         let id_clone = id;
 

@@ -3,7 +3,7 @@
 //! Enables actors on different nodes to send messages across the network.
 //!
 //! # Architecture
-//! ```
+//! ```text
 //! Node A                         Node B
 //! ┌──────────────────────┐       ┌──────────────────────┐
 //! │ ActorSystem          │       │ ActorSystem          │

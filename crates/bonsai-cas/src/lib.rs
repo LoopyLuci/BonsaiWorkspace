@@ -6,8 +6,23 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::broadcast;
 
 const INLINE_THRESHOLD: usize = 65_536; // 64 KiB
+
+// ── Watch events ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CasEvent {
+    /// A new object was inserted (key hex, mime type).
+    Inserted { key: String, mime: String, size: usize },
+    /// An already-present key was requested again (no data change, but caller re-put it).
+    Updated  { key: String },
+    /// An object was removed by GC (key hex).
+    Deleted  { key: String },
+}
+
+const WATCH_CAPACITY: usize = 256;
 
 // ── Key ───────────────────────────────────────────────────────────────────────
 
@@ -59,6 +74,7 @@ pub enum CasError {
 pub struct CasStore {
     db: sqlx::SqlitePool,
     blob_dir: PathBuf,
+    watch_tx: broadcast::Sender<CasEvent>,
 }
 
 impl CasStore {
@@ -84,7 +100,8 @@ impl CasStore {
             "CREATE INDEX IF NOT EXISTS idx_cas_mime ON cas_objects(mime_type)"
         ).execute(&pool).await?;
 
-        Ok(Self { db: pool, blob_dir: blob_dir.to_path_buf() })
+        let (watch_tx, _) = broadcast::channel(WATCH_CAPACITY);
+        Ok(Self { db: pool, blob_dir: blob_dir.to_path_buf(), watch_tx })
     }
 
     /// Store `data` with the given MIME type. Returns the content key.
@@ -102,6 +119,7 @@ impl CasStore {
         .await?;
 
         if exists {
+            let _ = self.watch_tx.send(CasEvent::Updated { key: hex.clone() });
             return Ok(key);
         }
 
@@ -137,6 +155,7 @@ impl CasStore {
             .await?;
         }
 
+        let _ = self.watch_tx.send(CasEvent::Inserted { key: hex, mime: mime.to_string(), size: data.len() });
         Ok(key)
     }
 
@@ -213,10 +232,11 @@ impl CasStore {
             .execute(&self.db)
             .await?;
 
-        // Remove orphaned blob files
+        // Remove orphaned blob files and emit events
         for hex in large_keys {
             let path = self.blob_path(&hex);
             let _ = tokio::fs::remove_file(&path).await;
+            let _ = self.watch_tx.send(CasEvent::Deleted { key: hex });
         }
 
         Ok(result.rows_affected())
@@ -243,6 +263,11 @@ impl CasStore {
         .fetch_one(&self.db)
         .await?;
         Ok(CasStats { object_count: count as u64, total_bytes: total_bytes as u64 })
+    }
+
+    /// Subscribe to CAS change events.  Call before any `put`/`gc` you want to observe.
+    pub fn watch(&self) -> broadcast::Receiver<CasEvent> {
+        self.watch_tx.subscribe()
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

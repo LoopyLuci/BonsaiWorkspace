@@ -79,7 +79,11 @@ mod tests {
     #[tokio::test]
     async fn run_echo() {
         let orch = OrchestratorActor::new();
-        let pipeline = PipelineDef { id: Some("t1".to_string()), stages: vec![StageDef { cmd: vec!["echo".to_string(), "hello".to_string()], cwd: None }] };
+        #[cfg(windows)]
+        let cmd = vec!["cmd".to_string(), "/C".to_string(), "echo".to_string(), "hello".to_string()];
+        #[cfg(not(windows))]
+        let cmd = vec!["echo".to_string(), "hello".to_string()];
+        let pipeline = PipelineDef { id: Some("t1".to_string()), stages: vec![StageDef { cmd, cwd: None }] };
         let r = orch.submit_pipeline(pipeline).await.unwrap();
         assert!(r.stdout.contains("hello"));
     }

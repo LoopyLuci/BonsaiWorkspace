@@ -166,7 +166,10 @@ pub fn lex(src: &str) -> LexResult<Vec<Spanned>> {
         }
 
         match c {
-            '+' => { try2!('=', Token::PlusAssign,  Token::Plus) }
+            '+' => {
+                if chars.get(i+1) == Some(&'+') { out.push(spanned!(Token::Concat)); i+=2; col+=2; continue; }
+                try2!('=', Token::PlusAssign, Token::Plus)
+            }
             '-' => {
                 if chars.get(i+1) == Some(&'>') { out.push(spanned!(Token::Arrow)); i+=2; col+=2; continue; }
                 try2!('=', Token::MinusAssign, Token::Minus)
@@ -187,7 +190,6 @@ pub fn lex(src: &str) -> LexResult<Vec<Spanned>> {
                 if chars.get(i+1) == Some(&'&') { out.push(spanned!(Token::And)); i+=2; col+=2; continue; }
                 out.push(spanned!(Token::Bang)); i+=1; col+=1; continue; // treat lone & as bang (not used)
             }
-            '+' if chars.get(i+1) == Some(&'+') => { out.push(spanned!(Token::Concat)); i+=2; col+=2; continue; }
             '.' => {
                 if chars.get(i+1) == Some(&'.') { out.push(spanned!(Token::DotDot)); i+=2; col+=2; continue; }
                 out.push(spanned!(Token::Dot)); i+=1; col+=1; continue;

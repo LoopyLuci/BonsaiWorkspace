@@ -1,5 +1,27 @@
 # Bonsai Ecosystem Changelog
 
+## [0.2.0] — 2026-05-28
+
+### Added
+- **F\* verification RPC** — `verify.check_fstar` endpoint wired to `FStarSidecar`; accepts `{ code, timeout_secs }`, returns `{ success, verified_modules, errors, stdout, stderr }`.
+- **TLA+ verification RPC** — `verify.check_tla` endpoint wired to `TlaSidecar`; accepts `{ spec, config, spec_name, timeout_secs }`, returns `{ success, states_explored, errors, violations, stdout }`.
+- **CAS watch channel** — `CasStore::watch()` returns a `broadcast::Receiver<CasEvent>`. `put()` emits `Inserted`/`Updated` events; `gc()` emits `Deleted` events. Enables live hot-reload notification for any subsystem holding a CAS reference.
+- **PeersPanel** — Svelte overlay listing active P2P transport lanes (WebRTC/Swarm/Onion) with kind, health, RTT, and per-lane close button. Wired to `p2p.list_lanes` / `p2p.close_lane` RPC.
+- **DataWorkbench** — Svelte overlay with SQL and APL/Array tabs wired to `data.execute_sql` and `data.eval_apl` daemon RPC methods.
+- **VerificationPanel** — Svelte overlay with tool selector (Lean 4 / Coq / Agda / Isabelle / F\* / TLA+), code textarea, and structured output display. Wired to `verify.check_*` RPC family.
+- **WebRTC answering-side handshake** — `WebRtcLane::new_answer()` fully implemented: uses `on_data_channel` callback with a oneshot channel to receive the data channel from the offerer side; 30-second timeout guard.
+
+### Security
+- **CRITICAL fix** — Bumped `lettre` to `>=0.11.22` in `bonsai-bot` and `src-tauri` to patch RUSTSEC-2026-0141 (TLS hostname verification disabled with Boring TLS backend, severity 9.1).
+
+### Known Issues (tracked for v0.2.1)
+- `rsa 0.9.10` — RUSTSEC-2023-0071 (Marvin Attack timing side-channel, severity 5.9). No upstream fix available; mitigated by the fact that RSA is only used in `sqlx-mysql` and `ssh-key` paths which are not exposed on network interfaces.
+- `hickory-proto 0.24.4` / `ring 0.16.20` — Low/medium advisories in transitive libp2p-tls deps. Will be resolved when libp2p updates its TLS stack.
+- `cap-primitives 1.0.15` — Low (2.3) Windows device filename sandbox issue; fix requires wasmtime upgrade.
+- Several unmaintained crate warnings (`bincode 1.x`, `backoff`, `derivative`, `fxhash`, `gdk`) — tracked for dependency refresh sprint.
+
+---
+
 ## 2026-05-25 — v0.1.0 Release + MLP Smoke Test Results
 
 ### v0.1.0 Release Summary
