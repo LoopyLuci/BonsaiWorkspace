@@ -68,13 +68,18 @@ impl RustCodegen {
                 format!("({inner})")
             }
             IrType::Map(k, v) => format!("std::collections::HashMap<{}, {}>", self.emit_type(k)?, self.emit_type(v)?),
-            IrType::Fn { params, ret } => {
+            IrType::Fn { params, ret, .. } => {
                 let ps = params.iter()
                     .map(|t| self.emit_type(t))
                     .collect::<Result<Vec<_>, _>>()?
                     .join(", ");
                 format!("impl Fn({ps}) -> {}", self.emit_type(ret)?)
             }
+            IrType::ActorRef(msg_ty) => {
+                format!("bonsai_actors::ActorRef<{}>", self.emit_type(msg_ty)?)
+            }
+            IrType::DataFrame => "polars::frame::DataFrame".into(),
+            IrType::NDArray(elem) => format!("bonsai_array::NDArray<{}>", self.emit_type(elem)?),
             IrType::Effect { inner, .. } => {
                 // Effects compile down to Result<T, String> at the Rust level
                 format!("Result<{}, String>", self.emit_type(inner)?)
@@ -286,10 +291,63 @@ impl RustCodegen {
             }
 
             IrOp::ToolCall { tool_name, args } => {
-                // Tool calls go through the UCR at runtime via a thread-local registry ref.
-                // Emits a call to a generated helper.
                 let a = self.emit_op(args, depth)?;
                 format!("__bonsai_tool_call({:?}, {a})", tool_name)
+            }
+
+            IrOp::Spawn { actor_ty, init_msg } => {
+                let ty = self.emit_type(actor_ty)?;
+                let msg = self.emit_op(init_msg, depth)?;
+                format!("__bonsai_actor_spawn::<{ty}>({msg})")
+            }
+
+            IrOp::Send { actor_ref, msg } => {
+                let r = self.emit_op(actor_ref, depth)?;
+                let m = self.emit_op(msg, depth)?;
+                format!("{r}.send({m}).await")
+            }
+
+            IrOp::Receive { .. } => "/* receive */ __bonsai_receive().await".into(),
+
+            IrOp::Ask { actor_ref, msg, .. } => {
+                let r = self.emit_op(actor_ref, depth)?;
+                let m = self.emit_op(msg, depth)?;
+                format!("{r}.ask({m}).await")
+            }
+
+            IrOp::DeviceAnnotation { target, expr } => {
+                let e = self.emit_op(expr, depth)?;
+                let t = match target {
+                    crate::ops::DeviceTarget::Gpu  => "gpu",
+                    crate::ops::DeviceTarget::Fpga => "fpga",
+                    crate::ops::DeviceTarget::Tpu  => "tpu",
+                    _                              => "cpu",
+                };
+                format!("/* @{t} */ {e}")
+            }
+
+            IrOp::SqlQuery { query, params } => {
+                let ps = params.iter()
+                    .map(|p| self.emit_op(p, depth))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!("__bonsai_sql_query({:?}, &[{ps}]).await", query)
+            }
+
+            IrOp::DataFrameOp { op, args } => {
+                let as_ = args.iter()
+                    .map(|a| self.emit_op(a, depth))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!("__bonsai_df_{:?}({as_})", op).to_lowercase()
+            }
+
+            IrOp::ArrayOp { op, args } => {
+                let as_ = args.iter()
+                    .map(|a| self.emit_op(a, depth))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!("__bonsai_apl_{op:?}({as_})").to_lowercase()
             }
         })
     }
@@ -413,6 +471,13 @@ fn contains_tool_call(op: &IrOp) -> bool {
         IrOp::UnOp { expr, .. } | IrOp::FieldAccess { expr, .. } => contains_tool_call(expr),
         IrOp::Lambda { body, .. } => contains_tool_call(body),
         IrOp::Tuple(es) | IrOp::Array(es) => es.iter().any(contains_tool_call),
+        IrOp::Spawn { init_msg, .. } => contains_tool_call(init_msg),
+        IrOp::Send { actor_ref, msg } => contains_tool_call(actor_ref) || contains_tool_call(msg),
+        IrOp::Ask { actor_ref, msg, .. } => contains_tool_call(actor_ref) || contains_tool_call(msg),
+        IrOp::DeviceAnnotation { expr, .. } => contains_tool_call(expr),
+        IrOp::SqlQuery { params, .. } => params.iter().any(contains_tool_call),
+        IrOp::DataFrameOp { args, .. } | IrOp::ArrayOp { args, .. } => args.iter().any(contains_tool_call),
+        IrOp::Match { scrutinee, arms } => contains_tool_call(scrutinee) || arms.iter().any(|(_, b)| contains_tool_call(b)),
         _ => false,
     }
 }

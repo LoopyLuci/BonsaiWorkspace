@@ -167,6 +167,7 @@ mod process_manager;
 mod omni_session;
 mod device_manager;
 mod omni_boot;
+mod transfer_commands;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -1230,6 +1231,7 @@ pub fn run() {
             });
             app.manage(remote_manager.clone());
             app.manage(features::FeatureFlags::global());
+            app.manage(transfer_commands::TransferState::new());
 
             // ── Start Copilot Orchestrator (local REST control) ─────────────
             {
@@ -2070,6 +2072,19 @@ pub fn run() {
             marketplace_commands::publish_compiled_skill_to_marketplace,
             marketplace_commands::discover_peer_skills,
             marketplace_commands::install_skill_from_marketplace,
+            // ── Transfer / Identity / Mailbox ─────────────────────────────────
+            transfer_commands::transfer_generate_phrase,
+            transfer_commands::transfer_create_identity,
+            transfer_commands::transfer_unlock_identity,
+            transfer_commands::transfer_get_identity,
+            transfer_commands::transfer_has_stored_identity,
+            transfer_commands::transfer_send_message,
+            transfer_commands::transfer_poll_inbox,
+            transfer_commands::transfer_mailbox_agent_count,
+            transfer_commands::transfer_send_file_loopback,
+            transfer_commands::transfer_list_transfers,
+            transfer_commands::transfer_store_put,
+            transfer_commands::transfer_store_get,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

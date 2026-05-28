@@ -122,6 +122,10 @@ impl Term {
     pub fn let_in(name: impl Into<String>, ty: Term, val: Term, body: Term) -> Self {
         Term::Let { name: name.into(), ty: Box::new(ty), val: Box::new(val), body: Box::new(body) }
     }
+
+    pub fn is_const_named(&self, name: &str) -> bool {
+        matches!(self, Term::Const(n) if n.starts_with(name))
+    }
 }
 
 // ── Environment ───────────────────────────────────────────────────────────────
@@ -372,6 +376,13 @@ pub struct AxiomKernel {
 
 impl AxiomKernel {
     pub fn new() -> Self { Self { env: Environment::new() } }
+
+    pub fn with_env(env: Environment) -> Self { Self { env } }
+
+    /// Expose definitional equality as a method.
+    pub fn definitionally_equal(&self, a: &Term, b: &Term, _ctx: &Context) -> bool {
+        definitionally_equal(a, b, &self.env)
+    }
 
     pub fn with_nat() -> Self {
         let mut k = Self::new();

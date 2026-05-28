@@ -6,6 +6,11 @@
 //! - Location transparency: `ActorRef<M>` is just a channel handle.
 //! - Async-native: built on `tokio` mpsc channels.
 
+pub mod transport;
+pub mod checkpoint;
+pub mod supervisor;
+pub mod swap_buffer;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};

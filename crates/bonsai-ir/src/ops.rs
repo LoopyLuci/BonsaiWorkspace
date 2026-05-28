@@ -8,6 +8,15 @@ use crate::effects::BonsaiEffect;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// Graded modality — how many times a value is used.
+/// ZERO = erased (type-level only), ONE = linear (consumed once), MANY = unrestricted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Modality { #[default] Many, One, Zero }
+
+/// Compute device target for a function or operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DeviceTarget { #[default] Cpu, Gpu, Fpga, Tpu, Auto }
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IrType {
     Unit,
@@ -21,12 +30,18 @@ pub enum IrType {
     Option(Box<IrType>),
     Result(Box<IrType>, Box<IrType>),
     Tuple(Vec<IrType>),
-    Fn { params: Vec<IrType>, ret: Box<IrType> },
-    /// Monadic effect wrapper — a computation that may perform effects of `effect_type`
-    /// and returns a value of `inner`.
+    /// Function type with graded modality on arguments.
+    Fn { params: Vec<IrType>, ret: Box<IrType>, modality: Modality },
+    /// Monadic effect wrapper.
     Effect { inner: Box<IrType>, effect_type: EffectType },
     /// Named struct/enum defined in an `IrModule`.
     Named(String),
+    /// A typed actor reference — can receive messages of type `msg`.
+    ActorRef(Box<IrType>),
+    /// Polars-backed DataFrame.
+    DataFrame,
+    /// Rank-polymorphic array (APL/J array model); element type T.
+    NDArray(Box<IrType>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +149,66 @@ pub enum IrOp {
         tool_name: String,
         args: Box<IrOp>,
     },
+
+    // ── Actor concurrency (Aether layer) ─────────────────────────────────────
+    /// Spawn a new actor with an initial message of type `msg_ty`.
+    Spawn { actor_ty: IrType, init_msg: Box<IrOp> },
+    /// Send a message to an actor reference (fire-and-forget).
+    Send { actor_ref: Box<IrOp>, msg: Box<IrOp> },
+    /// Receive the next message from the current actor's mailbox.
+    Receive { msg_ty: IrType },
+    /// Synchronous ask: send `msg` and await a reply of `reply_ty`.
+    Ask { actor_ref: Box<IrOp>, msg: Box<IrOp>, reply_ty: IrType },
+
+    // ── Device annotation (UniIR targeting) ──────────────────────────────────
+    /// Annotate an expression with a compute-device target.
+    DeviceAnnotation { target: DeviceTarget, expr: Box<IrOp> },
+
+    // ── SQL ───────────────────────────────────────────────────────────────────
+    /// Execute a SQL query string with positional bind parameters.
+    SqlQuery { query: String, params: Vec<IrOp> },
+
+    // ── DataFrame ops (Polars) ────────────────────────────────────────────────
+    DataFrameOp { op: DataFrameOpKind, args: Vec<IrOp> },
+
+    // ── Array language ops (APL/J) ────────────────────────────────────────────
+    ArrayOp { op: ArrayOpKind, args: Vec<IrOp> },
+}
+
+/// DataFrame operations (mirrors Polars lazy API).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DataFrameOpKind {
+    LoadCsv,           // args: [path_str]
+    LoadJson,          // args: [path_str]
+    Filter,            // args: [df, predicate_expr]
+    Select,            // args: [df, col_name...]
+    GroupBy,           // args: [df, col_name]
+    Agg,               // args: [grouped_df, agg_fn]
+    Join,              // args: [df_left, df_right, on_col]
+    Sort,              // args: [df, col_name, descending_bool]
+    WithColumn,        // args: [df, name_str, expr]
+    Collect,           // args: [lazy_df]
+    ToJson,            // args: [df]
+}
+
+/// Array/APL operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ArrayOpKind {
+    Shape,             // monadic: shape of array
+    Reshape,           // dyadic: reshape lhs to shape rhs
+    Rank,              // monadic: rank (number of dimensions)
+    Reduce,            // dyadic: f/ a  (reduce with function)
+    Scan,              // dyadic: f\ a  (prefix scan)
+    OuterProduct,      // triadic: f∘.  (outer product)
+    InnerProduct,      // triadic: f.g  (inner product)
+    Rotate,            // dyadic: n⌽a
+    Take,              // dyadic: n↑a
+    Drop,              // dyadic: n↓a
+    Iota,              // monadic: ⍳n
+    Ravel,             // monadic: ,a (flatten to vector)
+    Transpose,         // monadic: ⍉a
+    Enclose,           // monadic: ⊂a
+    Each,              // dyadic: f¨ a
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +336,36 @@ impl IrOp {
     pub fn tool_call(name: impl Into<String>, args: IrOp) -> Self {
         Self::ToolCall { tool_name: name.into(), args: Box::new(args) }
     }
+
+    pub fn spawn(actor_ty: IrType, init_msg: IrOp) -> Self {
+        Self::Spawn { actor_ty, init_msg: Box::new(init_msg) }
+    }
+
+    pub fn send(actor_ref: IrOp, msg: IrOp) -> Self {
+        Self::Send { actor_ref: Box::new(actor_ref), msg: Box::new(msg) }
+    }
+
+    pub fn on_device(target: DeviceTarget, expr: IrOp) -> Self {
+        Self::DeviceAnnotation { target, expr: Box::new(expr) }
+    }
+
+    pub fn sql(query: impl Into<String>, params: Vec<IrOp>) -> Self {
+        Self::SqlQuery { query: query.into(), params }
+    }
+}
+
+impl IrType {
+    /// Unrestricted function type (most common case).
+    pub fn fun(params: Vec<IrType>, ret: IrType) -> Self {
+        Self::Fn { params, ret: Box::new(ret), modality: Modality::Many }
+    }
+    /// Linear function type (consumes argument exactly once).
+    pub fn linear_fun(params: Vec<IrType>, ret: IrType) -> Self {
+        Self::Fn { params, ret: Box::new(ret), modality: Modality::One }
+    }
+    pub fn actor_ref(msg_ty: IrType) -> Self { Self::ActorRef(Box::new(msg_ty)) }
+    pub fn array_of(elem: IrType) -> Self { Self::Array(Box::new(elem)) }
+    pub fn ndarray_of(elem: IrType) -> Self { Self::NDArray(Box::new(elem)) }
 }
 
 #[cfg(test)]

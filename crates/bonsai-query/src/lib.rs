@@ -1,4 +1,10 @@
-//! Simple capability query layer (keyword match) for Phase 0
+//! Bonsai query layer — capability search, embedded SQL, and Datalog engine.
+
+pub mod datalog;
+pub mod sql;
+
+pub use datalog::{Db as DatalogDb, Rule, Atom, Term};
+pub use sql::{SqlEngine, SqlError, SqlResult};
 
 use std::sync::Arc;
 

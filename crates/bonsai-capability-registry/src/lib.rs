@@ -2,6 +2,13 @@
 //!
 //! Minimal, dependency-light implementation for Phase 0.
 
+pub mod trust_score;
+pub use trust_score::{
+    TrustScore, ProofToken, DeploymentGate, GateResult,
+    GATE_DEV, GATE_STAGING, GATE_PRODUCTION, GATE_SAFETY_CRITICAL,
+    effect_penalty,
+};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
