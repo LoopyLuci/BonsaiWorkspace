@@ -541,6 +541,78 @@ pub async fn dispatch(
             Ok(serde_json::json!({ "ok": true }))
         }
 
+        // ── Creator (generative AI) ───────────────────────────────────────────
+
+        "creator.generate" => {
+            let gen_params: bonsai_creator::GenerateParams =
+                serde_json::from_value(params.clone()).map_err(|e| format!("bad params: {e}"))?;
+
+            // Guardian prompt check.
+            let guardian = bonsai_creator::guardian::Guardian::default();
+            guardian.check_prompt(&gen_params.prompt)
+                .map_err(|e| format!("content policy: {e}"))?;
+
+            let tool = state.creator.get(&gen_params.modality).await
+                .ok_or_else(|| format!("unknown modality: {}", gen_params.modality))?;
+
+            let result = tool.generate(gen_params).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "cas_key":  result.cas_key.hex(),
+                "metadata": result.metadata,
+            }))
+        }
+
+        "creator.list_tools" => {
+            let tools = state.creator.list_tools().await;
+            Ok(serde_json::json!({ "tools": tools }))
+        }
+
+        "creator.fine_tune" => {
+            let base_model = params.get("base_model").and_then(|v| v.as_str())
+                .ok_or("missing base_model")?.to_string();
+            let epochs = params.get("epochs").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+            let dataset_hex = params.get("dataset_cas_key").and_then(|v| v.as_str())
+                .ok_or("missing dataset_cas_key")?;
+            let dataset_key = bonsai_cas::CasKey::from_hex(dataset_hex)
+                .map_err(|e| format!("invalid CAS key: {e}"))?;
+
+            let actor = bonsai_creator::fine_tuning::FineTuningActor::new(state.creator.cas.clone());
+            let adapter_key = actor.start_lora_job(base_model, vec![dataset_key], epochs).await
+                .map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({ "adapter_cas_key": adapter_key.hex() }))
+        }
+
+        "creator.fetch_model" => {
+            let name  = params.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+            let url   = params.get("url").and_then(|v| v.as_str()).ok_or("missing url")?;
+            let confirmed = params.get("user_confirmed").and_then(|v| v.as_bool()).unwrap_or(false);
+            let cache_dir = dirs::data_dir().unwrap_or_default().join("bonsai").join("models");
+            bonsai_creator::model_fetch::fetch_model(name, url, &cache_dir, confirmed).await
+                .map(|p| serde_json::json!({ "path": p.display().to_string() }))
+                .map_err(|e| e.to_string())
+        }
+
+        "creator.list_cached_models" => {
+            let cache_dir = dirs::data_dir().unwrap_or_default().join("bonsai").join("models");
+            let models = bonsai_creator::model_fetch::list_cached(&cache_dir).await
+                .unwrap_or_default();
+            Ok(serde_json::json!({ "models": models }))
+        }
+
+        "creator.compose" => {
+            let script = params.get("script").and_then(|v| v.as_str())
+                .ok_or("missing script")?.to_string();
+            let composer = bonsai_creator::composer::SylvaComposer::new(
+                state.creator.clone(),
+                state.tools.clone(),
+            );
+            let result = composer.execute(script).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({
+                "cas_key":  result.cas_key.hex(),
+                "metadata": result.metadata,
+            }))
+        }
+
         "daemon.update_binary" => {
             let new_path = params.get("path").and_then(|v| v.as_str()).ok_or("missing path")?;
             let p = std::path::PathBuf::from(new_path);

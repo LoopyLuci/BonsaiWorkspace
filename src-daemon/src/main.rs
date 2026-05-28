@@ -76,8 +76,21 @@ async fn main() -> anyhow::Result<()> {
         ).await?
     );
 
-    // Build shared daemon state
-    let daemon_state = Arc::new(DaemonState::new(token.clone()));
+    // Build shared daemon state (passes CAS so creator can store output blobs)
+    let daemon_state = Arc::new(DaemonState::new(token.clone(), cas.clone()));
+
+    // Register generative tools with the creator orchestrator.
+    {
+        use bonsai_creator::{image::FluxDiTTool, video::SvdVideoTool, three_d::Trellis3DTool,
+                             audio::{MusicGenTool, BarkTtsTool}, gaussian::GaussianSplattingTool};
+        let c = &daemon_state.creator;
+        c.register("image",   Arc::new(FluxDiTTool::new(cas.clone()))).await;
+        c.register("video",   Arc::new(SvdVideoTool::new(cas.clone()))).await;
+        c.register("3d",      Arc::new(Trellis3DTool::new(cas.clone()))).await;
+        c.register("audio",   Arc::new(MusicGenTool::new(cas.clone()))).await;
+        c.register("tts",     Arc::new(BarkTtsTool::new(cas.clone()))).await;
+        c.register("gaussian",Arc::new(GaussianSplattingTool::new(cas.clone()))).await;
+    }
 
     // Load initial skills from compiled_skills_dir() and start the file watcher.
     // The watcher is kept alive by binding it to `_skills_watcher`.

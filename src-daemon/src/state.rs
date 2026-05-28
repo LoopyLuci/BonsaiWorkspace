@@ -13,6 +13,7 @@ use bonsai_ci::OrchestratorActor;
 use bonsai_tool_registry::ToolRegistry;
 use bonsai_transfer_core::lane::TransportLane;
 use bonsai_p2p::WebRtcLane;
+use bonsai_creator::CreatorOrchestrator;
 
 pub struct DaemonState {
     /// Auth token — compared on every WebSocket connection handshake.
@@ -37,10 +38,12 @@ pub struct DaemonState {
     pub p2p_lanes: Mutex<HashMap<String, Arc<dyn TransportLane>>>,
     /// WebRTC-specific lane handles (for SDP signaling after offer creation).
     pub webrtc_lanes: Mutex<HashMap<String, Arc<WebRtcLane>>>,
+    /// Generative AI creator orchestrator (image/video/3d/audio).
+    pub creator: Arc<CreatorOrchestrator>,
 }
 
 impl DaemonState {
-    pub fn new(token: String) -> Self {
+    pub fn new(token: String, cas: Arc<bonsai_cas::CasStore>) -> Self {
         let store_path = EncryptedStore::default_path();
         let sql = SqlEngine::in_memory().expect("SQLite in-memory");
 
@@ -56,6 +59,7 @@ impl DaemonState {
             tools: Arc::new(ToolRegistry::new()),
             p2p_lanes: Mutex::new(HashMap::new()),
             webrtc_lanes: Mutex::new(HashMap::new()),
+            creator: Arc::new(CreatorOrchestrator::new(cas)),
         }
     }
 }
