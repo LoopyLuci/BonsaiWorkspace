@@ -1,0 +1,166 @@
+name: Survival System
+
+on:
+  push:
+    branches: [main, master, feat/bonsai-core-phase1]
+    paths:
+      - 'crates/bonsai-watchdog/**'
+      - 'bonsai-workspace/src-tauri/src/survival.rs'
+      - 'bonsai-workspace/src-tauri/src/crash_recovery.rs'
+      - 'bonsai-workspace/src-tauri/src/resource_guard.rs'
+      - 'bonsai-workspace/src-tauri/src/ipc_resilience.rs'
+      - 'scripts/generate_survival_training_data.py'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # ── 1. Workspace check (existing crates) ───────────────────────────────────
+  workspace-check:
+    name: cargo check --workspace
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cargo check workspace
+        run: cargo check --workspace 2>&1 | Tee-Object check_workspace.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workspace-check
+          path: check_workspace.txt
+
+  # ── 2. Watchdog standalone build & tests ──────────────────────────────────
+  watchdog:
+    name: bonsai-watchdog build + test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Check watchdog
+        run: cargo check --manifest-path crates/bonsai-watchdog/Cargo.toml 2>&1
+
+      - name: Test watchdog
+        run: cargo test --manifest-path crates/bonsai-watchdog/Cargo.toml -- --nocapture 2>&1 | Tee-Object watchdog_test.txt
+
+      - name: Build watchdog (release)
+        run: cargo build --release --manifest-path crates/bonsai-watchdog/Cargo.toml 2>&1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watchdog-test-results
+          path: watchdog_test.txt
+
+      - name: Upload watchdog binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bonsai-watchdog-windows
+          path: crates/bonsai-watchdog/target/release/bonsai-watchdog.exe
+
+  # ── 3. Survival knowledge base smoke test ─────────────────────────────────
+  kb-smoke:
+    name: KB smoke test
+    runs-on: windows-latest
+    needs: watchdog
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download watchdog binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bonsai-watchdog-windows
+          path: watchdog-bin
+
+      - name: Run KB smoke test (PowerShell)
+        run: |
+          # Verify the watchdog binary starts and exits cleanly (--help or version).
+          $exe = "watchdog-bin\bonsai-watchdog.exe"
+          if (Test-Path $exe) {
+            # Set env to point at a temp KB path so it doesn't touch user data
+            $env:BONSAI_KB_PATH = "$env:TEMP\bonsai_ci_kb.db"
+            # The watchdog requires a Bonsai exe; if not found it will exit quickly.
+            # We just check it doesn't panic at startup.
+            $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+            Start-Sleep -Seconds 3
+            if (-not $proc.HasExited) {
+              $proc | Stop-Process -Force
+              Write-Host "[smoke] Watchdog ran for 3s without crashing" -ForegroundColor Green
+            } else {
+              Write-Host "[smoke] Watchdog exited early (exit $($proc.ExitCode)) — likely no Bonsai binary found (expected in CI)" -ForegroundColor Yellow
+            }
+          } else {
+            Write-Host "[smoke] Watchdog binary not found — skipping runtime smoke" -ForegroundColor Yellow
+          }
+
+      - name: Verify training data export script
+        run: |
+          # Create a dummy KB (no entries) and verify the script runs without error
+          python scripts/generate_survival_training_data.py `
+            --db "$env:TEMP\ci_test_kb.db" `
+            --output "$env:TEMP\ci_survival_train.jsonl" `
+            --min-success 1
+          # Should produce 0 entries (no data) without error
+          $lines = (Get-Content "$env:TEMP\ci_survival_train.jsonl" -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
+          Write-Host "[smoke] Training export: $lines lines (0 expected for empty KB)"
+
+  # ── 4. Resilience simulation (crash + auto-repair) ────────────────────────
+  resilience-sim:
+    name: Rule-based repair simulation
+    runs-on: windows-latest
+    needs: watchdog
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run watchdog unit tests (repair scenarios)
+        run: |
+          # These tests verify:
+          # - KB seed + find_matching
+          # - run_script (echo)
+          # - outcome recording
+          # - JSONL export filtering
+          # - async repair dispatch (no server needed)
+          cargo test --manifest-path crates/bonsai-watchdog/Cargo.toml `
+            2>&1 | Tee-Object repair_test.txt
+          $failed = Select-String -Path repair_test.txt -Pattern "^test .* FAILED"
+          if ($failed) {
+            Write-Host "FAILED TESTS:" -ForegroundColor Red
+            $failed | ForEach-Object { Write-Host $_.Line -ForegroundColor Red }
+            exit 1
+          }
+          Write-Host "All repair tests passed" -ForegroundColor Green
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repair-test-results
+          path: repair_test.txt

@@ -168,6 +168,10 @@ mod omni_session;
 mod device_manager;
 mod omni_boot;
 mod transfer_commands;
+mod resource_guard;
+mod ipc_resilience;
+mod crash_recovery;
+mod survival;
 
 // Workstream types
 use crate::auth_commands::AuthState;
@@ -524,6 +528,30 @@ pub fn run() {
                 tauri::async_runtime::block_on(wal::WAL::new(&app_handle))
                     .expect("WAL init failed"),
             );
+
+            // Crash recovery — check for unclean-exit flag, replay WAL if needed.
+            {
+                let ah  = app_handle.clone();
+                let wal2 = wal.clone();
+                tauri::async_runtime::spawn(async move {
+                    crash_recovery::check_and_recover(&ah, &wal2).await;
+                });
+            }
+            // Arm flag for *this* session (removed on clean exit).
+            crash_recovery::arm_crash_flag(&app_handle);
+
+            // Sync any fixes the watchdog learned while we were offline.
+            {
+                let survival_db = app_handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join("survival_kb.db")
+                    .to_string_lossy()
+                    .to_string();
+                // Just initialise; sync happens via sync_watchdog_kb command.
+                let _ = survival::SurvivalState::new(&survival_db);
+            }
 
             let chat_sessions = Arc::new(
                 tauri::async_runtime::block_on(chat_sessions::ChatSessionStore::new(wal.pool()))
@@ -1233,6 +1261,16 @@ pub fn run() {
             app.manage(features::FeatureFlags::global());
             app.manage(transfer_commands::TransferState::new());
 
+            // Survival engine — self-repair with growing knowledge base
+            let survival_db = app_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("survival_kb.db")
+                .to_string_lossy()
+                .to_string();
+            app.manage(survival::SurvivalState::new(&survival_db));
+
             // ── Start Copilot Orchestrator (local REST control) ─────────────
             {
                 let ah = app_handle.clone();
@@ -1534,6 +1572,11 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "assistant" {
                     persist_assistant_visibility(&window.app_handle(), false);
+                }
+
+                // Remove crash flag on clean exit (main window only).
+                if window.label() == "main" {
+                    crash_recovery::on_exit_cleanup(&window.app_handle());
                 }
 
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1967,6 +2010,7 @@ pub fn run() {
             commands::load_model_native,
             commands::apply_lora_native,
             commands::get_memory_status,
+            commands::get_memory_pressure,
             commands::load_model_gpu,
             commands::compare_models,
             commands::start_training_loop,
@@ -2085,6 +2129,13 @@ pub fn run() {
             transfer_commands::transfer_list_transfers,
             transfer_commands::transfer_store_put,
             transfer_commands::transfer_store_get,
+            // ── Survival System ───────────────────────────────────────────────
+            survival::repair_error,
+            survival::report_fix,
+            survival::ai_repair_error,
+            survival::list_fixes,
+            survival::export_survival_training_data,
+            survival::sync_watchdog_kb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

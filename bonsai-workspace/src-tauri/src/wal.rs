@@ -49,6 +49,14 @@ impl WAL {
         Ok(())
     }
 
+    /// Re-apply any WAL events written since the last clean checkpoint.
+    /// In the current SQLite-backed implementation this is a no-op (SQLite's
+    /// own WAL journal handles durability); the method exists so crash_recovery
+    /// can call it and report the count without coupling to internals.
+    pub async fn replay_uncommitted(&self) -> Result<usize> {
+        Ok(0)
+    }
+
     pub async fn recent_events(&self, limit: i64) -> Result<Vec<serde_json::Value>> {
         // Use query() (runtime) rather than query!() (compile-time) to avoid
         // requiring a live database during `cargo build`.

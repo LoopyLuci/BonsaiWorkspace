@@ -51,7 +51,7 @@ impl FeatureFlags {
             return Ok(serde_yaml::from_str(&std::fs::read_to_string(&path)?)?);
         }
         // One-time migration: copy legacy repo-root features.yaml into app data dir.
-        let legacy = std::path::Path::new("features.yaml");
+        let legacy = std::path::Path::new("config/features.yaml");
         if legacy.exists() {
             if let Ok(yaml) = std::fs::read_to_string(legacy) {
                 if let Ok(flags) = serde_yaml::from_str::<Self>(&yaml) {

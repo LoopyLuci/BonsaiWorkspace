@@ -6265,6 +6265,12 @@ pub async fn get_memory_status(
     Ok(state.hybrid_engine.status().await)
 }
 
+/// Return current memory pressure as a 0.0–1.0 fraction of total RAM used.
+#[tauri::command]
+pub async fn get_memory_pressure() -> f32 {
+    crate::resource_guard::ResourceGuard::memory_pressure()
+}
+
 #[tauri::command]
 pub async fn compare_models(
     state: State<'_, AppState>,

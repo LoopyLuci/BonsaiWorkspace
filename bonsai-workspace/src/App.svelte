@@ -19,6 +19,8 @@
   import PeersPanel         from '$lib/components/PeersPanel.svelte';
   import DataWorkbench      from '$lib/components/DataWorkbench.svelte';
   import VerificationPanel  from '$lib/components/VerificationPanel.svelte';
+  import GlobalErrorBoundary from '$lib/components/GlobalErrorBoundary.svelte';
+  import SystemHealthPanel  from '$lib/components/SystemHealthPanel.svelte';
 
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
@@ -44,6 +46,7 @@
   let showPeers         = false;
   let showDataWorkbench = false;
   let showVerification  = false;
+  let showHealthPanel   = false;
   let sidebarWidth  = 280;
   let chatWidth     = 360;
   let resizingPane: 'sidebar' | 'chat' | null = null;
@@ -355,6 +358,8 @@
         on:click={() => (showDataWorkbench = !showDataWorkbench)}>Data</button>
       <button class="btn-icon" class:active={showVerification} title="Formal Verification"
         on:click={() => (showVerification = !showVerification)}>Verify</button>
+      <button class="btn-icon" class:active={showHealthPanel} title="System Health"
+        on:click={() => (showHealthPanel = !showHealthPanel)}>Health</button>
       <button class="btn-icon" title="Settings"
         on:click={() => (showSettings = !showSettings)}>⚙</button>
 
@@ -499,12 +504,15 @@
   {#if showPeers}<PeersPanel on:close={() => (showPeers = false)} />{/if}
   {#if showDataWorkbench}<DataWorkbench on:close={() => (showDataWorkbench = false)} />{/if}
   {#if showVerification}<VerificationPanel on:close={() => (showVerification = false)} />{/if}
+  {#if showHealthPanel}<SystemHealthPanel onClose={() => (showHealthPanel = false)} />{/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
 
   {/if}
 
 </div>
+
+<GlobalErrorBoundary />
 
 <style>
   /* ── Runtime service-lost banner ── */
