@@ -1,0 +1,280 @@
+// Neural Network Framework - Tensor Module (TITAN)
+// Enterprise-grade tensor operations with automatic differentiation support
+
+pub struct Tensor {
+    id: String
+    shape: Array[Int]
+    dtype: String  // float32, float16, int8, etc.
+    device: String  // cpu, cuda:0, tpu:0, etc.
+    data: Object  // ULL reference to actual data
+    requires_grad: Bool
+    gradient: Option[Object]
+    metadata: Object
+}
+
+impl Tensor {
+    // Create a new tensor
+    pub fn new(shape: Array[Int], dtype: String, device: String) -> Self {
+        Tensor {
+            id: generate_id(),
+            shape: shape,
+            dtype: dtype,
+            device: device,
+            data: null,
+            requires_grad: false,
+            gradient: null,
+            metadata: {}
+        }
+    }
+
+    // Create tensor filled with zeros
+    pub fn zeros(shape: Array[Int], dtype: String, device: String) -> Self {
+        let mut tensor = Tensor::new(shape, dtype, device)
+        tensor.data = bridge::call_rust("ull::hal", "allocate_zeros", {
+            shape: shape,
+            dtype: dtype,
+            device: device
+        })
+        tensor
+    }
+
+    // Create tensor filled with ones
+    pub fn ones(shape: Array[Int], dtype: String, device: String) -> Self {
+        let mut tensor = Tensor::new(shape, dtype, device)
+        tensor.data = bridge::call_rust("ull::hal", "allocate_ones", {
+            shape: shape,
+            dtype: dtype,
+            device: device
+        })
+        tensor
+    }
+
+    // Create tensor with random values (normal distribution)
+    pub fn randn(shape: Array[Int], dtype: String, device: String) -> Self {
+        let mut tensor = Tensor::new(shape, dtype, device)
+        tensor.data = bridge::call_rust("ull::hal", "allocate_randn", {
+            shape: shape,
+            dtype: dtype,
+            device: device
+        })
+        tensor
+    }
+
+    // Get total number of elements
+    pub fn numel(self: &Self) -> Int {
+        let mut result = 1
+        for dim in self.shape {
+            result = result * dim
+        }
+        result
+    }
+
+    // Get tensor size in bytes
+    pub fn size_bytes(self: &Self) -> Int {
+        let dtype_size = match self.dtype {
+            "float32" => 4
+            "float16" => 2
+            "bfloat16" => 2
+            "float64" => 8
+            "int32" => 4
+            "int64" => 8
+            "int8" => 1
+            "uint8" => 1
+            "bool" => 1
+            _ => 4
+        }
+        self.numel() * dtype_size
+    }
+
+    // Add two tensors element-wise
+    pub fn add(self: &Self, other: &Self) -> Result[Tensor] {
+        if self.shape != other.shape {
+            return Err("Shape mismatch in add operation")
+        }
+
+        let result_data = bridge::call_rust("ull::ops", "element_wise_add", {
+            a: self.data,
+            b: other.data,
+            device: self.device
+        })
+
+        let mut result = Tensor::new(self.shape.clone(), self.dtype, self.device.clone())
+        result.data = result_data
+        result.requires_grad = self.requires_grad || other.requires_grad
+        Ok(result)
+    }
+
+    // Multiply two tensors element-wise
+    pub fn mul(self: &Self, other: &Self) -> Result[Tensor] {
+        if self.shape != other.shape {
+            return Err("Shape mismatch in mul operation")
+        }
+
+        let result_data = bridge::call_rust("ull::ops", "element_wise_mul", {
+            a: self.data,
+            b: other.data,
+            device: self.device
+        })
+
+        let mut result = Tensor::new(self.shape.clone(), self.dtype, self.device.clone())
+        result.data = result_data
+        result.requires_grad = self.requires_grad || other.requires_grad
+        Ok(result)
+    }
+
+    // Scalar multiplication
+    pub fn scalar_mul(self: &Self, scalar: Float) -> Result[Tensor] {
+        let result_data = bridge::call_rust("ull::ops", "scalar_mul", {
+            tensor: self.data,
+            scalar: scalar,
+            device: self.device
+        })
+
+        let mut result = Tensor::new(self.shape.clone(), self.dtype, self.device.clone())
+        result.data = result_data
+        result.requires_grad = self.requires_grad
+        Ok(result)
+    }
+
+    // Matrix multiplication
+    pub fn matmul(self: &Self, other: &Self) -> Result[Tensor] {
+        if self.shape.len() < 2 || other.shape.len() < 2 {
+            return Err("MatMul requires at least 2D tensors")
+        }
+
+        let m = self.shape[self.shape.len() - 2]
+        let k = self.shape[self.shape.len() - 1]
+        let n = other.shape[other.shape.len() - 1]
+
+        if k != other.shape[other.shape.len() - 2] {
+            return Err("Incompatible shapes for matrix multiplication")
+        }
+
+        let result_data = bridge::call_rust("ull::ops", "matmul", {
+            a: self.data,
+            b: other.data,
+            device: self.device
+        })
+
+        let mut result_shape = self.shape.clone()
+        result_shape[result_shape.len() - 2] = m
+        result_shape[result_shape.len() - 1] = n
+
+        let mut result = Tensor::new(result_shape, self.dtype, self.device.clone())
+        result.data = result_data
+        result.requires_grad = self.requires_grad || other.requires_grad
+        Ok(result)
+    }
+
+    // Sum all elements
+    pub fn sum(self: &Self) -> Result[Float] {
+        let result = bridge::call_rust("ull::ops", "sum", {
+            tensor: self.data,
+            device: self.device
+        })
+        Ok(result)
+    }
+
+    // Mean of all elements
+    pub fn mean(self: &Self) -> Result[Float] {
+        let sum = self.sum()?
+        Ok(sum / self.numel() as Float)
+    }
+
+    // Reshape tensor
+    pub fn reshape(self: &Self, new_shape: Array[Int]) -> Result[Tensor] {
+        let mut numel_old = 1
+        for dim in self.shape {
+            numel_old = numel_old * dim
+        }
+
+        let mut numel_new = 1
+        for dim in new_shape {
+            numel_new = numel_new * dim
+        }
+
+        if numel_old != numel_new {
+            return Err("Cannot reshape: size mismatch")
+        }
+
+        let mut result = Tensor::new(new_shape, self.dtype, self.device.clone())
+        result.data = self.data  // Share underlying data (view, not copy)
+        result.requires_grad = self.requires_grad
+        Ok(result)
+    }
+
+    // Transpose (2D)
+    pub fn transpose(self: &Self) -> Result[Tensor] {
+        if self.shape.len() != 2 {
+            return Err("Transpose only supports 2D tensors")
+        }
+
+        let result_data = bridge::call_rust("ull::ops", "transpose", {
+            tensor: self.data,
+            device: self.device
+        })
+
+        let mut result = Tensor::new(
+            [self.shape[1], self.shape[0]],
+            self.dtype,
+            self.device.clone()
+        )
+        result.data = result_data
+        result.requires_grad = self.requires_grad
+        Ok(result)
+    }
+
+    // Clone tensor
+    pub fn clone(self: &Self) -> Self {
+        let mut cloned = Tensor::new(self.shape.clone(), self.dtype, self.device.clone())
+        cloned.data = bridge::call_rust("ull::hal", "clone_tensor", {
+            tensor: self.data,
+            device: self.device
+        })
+        cloned.requires_grad = self.requires_grad
+        cloned
+    }
+
+    // Set requires_grad flag
+    pub fn set_requires_grad(mut self: Self, requires_grad: Bool) -> Self {
+        self.requires_grad = requires_grad
+        self
+    }
+}
+
+// Helper function to generate unique tensor IDs
+fn generate_id() -> String {
+    // Use timestamp + counter for uniqueness
+    let timestamp = system::get_timestamp_millis()
+    let counter = system::atomic_increment("tensor_counter")
+    format!("tensor_{}_{}", timestamp, counter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_tensor_creation() {
+        let t = Tensor::zeros([2, 3, 4], "float32", "cpu")
+        assert_eq!(t.shape, [2, 3, 4])
+        assert_eq!(t.numel(), 24)
+        assert_eq!(t.dtype, "float32")
+    }
+
+    #[test]
+    fn test_tensor_add() {
+        let t1 = Tensor::ones([2, 3], "float32", "cpu")
+        let t2 = Tensor::ones([2, 3], "float32", "cpu")
+        let result = t1.add(&t2)
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_tensor_reshape() {
+        let t = Tensor::zeros([2, 3], "float32", "cpu")
+        let reshaped = t.reshape([6])
+        assert!(reshaped.is_ok())
+        assert_eq!(reshaped.unwrap().shape, [6])
+    }
+}
