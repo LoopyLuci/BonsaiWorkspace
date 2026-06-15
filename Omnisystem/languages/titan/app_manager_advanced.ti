@@ -1,0 +1,310 @@
+// Advanced TITAN Implementation for app_manager
+//
+// This file shows Phase 2 patterns:
+// - Using ULL bridge more extensively
+// - Implementing caching
+// - Error handling patterns
+// - Concurrent operations
+// - Business logic on top of Rust bridge
+
+import ull::bridge
+import ull::types
+import app_manager
+
+// Advanced AppManager with caching
+pub struct CachedAppManager {
+    cache: Object              // HashMap-like cache
+    cache_ttl_ms: u64          // Cache time-to-live
+    last_list_refresh: Option[u64]  // Last refresh timestamp
+}
+
+impl CachedAppManager {
+    pub fn new() -> Self {
+        return CachedAppManager {
+            cache: {},
+            cache_ttl_ms: 60000,    // 60 seconds
+            last_list_refresh: None,
+        }
+    }
+
+    // Get app with caching
+    pub fn get_app_cached(mut self: Self, app_id: String) -> Result[app_manager::AppState] {
+        // Check cache first
+        if let Some(cached) = self.cache[app_id] {
+            return Ok(cached)
+        }
+
+        // Call Rust if not cached
+        let app = app_manager::get_app_info(app_id.clone())?
+
+        // Store in cache
+        self.cache[app_id] = app
+
+        return Ok(app)
+    }
+
+    // List apps with caching
+    pub fn list_apps_cached(mut self: Self) -> Result[Array[app_manager::AppState]] {
+        let now = get_current_time_ms()
+
+        // Check cache validity
+        if let Some(last_refresh) = self.last_list_refresh {
+            if (now - last_refresh) < self.cache_ttl_ms {
+                // Cache is still valid
+                let cached_apps = self.cache["_app_list"] as Array[app_manager::AppState]
+                return Ok(cached_apps)
+            }
+        }
+
+        // Refresh from Rust
+        let apps = app_manager::list_apps()?
+
+        // Update cache
+        self.cache["_app_list"] = apps
+        self.last_list_refresh = Some(now)
+
+        return Ok(apps)
+    }
+
+    // Clear cache
+    pub fn clear_cache(mut self: Self) -> Self {
+        self.cache = {}
+        self.last_list_refresh = None
+        return self
+    }
+
+    // Install with validation
+    pub fn install_app_validated(
+        mut self: Self,
+        app_id: String,
+        version: String,
+    ) -> Result[app_manager::AppState] {
+        // Validate app_id
+        if app_id.is_empty() {
+            return Err("app_id cannot be empty")
+        }
+
+        if app_id.len() > 255 {
+            return Err("app_id too long (max 255 chars)")
+        }
+
+        // Validate version format
+        if !is_valid_version(&version) {
+            return Err("Invalid version format (expected X.Y.Z)")
+        }
+
+        // Call Rust
+        let app = app_manager::install_app(app_id, version)?
+
+        // Clear list cache (app list changed)
+        self.last_list_refresh = None
+
+        return Ok(app)
+    }
+}
+
+// Batch operations helper
+pub struct AppManagerBatch {
+    operations: Array[String]  // Queued operations
+}
+
+impl AppManagerBatch {
+    pub fn new() -> Self {
+        return AppManagerBatch {
+            operations: [],
+        }
+    }
+
+    pub fn add_install(mut self: Self, app_id: String, version: String) -> Self {
+        self.operations.push(format!("install:{app_id}:{version}"))
+        return self
+    }
+
+    pub fn add_uninstall(mut self: Self, app_id: String) -> Self {
+        self.operations.push(format!("uninstall:{app_id}"))
+        return self
+    }
+
+    pub fn execute_all(self: Self) -> Result[Array[String]] {
+        let mut results: Array[String] = []
+
+        for op in self.operations {
+            let parts = op.split(":")
+            let op_type = parts[0]
+
+            match op_type {
+                "install" => {
+                    let app_id = parts[1]
+                    let version = parts[2]
+                    let _result = app_manager::install_app(app_id, version)?
+                    results.push(format!("installed:{app_id}"))
+                }
+                "uninstall" => {
+                    let app_id = parts[1]
+                    let _result = app_manager::uninstall_app(app_id)?
+                    results.push(format!("uninstalled:{app_id}"))
+                }
+                _ => {
+                    results.push(format!("unknown:{op_type}"))
+                }
+            }
+        }
+
+        return Ok(results)
+    }
+}
+
+// Status tracking
+pub struct AppStatusTracker {
+    statuses: Object  // Map of app_id -> status info
+}
+
+impl AppStatusTracker {
+    pub fn new() -> Self {
+        return AppStatusTracker {
+            statuses: {},
+        }
+    }
+
+    pub fn update_status(
+        mut self: Self,
+        app_id: String,
+        state: String,
+        running: bool,
+    ) -> Self {
+        self.statuses[app_id] = {
+            "state": state,
+            "running": running,
+            "last_update": get_current_time_ms(),
+        }
+        return self
+    }
+
+    pub fn get_status(self: &Self, app_id: String) -> Option[Object] {
+        return self.statuses[app_id]
+    }
+
+    pub fn get_all_statuses(self: &Self) -> Object {
+        return self.statuses
+    }
+}
+
+// Validation helpers
+fn is_valid_version(version: &String) -> bool {
+    // Check format: X.Y.Z
+    let parts = version.split(".")
+    if parts.len() != 3 {
+        return false
+    }
+
+    // Check each part is numeric
+    for part in parts {
+        if !is_numeric(part) {
+            return false
+        }
+    }
+
+    return true
+}
+
+fn is_numeric(s: &String) -> bool {
+    // Check if string contains only digits
+    for c in s.chars() {
+        if !c.is_digit(10) {
+            return false
+        }
+    }
+    return true
+}
+
+// Time helper
+fn get_current_time_ms() -> u64 {
+    // In production, use actual system time
+    // For now, return placeholder
+    return 1718462400000  // 2026-06-15T12:00:00Z in milliseconds
+}
+
+// ============================================================================
+// PHASE 3 PATTERNS (For full TITAN implementation without Rust dependency)
+// ============================================================================
+
+/*
+// When ready to move to Phase 3, implement full TITAN version:
+
+pub struct AppManager {
+    apps: Object
+    config: AppManagerConfig
+}
+
+pub struct AppManagerConfig {
+    auto_start: bool
+    max_apps: u64
+    storage_path: String
+}
+
+impl AppManager {
+    pub fn new(config: AppManagerConfig) -> Self {
+        return AppManager {
+            apps: {},
+            config: config,
+        }
+    }
+
+    pub fn install_app(mut self: Self, app_id: String, version: String) -> Result[AppState] {
+        // Full business logic here
+        // No Rust calls needed
+    }
+
+    pub fn get_app(self: &Self, app_id: String) -> Result[AppState] {
+        // Full lookup logic here
+    }
+}
+*/
+
+#[cfg(test)]
+mod advanced_tests {
+    use super::*
+
+    #[test]
+    fn test_cached_app_manager() {
+        let manager = CachedAppManager::new()
+        assert_eq!(manager.cache_ttl_ms, 60000)
+        assert!(manager.last_list_refresh.is_none())
+    }
+
+    #[test]
+    fn test_version_validation() {
+        assert!(is_valid_version(&"1.0.0"))
+        assert!(is_valid_version(&"2.5.10"))
+        assert!(!is_valid_version(&"1.0"))
+        assert!(!is_valid_version(&"1.a.0"))
+    }
+
+    #[test]
+    fn test_batch_operations() {
+        let batch = AppManagerBatch::new()
+            .add_install("app1", "1.0.0")
+            .add_install("app2", "2.0.0")
+            .add_uninstall("app1")
+
+        assert_eq!(batch.operations.len(), 3)
+    }
+
+    #[test]
+    fn test_app_status_tracker() {
+        let mut tracker = AppStatusTracker::new()
+
+        tracker = tracker.update_status("app1", "installed", true)
+
+        let status = tracker.get_status("app1")
+        assert!(status.is_some())
+    }
+
+    #[test]
+    fn test_is_numeric() {
+        assert!(is_numeric(&"123"))
+        assert!(is_numeric(&"0"))
+        assert!(!is_numeric(&"12a"))
+        assert!(!is_numeric(&""))
+    }
+}
