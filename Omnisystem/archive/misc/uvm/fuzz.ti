@@ -1,0 +1,212 @@
+// uvm/fuzz.ti — Service API fuzzer
+// Generates pseudo-random inputs from a deterministic seed, calls service APIs,
+// and checks that no input causes a crash or violates invariants.
+// Invariant: every fuzz input must either succeed or fail gracefully (never hang/crash).
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+const TAG_CORPUS: i64 = 68600;
+const TAG_SEED:   i64 = 68601;
+const TAG_CASE:   i64 = 68602;
+const TAG_BUG:    i64 = 68603;
+const TAG_LIST:   i64 = 68604;
+
+// ── Deterministic PRNG (xorshift64) ──────────────────────────────────────
+let g_seed: i64 = 6364136223846793005;
+
+pub fn prng_next() -> i64 {
+    g_seed = g_seed ^ (g_seed * 64);
+    g_seed = g_seed ^ (g_seed / 4);
+    g_seed = g_seed ^ (g_seed * 32);
+    if g_seed < 0 { g_seed = 0 - g_seed; }
+    return g_seed;
+}
+
+pub fn prng_range(lo:i64, hi:i64) -> i64 {
+    if hi <= lo { return lo; }
+    let r = prng_next();
+    return lo + (r - (r / (hi - lo)) * (hi - lo));
+}
+
+pub fn prng_reset(seed:i64) { g_seed = seed; return; }
+
+// ── Fuzz corpus ───────────────────────────────────────────────────────────
+// Corpus entries are (input_hash, expected_kind) pairs
+// expected_kind: 0=ok, 1=error, 2=either (fuzzer accepts both)
+// body=input_val, arg=expected_kind, domain=next
+
+pub fn corpus_entry(val:i64, kind:i64) -> i64 {
+    let e=heap_alloc_term(); heap_set_tag(e,TAG_CASE);
+    heap_set_body(e,val); heap_set_arg(e,kind); heap_set_domain(e,0); return e;
+}
+
+// ── Bug record: body=input, arg=service_id, domain=violation_code ─────────
+pub fn bug_new(input:i64, svc:i64, code:i64) -> i64 {
+    let b=heap_alloc_term(); heap_set_tag(b,TAG_BUG);
+    heap_set_body(b,input); heap_set_arg(b,svc); heap_set_domain(b,code); return b;
+}
+
+// ── Service stubs (simplified models for fuzzing) ────────────────────────
+// Each returns 0=ok, -1=error; never returns a value that crashes
+
+// compress: must handle any byte sequence (never crash)
+pub fn fuzz_compress(data:i64) -> i64 {
+    if data < 0 { return -1; }  // invalid input → clean error
+    // Any non-negative input is valid for RLE
+    return 0;
+}
+
+// cache set: key and value must be non-negative integers
+pub fn fuzz_cache_set(key:i64, value:i64, ttl:i64) -> i64 {
+    if ttl < 0 { return -1; }  // negative TTL is invalid → clean error
+    if ttl > 86400 { return -1; }  // unreasonably large TTL → reject
+    return 0;
+}
+
+// auth: ID hash must be positive
+pub fn fuzz_auth(id_hash:i64) -> i64 {
+    if id_hash <= 0 { return -1; }
+    return 0;
+}
+
+// queue enqueue: priority must be 0-255
+pub fn fuzz_queue(payload:i64, priority:i64) -> i64 {
+    if priority < 0 || priority > 255 { return -1; }
+    return 0;
+}
+
+// rpc call: method_id must be registered (non-zero), params arbitrary
+pub fn fuzz_rpc(method_id:i64, param:i64) -> i64 {
+    if method_id <= 0 { return -1; }
+    return 0;
+}
+
+// storage: hash must be positive, data non-empty
+pub fn fuzz_storage(hash:i64, size:i64) -> i64 {
+    if hash <= 0 || size <= 0 { return -1; }
+    return 0;
+}
+
+// p2p send: from and to must differ, TTL positive
+pub fn fuzz_p2p(from:i64, to:i64, ttl:i64) -> i64 {
+    if from == to { return -1; }
+    if ttl <= 0   { return -1; }
+    return 0;
+}
+
+// ── Invariant checker ─────────────────────────────────────────────────────
+// "no crash" invariant: a fuzz result must be 0 or -1, never anything else
+pub fn check_invariant(result:i64) -> i64 {
+    if result == 0  { return 1; }   // clean success
+    if result == -1 { return 1; }   // clean error
+    return 0;                        // invariant violated (unexpected return)
+}
+
+// ── Fuzz runner ───────────────────────────────────────────────────────────
+// Returns number of bugs found (0 = clean)
+pub fn run_fuzz(service_id:i64, iterations:i64, seed:i64) -> i64 {
+    prng_reset(seed);
+    let bugs = 0;
+
+    let i = 0;
+    while i < iterations {
+        let v1 = prng_range(-100, 10000);
+        let v2 = prng_range(-10, 500);
+        let v3 = prng_range(-5, 100);
+
+        let result = 0;
+        if service_id == 1 { result = fuzz_compress(v1); }
+        if service_id == 2 { result = fuzz_cache_set(v1, v2, v3); }
+        if service_id == 3 { result = fuzz_auth(v1); }
+        if service_id == 4 { result = fuzz_queue(v1, v2); }
+        if service_id == 5 { result = fuzz_rpc(v1, v2); }
+        if service_id == 6 { result = fuzz_storage(v1, v2); }
+        if service_id == 7 { result = fuzz_p2p(v1, v2, v3); }
+
+        if check_invariant(result) == 0 {
+            bugs = bugs + 1;
+        }
+        i = i + 1;
+    }
+    return bugs;
+}
+
+// ── Coverage tracking ─────────────────────────────────────────────────────
+// Track which result codes were seen (diversity = better coverage)
+let g_seen_ok:  i64 = 0;
+let g_seen_err: i64 = 0;
+
+pub fn track(result:i64) {
+    if result == 0  { g_seen_ok  = g_seen_ok  + 1; }
+    if result == -1 { g_seen_err = g_seen_err + 1; }
+    return;
+}
+
+pub fn coverage_ok()  -> i64 { return g_seen_ok; }
+pub fn coverage_err() -> i64 { return g_seen_err; }
+
+pub fn main() -> i64 {
+    // Test 1: PRNG is deterministic
+    prng_reset(42);
+    let r1 = prng_next();
+    prng_reset(42);
+    let r2 = prng_next();
+    if r1 != r2 { return 1; }
+
+    // Test 2: PRNG range stays in bounds
+    prng_reset(100);
+    let i = 0;
+    while i < 20 {
+        let v = prng_range(0, 10);
+        if v < 0 || v >= 10 { return 2; }
+        i = i + 1;
+    }
+
+    // Test 3: invariant checker
+    if check_invariant(0)   != 1 { return 3; }
+    if check_invariant(-1)  != 1 { return 4; }
+    if check_invariant(42)  != 0 { return 5; }  // unexpected value
+
+    // Test 4: fuzz compress — no bugs expected
+    let bugs_compress = run_fuzz(1, 100, 12345);
+    if bugs_compress != 0 { return 6; }
+
+    // Test 5: fuzz cache — no bugs expected
+    let bugs_cache = run_fuzz(2, 100, 54321);
+    if bugs_cache != 0 { return 7; }
+
+    // Test 6: fuzz auth — no bugs expected
+    let bugs_auth = run_fuzz(3, 100, 99999);
+    if bugs_auth != 0 { return 8; }
+
+    // Test 7: fuzz all seven services
+    g_seen_ok = 0; g_seen_err = 0;
+    let svc = 1;
+    while svc <= 7 {
+        prng_reset(svc * 1000);
+        let j = 0;
+        while j < 50 {
+            let v1 = prng_range(-50, 5000);
+            let v2 = prng_range(-5, 300);
+            let v3 = prng_range(-3, 50);
+            let r = 0;
+            if svc == 1 { r = fuzz_compress(v1); }
+            if svc == 2 { r = fuzz_cache_set(v1,v2,v3); }
+            if svc == 3 { r = fuzz_auth(v1); }
+            if svc == 4 { r = fuzz_queue(v1,v2); }
+            if svc == 5 { r = fuzz_rpc(v1,v2); }
+            if svc == 6 { r = fuzz_storage(v1,v2); }
+            if svc == 7 { r = fuzz_p2p(v1,v2,v3); }
+            if check_invariant(r) == 0 { return 9; }  // bug found
+            track(r);
+            j = j + 1;
+        }
+        svc = svc + 1;
+    }
+
+    // Good coverage: both ok and error paths exercised
+    if coverage_ok()  == 0 { return 10; }
+    if coverage_err() == 0 { return 11; }
+
+    return 111;
+}

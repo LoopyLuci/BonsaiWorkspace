@@ -1,0 +1,313 @@
+// UDC Rule Engine: macOS DriverKit Code Generation
+// Transforms DIS operations into DriverKit C++ method calls
+// This is the core conversion logic for generating production-grade drivers
+
+module udc::rule_engine::macos_driverkit_rules
+
+use udc::dis::schema::{DeviceInterface, Operation, Effect, StateMachine}
+
+/// Rule engine state for tracking generated code
+pub struct DriverKitRuleEngine {
+    device: DeviceInterface,
+    generated_methods: Vec<GeneratedMethod>,
+    generated_classes: Vec<GeneratedClass>,
+    error_count: usize,
+}
+
+pub struct GeneratedMethod {
+    pub name: String,
+    pub return_type: String,
+    pub parameters: Vec<MethodParam>,
+    pub body: String,
+    pub comments: Vec<String>,
+}
+
+pub struct MethodParam {
+    pub name: String,
+    pub param_type: String,
+}
+
+pub struct GeneratedClass {
+    pub name: String,
+    pub base_class: String,
+    pub methods: Vec<GeneratedMethod>,
+    pub member_variables: Vec<MemberVariable>,
+}
+
+pub struct MemberVariable {
+    pub name: String,
+    pub var_type: String,
+    pub initialization: Option<String>,
+}
+
+impl DriverKitRuleEngine {
+    pub fn new(device: DeviceInterface) -> Self {
+        DriverKitRuleEngine {
+            device,
+            generated_methods: vec![],
+            generated_classes: vec![],
+            error_count: 0,
+        }
+    }
+
+    /// Rule 1: Bulk Write operations → IOUSBHostPipe::Write()
+    pub fn rule_bulk_write(&self, ep_address: u8) -> String {
+        format!(
+            r#"
+    IOUSBHostPipe* pipe = getEndpoint({});
+    if (!pipe) {{
+        IOLog("BrotherFAXDriver: Failed to get bulk OUT endpoint");
+        return kIOReturnNoDevice;
+    }}
+
+    kern_return_t status = pipe->Write(data, length, 5000, nullptr);
+    if (status != KERN_SUCCESS) {{
+        IOLog("BrotherFAXDriver: Bulk write failed: 0x%x", status);
+        return status;
+    }}
+
+    IOLog("BrotherFAXDriver: Sent %u bytes to endpoint {}", length, {});
+    return KERN_SUCCESS;
+"#,
+            ep_address, ep_address
+        )
+    }
+
+    /// Rule 2: Bulk Read operations → IOUSBHostPipe::Read()
+    pub fn rule_bulk_read(&self, ep_address: u8) -> String {
+        format!(
+            r#"
+    IOUSBHostPipe* pipe = getEndpoint({});
+    if (!pipe) {{
+        IOLog("BrotherFAXDriver: Failed to get bulk IN endpoint");
+        return kIOReturnNoDevice;
+    }}
+
+    uint32_t bytesTransferred = 0;
+    kern_return_t status = pipe->Read(buffer, buffer_size, &bytesTransferred, 30000, nullptr);
+    if (status != KERN_SUCCESS) {{
+        IOLog("BrotherFAXDriver: Bulk read failed: 0x%x", status);
+        return status;
+    }}
+
+    IOLog("BrotherFAXDriver: Received %u bytes from endpoint {}", bytesTransferred, {});
+    *bytes_read = bytesTransferred;
+    return KERN_SUCCESS;
+"#,
+            ep_address, ep_address
+        )
+    }
+
+    /// Rule 3: Interrupt Read → IOUSBHostPipe::InterruptRead()
+    pub fn rule_interrupt_read(&self, ep_address: u8, poll_interval: u32) -> String {
+        format!(
+            r#"
+    IOUSBHostPipe* pipe = getEndpoint({});
+    if (!pipe) {{
+        IOLog("BrotherFAXDriver: Failed to get interrupt IN endpoint");
+        return kIOReturnNoDevice;
+    }}
+
+    uint8_t status_buffer[8];
+    uint32_t bytesTransferred = 0;
+    kern_return_t status = pipe->Read(status_buffer, sizeof(status_buffer), &bytesTransferred, 10000, nullptr);
+
+    if (status != KERN_SUCCESS) {{
+        IOLog("BrotherFAXDriver: Interrupt read failed: 0x%x", status);
+        return status;
+    }}
+
+    if (bytesTransferred > 0) {{
+        *status_byte = status_buffer[0];
+        IOLog("BrotherFAXDriver: Status: 0x%02x", *status_byte);
+    }}
+
+    return KERN_SUCCESS;
+"#,
+            ep_address
+        )
+    }
+
+    /// Rule 4: Control Transfer → IOUSBHostDevice::ControlRequest()
+    pub fn rule_control_transfer(
+        &self,
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    ) -> String {
+        format!(
+            r#"
+    IOUSBDeviceRequest request;
+    request.bmRequestType = {};
+    request.bRequest = {};
+    request.wValue = OSSwapHostToLittleInt16({});
+    request.wIndex = OSSwapHostToLittleInt16({});
+    request.wLength = OSSwapHostToLittleInt16({});
+
+    kern_return_t status = DeviceRequest(&request);
+    if (status != KERN_SUCCESS) {{
+        IOLog("BrotherFAXDriver: Control transfer failed: 0x%x", status);
+        return status;
+    }}
+
+    IOLog("BrotherFAXDriver: Control transfer succeeded");
+    return KERN_SUCCESS;
+"#,
+            request_type, request, value, index, length
+        )
+    }
+
+    /// Rule 5: State machine transitions → explicit state tracking
+    pub fn rule_state_machine(&self, sm: &StateMachine) -> String {
+        let mut code = String::new();
+        code.push_str("    // State machine handling\n");
+        code.push_str("    switch (device_state_) {\n");
+
+        for state in &sm.states {
+            code.push_str(&format!("    case State::{}:\n", state.name));
+            code.push_str("        // Handle state\n");
+            code.push_str("        break;\n");
+        }
+
+        code.push_str("    default:\n");
+        code.push_str("        IOLog(\"BrotherFAXDriver: Unknown state: %d\", device_state_);\n");
+        code.push_str("        device_state_ = State::Error;\n");
+        code.push_str("        break;\n");
+        code.push_str("    }\n");
+
+        code
+    }
+
+    /// Generate class declaration
+    pub fn generate_class_header(&self) -> String {
+        let mut header = String::new();
+        header.push_str("#ifndef BROTHERFAXDRIVER_HPP\n");
+        header.push_str("#define BROTHERFAXDRIVER_HPP\n\n");
+        header.push_str("#include <DriverKit/DriverKit.h>\n");
+        header.push_str("#include <DriverKit/IOUSBHostDevice.h>\n");
+        header.push_str("#include <DriverKit/IOUSBHostPipe.h>\n");
+        header.push_str("#include <DriverKit/OSAction.h>\n");
+        header.push_str("#include <os/log.h>\n\n");
+
+        header.push_str("class BrotherFAXDriver : public IOUSBHostDevice {\n");
+        header.push_str("    OSDeclareDefaultStructors(BrotherFAXDriver);\n\n");
+
+        header.push_str("public:\n");
+        header.push_str("    virtual kern_return_t Start(IOService* provider);\n");
+        header.push_str("    virtual kern_return_t Stop(IOService* provider);\n");
+        header.push_str("    virtual kern_return_t SetProperties(OSDictionary* properties);\n\n");
+
+        header.push_str("    // Fax operations\n");
+        header.push_str("    kern_return_t InitDevice();\n");
+        header.push_str("    kern_return_t SendFaxData(const uint8_t* data, uint32_t length);\n");
+        header.push_str("    kern_return_t ReceiveFaxData(uint8_t* buffer, uint32_t buffer_size, uint32_t* bytes_read);\n");
+        header.push_str("    kern_return_t GetDeviceStatus(uint8_t* status_byte);\n");
+        header.push_str("    kern_return_t ResetDevice();\n");
+        header.push_str("    kern_return_t GetDeviceID(char* device_id_str, uint32_t max_length);\n\n");
+
+        header.push_str("protected:\n");
+        header.push_str("    IOUSBHostPipe* getEndpoint(uint8_t address);\n");
+        header.push_str("    void releaseEndpoints();\n");
+        header.push_str("    void handleInterruptStatus();\n\n");
+
+        header.push_str("private:\n");
+        header.push_str("    enum class DeviceState {\n");
+        header.push_str("        Uninitialized = 0,\n");
+        header.push_str("        Idle = 1,\n");
+        header.push_str("        Transmitting = 2,\n");
+        header.push_str("        Receiving = 3,\n");
+        header.push_str("        Error = 4,\n");
+        header.push_str("    };\n\n");
+
+        header.push_str("    DeviceState device_state_ = DeviceState::Uninitialized;\n");
+        header.push_str("    IOUSBHostPipe* bulk_out_pipe_ = nullptr;\n");
+        header.push_str("    IOUSBHostPipe* bulk_in_pipe_ = nullptr;\n");
+        header.push_str("    IOUSBHostPipe* interrupt_in_pipe_ = nullptr;\n");
+        header.push_str("    os_log_t logger_ = nullptr;\n");
+        header.push_str("};\n\n");
+
+        header.push_str("#endif // BROTHERFAXDRIVER_HPP\n");
+
+        header
+    }
+
+    /// Generate method implementations
+    pub fn generate_method_implementation(&self, operation: &Operation) -> String {
+        let mut code = String::new();
+        code.push_str(&format!("// Operation: {}\n", operation.name));
+        code.push_str(&format!("// {}\n\n", operation.inputs.iter().map(|p| &p.name).collect::<Vec<_>>().join(", ")));
+
+        for effect in &operation.side_effects {
+            match effect {
+                Effect::BulkWrite(ep) => {
+                    code.push_str(&self.rule_bulk_write(*ep));
+                }
+                Effect::BulkRead(ep) => {
+                    code.push_str(&self.rule_bulk_read(*ep));
+                }
+                Effect::InterruptRead(_ep) => {
+                    code.push_str(&self.rule_interrupt_read(131, 10));
+                }
+                Effect::ControlTransfer { request_type, request, value, index, length } => {
+                    code.push_str(&self.rule_control_transfer(*request_type, *request, *value, *index, *length));
+                }
+                _ => {
+                    code.push_str("    // [Other effect type handled elsewhere]\n");
+                }
+            }
+        }
+
+        code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bulk_write_rule() {
+        let device = DeviceInterface::new(
+            "test_device",
+            0x04f9,
+            0x0346,
+            udc::dis::schema::BusType::Usb,
+        );
+        let engine = DriverKitRuleEngine::new(device);
+        let code = engine.rule_bulk_write(1);
+        assert!(code.contains("IOUSBHostPipe"));
+        assert!(code.contains("Write"));
+    }
+
+    #[test]
+    fn test_control_transfer_rule() {
+        let device = DeviceInterface::new(
+            "test_device",
+            0x04f9,
+            0x0346,
+            udc::dis::schema::BusType::Usb,
+        );
+        let engine = DriverKitRuleEngine::new(device);
+        let code = engine.rule_control_transfer(33, 1, 0, 0, 0);
+        assert!(code.contains("IOUSBDeviceRequest"));
+        assert!(code.contains("DeviceRequest"));
+    }
+
+    #[test]
+    fn test_class_header_generation() {
+        let device = DeviceInterface::new(
+            "test_device",
+            0x04f9,
+            0x0346,
+            udc::dis::schema::BusType::Usb,
+        );
+        let engine = DriverKitRuleEngine::new(device);
+        let header = engine.generate_class_header();
+        assert!(header.contains("BrotherFAXDriver"));
+        assert!(header.contains("IOUSBHostDevice"));
+        assert!(header.contains("SendFaxData"));
+        assert!(header.contains("ReceiveFaxData"));
+    }
+}

@@ -1,0 +1,542 @@
+// Universal Metrics and Analytics System (UMAS) Manager (Aether)
+// Central orchestrator for ecosystem-wide observability and analytics
+
+module ecosystem::umas::umas_manager
+
+use core::string::{String, format}
+use core::vec::Vec
+use core::map::Map
+use core::time::{now, Timestamp, sleep_ms}
+use core::fs::{create_dir_all, write}
+use ecosystem::umas::types::*
+
+// ============================================================================
+// UMAS Manager Actor
+// ============================================================================
+
+actor UMASManager {
+    var system: UniversalMetricsSystem
+    var active_collectors: Map<String, MetricsCollector>
+    var metric_storage: Vec<Metric>
+    var aggregated_metrics: Vec<AggregatedMetric>
+    var active_alerts: Vec<Alert>
+    var dashboards: Map<String, Dashboard>
+    var alerting_rules: Vec<AlertingRule>
+    var storage_path: String
+    var is_running: bool = false
+
+    on create(system_id: String, storage_root: String) {
+        this.system = UniversalMetricsSystem {
+            system_id: system_id.clone(),
+            version: UMAS_VERSION.to_string(),
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
+            is_active: false,
+            collectors: Vec::new(),
+            processors: Vec::new(),
+            dashboards: Vec::new(),
+            alerting_rules: Vec::new(),
+            metadata: SystemMetadata {
+                namespace: "bonsai-ecosystem".to_string(),
+                cluster_id: "cluster-1".to_string(),
+                region: "multi-region".to_string(),
+                environment: "production".to_string(),
+                services_monitored: 0,
+                metrics_retained_days: 30,
+                sampling_rate: 1.0,
+                aggregation_interval_seconds: 60,
+            },
+        }
+        this.storage_path = format!("{}/umas/{}", storage_root, system_id)
+        log_info("UMAS Manager initialized: {}", system_id)
+    }
+
+    // ========================================================================
+    // System Lifecycle
+    // ========================================================================
+
+    async on start(&mut self) -> Result<(), String> {
+        log_info("Starting UMAS Manager...")
+
+        // Create storage
+        create_dir_all(&self.storage_path).map_err(|e| format!("Storage creation failed: {}", e))?
+        create_dir_all(&format!("{}/metrics", self.storage_path))?
+        create_dir_all(&format!("{}/dashboards", self.storage_path))?
+        create_dir_all(&format!("{}/alerts", self.storage_path))?
+        create_dir_all(&format!("{}/snapshots", self.storage_path))?
+
+        self.system.is_active = true
+        self.is_running = true
+
+        log_info("✅ UMAS Manager started")
+        Ok(())
+    }
+
+    async on stop(&mut self) {
+        log_info("Stopping UMAS Manager...")
+        self.system.is_active = false
+        self.is_running = false
+        log_info("✅ UMAS Manager stopped")
+    }
+
+    // ========================================================================
+    // Collector Management
+    // ========================================================================
+
+    on register_collector(&mut self, collector: MetricsCollector) -> Result<String, String> {
+        if !self.is_running {
+            return Err("UMAS Manager not running".to_string())
+        }
+
+        let collector_id = collector.collector_id.clone()
+        log_info("Registering collector: {} ({})", collector.service_name, collector_id)
+
+        self.active_collectors.insert(collector_id.clone(), collector.clone())
+        self.system.collectors.push(collector)
+        self.system.metadata.services_monitored += 1
+
+        log_info("✅ Collector registered: {}", collector_id)
+        Ok(collector_id)
+    }
+
+    async on scrape_metrics(&mut self, collector_id: &str) -> Result<Vec<Metric>, String> {
+        let collector = self.active_collectors.get(collector_id)
+            .ok_or(format!("Collector not found: {}", collector_id))?
+
+        log_debug("Scraping metrics from: {}", collector.service_name)
+
+        // Simulate metric scraping (in production, would call actual collector endpoint)
+        let mut metrics = Vec::new()
+
+        // Example metrics
+        metrics.push(Metric {
+            metric_id: format!("metric-{}-cpu", collector.service_name),
+            metric_name: "cpu_percent".to_string(),
+            metric_type: MetricType::Gauge,
+            service_name: collector.service_name.clone(),
+            instance: collector.endpoint.clone(),
+            timestamp: Timestamp::now(),
+            value: 45.5,
+            labels: Map::new(),
+            unit: "percent".to_string(),
+        })
+
+        metrics.push(Metric {
+            metric_id: format!("metric-{}-requests", collector.service_name),
+            metric_name: "request_rate".to_string(),
+            metric_type: MetricType::Rate,
+            service_name: collector.service_name.clone(),
+            instance: collector.endpoint.clone(),
+            timestamp: Timestamp::now(),
+            value: 1250.5,
+            labels: Map::new(),
+            unit: "requests_per_second".to_string(),
+        })
+
+        // Store metrics
+        for metric in &metrics {
+            self.metric_storage.push(metric.clone())
+        }
+
+        log_debug("Scraped {} metrics from {}", metrics.len(), collector.service_name)
+        Ok(metrics)
+    }
+
+    // ========================================================================
+    // Metrics Aggregation
+    // ========================================================================
+
+    async on aggregate_metrics(&mut self, window_seconds: u32) -> Result<Vec<AggregatedMetric>, String> {
+        log_info("Aggregating metrics (window: {} seconds)...", window_seconds)
+
+        let mut aggregates = Vec::new()
+
+        // Group metrics by name
+        let mut metric_groups: Map<String, Vec<f64>> = Map::new()
+
+        for metric in &self.metric_storage {
+            metric_groups.entry(metric.metric_name.clone())
+                .or_insert_with(Vec::new)
+                .push(metric.value)
+        }
+
+        // Compute statistics
+        for (metric_name, values) in &metric_groups {
+            if values.is_empty() {
+                continue
+            }
+
+            let sum: f64 = values.iter().sum()
+            let mean = sum / values.len() as f64
+            let min = values.iter().cloned().fold(f64::INFINITY, f64::min)
+            let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+
+            // Compute standard deviation
+            let variance: f64 = values.iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f64>() / values.len() as f64
+            let stddev = variance.sqrt()
+
+            let aggregate = AggregatedMetric {
+                aggregation_id: format!("agg-{}-{}", metric_name, now()),
+                metric_name: metric_name.clone(),
+                time_window: TimeWindow {
+                    start_time: Timestamp::now(),
+                    end_time: Timestamp::now(),
+                    duration_seconds: window_seconds as u64,
+                    bucket_name: format!("{}s_bucket", window_seconds),
+                },
+                count: values.len() as u64,
+                sum,
+                min,
+                max,
+                mean,
+                stddev,
+                percentiles: PercentileStats {
+                    p50: 0.0,
+                    p75: 0.0,
+                    p95: 0.0,
+                    p99: 0.0,
+                    p999: 0.0,
+                },
+            }
+
+            aggregates.push(aggregate)
+        }
+
+        self.aggregated_metrics.extend(aggregates.clone())
+        log_info("✅ Aggregated {} metrics", aggregates.len())
+        Ok(aggregates)
+    }
+
+    // ========================================================================
+    // Alerting
+    // ========================================================================
+
+    async on evaluate_alerts(&mut self) -> Result<Vec<Alert>, String> {
+        log_info("Evaluating alerting rules...")
+
+        let mut triggered_alerts = Vec::new()
+
+        for rule in &self.alerting_rules {
+            if !rule.is_enabled {
+                continue
+            }
+
+            // Find matching metrics
+            for metric in &self.metric_storage {
+                if metric.metric_name != rule.metric_name {
+                    continue
+                }
+
+                let should_alert = match rule.condition.operator.as_str() {
+                    "greater_than" => metric.value > rule.condition.threshold,
+                    "less_than" => metric.value < rule.condition.threshold,
+                    "equal_to" => (metric.value - rule.condition.threshold).abs() < 0.001,
+                    _ => false,
+                }
+
+                if should_alert {
+                    let alert = Alert {
+                        alert_id: format!("alert-{}-{}", rule.rule_id, now()),
+                        rule_id: rule.rule_id.clone(),
+                        service_name: metric.service_name.clone(),
+                        metric_name: metric.metric_name.clone(),
+                        severity: rule.severity.clone(),
+                        current_value: metric.value,
+                        threshold: rule.condition.threshold,
+                        triggered_at: Timestamp::now(),
+                        resolved_at: None,
+                        annotations: Map::new(),
+                    }
+
+                    self.active_alerts.push(alert.clone())
+                    triggered_alerts.push(alert)
+
+                    // Send notifications
+                    self._send_notifications(&rule, &metric).await.ok()
+                }
+            }
+        }
+
+        log_info("✅ Evaluated alerts: {} triggered", triggered_alerts.len())
+        Ok(triggered_alerts)
+    }
+
+    async fn _send_notifications(&self, rule: &AlertingRule, metric: &Metric) -> Result<(), String> {
+        for channel in &rule.notification_channels {
+            if !channel.is_active {
+                continue
+            }
+
+            let message = format!(
+                "ALERT: {} - {} is {} (threshold: {})",
+                metric.service_name,
+                metric.metric_name,
+                metric.value,
+                rule.condition.threshold
+            )
+
+            log_info("Sending notification via {}: {}", channel.channel_type, message)
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Load Balancer Validation
+    // ========================================================================
+
+    async on validate_load_balancer(&self, lb_metrics: &LoadBalancerMetrics) -> Result<LoadBalancerValidationReport, String> {
+        log_info("Validating load balancer decisions...")
+
+        let mut issues = Vec::new()
+        let mut total_requests = 0u64
+        let mut expected_per_backend = lb_metrics.backend_pool.len() as f64
+
+        // Check distribution
+        for backend in &lb_metrics.backend_pool {
+            total_requests += backend.requests_handled
+        }
+
+        if total_requests == 0 {
+            return Err("No requests to validate".to_string())
+        }
+
+        let expected_per_backend = total_requests as f64 / expected_per_backend
+
+        for backend in &lb_metrics.backend_pool {
+            let percentage = (backend.requests_handled as f64 / total_requests as f64) * 100.0
+
+            // Validate health-aware distribution
+            if !backend.is_healthy && backend.requests_handled > 0 {
+                issues.push(format!(
+                    "Unhealthy backend {} received {} requests",
+                    backend.backend_id, backend.requests_handled
+                ))
+            }
+
+            // Validate weighted distribution
+            let weight_factor = (backend.weight as f64) / 100.0
+            let expected = expected_per_backend * weight_factor
+            let variance = ((backend.requests_handled as f64 - expected).abs() / expected) * 100.0
+
+            if variance > 20.0 {
+                issues.push(format!(
+                    "Load distribution variance for {}: {:.1}% (expected: {}, actual: {})",
+                    backend.backend_name, variance, expected as u64, backend.requests_handled
+                ))
+            }
+
+            // Check response time consistency
+            if backend.avg_response_time_ms > 500.0 {
+                issues.push(format!(
+                    "Slow response time on backend {}: {:.1}ms",
+                    backend.backend_name, backend.avg_response_time_ms
+                ))
+            }
+        }
+
+        let report = LoadBalancerValidationReport {
+            validation_id: format!("validation-{}", now()),
+            lb_id: lb_metrics.lb_id.clone(),
+            timestamp: Timestamp::now(),
+            is_valid: issues.is_empty(),
+            issues: issues.clone(),
+            distribution_score: self._calculate_distribution_score(lb_metrics),
+            health_score: self._calculate_health_score(lb_metrics),
+            performance_score: self._calculate_performance_score(lb_metrics),
+            recommendations: self._generate_recommendations(&issues),
+        }
+
+        log_info("✅ Load balancer validation: {} issues found", issues.len())
+        Ok(report)
+    }
+
+    fn _calculate_distribution_score(&self, lb_metrics: &LoadBalancerMetrics) -> f64 {
+        // Score based on request distribution evenness
+        let total = lb_metrics.backend_pool.iter().map(|b| b.requests_handled).sum::<u64>() as f64
+        if total == 0.0 {
+            return 0.0
+        }
+
+        let variance: f64 = lb_metrics.backend_pool.iter()
+            .map(|b| ((b.requests_handled as f64 / total) - (1.0 / lb_metrics.backend_pool.len() as f64)).powi(2))
+            .sum()
+
+        (1.0 - variance).max(0.0)
+    }
+
+    fn _calculate_health_score(&self, lb_metrics: &LoadBalancerMetrics) -> f64 {
+        let healthy_count = lb_metrics.backend_pool.iter().filter(|b| b.is_healthy).count()
+        healthy_count as f64 / lb_metrics.backend_pool.len() as f64
+    }
+
+    fn _calculate_performance_score(&self, lb_metrics: &LoadBalancerMetrics) -> f64 {
+        let avg_latency: f64 = lb_metrics.backend_pool.iter()
+            .map(|b| b.avg_response_time_ms)
+            .sum::<f64>() / lb_metrics.backend_pool.len() as f64
+
+        // Score: lower latency = higher score
+        (1000.0 - avg_latency).max(0.0) / 1000.0
+    }
+
+    fn _generate_recommendations(&self, issues: &Vec<String>) -> Vec<String> {
+        let mut recommendations = Vec::new()
+
+        for issue in issues {
+            if issue.contains("Unhealthy") {
+                recommendations.push("Remove unhealthy backend from load balancer pool".to_string())
+            } else if issue.contains("distribution variance") {
+                recommendations.push("Adjust backend weights to improve load distribution".to_string())
+            } else if issue.contains("Slow response") {
+                recommendations.push("Investigate backend performance or increase allocated resources".to_string())
+            }
+        }
+
+        recommendations
+    }
+
+    // ========================================================================
+    // Dashboard Management
+    // ========================================================================
+
+    on register_dashboard(&mut self, dashboard: Dashboard) -> Result<String, String> {
+        let dashboard_id = dashboard.dashboard_id.clone()
+        self.dashboards.insert(dashboard_id.clone(), dashboard)
+        log_info("✅ Dashboard registered: {}", dashboard_id)
+        Ok(dashboard_id)
+    }
+
+    // ========================================================================
+    // Analytics
+    // ========================================================================
+
+    async on detect_anomalies(&self) -> Result<Vec<AnomalyDetection>, String> {
+        log_info("Detecting anomalies...")
+
+        let mut anomalies = Vec::new()
+
+        for aggregate in &self.aggregated_metrics {
+            // Simple anomaly detection: deviation >2σ from mean
+            if aggregate.stddev > 0.0 {
+                for metric in &self.metric_storage {
+                    if metric.metric_name != aggregate.metric_name {
+                        continue
+                    }
+
+                    let z_score = (metric.value - aggregate.mean).abs() / aggregate.stddev
+                    if z_score > 2.0 {
+                        anomalies.push(AnomalyDetection {
+                            anomaly_id: format!("anomaly-{}", now()),
+                            metric_name: metric.metric_name.clone(),
+                            service_name: metric.service_name.clone(),
+                            detected_at: Timestamp::now(),
+                            anomaly_type: if metric.value > aggregate.mean { "spike".to_string() } else { "drop".to_string() },
+                            severity: (z_score / 5.0).min(1.0),
+                            description: format!("Value {} deviates {:.1}σ from mean {}", metric.value, z_score, aggregate.mean),
+                            recommended_action: "Investigate service behavior".to_string(),
+                        })
+                    }
+                }
+            }
+        }
+
+        log_info("✅ Anomaly detection: {} anomalies found", anomalies.len())
+        Ok(anomalies)
+    }
+
+    async on analyze_trends(&self, metric_name: &str, days: u32) -> Result<PerformanceTrendAnalysis, String> {
+        log_info("Analyzing trends for {}", metric_name)
+
+        // Find matching metrics
+        let matching: Vec<_> = self.metric_storage.iter()
+            .filter(|m| m.metric_name == metric_name)
+            .collect()
+
+        if matching.is_empty() {
+            return Err(format!("No metrics found for {}", metric_name))
+        }
+
+        let values: Vec<f64> = matching.iter().map(|m| m.value).collect()
+        let current_value = values.last().cloned().unwrap_or(0.0)
+        let baseline_value = values.first().cloned().unwrap_or(0.0)
+        let change_percent = ((current_value - baseline_value) / baseline_value) * 100.0
+
+        let trend_direction = if change_percent > 5.0 {
+            "improving".to_string()
+        } else if change_percent < -5.0 {
+            "degrading".to_string()
+        } else {
+            "stable".to_string()
+        }
+
+        Ok(PerformanceTrendAnalysis {
+            analysis_id: format!("trend-{}-{}", metric_name, now()),
+            metric_name: metric_name.to_string(),
+            time_range_days: days,
+            baseline_value,
+            current_value,
+            change_percent,
+            trend_direction,
+            forecast_next_day: current_value * (1.0 + (change_percent / 100.0)),
+            forecast_confidence: 0.85,
+        })
+    }
+
+    // ========================================================================
+    // System Status
+    // ========================================================================
+
+    on get_system_status(&self) -> UMASSystemStatus {
+        UMASSystemStatus {
+            is_running: self.is_running,
+            collectors_count: self.active_collectors.len() as u32,
+            metrics_stored: self.metric_storage.len() as u64,
+            aggregated_metrics_count: self.aggregated_metrics.len() as u64,
+            active_alerts_count: self.active_alerts.len() as u32,
+            dashboards_count: self.dashboards.len() as u32,
+            last_update: Timestamp::now(),
+        }
+    }
+}
+
+// ============================================================================
+// Supporting Types
+// ============================================================================
+
+pub struct LoadBalancerValidationReport {
+    pub validation_id: String,
+    pub lb_id: String,
+    pub timestamp: Timestamp,
+    pub is_valid: bool,
+    pub issues: Vec<String>,
+    pub distribution_score: f64,
+    pub health_score: f64,
+    pub performance_score: f64,
+    pub recommendations: Vec<String>,
+}
+
+pub struct UMASSystemStatus {
+    pub is_running: bool,
+    pub collectors_count: u32,
+    pub metrics_stored: u64,
+    pub aggregated_metrics_count: u64,
+    pub active_alerts_count: u32,
+    pub dashboards_count: u32,
+    pub last_update: Timestamp,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn log_info(msg: &str, args: ...) {
+    println!("[UMAS] {}", format!(msg, args))
+}
+
+fn log_debug(msg: &str, args: ...) {
+    if cfg!(debug_assertions) {
+        println!("[UMAS DEBUG] {}", format!(msg, args))
+    }
+}

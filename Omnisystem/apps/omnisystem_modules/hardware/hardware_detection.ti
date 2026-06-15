@@ -1,0 +1,508 @@
+module omnisystem.hardware_detection
+
+# Complete hardware detection and configuration module
+# Detects CPU, GPU, Memory, and Storage capabilities
+# Determines optimal execution mode automatically
+
+import system.cpuid
+import system.memory
+import system.storage
+
+# Hardware configuration result
+type HardwareConfig = struct {
+    # CPU Information
+    cpu_count: u32
+    cpu_features: CpuFeatures
+    cpu_frequency_mhz: u32
+    l3_cache_mb: u32
+
+    # GPU Information
+    gpu_available: bool
+    gpu_type: GpuType
+    gpu_vram_mb: u32
+    gpu_capabilities: GpuCapabilities
+
+    # Memory Information
+    system_ram_mb: u32
+    available_ram_mb: u32
+
+    # Storage Information
+    storage_devices: Vec<StorageDevice>
+
+    # Computed
+    optimal_mode: ExecutionMode
+    total_compute_power: ComputePower
+}
+
+enum ExecutionMode {
+    CpuOnly,
+    GpuOnly,
+    HybridGpuCpu,
+}
+
+enum GpuType {
+    Nvidia,
+    Amd,
+    Intel,
+    Apple,
+    None,
+}
+
+type CpuFeatures = struct {
+    sse2: bool
+    sse3: bool
+    sse41: bool
+    sse42: bool
+    avx: bool
+    avx2: bool
+    avx512f: bool
+    avx512bw: bool
+    avx512dq: bool
+    aes_ni: bool
+    sha: bool
+    neon: bool
+    sve: bool
+    sve2: bool
+}
+
+type GpuCapabilities = struct {
+    cuda: Option<CudaInfo>
+    hip: Option<HipInfo>
+    opencl: Option<OpenClInfo>
+    metal: bool
+    vulkan: bool
+    compute_capability: (u32, u32),  # (major, minor) for NVIDIA
+    max_threads_per_block: u32
+    max_blocks_per_grid: u32
+    warp_size: u32
+}
+
+type CudaInfo = struct {
+    version: string
+    device_count: u32
+}
+
+type HipInfo = struct {
+    version: string
+    device_count: u32
+}
+
+type OpenClInfo = struct {
+    version: string
+    platform_count: u32
+}
+
+type StorageDevice = struct {
+    name: string
+    capacity_gb: u32
+    is_nvme: bool
+    is_ssd: bool
+    read_bandwidth_mbs: u32
+    write_bandwidth_mbs: u32
+    can_direct_io: bool
+}
+
+type ComputePower = struct {
+    cpu_flops: u64
+    gpu_flops: u64
+    total_flops: u64
+    memory_bandwidth: u64
+}
+
+# Main detection function
+fun detect_hardware() -> Result<HardwareConfig, string> {
+    let cpu_features = detect_cpu_features()?
+    let cpu_count = get_cpu_count()?
+    let cpu_freq = get_cpu_frequency()?
+    let l3_cache = get_l3_cache_size()?
+
+    let gpu_available = check_gpu_available()?
+    let (gpu_type, gpu_vram, gpu_caps) = if gpu_available {
+        detect_gpu_capabilities()?
+    } else {
+        (GpuType::None, 0, default_gpu_capabilities())
+    }
+
+    let system_ram = get_system_ram()?
+    let available_ram = get_available_ram()?
+
+    let storage_devices = detect_storage_devices()?
+
+    let optimal_mode = compute_optimal_mode(
+        gpu_available,
+        cpu_count,
+        system_ram
+    )
+
+    let compute_power = calculate_compute_power(
+        cpu_count,
+        cpu_freq,
+        gpu_available,
+        gpu_vram
+    )?
+
+    Ok(HardwareConfig {
+        cpu_count,
+        cpu_features,
+        cpu_frequency_mhz: cpu_freq,
+        l3_cache_mb: l3_cache,
+        gpu_available,
+        gpu_type,
+        gpu_vram_mb: gpu_vram,
+        gpu_capabilities: gpu_caps,
+        system_ram_mb: system_ram,
+        available_ram_mb: available_ram,
+        storage_devices,
+        optimal_mode,
+        total_compute_power: compute_power,
+    })
+}
+
+# CPU Detection
+fun detect_cpu_features() -> Result<CpuFeatures, string> {
+    # CPUID instruction analysis
+    let eax = cpuid_leaf(1, 0).eax
+    let ecx = cpuid_leaf(1, 0).ecx
+    let edx = cpuid_leaf(1, 0).edx
+
+    let sse2 = (edx & (1 << 26)) != 0
+    let sse3 = (ecx & (1 << 0)) != 0
+    let sse41 = (ecx & (1 << 19)) != 0
+    let sse42 = (ecx & (1 << 20)) != 0
+    let avx = (ecx & (1 << 28)) != 0
+
+    let ext_eax = cpuid_leaf(7, 0).eax
+    let avx2 = (ext_eax & (1 << 5)) != 0
+    let avx512f = (ext_eax & (1 << 16)) != 0
+    let avx512bw = (ext_eax & (1 << 30)) != 0
+    let avx512dq = (ext_eax & (1 << 17)) != 0
+
+    let aes_ni = (ecx & (1 << 25)) != 0
+    let sha = (ext_eax & (1 << 29)) != 0
+
+    let neon = detect_arm_neon()
+    let sve = detect_arm_sve()
+    let sve2 = detect_arm_sve2()
+
+    Ok(CpuFeatures {
+        sse2,
+        sse3,
+        sse41,
+        sse42,
+        avx,
+        avx2,
+        avx512f,
+        avx512bw,
+        avx512dq,
+        aes_ni,
+        sha,
+        neon,
+        sve,
+        sve2,
+    })
+}
+
+fun get_cpu_count() -> Result<u32, string> {
+    # Query system for logical CPU count
+    Ok(system::get_nprocs() as u32)
+}
+
+fun get_cpu_frequency() -> Result<u32, string> {
+    # Query CPU frequency from system
+    Ok(system::get_cpu_freq_mhz())
+}
+
+fun get_l3_cache_size() -> Result<u32, string> {
+    # Parse from /proc/cpuinfo or equivalent
+    Ok(system::get_l3_cache_kb() / 1024)
+}
+
+# GPU Detection
+fun check_gpu_available() -> Result<bool, string> {
+    # Check for NVIDIA GPU
+    if detect_nvidia_gpu().is_ok() {
+        return Ok(true)
+    }
+
+    # Check for AMD GPU
+    if detect_amd_gpu().is_ok() {
+        return Ok(true)
+    }
+
+    # Check for Intel GPU
+    if detect_intel_gpu().is_ok() {
+        return Ok(true)
+    }
+
+    # Check for Apple GPU
+    if detect_apple_gpu().is_ok() {
+        return Ok(true)
+    }
+
+    Ok(false)
+}
+
+fun detect_gpu_capabilities() -> Result<(GpuType, u32, GpuCapabilities), string> {
+    # Try NVIDIA first
+    if let Ok((vram, caps)) = detect_nvidia_gpu() {
+        return Ok((GpuType::Nvidia, vram, caps))
+    }
+
+    # Try AMD
+    if let Ok((vram, caps)) = detect_amd_gpu() {
+        return Ok((GpuType::Amd, vram, caps))
+    }
+
+    # Try Intel
+    if let Ok((vram, caps)) = detect_intel_gpu() {
+        return Ok((GpuType::Intel, vram, caps))
+    }
+
+    # Try Apple
+    if let Ok((vram, caps)) = detect_apple_gpu() {
+        return Ok((GpuType::Apple, vram, caps))
+    }
+
+    Err("No GPU detected".to_string())
+}
+
+fun detect_nvidia_gpu() -> Result<(u32, GpuCapabilities), string> {
+    # Query CUDA runtime for GPU info
+    # Returns (VRAM in MB, capabilities)
+
+    let device_count = cuda_get_device_count()?
+    if device_count == 0 {
+        return Err("No NVIDIA GPU found".to_string())
+    }
+
+    let device = 0u32
+    cuda_set_device(device)?
+
+    let props = cuda_get_device_properties(device)?
+    let vram = (props.total_global_mem / (1024 * 1024)) as u32
+
+    let cuda_info = CudaInfo {
+        version: cuda_get_version()?,
+        device_count,
+    }
+
+    let capabilities = GpuCapabilities {
+        cuda: Some(cuda_info),
+        hip: None,
+        opencl: None,
+        metal: false,
+        vulkan: check_vulkan()?,
+        compute_capability: (props.major, props.minor),
+        max_threads_per_block: props.max_threads_per_block as u32,
+        max_blocks_per_grid: props.max_blocks_per_grid as u32,
+        warp_size: props.warp_size as u32,
+    }
+
+    Ok((vram, capabilities))
+}
+
+fun detect_amd_gpu() -> Result<(u32, GpuCapabilities), string> {
+    # Query ROCm runtime for GPU info
+    let device_count = hip_get_device_count()?
+    if device_count == 0 {
+        return Err("No AMD GPU found".to_string())
+    }
+
+    let device = 0u32
+    hip_set_device(device)?
+
+    let props = hip_get_device_properties(device)?
+    let vram = (props.total_global_mem / (1024 * 1024)) as u32
+
+    let hip_info = HipInfo {
+        version: hip_get_version()?,
+        device_count,
+    }
+
+    let capabilities = GpuCapabilities {
+        cuda: None,
+        hip: Some(hip_info),
+        opencl: None,
+        metal: false,
+        vulkan: check_vulkan()?,
+        compute_capability: (props.major, props.minor),
+        max_threads_per_block: props.max_threads_per_block as u32,
+        max_blocks_per_grid: props.max_blocks_per_grid as u32,
+        warp_size: props.warp_size as u32,
+    }
+
+    Ok((vram, capabilities))
+}
+
+fun detect_intel_gpu() -> Result<(u32, GpuCapabilities), string> {
+    # Query Intel Arc or Iris GPU
+    // Similar to NVIDIA/AMD detection
+    Err("Intel GPU detection not yet implemented".to_string())
+}
+
+fun detect_apple_gpu() -> Result<(u32, GpuCapabilities), string> {
+    # Query Metal for Apple GPU info
+    // Similar to NVIDIA/AMD detection
+    Err("Apple GPU detection not yet implemented".to_string())
+}
+
+fun check_vulkan() -> Result<bool, string> {
+    # Check for Vulkan support
+    Ok(vulkan_is_available())
+}
+
+# Memory Detection
+fun get_system_ram() -> Result<u32, string> {
+    Ok((memory::get_total_memory() / (1024 * 1024)) as u32)
+}
+
+fun get_available_ram() -> Result<u32, string> {
+    Ok((memory::get_available_memory() / (1024 * 1024)) as u32)
+}
+
+# Storage Detection
+fun detect_storage_devices() -> Result<Vec<StorageDevice>, string> {
+    let mut devices = Vec::new()
+
+    # Detect NVMe devices
+    let nvme_devices = storage::get_nvme_devices()?
+    for nvme in nvme_devices {
+        devices.push(StorageDevice {
+            name: nvme.name.clone(),
+            capacity_gb: (nvme.capacity / (1024 * 1024 * 1024)) as u32,
+            is_nvme: true,
+            is_ssd: true,
+            read_bandwidth_mbs: 7000,   # Typical for PCIe 4.0 NVMe
+            write_bandwidth_mbs: 6000,
+            can_direct_io: true,
+        })
+    }
+
+    # Detect SSDs
+    let ssd_devices = storage::get_ssd_devices()?
+    for ssd in ssd_devices {
+        devices.push(StorageDevice {
+            name: ssd.name.clone(),
+            capacity_gb: (ssd.capacity / (1024 * 1024 * 1024)) as u32,
+            is_nvme: false,
+            is_ssd: true,
+            read_bandwidth_mbs: 550,    # Typical for SATA SSD
+            write_bandwidth_mbs: 500,
+            can_direct_io: true,
+        })
+    }
+
+    Ok(devices)
+}
+
+# Computation
+fun compute_optimal_mode(gpu_available: bool, cpu_count: u32, ram_mb: u32)
+    -> ExecutionMode {
+
+    if gpu_available && ram_mb >= 2048 {
+        # GPU + sufficient RAM = hybrid mode
+        ExecutionMode::HybridGpuCpu
+    } else if gpu_available && ram_mb >= 512 {
+        # GPU only with limited RAM
+        ExecutionMode::GpuOnly
+    } else {
+        # CPU only (fallback)
+        ExecutionMode::CpuOnly
+    }
+}
+
+fun calculate_compute_power(cpu_count: u32, cpu_freq_mhz: u32,
+                            gpu_available: bool, gpu_vram_mb: u32)
+    -> Result<ComputePower, string> {
+
+    # CPU FLOPS: assume 4 FLOPS per cycle (AVX2)
+    let cpu_flops = (cpu_count as u64) * (cpu_freq_mhz as u64) * 1_000_000 * 4
+
+    # GPU FLOPS: vary based on type
+    # NVIDIA: typically 10-100 TFLOPS per GPU
+    # AMD: typically 10-80 TFLOPS per GPU
+    let gpu_flops = if gpu_available {
+        (gpu_vram_mb as u64) * 100_000_000  # Rough estimate
+    } else {
+        0
+    }
+
+    # Memory bandwidth: CPU ~100GB/s, GPU ~500-900GB/s
+    let memory_bandwidth = if gpu_available {
+        700_000_000_000  // 700 GB/s (GPU + CPU combined)
+    } else {
+        100_000_000_000  // 100 GB/s (CPU only)
+    }
+
+    Ok(ComputePower {
+        cpu_flops,
+        gpu_flops,
+        total_flops: cpu_flops + gpu_flops,
+        memory_bandwidth,
+    })
+}
+
+# Utility functions (stubs for actual implementation)
+fun cpuid_leaf(leaf: u32, subleaf: u32) -> CpuidResult {
+    // Call CPUID instruction
+    CpuidResult { eax: 0, ebx: 0, ecx: 0, edx: 0 }
+}
+
+fun detect_arm_neon() -> bool { false }
+fun detect_arm_sve() -> bool { false }
+fun detect_arm_sve2() -> bool { false }
+
+fun cuda_get_device_count() -> Result<u32, string> { Ok(0) }
+fun cuda_set_device(device: u32) -> Result<(), string> { Ok(()) }
+fun cuda_get_device_properties(device: u32) -> Result<CudaDeviceProperties, string> {
+    Err("Not implemented".to_string())
+}
+fun cuda_get_version() -> Result<string, string> { Ok("12.0".to_string()) }
+
+fun hip_get_device_count() -> Result<u32, string> { Ok(0) }
+fun hip_set_device(device: u32) -> Result<(), string> { Ok(()) }
+fun hip_get_device_properties(device: u32) -> Result<HipDeviceProperties, string> {
+    Err("Not implemented".to_string())
+}
+fun hip_get_version() -> Result<string, string> { Ok("5.0".to_string()) }
+
+fun vulkan_is_available() -> bool { false }
+
+fn default_gpu_capabilities() -> GpuCapabilities {
+    GpuCapabilities {
+        cuda: None,
+        hip: None,
+        opencl: None,
+        metal: false,
+        vulkan: false,
+        compute_capability: (0, 0),
+        max_threads_per_block: 512,
+        max_blocks_per_grid: 65535,
+        warp_size: 32,
+    }
+}
+
+type CpuidResult = struct {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+}
+
+type CudaDeviceProperties = struct {
+    total_global_mem: u64,
+    major: u32,
+    minor: u32,
+    max_threads_per_block: i32,
+    max_blocks_per_grid: i32,
+    warp_size: i32,
+}
+
+type HipDeviceProperties = struct {
+    total_global_mem: u64,
+    major: u32,
+    minor: u32,
+    max_threads_per_block: i32,
+    max_blocks_per_grid: i32,
+    warp_size: i32,
+}

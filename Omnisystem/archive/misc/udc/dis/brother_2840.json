@@ -1,0 +1,395 @@
+{
+  "name": "Brother IntelliFAX 2840",
+  "description": "USB Printer Class fax modem with T.30 support",
+  "vendor_id": 4345,
+  "device_id": 838,
+  "bus_type": "Usb",
+  "revision": "1.0",
+
+  "resources": [],
+  "interrupts": [],
+  "registers": [],
+
+  "operations": [
+    {
+      "name": "init_device",
+      "description": "Initialize device for fax operations",
+      "inputs": [],
+      "outputs": [],
+      "side_effects": [
+        {
+          "type": "ControlTransfer",
+          "request_type": 33,
+          "request": 1,
+          "value": 0,
+          "index": 0,
+          "length": 0,
+          "description": "SET_PORT_STATUS"
+        }
+      ],
+      "preconditions": [],
+      "postconditions": ["device_ready"]
+    },
+    {
+      "name": "send_fax_data",
+      "description": "Send fax page data to device",
+      "inputs": [
+        {
+          "name": "data",
+          "type": "Bytes",
+          "description": "Raw fax page data (TIFF-F format)"
+        },
+        {
+          "name": "length",
+          "type": "U32",
+          "description": "Data length in bytes"
+        }
+      ],
+      "outputs": [],
+      "side_effects": [
+        {
+          "type": "BulkWrite",
+          "endpoint": 1,
+          "description": "Write data to bulk OUT endpoint"
+        }
+      ],
+      "preconditions": ["device_ready"],
+      "postconditions": ["transfer_complete"]
+    },
+    {
+      "name": "receive_fax_data",
+      "description": "Receive incoming fax data from device",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "data",
+          "type": "Bytes",
+          "description": "Received fax data"
+        }
+      ],
+      "side_effects": [
+        {
+          "type": "BulkRead",
+          "endpoint": 130,
+          "description": "Read data from bulk IN endpoint"
+        }
+      ],
+      "preconditions": ["device_ready"],
+      "postconditions": []
+    },
+    {
+      "name": "get_device_status",
+      "description": "Query device status (idle, transmitting, receiving, error)",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "status_byte",
+          "type": "U8",
+          "description": "Device status: 0x00=idle, 0x01=transmitting, 0x02=receiving, 0xFF=error"
+        }
+      ],
+      "side_effects": [
+        {
+          "type": "InterruptRead",
+          "endpoint": 131,
+          "description": "Read status from interrupt IN endpoint"
+        }
+      ],
+      "preconditions": [],
+      "postconditions": []
+    },
+    {
+      "name": "reset_device",
+      "description": "Reset device to idle state",
+      "inputs": [],
+      "outputs": [],
+      "side_effects": [
+        {
+          "type": "ControlTransfer",
+          "request_type": 33,
+          "request": 2,
+          "value": 0,
+          "index": 0,
+          "length": 0,
+          "description": "RESET_ENDPOINT"
+        }
+      ],
+      "preconditions": [],
+      "postconditions": ["device_ready"]
+    },
+    {
+      "name": "get_device_id",
+      "description": "Retrieve device identification string (IEEE 1284)",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "device_id",
+          "type": "String",
+          "description": "IEEE 1284 device ID"
+        }
+      ],
+      "side_effects": [
+        {
+          "type": "ControlTransfer",
+          "request_type": 192,
+          "request": 0,
+          "value": 0,
+          "index": 0,
+          "length": 2,
+          "description": "GET_DEVICE_ID"
+        }
+      ],
+      "preconditions": [],
+      "postconditions": []
+    }
+  ],
+
+  "state_machine": {
+    "name": "FaxDeviceStateMachine",
+    "description": "Finite state machine for fax modem operation",
+    "initial": "uninitialized",
+    "states": [
+      {
+        "name": "uninitialized",
+        "description": "Device not yet initialized",
+        "is_error": false
+      },
+      {
+        "name": "idle",
+        "description": "Device ready, waiting for command",
+        "is_error": false
+      },
+      {
+        "name": "transmitting",
+        "description": "Actively sending fax data",
+        "is_error": false
+      },
+      {
+        "name": "receiving",
+        "description": "Actively receiving fax data",
+        "is_error": false
+      },
+      {
+        "name": "error",
+        "description": "Device in error state, needs reset",
+        "is_error": true
+      }
+    ],
+    "transitions": [
+      {
+        "from": "uninitialized",
+        "to": "idle",
+        "condition": "init_device_success",
+        "action": "enable_endpoints()"
+      },
+      {
+        "from": "idle",
+        "to": "transmitting",
+        "condition": "send_fax_data called",
+        "action": "enable_bulk_write()"
+      },
+      {
+        "from": "transmitting",
+        "to": "idle",
+        "condition": "write_complete",
+        "action": "disable_bulk_write()"
+      },
+      {
+        "from": "idle",
+        "to": "receiving",
+        "condition": "incoming_call_detected",
+        "action": "enable_bulk_read()"
+      },
+      {
+        "from": "receiving",
+        "to": "idle",
+        "condition": "read_complete_or_timeout",
+        "action": "disable_bulk_read()"
+      },
+      {
+        "from": "transmitting",
+        "to": "error",
+        "condition": "transfer_timeout or usb_error",
+        "action": "halt_endpoints()"
+      },
+      {
+        "from": "receiving",
+        "to": "error",
+        "condition": "transfer_timeout or usb_error",
+        "action": "halt_endpoints()"
+      },
+      {
+        "from": "error",
+        "to": "idle",
+        "condition": "reset_device called",
+        "action": "reset_endpoints()"
+      }
+    ]
+  },
+
+  "protocols": [
+    {
+      "name": "UsbPrinterClass",
+      "version": "1.0",
+      "description": "USB Printer Device Class (Class 0x07)",
+      "endpoints": [
+        {
+          "address": 1,
+          "type": "Bulk",
+          "direction": "Out",
+          "max_packet_size": 512,
+          "description": "Data OUT (host to device)"
+        },
+        {
+          "address": 130,
+          "type": "Bulk",
+          "direction": "In",
+          "max_packet_size": 512,
+          "description": "Data IN (device to host)"
+        },
+        {
+          "address": 131,
+          "type": "Interrupt",
+          "direction": "In",
+          "max_packet_size": 8,
+          "polling_interval_ms": 10,
+          "description": "Status IN (periodic status updates)"
+        }
+      ],
+      "control_transfers": [
+        {
+          "request": 0,
+          "description": "GET_DEVICE_ID",
+          "request_type": 192
+        },
+        {
+          "request": 1,
+          "description": "GET_PORT_STATUS",
+          "request_type": 161
+        },
+        {
+          "request": 1,
+          "description": "SET_PORT_STATUS",
+          "request_type": 33
+        },
+        {
+          "request": 2,
+          "description": "SOFT_RESET",
+          "request_type": 33
+        }
+      ],
+      "operations_required": [
+        "init_device",
+        "send_fax_data",
+        "receive_fax_data",
+        "get_device_status",
+        "reset_device"
+      ]
+    },
+    {
+      "name": "T30FaxProtocol",
+      "version": "1.0",
+      "description": "ITU-T T.30 fax modem protocol (implemented in userspace)",
+      "operations_required": [
+        "send_fax_data",
+        "receive_fax_data",
+        "get_device_status",
+        "reset_device"
+      ]
+    }
+  ],
+
+  "invariants": [
+    {
+      "name": "data_transfer_consistency",
+      "description": "Cannot send and receive simultaneously",
+      "expr": "NOT (state == transmitting AND state == receiving)",
+      "severity": "Critical"
+    },
+    {
+      "name": "status_error_check",
+      "description": "Receiving error status should transition to error state",
+      "expr": "status_byte == 0xFF => state == error OR error_handler_called",
+      "severity": "High"
+    },
+    {
+      "name": "device_ready_check",
+      "description": "Cannot send data unless device is initialized",
+      "expr": "send_fax_data called => state == idle",
+      "severity": "Critical"
+    }
+  ],
+
+  "timing_constraints": [
+    {
+      "name": "init_latency",
+      "kind": "MaxLatency",
+      "value_us": 5000,
+      "between": ["init_device_called", "idle_state_reached"],
+      "description": "Device must initialize within 5ms"
+    },
+    {
+      "name": "status_poll_interval",
+      "kind": "MaxLatency",
+      "value_us": 10000,
+      "between": ["poll_status", "status_received"],
+      "description": "Status interrupt should arrive within 10ms"
+    },
+    {
+      "name": "bulk_transfer_timeout",
+      "kind": "MaxLatency",
+      "value_us": 30000000,
+      "between": ["bulk_write_start", "bulk_write_complete"],
+      "description": "Bulk transfer must complete within 30 seconds or timeout"
+    }
+  ],
+
+  "power_states": [
+    {
+      "name": "active",
+      "description": "Device actively processing fax operations",
+      "entry_latency_us": 0,
+      "exit_latency_us": 0,
+      "power_consumption_uw": 5000000
+    },
+    {
+      "name": "idle",
+      "description": "Device ready but not actively transmitting/receiving",
+      "entry_latency_us": 100,
+      "exit_latency_us": 100,
+      "power_consumption_uw": 500000
+    },
+    {
+      "name": "suspend",
+      "description": "Device suspended, can wake via USB resume",
+      "entry_latency_us": 1000,
+      "exit_latency_us": 3000,
+      "power_consumption_uw": 50000
+    }
+  ],
+
+  "quirks": [
+    {
+      "description": "Device may require 100ms delay after control transfer before accepting data",
+      "workaround": "Add 100ms delay in transfer_complete callback",
+      "applies_to": "all revisions"
+    },
+    {
+      "description": "Bulk transfer may stall on error; requires endpoint halt and reset",
+      "workaround": "On transfer error, call RESET_ENDPOINT control transfer before retry",
+      "applies_to": "all revisions"
+    },
+    {
+      "description": "Interrupt endpoint may occasionally miss status byte; poll manually",
+      "workaround": "Fall back to GET_PORT_STATUS control transfer on timeout",
+      "applies_to": "firmware < 2.0"
+    }
+  ],
+
+  "verification": {
+    "invariant_checks": ["critical_only"],
+    "state_machine_analysis": ["reachability", "completeness", "deadlock_freedom"],
+    "timing_constraints": ["strict"],
+    "formal_proof": false
+  }
+}

@@ -1,0 +1,183 @@
+// services/studio/backend.ti – Integrated development environment backend
+// Language server, compiler integration, test runner, environment control
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_domain(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+}
+
+const TAG_STUDIO: i64 = 10250;
+const TAG_EDITOR_STATE: i64 = 10251;
+const TAG_DIAGNOSTIC: i64 = 10252;
+const TAG_BUILD_RESULT: i64 = 10253;
+
+// Editor state (for a single file)
+pub fn editor_state_new(file_path: i64, content: i64) -> i64 {
+    let state = heap_alloc_term();
+    heap_set_tag(state, TAG_EDITOR_STATE);
+    heap_set_body(state, file_path);    // file path
+    heap_set_arg(state, content);       // current content
+    heap_set_domain(state, 0);          // diagnostics list
+    return state;
+}
+
+pub fn editor_file_path(e: i64) -> i64 { return heap_get_body(e); }
+pub fn editor_content(e: i64) -> i64 { return heap_get_arg(e); }
+pub fn editor_diagnostics(e: i64) -> i64 { return heap_get_domain(e); }
+
+// Diagnostic (error/warning from LSP)
+pub fn diagnostic_new(line: i64, col: i64, severity: i64, message: i64) -> i64 {
+    let diag = heap_alloc_term();
+    heap_set_tag(diag, TAG_DIAGNOSTIC);
+    heap_set_body(diag, line);          // line number
+    heap_set_arg(diag, col);            // column
+    heap_set_domain(diag, severity);    // 0=error, 1=warning, 2=info
+    // message would be in additional slot
+    return diag;
+}
+
+// Build result
+pub fn build_result_new(success: i64, output: i64) -> i64 {
+    let result = heap_alloc_term();
+    heap_set_tag(result, TAG_BUILD_RESULT);
+    heap_set_body(result, success);     // 1=success, 0=failure
+    heap_set_arg(result, output);       // compiler output/diagnostics
+    return result;
+}
+
+// Studio service
+pub fn studio_service_new() -> i64 {
+    let studio = heap_alloc_term();
+    heap_set_tag(studio, TAG_STUDIO);
+    heap_set_body(studio, 0);           // open editors list
+    heap_set_arg(studio, 0);            // projects list
+    heap_set_domain(studio, 0);         // active environment
+    return studio;
+}
+
+// Handle editor request (on_change, on_save, etc.)
+pub fn studio_handle_editor_change(studio: i64, file_path: i64, content: i64) {
+    // Update editor state
+    let editors = heap_get_body(studio);
+    let editor = find_or_create_editor(editors, file_path);
+
+    heap_set_arg(editor, content);
+
+    // Run LSP on the fly (simplified: just check syntax)
+    let diagnostics = run_linter(file_path, content);
+    heap_set_domain(editor, diagnostics);
+
+    // Broadcast diagnostics to UI
+    send_diagnostics_to_ui(file_path, diagnostics);
+}
+
+// Compile command
+pub fn studio_compile(studio: i64, file_path: i64) -> i64 {
+    // Invoke compiler on file
+    let output = compile_file(file_path);
+    let result = build_result_new(1, output); // assume success
+    return result;
+}
+
+// Run tests
+pub fn studio_run_tests(studio: i64, target: i64) -> i64 {
+    // Invoke test runner
+    let output = run_test_suite(target);
+    return output;
+}
+
+// Create/start environment from within IDE
+pub fn studio_create_env(studio: i64, env_spec: i64) -> i64 {
+    // Create environment via env-fabric manager
+    let env_id = create_environment(env_spec);
+    heap_set_domain(studio, env_id);
+    return env_id;
+}
+
+// Execute command in active environment
+pub fn studio_exec_in_env(studio: i64, command: i64) -> i64 {
+    let env_id = heap_get_domain(studio);
+    if env_id == 0 { return -1; } // no active environment
+
+    // Send command via guest agent
+    let output = send_command_to_env(env_id, command);
+    return output;
+}
+
+// Main studio service loop
+pub fn studio_service_main() {
+    let studio = studio_service_new();
+
+    loop {
+        // Poll for WebSocket connections from IDE frontend
+        let request = receive_editor_request();
+        if request == 0 { break; }
+
+        // Dispatch request
+        let request_type = heap_get_body(request);
+        let arg1 = heap_get_arg(request);
+        let arg2 = heap_get_domain(request);
+
+        if request_type == 1 {
+            // Editor change
+            studio_handle_editor_change(studio, arg1, arg2);
+        } else if request_type == 2 {
+            // Compile
+            let result = studio_compile(studio, arg1);
+            send_response_to_ui(result);
+        } else if request_type == 3 {
+            // Run tests
+            let result = studio_run_tests(studio, arg1);
+            send_response_to_ui(result);
+        } else if request_type == 4 {
+            // Create environment
+            let env_id = studio_create_env(studio, arg1);
+            send_response_to_ui(env_id);
+        } else if request_type == 5 {
+            // Exec in environment
+            let output = studio_exec_in_env(studio, arg1);
+            send_response_to_ui(output);
+        }
+    }
+}
+
+// Stub functions
+fn find_or_create_editor(editors: i64, file_path: i64) -> i64 {
+    // Find editor for file, create if not exists
+    return editor_state_new(file_path, 0);
+}
+
+fn run_linter(file_path: i64, content: i64) -> i64 {
+    // Run syntax check, return diagnostics
+    return 0; // no errors
+}
+
+fn compile_file(file_path: i64) -> i64 {
+    // Invoke Titan compiler
+    return 0; // success
+}
+
+fn run_test_suite(target: i64) -> i64 {
+    // Run tests
+    return 0; // success
+}
+
+fn create_environment(env_spec: i64) -> i64 {
+    // Create environment via env-fabric
+    return 1; // env ID
+}
+
+fn send_command_to_env(env_id: i64, command: i64) -> i64 {
+    // Send command via guest agent
+    return 0; // success
+}
+
+fn receive_editor_request() -> i64 { return 0; }
+fn send_diagnostics_to_ui(file_path: i64, diags: i64) { }
+fn send_response_to_ui(response: i64) { }

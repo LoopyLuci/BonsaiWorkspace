@@ -1,0 +1,468 @@
+# PATHFINDER Kubernetes Deployment Configuration
+# Production multi-region setup with auto-scaling and monitoring
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pathfinder-prod
+  labels:
+    app: pathfinder
+    env: production
+
+---
+# ConfigMap for environment variables
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pathfinder-config
+  namespace: pathfinder-prod
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "info"
+  MAX_CONNECTIONS: "10000"
+  CACHE_TTL: "3600"
+  FEATURE_FLAGS: |
+    enable_offline_mode: true
+    enable_gamification: true
+    enable_parent_portal: true
+    enable_mobile_app: true
+
+---
+# Secrets for sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pathfinder-secrets
+  namespace: pathfinder-prod
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://user:pass@postgres.pathfinder.svc.cluster.local:5432/pathfinder"
+  REDIS_URL: "redis://redis.pathfinder.svc.cluster.local:6379"
+  JWT_SECRET: "your-production-jwt-secret-key-here"
+  SMTP_PASSWORD: "your-smtp-password"
+  SMTP_USERNAME: "noreply@pathfinder.com"
+
+---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: pathfinder-prod
+spec:
+  serviceName: postgres
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_DB
+          value: pathfinder
+        - name: POSTGRES_USER
+          value: pathfinder
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: pathfinder-secrets
+              key: DB_PASSWORD
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U pathfinder
+          initialDelaySeconds: 30
+          periodSeconds: 10
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 50Gi
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pathfinder-prod
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: pathfinder-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        command: ["redis-server", "--requirepass", "your-redis-password"]
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: redis-storage
+          mountPath: /data
+      volumes:
+      - name: redis-storage
+        persistentVolumeClaim:
+          claimName: redis-pvc
+
+---
+# Redis PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: pathfinder-prod
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: pathfinder-prod
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  type: ClusterIP
+
+---
+# User Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: pathfinder-prod
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+        version: v1
+    spec:
+      containers:
+      - name: user-service
+        image: pathfinder/user-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: http
+        env:
+        - name: PORT
+          value: "8001"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: pathfinder-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: pathfinder-secrets
+              key: REDIS_URL
+        envFrom:
+        - configMapRef:
+            name: pathfinder-config
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - user-service
+              topologyKey: kubernetes.io/hostname
+
+---
+# User Service Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: user-service-hpa
+  namespace: pathfinder-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: user-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+
+---
+# User Service ClusterIP Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: pathfinder-prod
+  labels:
+    app: user-service
+spec:
+  type: ClusterIP
+  selector:
+    app: user-service
+  ports:
+  - port: 8001
+    targetPort: 8001
+    protocol: TCP
+
+---
+# Ingress for public API
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pathfinder-ingress
+  namespace: pathfinder-prod
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.pathfinder.com
+    secretName: pathfinder-tls
+  rules:
+  - host: api.pathfinder.com
+    http:
+      paths:
+      - path: /v1/users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8001
+      - path: /v1/content
+        pathType: Prefix
+        backend:
+          service:
+            name: content-service
+            port:
+              number: 8002
+      - path: /v1/exercises
+        pathType: Prefix
+        backend:
+          service:
+            name: content-service
+            port:
+              number: 8002
+      - path: /v1/progress
+        pathType: Prefix
+        backend:
+          service:
+            name: progress-service
+            port:
+              number: 8004
+      - path: /v1/teachers
+        pathType: Prefix
+        backend:
+          service:
+            name: teacher-service
+            port:
+              number: 8005
+      - path: /v1/parents
+        pathType: Prefix
+        backend:
+          service:
+            name: parent-service
+            port:
+              number: 8006
+      - path: /v1/notifications
+        pathType: Prefix
+        backend:
+          service:
+            name: notification-service
+            port:
+              number: 8007
+      - path: /v1/achievements
+        pathType: Prefix
+        backend:
+          service:
+            name: achievement-service
+            port:
+              number: 8008
+      - path: /v1/insights
+        pathType: Prefix
+        backend:
+          service:
+            name: insights-service
+            port:
+              number: 8009
+
+---
+# Network Policy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pathfinder-network-policy
+  namespace: pathfinder-prod
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: pathfinder-prod
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: pathfinder-prod
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+
+---
+# Pod Disruption Budget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-service-pdb
+  namespace: pathfinder-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: user-service
+
+---
+# Monitoring ServiceMonitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pathfinder-services
+  namespace: pathfinder-prod
+spec:
+  selector:
+    matchLabels:
+      monitoring: "true"
+  endpoints:
+  - port: metrics
+    interval: 30s

@@ -1,0 +1,202 @@
+// lib/ums/ffi.ti – FFI & Omni-IR bridging layer
+// Enables seamless Bonsai ↔ Omnisystem interoperability
+
+module ums::ffi
+
+use core::option::Option
+
+/// Foreign Function Interface: call native code across Bonsai/Omnisystem boundary
+pub struct FfiBridge {
+    pub functions: std::collections::HashMap<String, FfiFunction>,
+}
+
+pub struct FfiFunction {
+    pub name: String,
+    pub signature: String,  // "fn(i32, *const u8) -> i32"
+    pub abi: FfiAbi,
+    pub address: usize,  // Memory address of function
+    pub capability: Option<Capability>,  // UOSC capability if crossing boundary
+}
+
+pub enum FfiAbi {
+    C,           // C calling convention (System V, Win64, etc.)
+    Rust,        // Rust ABI (no stability guarantees, but fast)
+    OmniIr,      // Omni-IR (calls Omni-VM JIT)
+    Titan,       // Titan native
+}
+
+impl FfiBridge {
+    pub fn new() -> Self {
+        Self {
+            functions: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a native function from Omnisystem (Titan)
+    /// to be called from Bonsai (Rust, Python, etc.)
+    pub fn register_titan_function(&mut self, name: &str, func: FfiFunction) {
+        self.functions.insert(name.to_string(), func);
+    }
+
+    /// Register a native function from Bonsai (Rust)
+    /// to be called from Omnisystem (Titan)
+    pub fn register_rust_function(&mut self, name: &str, func: FfiFunction) {
+        self.functions.insert(name.to_string(), func);
+    }
+
+    /// Call a registered function with arguments
+    pub unsafe fn call(&self, name: &str, args: &[u64]) -> Result<u64, FfiError> {
+        let func = self.functions.get(name)
+            .ok_or(FfiError::NotFound)?;
+
+        match func.abi {
+            FfiAbi::C => {
+                // Call via C ABI (platform-specific calling convention)
+                call_c_function(func.address, args)
+            }
+            FfiAbi::Rust => {
+                // Call via Rust ABI
+                call_rust_function(func.address, args)
+            }
+            FfiAbi::OmniIr => {
+                // Call Omni-IR via JIT
+                call_omniir_function(&func.name, args).await
+            }
+            FfiAbi::Titan => {
+                // Call Titan native (same as C ABI)
+                call_c_function(func.address, args)
+            }
+        }
+    }
+}
+
+/// Omni-IR virtual machine: executes portable bytecode
+pub struct OmniVm {
+    pub bytecode_cache: std::collections::HashMap<String, Vec<u8>>,
+    pub jit_compiled: std::collections::HashMap<String, usize>,  // name → native addr
+}
+
+impl OmniVm {
+    pub fn new() -> Self {
+        Self {
+            bytecode_cache: std::collections::HashMap::new(),
+            jit_compiled: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Load Omni-IR bytecode
+    pub fn load_bytecode(&mut self, name: &str, bytecode: Vec<u8>) {
+        self.bytecode_cache.insert(name.to_string(), bytecode);
+    }
+
+    /// JIT-compile Omni-IR to native code
+    pub fn jit_compile(&mut self, name: &str) -> Result<usize, Error> {
+        let bytecode = self.bytecode_cache.get(name)
+            .ok_or(Error::NotFound)?;
+
+        // Compile bytecode to native code (machine-dependent)
+        let native_addr = compile_omniir_to_native(bytecode)?;
+        self.jit_compiled.insert(name.to_string(), native_addr);
+
+        Ok(native_addr)
+    }
+
+    /// Execute Omni-IR function
+    pub async fn execute(&self, name: &str, args: &[u64]) -> Result<u64, Error> {
+        let addr = self.jit_compiled.get(name)
+            .ok_or(Error::NotCompiled)?;
+
+        unsafe {
+            call_c_function(*addr, args)
+        }
+    }
+}
+
+/// Capability-aware FFI: ensures caller has required capabilities
+pub struct CapabilityAwareFfi {
+    pub bridge: FfiBridge,
+    pub caller_capabilities: std::collections::HashSet<String>,  // e.g., {"net:outbound", "fs:read:/var"}
+}
+
+impl CapabilityAwareFfi {
+    pub fn new(caller_caps: std::collections::HashSet<String>) -> Self {
+        Self {
+            bridge: FfiBridge::new(),
+            caller_capabilities: caller_caps,
+        }
+    }
+
+    /// Call a function, enforcing capability checks
+    pub async fn call(&self, name: &str, args: &[u64]) -> Result<u64, FfiError> {
+        let func = self.bridge.functions.get(name)
+            .ok_or(FfiError::NotFound)?;
+
+        // Check if caller has required capability
+        if let Some(required_cap) = &func.capability {
+            if !self.caller_capabilities.contains(&required_cap.resource) {
+                return Err(FfiError::CapabilityDenied);
+            }
+        }
+
+        unsafe {
+            self.bridge.call(name, args)
+        }
+    }
+}
+
+/// Low-level helpers: platform-specific calling conventions
+unsafe fn call_c_function(addr: usize, args: &[u64]) -> Result<u64, FfiError> {
+    // Convert args to C calling convention
+    // On x86_64-linux: rdi, rsi, rdx, rcx, r8, r9
+    // On x86_64-win64: rcx, rdx, r8, r9 (+ stack)
+    // Call via asm! or via indirect function pointer
+
+    let func_ptr: extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
+        std::mem::transmute(addr);
+
+    let result = func_ptr(
+        args.get(0).copied().unwrap_or(0),
+        args.get(1).copied().unwrap_or(0),
+        args.get(2).copied().unwrap_or(0),
+        args.get(3).copied().unwrap_or(0),
+        args.get(4).copied().unwrap_or(0),
+        args.get(5).copied().unwrap_or(0),
+    );
+
+    Ok(result)
+}
+
+unsafe fn call_rust_function(addr: usize, args: &[u64]) -> Result<u64, FfiError> {
+    // Rust ABI is not stable, but for common cases, same as C ABI
+    call_c_function(addr, args)
+}
+
+async fn call_omniir_function(name: &str, args: &[u64]) -> Result<u64, FfiError> {
+    // Execute via Omni-VM
+    // The Omni-VM is globally accessible (singleton)
+    // let vm = get_global_omnivm();
+    // vm.execute(name, args).await
+    Ok(0)  // placeholder
+}
+
+fn compile_omniir_to_native(bytecode: &[u8]) -> Result<usize, Error> {
+    // JIT compilation: translate Omni-IR bytecode to native machine code
+    // This is architecture-dependent (x86_64, aarch64, etc.)
+    // Use cranelift or similar JIT backend
+
+    Ok(0)  // placeholder: return native code address
+}
+
+#[derive(Debug)]
+pub enum FfiError {
+    NotFound,
+    CapabilityDenied,
+    InvalidArguments,
+    CallFailed,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    NotFound,
+    NotCompiled,
+}

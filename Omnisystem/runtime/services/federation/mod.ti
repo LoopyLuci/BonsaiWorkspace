@@ -1,0 +1,181 @@
+// services/federation/mod.ti – Multi-region federation with TransferDaemon mesh
+// Connects clusters globally with data sovereignty, cross-region migration, and CRDT-based eventual consistency
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_domain(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+}
+
+const TAG_REGION: i64 = 10400;
+const TAG_FEDERATION: i64 = 10401;
+const TAG_PLACEMENT_POLICY: i64 = 10402;
+const TAG_MIGRATION_CMD: i64 = 10403;
+
+const POLICY_DATA_RESIDENCY: i64 = 1;
+const POLICY_LOWEST_LATENCY: i64 = 2;
+const POLICY_LOAD_BALANCED: i64 = 3;
+
+// Region information (announced via gossip over p2p mesh)
+pub fn region_new(region_id: i64, name: i64, location: i64) -> i64 {
+    let region = heap_alloc_term();
+    heap_set_tag(region, TAG_REGION);
+    heap_set_body(region, region_id);      // unique region ID
+    heap_set_arg(region, name);            // e.g., "eu-west-1"
+    heap_set_domain(region, location);     // geographic location
+    return region;
+}
+
+pub fn region_id(r: i64) -> i64 { return heap_get_body(r); }
+pub fn region_name(r: i64) -> i64 { return heap_get_arg(r); }
+pub fn region_location(r: i64) -> i64 { return heap_get_domain(r); }
+
+// Federation: maintains global view of all regions via CRDT gossip
+pub fn federation_new() -> i64 {
+    let fed = heap_alloc_term();
+    heap_set_tag(fed, TAG_FEDERATION);
+    heap_set_body(fed, 0);           // local region
+    heap_set_arg(fed, 0);            // global region map (CRDT)
+    heap_set_domain(fed, 0);         // p2p client connection
+    return fed;
+}
+
+// Announce this region to the global federation
+pub fn federation_announce(fed: i64, region: i64) {
+    // Serialize region and send via p2p gossip
+    let region_bytes = serialize_region(region);
+    gossip_over_p2p(fed, "federation.regions", region_bytes);
+}
+
+// Receive region announcement from gossip
+pub fn federation_on_region_gossip(fed: i64, region_bytes: i64) {
+    let region = deserialize_region(region_bytes);
+    // Add to CRDT map (mergeable)
+    let regions = heap_get_arg(fed);
+    let next = regions;
+    heap_set_domain(region, next);
+    heap_set_arg(fed, region);
+}
+
+// Select best region for an environment
+pub fn federation_select_region(fed: i64, env_spec: i64, policy_type: i64) -> i64 {
+    let regions = heap_get_arg(fed);
+    let best = 0i64;
+
+    // Scan regions and find best match
+    let cur = regions;
+    while cur != 0 {
+        let region = cur;
+        cur = heap_get_domain(region);
+
+        // Check if region can run spec (capacity available)
+        if can_run_in_region(region, env_spec) {
+            if policy_type == POLICY_DATA_RESIDENCY {
+                // Check if location matches policy
+                let loc = region_location(region);
+                if location_matches_policy(loc, env_spec) {
+                    return region_id(region);
+                }
+            } else if policy_type == POLICY_LOWEST_LATENCY {
+                // Find region with lowest latency (use p2p ping)
+                let latency = measure_latency_to_region(fed, region);
+                if best == 0 || latency < get_best_latency(fed) {
+                    best = region_id(region);
+                }
+            } else if policy_type == POLICY_LOAD_BALANCED {
+                // Find least-loaded region
+                let load = get_region_load(region);
+                if best == 0 || load < get_best_load(fed) {
+                    best = region_id(region);
+                }
+            }
+        }
+    }
+
+    return best; // 0 if no suitable region
+}
+
+// Live migration across regions
+pub fn federation_migrate_env(fed: i64, env_name: i64, target_region: i64) -> i64 {
+    // Create snapshot of environment
+    let snapshot = create_env_snapshot(env_name);
+
+    // Send snapshot via p2p streaming to target region
+    let stream_id = start_p2p_stream(fed, target_region);
+    send_snapshot_via_p2p(stream_id, snapshot);
+
+    // Send migration command to target region
+    let migration_cmd = create_migration_command(env_name, snapshot);
+    send_command_over_p2p(fed, target_region, migration_cmd);
+
+    // Destroy local instance
+    destroy_local_env(env_name);
+
+    return 0; // success
+}
+
+// Placement policy
+pub fn placement_policy_new(policy_type: i64, constraint: i64) -> i64 {
+    let policy = heap_alloc_term();
+    heap_set_tag(policy, TAG_PLACEMENT_POLICY);
+    heap_set_body(policy, policy_type);   // data residency, latency, load
+    heap_set_arg(policy, constraint);     // location string, latency ms, load %
+    return policy;
+}
+
+// Main federation service loop
+pub fn federation_service_main() {
+    let fed = federation_new();
+
+    // Announce this region
+    let local_region = region_new(1, "us-east-1", "Virginia");
+    federation_announce(fed, local_region);
+
+    loop {
+        // Poll for incoming region gossip
+        let region_gossip = receive_region_gossip();
+        if region_gossip != 0 {
+            federation_on_region_gossip(fed, region_gossip);
+        }
+
+        // Poll for migration requests
+        let migration_req = receive_migration_request();
+        if migration_req != 0 {
+            let env_name = get_migration_env_name(migration_req);
+            let target = get_migration_target(migration_req);
+            federation_migrate_env(fed, env_name, target);
+        }
+
+        // Periodically re-announce (keep region alive in mesh)
+        if should_reannounce() {
+            federation_announce(fed, local_region);
+        }
+    }
+}
+
+// Stubs
+fn serialize_region(r: i64) -> i64 { return 0; }
+fn deserialize_region(b: i64) -> i64 { return 0; }
+fn gossip_over_p2p(fed: i64, topic: i64, data: i64) { }
+fn can_run_in_region(region: i64, spec: i64) -> i64 { return 1; }
+fn location_matches_policy(loc: i64, spec: i64) -> i64 { return 1; }
+fn measure_latency_to_region(fed: i64, region: i64) -> i64 { return 0; }
+fn get_region_load(region: i64) -> i64 { return 50; }
+fn get_best_latency(fed: i64) -> i64 { return 100; }
+fn get_best_load(fed: i64) -> i64 { return 75; }
+fn create_env_snapshot(name: i64) -> i64 { return 0; }
+fn start_p2p_stream(fed: i64, target: i64) -> i64 { return 1; }
+fn send_snapshot_via_p2p(stream_id: i64, snapshot: i64) { }
+fn create_migration_command(name: i64, snapshot: i64) -> i64 { return 0; }
+fn send_command_over_p2p(fed: i64, target: i64, cmd: i64) { }
+fn destroy_local_env(name: i64) { }
+fn receive_region_gossip() -> i64 { return 0; }
+fn receive_migration_request() -> i64 { return 0; }
+fn get_migration_env_name(req: i64) -> i64 { return 0; }
+fn get_migration_target(req: i64) -> i64 { return 0; }
+fn should_reannounce() -> i64 { return 0; }

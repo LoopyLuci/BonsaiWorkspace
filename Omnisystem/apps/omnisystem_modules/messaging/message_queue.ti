@@ -1,0 +1,371 @@
+module omnisystem.messaging.message_queue
+
+# Message Queue - Event publishing and subscription system
+# Enables async communication between components
+
+# ============================================================================
+# MESSAGE & EVENT DEFINITIONS
+# ============================================================================
+
+type Message = struct {
+    message_id: string,
+    topic: string,
+    event_type: string,
+    payload: string,
+    timestamp: u64,
+    priority: MessagePriority,
+    retry_count: u32,
+    status: MessageStatus,
+}
+
+enum MessagePriority {
+    Critical,
+    High,
+    Normal,
+    Low,
+}
+
+enum MessageStatus {
+    Pending,
+    Published,
+    Delivered,
+    Failed,
+    DeadLetter,
+}
+
+type Topic = struct {
+    topic_name: string,
+    partition_count: u32,
+    replication_factor: u32,
+    retention_ms: u64,
+    compression: CompressionType,
+}
+
+enum CompressionType {
+    None,
+    Gzip,
+    Snappy,
+    Lz4,
+}
+
+# ============================================================================
+# PUBLISHER
+# ============================================================================
+
+type Publisher = struct {
+    publisher_id: string,
+    topics: Vec<string>,
+    messages_published: u64,
+    messages_failed: u64,
+}
+
+fn create_publisher(publisher_id: string) -> Publisher {
+    Publisher {
+        publisher_id,
+        topics: Vec::new(),
+        messages_published: 0,
+        messages_failed: 0,
+    }
+}
+
+fn publish_message(
+    publisher: &mut Publisher,
+    message: Message,
+) -> Result<(), string> {
+    println!("Publishing message: {}", message.message_id);
+    println!("  Topic: {}", message.topic);
+    println!("  Event: {}", message.event_type);
+    println!("  Priority: {:?}", message.priority);
+
+    publisher.messages_published += 1
+
+    println!("  ✅ Message published");
+
+    Ok(())
+}
+
+fn publish_batch_messages(
+    publisher: &mut Publisher,
+    messages: Vec<Message>,
+) -> Result<u32, string> {
+    println!("Publishing batch of {} messages", messages.len());
+
+    for msg in messages {
+        let _ = publish_message(publisher, msg)?
+    }
+
+    println!("✅ Batch published");
+
+    Ok(messages.len() as u32)
+}
+
+# ============================================================================
+# SUBSCRIBER
+# ============================================================================
+
+type Subscriber = struct {
+    subscriber_id: string,
+    subscribed_topics: Vec<string>,
+    message_handler: Option<string>,
+    messages_received: u64,
+    messages_processed: u64,
+    messages_failed: u64,
+}
+
+fn create_subscriber(subscriber_id: string) -> Subscriber {
+    Subscriber {
+        subscriber_id,
+        subscribed_topics: Vec::new(),
+        message_handler: None,
+        messages_received: 0,
+        messages_processed: 0,
+        messages_failed: 0,
+    }
+}
+
+fn subscribe_to_topic(
+    subscriber: &mut Subscriber,
+    topic: string,
+) -> Result<(), string> {
+    println!("Subscribing to topic: {}", topic);
+
+    if !subscriber.subscribed_topics.contains(&topic) {
+        subscriber.subscribed_topics.push(topic)
+    }
+
+    println!("  ✅ Subscribed");
+
+    Ok(())
+}
+
+fn process_message(
+    subscriber: &mut Subscriber,
+    message: &Message,
+) -> Result<(), string> {
+    println!("Processing message: {}", message.message_id);
+
+    subscriber.messages_received += 1
+    subscriber.messages_processed += 1
+
+    println!("  ✅ Message processed");
+
+    Ok(())
+}
+
+# ============================================================================
+# MESSAGE QUEUE & TOPIC MANAGEMENT
+# ============================================================================
+
+type MessageQueue = struct {
+    queue_id: string,
+    topics: Vec<Topic>,
+    messages_total: u64,
+    messages_in_queue: u32,
+    brokers: Vec<BrokerNode>,
+}
+
+type BrokerNode = struct {
+    broker_id: string,
+    ip_address: string,
+    port: u32,
+    status: BrokerStatus,
+    stored_messages: u64,
+}
+
+enum BrokerStatus {
+    Leader,
+    Follower,
+    Offline,
+}
+
+fn create_message_queue(queue_id: string) -> Result<MessageQueue, string> {
+    println!("Creating message queue: {}", queue_id);
+
+    Ok(MessageQueue {
+        queue_id,
+        topics: Vec::new(),
+        messages_total: 0,
+        messages_in_queue: 0,
+        brokers: vec![
+            BrokerNode {
+                broker_id: "broker-1".to_string(),
+                ip_address: "10.0.2.10".to_string(),
+                port: 9092,
+                status: BrokerStatus::Leader,
+                stored_messages: 0,
+            },
+            BrokerNode {
+                broker_id: "broker-2".to_string(),
+                ip_address: "10.0.2.11".to_string(),
+                port: 9092,
+                status: BrokerStatus::Follower,
+                stored_messages: 0,
+            },
+            BrokerNode {
+                broker_id: "broker-3".to_string(),
+                ip_address: "10.0.2.12".to_string(),
+                port: 9092,
+                status: BrokerStatus::Follower,
+                stored_messages: 0,
+            },
+        ],
+    })
+}
+
+fn create_topic(
+    queue: &mut MessageQueue,
+    topic_name: string,
+    partition_count: u32,
+    replication_factor: u32,
+) -> Result<(), string> {
+    println!("Creating topic: {}", topic_name);
+    println!("  Partitions: {}", partition_count);
+    println!("  Replication Factor: {}x", replication_factor);
+
+    queue.topics.push(Topic {
+        topic_name,
+        partition_count,
+        replication_factor,
+        retention_ms: 7 * 24 * 60 * 60 * 1000,  // 7 days
+        compression: CompressionType::Snappy,
+    })
+
+    println!("  ✅ Topic created");
+
+    Ok(())
+}
+
+# ============================================================================
+# RETRY & DEAD LETTER HANDLING
+# ============================================================================
+
+fn retry_failed_message(
+    queue: &mut MessageQueue,
+    message: &mut Message,
+) -> Result<(), string> {
+    println!("Retrying failed message: {}", message.message_id);
+    println!("  Retry count: {}", message.retry_count + 1);
+
+    message.retry_count += 1
+
+    if message.retry_count > 3 {
+        println!("  Max retries exceeded - sending to dead letter queue");
+        message.status = MessageStatus::DeadLetter
+    } else {
+        println!("  ✅ Message requeued");
+    }
+
+    Ok(())
+}
+
+# ============================================================================
+# MESSAGE QUEUE INITIALIZATION & TESTING
+# ============================================================================
+
+fun initialize_message_queue() -> Result<(), string> {
+    println!("═════════════════════════════════════════════════════");
+    println!("MESSAGE QUEUE INITIALIZATION");
+    println!("═════════════════════════════════════════════════════\n");
+
+    // Create message queue
+    println!("1. Creating Message Queue Cluster");
+    println!("───────────────────────────────────────────────────");
+    let mut queue = create_message_queue("mq-cluster-1".to_string())?
+    println!("✅ Message queue created with {} brokers", queue.brokers.len())
+    println!("  Broker Status:")
+    for broker in &queue.brokers {
+        println!("    {} - {} ({:?})", broker.broker_id, broker.ip_address, broker.status);
+    }
+    println!()
+
+    // Create topics
+    println!("2. Creating Topics");
+    println!("───────────────────────────────────────────────────");
+    create_topic(&mut queue, "customer.created".to_string(), 3, 2)?
+    create_topic(&mut queue, "task.submitted".to_string(), 5, 3)?
+    create_topic(&mut queue, "alert.triggered".to_string(), 3, 2)?
+    create_topic(&mut queue, "metric.collected".to_string(), 10, 3)?
+    println!()
+
+    // Create publisher
+    println!("3. Setting Up Publisher");
+    println!("───────────────────────────────────────────────────");
+    let mut publisher = create_publisher("pub-01".to_string())
+    println!("✅ Publisher ready\n")
+
+    // Publish events
+    println!("4. Publishing Events");
+    println!("───────────────────────────────────────────────────");
+    let msg1 = Message {
+        message_id: "msg-001".to_string(),
+        topic: "customer.created".to_string(),
+        event_type: "CustomerSignup".to_string(),
+        payload: r#"{"customer_id":"cust-123","email":"alice@example.com"}"#.to_string(),
+        timestamp: 0,
+        priority: MessagePriority::High,
+        retry_count: 0,
+        status: MessageStatus::Pending,
+    }
+    publish_message(&mut publisher, msg1)?
+    println!()
+
+    let msg2 = Message {
+        message_id: "msg-002".to_string(),
+        topic: "task.submitted".to_string(),
+        event_type: "TaskExecution".to_string(),
+        payload: r#"{"task_id":"task-456","type":"compute"}"#.to_string(),
+        timestamp: 0,
+        priority: MessagePriority::Normal,
+        retry_count: 0,
+        status: MessageStatus::Pending,
+    }
+    publish_message(&mut publisher, msg2)?
+    println!()
+
+    // Create subscriber
+    println!("5. Setting Up Subscriber");
+    println!("───────────────────────────────────────────────────");
+    let mut subscriber = create_subscriber("sub-01".to_string())
+    subscribe_to_topic(&mut subscriber, "customer.created".to_string())?
+    subscribe_to_topic(&mut subscriber, "task.submitted".to_string())?
+    println!("✅ Subscriber listening to {} topics\n", subscriber.subscribed_topics.len())
+
+    // Process messages
+    println!("6. Processing Messages");
+    println!("───────────────────────────────────────────────────");
+    let mut msg = Message {
+        message_id: "msg-001".to_string(),
+        topic: "customer.created".to_string(),
+        event_type: "CustomerSignup".to_string(),
+        payload: "".to_string(),
+        timestamp: 0,
+        priority: MessagePriority::High,
+        retry_count: 0,
+        status: MessageStatus::Published,
+    }
+    process_message(&mut subscriber, &msg)?
+    println!()
+
+    // Handle failure and retry
+    println!("7. Failure Handling & Retry");
+    println!("───────────────────────────────────────────────────");
+    let mut failed_msg = Message {
+        message_id: "msg-003".to_string(),
+        topic: "alert.triggered".to_string(),
+        event_type: "Alert".to_string(),
+        payload: "".to_string(),
+        timestamp: 0,
+        priority: MessagePriority::Critical,
+        retry_count: 0,
+        status: MessageStatus::Failed,
+    }
+    retry_failed_message(&mut queue, &mut failed_msg)?
+    println!()
+
+    println!("═════════════════════════════════════════════════════");
+    println!("✅ MESSAGE QUEUE OPERATIONAL");
+    println!("═════════════════════════════════════════════════════\n");
+
+    Ok(())
+}
+

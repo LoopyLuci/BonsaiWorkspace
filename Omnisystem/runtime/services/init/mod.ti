@@ -1,0 +1,229 @@
+// services/init/mod.ti – UOSC Init System
+// First userspace process; boots the OS and manages all services
+
+module init
+
+use kernel::uosc_os::{syscall_process_create, CapabilitySet, ProcessHandle}
+use service_manager::ServiceManager
+use aether::actor::Actor
+use core::collections::HashMap
+
+/// Init process: boots UOSC and starts all essential services
+pub async fn init_main() -> Result<(), String> {
+    eprintln!("[init] Boot started");
+
+    // Step 1: Mount root filesystem
+    mount_root_filesystem().await?;
+    eprintln!("[init] Root filesystem mounted");
+
+    // Step 2: Load system configuration
+    let config = load_system_config().await?;
+    eprintln!("[init] Configuration loaded");
+
+    // Step 3: Start core services in dependency order
+    start_core_services(&config).await?;
+    eprintln!("[init] Core services started");
+
+    // Step 4: Start system management services
+    start_system_services(&config).await?;
+    eprintln!("[init] System services started");
+
+    // Step 5: Wait for shutdown signal
+    wait_for_shutdown().await?;
+    eprintln!("[init] Shutdown initiated");
+
+    // Step 6: Graceful shutdown
+    shutdown_all_services().await?;
+    eprintln!("[init] All services stopped");
+
+    Ok(())
+}
+
+/// Mount the root filesystem (CASFS, immutable, from CAS)
+async fn mount_root_filesystem() -> Result<(), String> {
+    // In real implementation:
+    // 1. Read CAS root image hash from kernel metadata
+    // 2. Map it as read-only via CASFS
+    // 3. Bind mount as "/"
+    Ok(())
+}
+
+/// Load system configuration from config service
+async fn load_system_config() -> Result<SystemConfig, String> {
+    // In real implementation: query config service via IPC
+    Ok(SystemConfig {
+        hostname: "uosc-node".to_string(),
+        security_level: SecurityLevel::Standard,
+        services_to_start: vec![
+            "vfs".to_string(),
+            "storage".to_string(),
+            "net-stack".to_string(),
+            "device-manager".to_string(),
+            "display".to_string(),
+        ],
+    })
+}
+
+/// Start core services (filesystem, storage, networking)
+async fn start_core_services(config: &SystemConfig) -> Result<(), String> {
+    let manager = ServiceManager::new();
+
+    for service_name in &config.services_to_start {
+        start_service(&manager, service_name).await?;
+    }
+
+    Ok(())
+}
+
+/// Start a single service as a new process
+async fn start_service(manager: &ServiceManager, service_name: &str) -> Result<ProcessHandle, String> {
+    // Load service module from UMS
+    let module_hash = manager.resolve_service(service_name).await?;
+
+    // Determine capabilities for this service
+    let capabilities = get_service_capabilities(service_name)?;
+
+    // Create process via UOSC syscall
+    let process = syscall_process_create(
+        &format!("/svc/{}", service_name),
+        capabilities,
+        512,  // 512 MB memory limit
+    ).await.map_err(|e| format!("Failed to create process: {:?}", e))?;
+
+    eprintln!("[init] Started {}: pid={}", service_name, process.pid);
+
+    // Register with service manager
+    manager.register_service(service_name, process.clone()).await?;
+
+    Ok(process)
+}
+
+/// Determine capabilities for a service based on its name
+fn get_service_capabilities(service_name: &str) -> Result<CapabilitySet, String> {
+    use core::collections::HashMap;
+
+    let mut caps = HashMap::new();
+
+    match service_name {
+        "vfs" => {
+            caps.insert("fs:*".to_string(), "full".to_string());
+            caps.insert("storage:read_write".to_string(), "full".to_string());
+        }
+        "storage" => {
+            caps.insert("block-device:*".to_string(), "read_write".to_string());
+            caps.insert("mem:1024MB".to_string(), "allocate".to_string());
+        }
+        "net-stack" => {
+            caps.insert("net:*".to_string(), "read_write".to_string());
+            caps.insert("device:ethernet".to_string(), "access".to_string());
+        }
+        "device-manager" => {
+            caps.insert("device:*".to_string(), "enumerate".to_string());
+            caps.insert("mmio:*".to_string(), "map".to_string());
+        }
+        "display" => {
+            caps.insert("gpu:*".to_string(), "read_write".to_string());
+            caps.insert("framebuffer:*".to_string(), "write".to_string());
+        }
+        _ => {
+            caps.insert("log:write".to_string(), "yes".to_string());
+        }
+    }
+
+    // All services get logging capability
+    caps.insert("log:write".to_string(), "yes".to_string());
+
+    Ok(CapabilitySet {
+        capabilities: caps.into_iter()
+            .map(|(k, v)| (k, kernel::uosc_os::CapabilityGrant {
+                resource: k.clone(),
+                access_level: v,
+                limit: None,
+            }))
+            .collect(),
+    })
+}
+
+/// Start system management services (logger, monitor, update manager)
+async fn start_system_services(config: &SystemConfig) -> Result<(), String> {
+    let manager = ServiceManager::new();
+
+    let system_services = vec![
+        "logger",
+        "system-monitor",
+        "config",
+        "time",
+        "update-manager",
+    ];
+
+    for service_name in system_services {
+        start_service(&manager, service_name).await?;
+    }
+
+    Ok(())
+}
+
+/// Wait for shutdown signal (SIGTERM, power button, etc.)
+async fn wait_for_shutdown() -> Result<(), String> {
+    // In real implementation: block on receiving a shutdown event
+    // For now, simulate by sleeping indefinitely
+    loop {
+        // Sleep forever until interrupted
+        tokio::time::sleep(tokio::time::Duration::from_secs(86400)).await;
+    }
+}
+
+/// Graceful shutdown: stop all services in reverse dependency order
+async fn shutdown_all_services() -> Result<(), String> {
+    eprintln!("[init] Initiating graceful shutdown");
+
+    // In real implementation:
+    // 1. Signal all user sessions to save their state
+    // 2. Stop system services in reverse order
+    // 3. Stop core services
+    // 4. Wait for all processes to exit
+    // 5. Sync filesystems
+    // 6. Unmount all mounts
+    // 7. Reboot or halt
+
+    Ok(())
+}
+
+/// System configuration
+#[derive(Clone, Debug)]
+struct SystemConfig {
+    pub hostname: String,
+    pub security_level: SecurityLevel,
+    pub services_to_start: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+enum SecurityLevel {
+    Permissive,
+    Standard,
+    Strict,
+    Hardened,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_service_capabilities() {
+        let caps = get_service_capabilities("vfs").unwrap();
+        assert!(caps.capabilities.contains_key("fs:*"));
+        assert!(caps.capabilities.contains_key("log:write"));
+    }
+
+    #[test]
+    fn test_config_structure() {
+        let config = SystemConfig {
+            hostname: "test-node".to_string(),
+            security_level: SecurityLevel::Standard,
+            services_to_start: vec!["vfs".to_string(), "net-stack".to_string()],
+        };
+
+        assert_eq!(config.services_to_start.len(), 2);
+    }
+}

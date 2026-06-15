@@ -1,0 +1,357 @@
+# PATHFINDER Prometheus Alert Rules
+# Critical alerts for production monitoring
+
+groups:
+  - name: pathfinder_alerts
+    interval: 15s
+    rules:
+
+      # ========================
+      # SERVICE AVAILABILITY
+      # ========================
+
+      - alert: ServiceDown
+        expr: up{job=~"user-service|content-service|teacher-service|parent-service|notification-service|achievement-service|insights-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: pathfinder
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been unreachable for more than 2 minutes"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: pathfinder
+        annotations:
+          summary: "High error rate detected in {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, http_request_duration_seconds_bucket) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: pathfinder
+        annotations:
+          summary: "High latency in {{ $labels.job }}"
+          description: "P95 latency is {{ $value }}s (threshold: 1s)"
+
+      - alert: ContainerRestartingTooOften
+        expr: rate(container_last_seen{container_name=~".*-service"}[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: pathfinder
+        annotations:
+          summary: "{{ $labels.container_name }} is restarting frequently"
+          description: "Container has restarted {{ $value }} times in 15 minutes"
+
+      # ========================
+      # DATABASE
+      # ========================
+
+      - alert: DatabaseDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL has been unreachable for more than 1 minute"
+
+      - alert: DatabaseConnectionLimit
+        expr: pg_stat_activity_count > pg_settings_max_connections * 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL connection limit nearly reached"
+          description: "Using {{ $value | humanizePercentage }} of max connections"
+
+      - alert: DatabaseHighLoad
+        expr: rate(pg_stat_statements_exec_time_milliseconds[5m]) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL has high query execution time"
+          description: "Average query time is {{ $value }}ms"
+
+      - alert: DatabaseDiskUsage
+        expr: pg_database_size_bytes / 1099511627776 > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL disk usage is critical"
+          description: "Using {{ $value }}% of available space"
+
+      - alert: DatabaseReplicationLag
+        expr: pg_replication_lag_bytes > 1000000
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL replication lag detected"
+          description: "Replication lag is {{ $value | humanize }}B"
+
+      # ========================
+      # CACHE
+      # ========================
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis cache is down"
+          description: "Redis has been unreachable for more than 1 minute"
+
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Using {{ $value | humanizePercentage }} of max memory"
+
+      - alert: RedisEvictions
+        expr: rate(redis_evicted_keys_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis is evicting keys frequently"
+          description: "{{ $value }} keys evicted per second"
+
+      # ========================
+      # MESSAGE QUEUE
+      # ========================
+
+      - alert: KafkaDown
+        expr: up{job="kafka"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: messaging
+        annotations:
+          summary: "Kafka broker is down"
+          description: "Kafka has been unreachable for more than 1 minute"
+
+      - alert: KafkaLagHigh
+        expr: kafka_consumer_lag_sum > 100000
+        for: 10m
+        labels:
+          severity: warning
+          component: messaging
+        annotations:
+          summary: "High Kafka consumer lag detected"
+          description: "Consumer lag is {{ $value }} messages"
+
+      # ========================
+      # RESOURCE UTILIZATION
+      # ========================
+
+      - alert: HighCPUUsage
+        expr: (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanize }}%"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanize }}%"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes) * 100 < 15
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Only {{ $value | humanize }}% disk space remaining"
+
+      - alert: DiskIOHigh
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High disk I/O on {{ $labels.instance }}"
+          description: "Disk I/O utilization is {{ $value | humanizePercentage }}"
+
+      # ========================
+      # NETWORK
+      # ========================
+
+      - alert: HighNetworkBandwidth
+        expr: rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m]) > 1000000000
+        for: 10m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High network bandwidth on {{ $labels.instance }}"
+          description: "Network bandwidth is {{ $value | humanize }}B/s"
+
+      - alert: PacketLoss
+        expr: rate(node_network_receive_drop_total[5m]) > 100 or rate(node_network_transmit_drop_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Packet loss detected on {{ $labels.instance }}"
+          description: "Dropping {{ $value }} packets per second"
+
+      # ========================
+      # API METRICS
+      # ========================
+
+      - alert: SlowAPIEndpoint
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 3
+        for: 10m
+        labels:
+          severity: warning
+          service: pathfinder
+        annotations:
+          summary: "Slow API endpoint detected"
+          description: "{{ $labels.path }} has P99 latency of {{ $value }}s"
+
+      - alert: LargeResponseSize
+        expr: histogram_quantile(0.95, rate(http_response_size_bytes_bucket[5m])) > 10485760
+        for: 10m
+        labels:
+          severity: warning
+          service: pathfinder
+        annotations:
+          summary: "Large response size detected"
+          description: "{{ $labels.path }} P95 response size is {{ $value | humanize }}B"
+
+      # ========================
+      # LEARNING METRICS
+      # ========================
+
+      - alert: ExerciseSyncFailure
+        expr: rate(exercise_sync_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: learning
+        annotations:
+          summary: "High exercise sync failure rate"
+          description: "{{ $value }} sync failures per second"
+
+      - alert: BKTCalculationError
+        expr: rate(bkt_calculation_errors_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: learning
+        annotations:
+          summary: "BKT calculation errors detected"
+          description: "{{ $value }} BKT errors per second"
+
+      - alert: NotificationQueueFull
+        expr: notification_queue_length > 100000
+        for: 10m
+        labels:
+          severity: warning
+          component: notifications
+        annotations:
+          summary: "Notification queue is backing up"
+          description: "Queue length is {{ $value }} messages"
+
+      # ========================
+      # DEPLOYMENT & POD HEALTH
+      # ========================
+
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: "Pod has restarted {{ $value }} times in 15 minutes"
+
+      - alert: PodNotHealthy
+        expr: min by (namespace, pod) (kube_pod_status_phase{phase=~"Failed|Unknown"}) == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod {{ $labels.pod }} is not healthy"
+          description: "Pod has been in {{ $labels.phase }} state for more than 5 minutes"
+
+      - alert: ContainerOOMKiller
+        expr: kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Container {{ $labels.container }} was OOMKilled"
+          description: "Container ran out of memory and was terminated"
+
+      - alert: DeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 10m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} replicas mismatch"
+          description: "Expected {{ $value }} replicas, but only available replicas differ"
+
+      # ========================
+      # SLA MONITORING
+      # ========================
+
+      - alert: SLOErrorBudgetExhausted
+        expr: (sum(rate(http_requests_total{status=~"5.."}[30d])) / sum(rate(http_requests_total[30d]))) > 0.01
+        for: 1m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "SLO error budget exhausted"
+          description: "Monthly error rate is {{ $value | humanizePercentage }} (budget: 1%)"
+
+      - alert: SLOAvailabilityDegraded
+        expr: up{job=~"user-service|content-service|teacher-service|parent-service|notification-service|achievement-service|insights-service"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: slo
+        annotations:
+          summary: "Service availability SLO at risk"
+          description: "Service {{ $labels.job }} is down, affecting uptime SLO"
+

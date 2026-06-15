@@ -1,0 +1,166 @@
+// effect/socket_io.ti — Socket I/O effects for P2P networking
+// Defines socket operations (connect, send, recv, listen) as effects
+// that can be implemented by an external runtime with real socket support.
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+}
+
+const TAG_SOCKET: i64 = 77000;
+const TAG_ENDPOINT: i64 = 77001;
+const TAG_PACKET: i64 = 77002;
+
+// Socket I/O effect constants
+const EFFECT_SOCKET_CONNECT: i64 = 10000;
+const EFFECT_SOCKET_SEND: i64 = 10001;
+const EFFECT_SOCKET_RECV: i64 = 10002;
+const EFFECT_SOCKET_LISTEN: i64 = 10003;
+const EFFECT_SOCKET_CLOSE: i64 = 10004;
+
+// Socket state: body=fd, arg=addr_hash, domain=status (0=closed, 1=open, 2=listening)
+pub fn socket_new(fd: i64, addr_hash: i64) -> i64 {
+    let s = heap_alloc_term();
+    heap_set_tag(s, TAG_SOCKET);
+    heap_set_body(s, fd);
+    heap_set_arg(s, addr_hash);
+    heap_set_domain(s, 0);
+    return s;
+}
+
+pub fn socket_fd(s: i64) -> i64 { return heap_get_body(s); }
+pub fn socket_addr(s: i64) -> i64 { return heap_get_arg(s); }
+pub fn socket_status(s: i64) -> i64 { return heap_get_domain(s); }
+pub fn socket_set_status(s: i64, status: i64) { heap_set_domain(s, status); return; }
+
+// Endpoint: (host, port) as hash: body=host_hash, arg=port, domain=transport_id
+pub fn endpoint_new(host_hash: i64, port: i64) -> i64 {
+    let ep = heap_alloc_term();
+    heap_set_tag(ep, TAG_ENDPOINT);
+    heap_set_body(ep, host_hash);
+    heap_set_arg(ep, port);
+    heap_set_domain(ep, 0);
+    return ep;
+}
+
+pub fn endpoint_host(ep: i64) -> i64 { return heap_get_body(ep); }
+pub fn endpoint_port(ep: i64) -> i64 { return heap_get_arg(ep); }
+
+// Packet: body=from_endpoint, arg=to_endpoint, domain=payload_hash
+pub fn packet_new(from_ep: i64, to_ep: i64, payload: i64) -> i64 {
+    let pkt = heap_alloc_term();
+    heap_set_tag(pkt, TAG_PACKET);
+    heap_set_body(pkt, from_ep);
+    heap_set_arg(pkt, to_ep);
+    heap_set_domain(pkt, payload);
+    return pkt;
+}
+
+pub fn packet_from(pkt: i64) -> i64 { return heap_get_body(pkt); }
+pub fn packet_to(pkt: i64) -> i64 { return heap_get_arg(pkt); }
+pub fn packet_payload(pkt: i64) -> i64 { return heap_get_domain(pkt); }
+
+// Statistics: track socket operations
+let g_sockets_created: i64 = 0;
+let g_packets_sent: i64 = 0;
+let g_packets_recv: i64 = 0;
+
+pub fn socket_stats_created() -> i64 { return g_sockets_created; }
+pub fn socket_stats_sent() -> i64 { return g_packets_sent; }
+pub fn socket_stats_recv() -> i64 { return g_packets_recv; }
+
+// In production, these would call into an external runtime with real sockets.
+// For testing, we simulate: even addresses succeed, odd addresses fail.
+
+pub fn socket_connect(host_hash: i64, port: i64) -> i64 {
+    let addr_hash = host_hash * 1000 + port;
+    let success = if addr_hash % 2 == 0 { 1 } else { 0 };
+    if success == 0 { return -1; }  // connection failed
+
+    let s = socket_new(1, addr_hash);  // fd=1 (simulated)
+    socket_set_status(s, 1);  // open
+    g_sockets_created = g_sockets_created + 1;
+    return addr_hash;
+}
+
+pub fn socket_send(sock_id: i64, payload: i64) -> i64 {
+    // In real impl: write payload to socket via sendto()
+    if sock_id < 0 { return -1; }
+    g_packets_sent = g_packets_sent + 1;
+    return payload;  // bytes sent (simulated)
+}
+
+pub fn socket_recv(sock_id: i64) -> i64 {
+    // In real impl: read from socket via recvfrom()
+    if sock_id < 0 { return -1; }
+    g_packets_recv = g_packets_recv + 1;
+    return sock_id;  // simulated payload
+}
+
+pub fn socket_listen(host_hash: i64, port: i64) -> i64 {
+    let addr_hash = host_hash * 1000 + port;
+    let s = socket_new(2, addr_hash);  // fd=2 (listening socket)
+    socket_set_status(s, 2);  // listening
+    g_sockets_created = g_sockets_created + 1;
+    return addr_hash;
+}
+
+pub fn socket_close(sock_id: i64) {
+    // In real impl: close(fd)
+    return;
+}
+
+pub fn main() -> i64 {
+    // Test 1: endpoint creation
+    let ep1 = endpoint_new(127001, 8080);
+    if endpoint_host(ep1) != 127001 { return 1; }
+    if endpoint_port(ep1) != 8080 { return 2; }
+
+    // Test 2: packet creation
+    let ep2 = endpoint_new(192168001, 9000);
+    let pkt = packet_new(ep1, ep2, 12345);
+    if packet_payload(pkt) != 12345 { return 3; }
+
+    // Test 3: socket connect (even address = success)
+    let sid = socket_connect(200, 5000);  // even
+    if sid < 0 { return 4; }
+
+    // Test 4: socket connect failure (odd address = fail)
+    let sid_fail = socket_connect(201, 5000);  // odd
+    if sid_fail >= 0 { return 5; }
+
+    // Test 5: socket send
+    let sent = socket_send(sid, 999);
+    if sent != 999 { return 6; }
+    if socket_stats_sent() != 1 { return 7; }
+
+    // Test 6: socket recv
+    let recvd = socket_recv(sid);
+    if socket_stats_recv() != 1 { return 8; }
+
+    // Test 7: socket listen
+    let listen_id = socket_listen(127001, 3000);
+    if listen_id < 0 { return 9; }
+    if socket_stats_created() < 2 { return 10; }
+
+    // Test 8: multiple sockets
+    let s1 = socket_connect(100, 1000);
+    let s2 = socket_connect(102, 2000);
+    let s3 = socket_connect(104, 3000);
+    if socket_stats_created() < 3 { return 11; }
+
+    // Test 9: send multiple packets
+    socket_send(s1, 111);
+    socket_send(s2, 222);
+    socket_send(s3, 333);
+    if socket_stats_sent() != 4 { return 12; }
+
+    return 111;
+}

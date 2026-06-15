@@ -1,0 +1,163 @@
+// services/edge/agent.ti – Lightweight edge node agent
+// Operates autonomously, syncs with central fabric via p2p, runs containers
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_domain(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+}
+
+const TAG_EDGE_AGENT: i64 = 10200;
+const TAG_EDGE_JOB: i64 = 10201;
+const TAG_EDGE_STATE: i64 = 10202;
+
+const OFFLINE_MODE: i64 = 0;
+const ONLINE_MODE: i64 = 1;
+
+// Edge agent state
+pub fn edge_agent_new(agent_id: i64) -> i64 {
+    let agent = heap_alloc_term();
+    heap_set_tag(agent, TAG_EDGE_AGENT);
+    heap_set_body(agent, agent_id);     // agent ID (edge node identifier)
+    heap_set_arg(agent, ONLINE_MODE);   // current mode (online/offline)
+    heap_set_domain(agent, 0);          // local job queue
+    return agent;
+}
+
+pub fn edge_agent_id(a: i64) -> i64 { return heap_get_body(a); }
+pub fn edge_agent_mode(a: i64) -> i64 { return heap_get_arg(a); }
+pub fn edge_agent_set_mode(a: i64, mode: i64) { heap_set_arg(a, mode); }
+pub fn edge_agent_queue(a: i64) -> i64 { return heap_get_domain(a); }
+
+// Edge job (container-only, lightweight)
+pub fn edge_job_new(job_id: i64, image: i64, memory: i64, cpus: i64) -> i64 {
+    let job = heap_alloc_term();
+    heap_set_tag(job, TAG_EDGE_JOB);
+    heap_set_body(job, job_id);         // job ID
+    heap_set_arg(job, image);           // container image
+    heap_set_domain(job, memory);       // memory requirement
+    // cpus would be in additional slot
+    return job;
+}
+
+// Main edge agent loop
+pub fn edge_agent_main(agent_id: i64) {
+    let agent = edge_agent_new(agent_id);
+
+    loop {
+        let mode = edge_agent_mode(agent);
+
+        if mode == ONLINE_MODE {
+            // Try to receive jobs from central fabric
+            let job = receive_job_from_central();
+            if job == 0 {
+                // Connection lost, switch to offline mode
+                edge_agent_set_mode(agent, OFFLINE_MODE);
+            } else {
+                // Enqueue job
+                let queue = edge_agent_queue(agent);
+                heap_set_domain(job, queue);
+                heap_set_domain(agent, job);
+            }
+        } else {
+            // OFFLINE_MODE: try to reconnect
+            let ping_result = ping_central();
+            if ping_result == 1 {
+                edge_agent_set_mode(agent, ONLINE_MODE);
+            }
+        }
+
+        // Process local job queue
+        let queue = edge_agent_queue(agent);
+        while queue != 0 {
+            let job = queue;
+            queue = heap_get_domain(job);
+
+            // Check if edge node can run this job (memory, CPU available)
+            if can_run_locally(job) {
+                // Start container
+                let result = start_container(job);
+
+                // If online, report result to central
+                if edge_agent_mode(agent) == ONLINE_MODE {
+                    send_job_result(job, result);
+                }
+
+                // Remove from queue (simplified)
+                heap_set_domain(agent, queue);
+            } else {
+                // Not enough resources, re-queue
+                break;
+            }
+        }
+
+        // Sleep before next iteration
+        sleep_ms(5000);
+    }
+}
+
+// Check if edge node has resources to run job
+fn can_run_locally(job: i64) -> i64 {
+    // Stub: check available memory and CPU
+    // For now, assume always can run (simplified)
+    return 1;
+}
+
+// Start container with job spec
+fn start_container(job: i64) -> i64 {
+    // Would invoke sandbox service to create container
+    // Return 0 = success, -1 = error
+    return 0;
+}
+
+// P2P communication stubs
+fn receive_job_from_central() -> i64 { return 0; }
+fn ping_central() -> i64 { return 0; }
+fn send_job_result(job: i64, result: i64) { }
+fn sleep_ms(ms: i64) { }
+
+// Edge controller (for central fabric management of edge nodes)
+pub fn edge_controller_new() -> i64 {
+    let controller = heap_alloc_term();
+    heap_set_tag(controller, TAG_EDGE_STATE);
+    heap_set_body(controller, 0);       // edge nodes list
+    return controller;
+}
+
+pub fn edge_controller_register_node(controller: i64, agent_id: i64, capabilities: i64) {
+    let node = edge_agent_new(agent_id);
+    let nodes = heap_get_body(controller);
+    heap_set_domain(node, nodes);
+    heap_set_body(controller, node);
+}
+
+pub fn edge_controller_deploy_job(controller: i64, job: i64, region_pref: i64) -> i64 {
+    // Select best edge node (considering region, capacity, etc.)
+    let nodes = heap_get_body(controller);
+    let best_node = 0i64;
+
+    let cur = nodes;
+    while cur != 0 {
+        // Check region match
+        if heap_get_body(cur) == region_pref || region_pref == 0 {
+            best_node = cur;
+            break;
+        }
+        cur = heap_get_domain(cur);
+    }
+
+    if best_node != 0 {
+        // Send job to edge node
+        send_job_to_edge(best_node, job);
+        return heap_get_body(best_node);
+    }
+
+    return -1; // no suitable edge node
+}
+
+fn send_job_to_edge(edge_node: i64, job: i64) { }

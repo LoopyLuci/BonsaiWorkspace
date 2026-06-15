@@ -1,0 +1,166 @@
+model:
+  student_architecture: "tinyllama"
+  student_parameters: 1_100_000_000
+  teacher_model: "Bonsai-8B-Q2_K"
+  context_length: 2048
+  vocab_size: 32000
+
+training:
+  batch_size: 4
+  epochs: 3
+  learning_rate: 5.0e-4
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  seed: 42
+
+distillation:
+  temperature: 4.0
+  # alpha: 0.5 = 50% KL divergence + 50% cross-entropy
+  # alpha: 0.8 = 80% KL divergence + 20% cross-entropy (stronger distillation)
+  # alpha: 0.2 = 20% KL divergence + 80% cross-entropy (more supervised learning)
+  alpha: 0.5
+  kl_loss_weight: 1.0
+  use_api_distillation: true  # Use teacher via API (llama-server) instead of loading in-process
+
+data:
+  max_sequence_length: 512
+  num_prompts: 8000
+  domains:
+    chat: 0.625        # 5000 examples - general chat and Q&A
+    tool_use: 0.25     # 2000 examples - code, tool calls, system commands
+    survival: 0.125    # 1000 examples - error handling, debugging, edge cases
+  min_quality_threshold: 0.70
+  validation_split: 0.10
+
+optimization:
+  optimizer: "adamw"
+  optimizer_config:
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+  device: "cpu"  # Options: cpu, cuda, mps, directml
+  mixed_precision: null  # Options: null (fp32), fp16, bf16
+  gradient_checkpointing: false
+  use_lora: true
+  lora_config:
+    r: 32
+    lora_alpha: 64
+    lora_dropout: 0.05
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+    bias: none
+    task_type: "CAUSAL_LM"
+
+teacher_model:
+  model_type: "gguf"  # Options: gguf (via API), huggingface (in-process)
+  api_endpoint: "http://127.0.0.1:8080"
+  api_timeout_seconds: 30
+  max_tokens_per_request: 256
+  temperature: 1.0
+  top_p: 0.9
+
+evaluation:
+  validation_frequency: 1  # Validate after every N epochs
+  save_best_only: true
+  metric_for_best: "loss"  # loss, perplexity, etc.
+  patience: 3  # Early stopping patience
+
+output:
+  checkpoint_dir: "./training_output/bonsai-mobile-v1/checkpoints"
+  final_model_dir: "./training_output/bonsai-mobile-v1/final_model"
+  logs_dir: "./training_output/bonsai-mobile-v1/logs"
+  save_every_n_steps: null  # Save checkpoint every N steps (null = only at epoch end)
+
+quantization:
+  format: "GGUF"
+  type: "Q4_K_M"  # Options: Q2_K, Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0, F16, F32
+  target_size_mb: 220
+  llama_cpp_dir: null  # Auto-detect if null
+
+monitoring:
+  wandb_enabled: false
+  wandb_project: "bonsai-mobile"
+  wandb_entity: null
+  wandb_notes: "Knowledge distillation training for mobile deployment"
+  log_interval: 10  # Log metrics every N steps
+  checkpoint_interval: 1  # Save checkpoint every N epochs
+
+# Domain-specific configurations
+domains:
+  chat:
+    weight: 0.625
+    description: "General chat and question-answering"
+    examples: 5000
+    domains_included:
+      - chat
+      - qa
+      - explanation
+  tool_use:
+    weight: 0.25
+    description: "Tool use, code generation, system commands"
+    examples: 2000
+    domains_included:
+      - code
+      - tool_use
+      - system_command
+      - api_design
+  survival:
+    weight: 0.125
+    description: "Error handling, debugging, edge cases"
+    examples: 1000
+    domains_included:
+      - error_handling
+      - debugging
+      - edge_case
+      - system_repair
+
+# Distillation strategies
+distillation_strategies:
+  balanced:
+    alpha: 0.5
+    temperature: 4.0
+    description: "Equal weight to distillation and supervised learning"
+  aggressive:
+    alpha: 0.8
+    temperature: 3.0
+    description: "Favor knowledge distillation over supervised learning"
+  conservative:
+    alpha: 0.2
+    temperature: 5.0
+    description: "Favor supervised learning with light distillation"
+
+# Quality gates
+quality_gates:
+  min_training_loss: 1.5
+  min_validation_loss: 2.0
+  max_kl_divergence: 5.0
+  divergence_check_interval: 5  # Check KL divergence every N batches
+  fallback_to_sft_on_divergence: true  # Switch to SFT if KL diverges
+
+# Post-training
+post_training:
+  merge_lora: true
+  quantize: true
+  generate_model_card: true
+  create_bkp_package: true
+  register_with_model_registry: false
+  benchmark_on_cpu: false
+
+# Mobile deployment targets
+deployment_targets:
+  ios:
+    max_model_size_mb: 200
+    min_tokens_per_sec: 4
+    recommended_batch_size: 1
+  android:
+    max_model_size_mb: 250
+    min_tokens_per_sec: 3
+    recommended_batch_size: 1
+  edge_cpu:
+    max_model_size_mb: 500
+    min_tokens_per_sec: 2
+    recommended_batch_size: 2

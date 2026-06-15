@@ -1,0 +1,265 @@
+---
+# Omnisystem Kubernetes Deployment (All 1,039+ Crates)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omnisystem
+
+---
+# ConfigMap for all crate configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnisystem-config
+  namespace: omnisystem
+data:
+  database-url: "postgresql://postgres:postgres@postgres.omnisystem:5432/omnisystem"
+  redis-url: "redis://redis.omnisystem:6379"
+  log-level: "info"
+  metrics-port: "9090"
+  api-port: "8080"
+
+---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: omnisystem
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: omnisystem
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# Redis StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: omnisystem
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+---
+# Service for PostgreSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: omnisystem
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Service for Redis
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: omnisystem
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# Omnisystem API Gateway Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: omnisystem-gateway
+  template:
+    metadata:
+      labels:
+        app: omnisystem-gateway
+    spec:
+      containers:
+      - name: gateway
+        image: omnisystem:latest
+        imagePullPolicy: Always
+        ports:
+        - name: api
+          containerPort: 8080
+        - name: metrics
+          containerPort: 9090
+        envFrom:
+        - configMapRef:
+            name: omnisystem-config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: api
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: api
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Service for API Gateway
+apiVersion: v1
+kind: Service
+metadata:
+  name: omnisystem-api
+  namespace: omnisystem
+spec:
+  type: LoadBalancer
+  selector:
+    app: omnisystem-gateway
+  ports:
+  - name: api
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+
+---
+# HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: omnisystem-gateway-hpa
+  namespace: omnisystem
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: omnisystem-gateway
+  minReplicas: 3
+  maxReplicas: 100
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# Prometheus Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: omnisystem
+  namespace: omnisystem
+spec:
+  selector:
+    matchLabels:
+      app: omnisystem-gateway
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+# Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omnisystem-network-policy
+  namespace: omnisystem
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: omnisystem
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: omnisystem
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53

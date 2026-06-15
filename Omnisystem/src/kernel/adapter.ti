@@ -1,0 +1,391 @@
+// kernel/adapter.ti – Universal Host Adapter Layer
+// Abstracts UOSC to run on any platform: bare metal, VM, hosted, library OS
+
+module kernel::adapter
+
+use core::option::Option
+use core::result::Result
+use std::sync::{Arc, Mutex}
+use std::collections::HashMap
+
+/// Universal adapter interface – all platforms implement this
+pub trait HostAdapter: Send + Sync {
+    // Memory management
+    fn map_physical_memory(&self, start: u64, size: usize) -> Result<MemoryCapability, AdapterError>;
+    fn unmap_physical_memory(&self, cap: MemoryCapability) -> Result<(), AdapterError>;
+    fn physical_to_virtual(&self, phys: u64) -> Option<u64>;
+    fn virtual_to_physical(&self, virt: u64) -> Option<u64>;
+
+    // Interrupts
+    fn register_interrupt(&self, vector: u8, handler: extern "C" fn(u32)) -> Result<InterruptCapability, AdapterError>;
+    fn register_timer(&self, interval_ms: u64, handler: extern "C" fn()) -> Result<TimerCapability, AdapterError>;
+    fn acknowledge_interrupt(&self, vector: u8) -> Result<(), AdapterError>;
+
+    // Virtio devices (for VMs)
+    fn virtio_device(&self, device_type: VirtioType) -> Result<VirtioCapability, AdapterError>;
+
+    // Time
+    fn current_time_ns(&self) -> u64;
+    fn sleep_ns(&self, duration: u64) -> Result<(), AdapterError>;
+
+    // Threading & CPU
+    fn spawn_thread(&self, entry: extern "C" fn(*mut u8), arg: *mut u8, stack_size: usize) -> Result<ThreadCapability, AdapterError>;
+    fn num_cpus(&self) -> usize;
+    fn cpu_id(&self) -> u32;
+
+    // Environment info
+    fn environment(&self) -> EnvironmentInfo;
+    fn total_memory_mb(&self) -> usize;
+
+    // Shutdown
+    fn halt(&self) -> !;
+    fn reboot(&self) -> !;
+}
+
+/// Memory capability returned by adapter
+#[derive(Clone, Debug)]
+pub struct MemoryCapability {
+    pub virt_addr: u64,
+    pub phys_addr: u64,
+    pub size: usize,
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+}
+
+/// Interrupt capability
+#[derive(Clone, Debug)]
+pub struct InterruptCapability {
+    pub vector: u8,
+    pub handler: extern "C" fn(u32),
+}
+
+/// Timer capability
+#[derive(Clone, Debug)]
+pub struct TimerCapability {
+    pub interval_ms: u64,
+}
+
+/// Virtio capability (for VMs)
+#[derive(Clone, Debug)]
+pub struct VirtioCapability {
+    pub device_type: VirtioType,
+    pub mmio_base: u64,
+    pub mmio_size: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum VirtioType {
+    Net,      // Network device
+    Block,    // Block storage
+    Rng,      // Random number generator
+    Console,  // Serial console
+    Input,    // Input device
+    Gpu,      // GPU
+}
+
+/// Thread capability
+#[derive(Clone, Debug)]
+pub struct ThreadCapability {
+    pub thread_id: u32,
+}
+
+/// Environment information
+#[derive(Clone, Debug)]
+pub enum EnvironmentInfo {
+    BareMetal {
+        num_cpus: usize,
+        total_ram_mb: usize,
+        boot_method: String,  // "UEFI" | "Multiboot2" | "BIOS"
+    },
+    HypervisorGuest {
+        hypervisor: String,   // "KVM" | "Xen" | "VMware" | "Hyper-V"
+        num_cpus: usize,
+        total_ram_mb: usize,
+    },
+    HostedProcess {
+        host_os: String,      // "Linux" | "macOS" | "Windows"
+        host_pid: u32,
+        max_memory_mb: usize,
+    },
+    LibraryOS {
+        parent_process: u32,
+        memory_available_mb: usize,
+    },
+}
+
+#[derive(Debug)]
+pub enum AdapterError {
+    OutOfMemory,
+    InvalidAddress,
+    InterruptAlreadyRegistered,
+    NoAvailableTimer,
+    OperationNotSupported,
+    EnvironmentMismatch,
+}
+
+/// Global adapter instance (set at runtime)
+lazy_static::lazy_static! {
+    pub static ref GLOBAL_ADAPTER: Arc<Mutex<Option<Arc<dyn HostAdapter>>>> = Arc::new(Mutex::new(None));
+}
+
+pub fn set_adapter(adapter: Arc<dyn HostAdapter>) -> Result<(), AdapterError> {
+    let mut global = GLOBAL_ADAPTER.lock().unwrap();
+    *global = Some(adapter);
+    Ok(())
+}
+
+pub fn get_adapter() -> Result<Arc<dyn HostAdapter>, AdapterError> {
+    let global = GLOBAL_ADAPTER.lock().unwrap();
+    global.clone().ok_or(AdapterError::OperationNotSupported)
+}
+
+/// Bare-metal adapter implementation
+pub struct BareMetalAdapter {
+    num_cpus: usize,
+    total_ram_mb: usize,
+    interrupt_handlers: Arc<Mutex<HashMap<u8, extern "C" fn(u32)>>>,
+}
+
+impl BareMetalAdapter {
+    pub fn new(num_cpus: usize, total_ram_mb: usize) -> Self {
+        BareMetalAdapter {
+            num_cpus,
+            total_ram_mb,
+            interrupt_handlers: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl HostAdapter for BareMetalAdapter {
+    fn map_physical_memory(&self, start: u64, size: usize) -> Result<MemoryCapability, AdapterError> {
+        if start + size as u64 > (self.total_ram_mb as u64) * 1024 * 1024 {
+            return Err(AdapterError::OutOfMemory);
+        }
+
+        Ok(MemoryCapability {
+            virt_addr: start,
+            phys_addr: start,
+            size,
+            readable: true,
+            writable: true,
+            executable: true,
+        })
+    }
+
+    fn unmap_physical_memory(&self, _cap: MemoryCapability) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn physical_to_virtual(&self, phys: u64) -> Option<u64> {
+        Some(phys)  // Identity mapping on bare metal
+    }
+
+    fn virtual_to_physical(&self, virt: u64) -> Option<u64> {
+        Some(virt)  // Identity mapping on bare metal
+    }
+
+    fn register_interrupt(&self, vector: u8, handler: extern "C" fn(u32)) -> Result<InterruptCapability, AdapterError> {
+        let mut handlers = self.interrupt_handlers.lock().unwrap();
+        if handlers.contains_key(&vector) {
+            return Err(AdapterError::InterruptAlreadyRegistered);
+        }
+        handlers.insert(vector, handler);
+        Ok(InterruptCapability { vector, handler })
+    }
+
+    fn register_timer(&self, interval_ms: u64, _handler: extern "C" fn()) -> Result<TimerCapability, AdapterError> {
+        Ok(TimerCapability { interval_ms })
+    }
+
+    fn acknowledge_interrupt(&self, _vector: u8) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn virtio_device(&self, _device_type: VirtioType) -> Result<VirtioCapability, AdapterError> {
+        Err(AdapterError::OperationNotSupported)  // Bare metal doesn't have virtio
+    }
+
+    fn current_time_ns(&self) -> u64 {
+        // Read system timer (would be RDTSC on x86, or similar)
+        0  // Placeholder
+    }
+
+    fn sleep_ns(&self, _duration: u64) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn spawn_thread(&self, entry: extern "C" fn(*mut u8), arg: *mut u8, _stack_size: usize) -> Result<ThreadCapability, AdapterError> {
+        // Would create a new kernel thread
+        entry(arg);
+        Ok(ThreadCapability { thread_id: 1 })
+    }
+
+    fn num_cpus(&self) -> usize {
+        self.num_cpus
+    }
+
+    fn cpu_id(&self) -> u32 {
+        0  // Placeholder
+    }
+
+    fn environment(&self) -> EnvironmentInfo {
+        EnvironmentInfo::BareMetal {
+            num_cpus: self.num_cpus,
+            total_ram_mb: self.total_ram_mb,
+            boot_method: "UEFI".to_string(),
+        }
+    }
+
+    fn total_memory_mb(&self) -> usize {
+        self.total_ram_mb
+    }
+
+    fn halt(&self) -> ! {
+        loop {}
+    }
+
+    fn reboot(&self) -> ! {
+        loop {}
+    }
+}
+
+/// Hosted-Light adapter (UOSC as userspace process on Linux/macOS/Windows)
+pub struct HostedLightAdapter {
+    host_os: String,
+    max_memory_mb: usize,
+    num_cpus: usize,
+}
+
+impl HostedLightAdapter {
+    pub fn new(host_os: String, max_memory_mb: usize, num_cpus: usize) -> Self {
+        HostedLightAdapter {
+            host_os,
+            max_memory_mb,
+            num_cpus,
+        }
+    }
+}
+
+impl HostAdapter for HostedLightAdapter {
+    fn map_physical_memory(&self, _start: u64, size: usize) -> Result<MemoryCapability, AdapterError> {
+        if size > self.max_memory_mb * 1024 * 1024 {
+            return Err(AdapterError::OutOfMemory);
+        }
+
+        // Would call mmap/VirtualAlloc here
+        Ok(MemoryCapability {
+            virt_addr: 0x400000,  // Placeholder
+            phys_addr: 0x400000,
+            size,
+            readable: true,
+            writable: true,
+            executable: true,
+        })
+    }
+
+    fn unmap_physical_memory(&self, _cap: MemoryCapability) -> Result<(), AdapterError> {
+        // Would call munmap/VirtualFree
+        Ok(())
+    }
+
+    fn physical_to_virtual(&self, virt: u64) -> Option<u64> {
+        Some(virt)  // Virtual == physical in hosted light
+    }
+
+    fn virtual_to_physical(&self, phys: u64) -> Option<u64> {
+        Some(phys)
+    }
+
+    fn register_interrupt(&self, _vector: u8, _handler: extern "C" fn(u32)) -> Result<InterruptCapability, AdapterError> {
+        // Would use signal/event handlers
+        Ok(InterruptCapability { vector: 0, handler: _handler })
+    }
+
+    fn register_timer(&self, interval_ms: u64, _handler: extern "C" fn()) -> Result<TimerCapability, AdapterError> {
+        Ok(TimerCapability { interval_ms })
+    }
+
+    fn acknowledge_interrupt(&self, _vector: u8) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn virtio_device(&self, device_type: VirtioType) -> Result<VirtioCapability, AdapterError> {
+        // Hosted light doesn't have direct virtio, but could emulate
+        Err(AdapterError::OperationNotSupported)
+    }
+
+    fn current_time_ns(&self) -> u64 {
+        // Would use clock_gettime/QueryPerformanceCounter
+        0
+    }
+
+    fn sleep_ns(&self, _duration: u64) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn spawn_thread(&self, entry: extern "C" fn(*mut u8), arg: *mut u8, _stack_size: usize) -> Result<ThreadCapability, AdapterError> {
+        entry(arg);
+        Ok(ThreadCapability { thread_id: 1 })
+    }
+
+    fn num_cpus(&self) -> usize {
+        self.num_cpus
+    }
+
+    fn cpu_id(&self) -> u32 {
+        0
+    }
+
+    fn environment(&self) -> EnvironmentInfo {
+        EnvironmentInfo::HostedProcess {
+            host_os: self.host_os.clone(),
+            host_pid: 0,
+            max_memory_mb: self.max_memory_mb,
+        }
+    }
+
+    fn total_memory_mb(&self) -> usize {
+        self.max_memory_mb
+    }
+
+    fn halt(&self) -> ! {
+        std::process::exit(0);
+    }
+
+    fn reboot(&self) -> ! {
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bare_metal_adapter() {
+        let adapter = BareMetalAdapter::new(4, 2048);
+        assert_eq!(adapter.num_cpus(), 4);
+        assert_eq!(adapter.total_memory_mb(), 2048);
+    }
+
+    #[test]
+    fn test_map_memory() {
+        let adapter = BareMetalAdapter::new(4, 2048);
+        let cap = adapter.map_physical_memory(0, 1024).unwrap();
+        assert_eq!(cap.size, 1024);
+        assert!(cap.readable);
+        assert!(cap.writable);
+    }
+
+    #[test]
+    fn test_hosted_light_adapter() {
+        let adapter = HostedLightAdapter::new("Linux".to_string(), 512, 2);
+        match adapter.environment() {
+            EnvironmentInfo::HostedProcess { host_os, .. } => {
+                assert_eq!(host_os, "Linux");
+            }
+            _ => panic!("Expected HostedProcess"),
+        }
+    }
+}

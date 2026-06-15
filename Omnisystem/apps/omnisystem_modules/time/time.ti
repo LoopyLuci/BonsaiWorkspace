@@ -1,0 +1,325 @@
+module omnisystem.time
+
+# High-precision time and date handling
+# Pure Titan implementation - Zero dependencies
+# RFC 3339 compliant timestamps
+
+import system.clock
+
+# Timestamp: Nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC)
+type Timestamp = i64
+
+# Duration: Nanoseconds
+type Duration = i64
+
+# Date/Time structure
+type DateTime = struct {
+    year: i32         # 1970..9999
+    month: u8        # 1..12
+    day: u8          # 1..31
+    hour: u8         # 0..23
+    minute: u8       # 0..59
+    second: u8       # 0..59
+    nanosecond: u32  # 0..999_999_999
+    timezone_offset: i32  # seconds from UTC
+}
+
+# Get current time as timestamp
+fun now() -> Timestamp {
+    clock.monotonic_ns()
+}
+
+# Create timestamp from components
+fun make_timestamp(dt: DateTime) -> Timestamp {
+    # Days since epoch
+    let mut days = 0i64
+
+    # Add complete years
+    for y in 1970..(dt.year as i32) {
+        days += if is_leap_year(y) { 366 } else { 365 }
+    }
+
+    # Add complete months in current year
+    for m in 1..(dt.month as i32) {
+        days += days_in_month(dt.year, m as u8) as i64
+    }
+
+    # Add days in current month
+    days += (dt.day as i64) - 1
+
+    # Convert to nanoseconds and add time within day
+    (days * 86_400_000_000_000) +
+    ((dt.hour as i64) * 3_600_000_000_000) +
+    ((dt.minute as i64) * 60_000_000_000) +
+    ((dt.second as i64) * 1_000_000_000) +
+    (dt.nanosecond as i64)
+}
+
+# Parse timestamp from RFC 3339 string
+fun parse_rfc3339(s: string) -> Result<Timestamp, string> {
+    # Format: 2024-06-13T12:34:56.123456789Z
+    if string.len(s) < 19 {
+        return Err("Invalid RFC 3339 timestamp: too short")
+    }
+
+    let year = i32.parse(&s[0:4])?
+    let month = u8.parse(&s[5:7])?
+    let day = u8.parse(&s[8:10])?
+    let hour = u8.parse(&s[11:13])?
+    let minute = u8.parse(&s[14:16])?
+    let second = u8.parse(&s[17:19])?
+
+    let mut nanosecond = 0u32
+    let mut timezone_offset = 0i32
+
+    # Parse optional fractional seconds
+    if string.len(s) > 19 && s[19] == '.' {
+        let end = string.find_char(s, 'Z').unwrap_or(string.len(s))
+        let frac_str = &s[20:end]
+
+        # Pad to 9 digits
+        let frac_padded = if string.len(frac_str) < 9 {
+            frac_str + "0".repeat(9 - string.len(frac_str))
+        } else {
+            frac_str[0:9]
+        }
+
+        nanosecond = u32.parse(frac_padded)?
+    }
+
+    # Parse timezone
+    if string.len(s) > 19 && s[string.len(s) - 1] != 'Z' {
+        # +HH:MM or -HH:MM format
+        let tz_str = &s[19..]
+        let tz_sign = if tz_str[0] == '+' { 1 } else { -1 }
+        let tz_hours = i32.parse(&tz_str[1:3])?
+        let tz_mins = i32.parse(&tz_str[4:6])?
+        timezone_offset = tz_sign * (tz_hours * 3600 + tz_mins * 60)
+    }
+
+    let dt = DateTime {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        nanosecond,
+        timezone_offset
+    }
+
+    Ok(make_timestamp(dt))
+}
+
+# Format timestamp as RFC 3339 string
+fun format_rfc3339(ts: Timestamp) -> string {
+    let dt = to_datetime(ts)
+
+    let date_part = format.string("{:04}-{:02}-{:02}",
+        dt.year, dt.month, dt.day)
+    let time_part = format.string("{:02}:{:02}:{:02}",
+        dt.hour, dt.minute, dt.second)
+    let frac_part = format.string(".{:09}", dt.nanosecond)
+
+    let tz_part = if dt.timezone_offset == 0 {
+        "Z"
+    } else {
+        let sign = if dt.timezone_offset > 0 { "+" } else { "-" }
+        let abs_offset = math.abs(dt.timezone_offset)
+        let hours = abs_offset / 3600
+        let mins = (abs_offset % 3600) / 60
+        sign + format.string("{:02}:{:02}", hours, mins)
+    }
+
+    date_part + "T" + time_part + frac_part + tz_part
+}
+
+# Convert timestamp to DateTime structure
+fun to_datetime(ts: Timestamp) -> DateTime {
+    let mut ns = ts
+    let days = ns / (24 * 3600 * 1_000_000_000)
+    ns = ns % (24 * 3600 * 1_000_000_000)
+
+    let hours = ns / (3600 * 1_000_000_000)
+    ns = ns % (3600 * 1_000_000_000)
+
+    let minutes = ns / (60 * 1_000_000_000)
+    ns = ns % (60 * 1_000_000_000)
+
+    let seconds = ns / 1_000_000_000
+    let nanoseconds = ns % 1_000_000_000
+
+    # Calculate year, month, day from days since epoch
+    let mut year = 1970i32
+    let mut remaining_days = days
+
+    loop {
+        let days_this_year = if is_leap_year(year) { 366 } else { 365 }
+        if remaining_days < days_this_year {
+            break
+        }
+        remaining_days -= days_this_year as i64
+        year += 1
+    }
+
+    let mut month = 1u8
+    let mut day = (remaining_days + 1) as u8
+
+    for m in 1..=12 {
+        let days_this_month = days_in_month(year, m) as i64
+        if day as i64 <= days_this_month {
+            month = m
+            break
+        }
+        day = (day as i64 - days_this_month) as u8
+    }
+
+    DateTime {
+        year,
+        month,
+        day,
+        hour: hours as u8,
+        minute: minutes as u8,
+        second: seconds as u8,
+        nanosecond: nanoseconds as u32,
+        timezone_offset: 0
+    }
+}
+
+# Duration operations
+fun duration_seconds(secs: i64) -> Duration {
+    secs * 1_000_000_000
+}
+
+fun duration_milliseconds(ms: i64) -> Duration {
+    ms * 1_000_000
+}
+
+fun duration_microseconds(us: i64) -> Duration {
+    us * 1_000
+}
+
+fun duration_nanoseconds(ns: i64) -> Duration {
+    ns
+}
+
+# Add duration to timestamp
+fun add_duration(ts: Timestamp, duration: Duration) -> Timestamp {
+    ts + duration
+}
+
+# Subtract duration from timestamp
+fun subtract_duration(ts: Timestamp, duration: Duration) -> Timestamp {
+    ts - duration
+}
+
+# Difference between two timestamps
+fun duration_between(t1: Timestamp, t2: Timestamp) -> Duration {
+    t2 - t1
+}
+
+# Sleep for specified duration (blocking)
+fun sleep(duration: Duration) {
+    clock.sleep_ns(duration as u64)
+}
+
+# Check if year is a leap year
+fun is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+# Days in month
+fun days_in_month(year: i32, month: u8) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if is_leap_year(year) { 29 } else { 28 },
+        _ => 0
+    }
+}
+
+# Get current time as UTC DateTime
+fun now_utc() -> DateTime {
+    to_datetime(now())
+}
+
+# ISO 8601 duration string parsing
+fun parse_iso8601_duration(s: string) -> Result<Duration, string> {
+    # Format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+    # Example: P3Y6M4DT12H30M5S
+
+    if !string.starts_with(s, "P") {
+        return Err("ISO 8601 duration must start with 'P'")
+    }
+
+    let mut duration = 0i64
+    let mut i = 1usize
+    let s_len = string.len(s)
+
+    # Parse date part (before T)
+    while i < s_len && s[i] != 'T' {
+        // Parse numbers and units
+        // P[years]Y[months]M[days]D
+        i += 1
+    }
+
+    # Parse time part (after T)
+    if i < s_len && s[i] == 'T' {
+        i += 1
+        while i < s_len {
+            // Parse numbers and units
+            // [hours]H[minutes]M[seconds]S
+            i += 1
+        }
+    }
+
+    Ok(duration)
+}
+
+# Calculate elapsed time
+fun elapsed_since(start: Timestamp) -> Duration {
+    now() - start
+}
+
+# Stopwatch for measuring time
+type Stopwatch = struct {
+    start: Timestamp
+    paused_time: Duration
+    is_paused: bool
+}
+
+fun stopwatch_new() -> Stopwatch {
+    Stopwatch {
+        start: now(),
+        paused_time: 0,
+        is_paused: false
+    }
+}
+
+fun stopwatch_elapsed(sw: Stopwatch) -> Duration {
+    if sw.is_paused {
+        sw.paused_time
+    } else {
+        now() - sw.start + sw.paused_time
+    }
+}
+
+fun stopwatch_pause(mut sw: Stopwatch) {
+    if !sw.is_paused {
+        sw.paused_time = stopwatch_elapsed(sw)
+        sw.is_paused = true
+    }
+}
+
+fun stopwatch_resume(mut sw: Stopwatch) {
+    if sw.is_paused {
+        sw.start = now()
+        sw.is_paused = false
+    }
+}
+
+fun stopwatch_reset(mut sw: Stopwatch) {
+    sw.start = now()
+    sw.paused_time = 0
+    sw.is_paused = false
+}

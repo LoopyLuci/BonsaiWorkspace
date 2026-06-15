@@ -1,0 +1,620 @@
+Provide comprehensive, in depth and detailed suggestions for designing a truly next generation, bleeding edge, production grade quality system that allows users and agents to use the Sanctum Vaults to be used to spin up emulations, simulations, VMs, Containers, etc. Design all commands and all other aspects of how the system works and functions. "# Next‑Generation Environment Fabric: Unified Sanctum Vault Management for Emulations, Simulations, VMs, and Containers
+
+## Executive Summary
+
+The **Environment Fabric (EF)** is a unified, production‑grade system for creating and managing isolated execution environments – **emulations** (full system emulation, e.g., QEMU), **simulations** (deterministic network or hardware simulation, e.g., BUSH), **virtual machines** (hardware‑accelerated VMs), and **containers** (process‑level isolation) – all built on top of **Sanctum vaults**. The EF provides a single, intuitive CLI (`build env ...`) and a deterministic, capability‑based API. It integrates with the Omnisystem’s resource management, P2P fabric for live migration, deterministic replay, hot‑reloadable components, and optional AI‑predictive scaling. The design is formally verified for isolation and resource accounting.
+
+---
+
+## 1. Core Principles
+
+| Principle | Implementation |
+|-----------|----------------|
+| **Unified primitive** | Every environment is a Sanctum vault (hardware‑isolated). The environment type determines the initial payload and device models. |
+| **Deterministic by default** | Environments can be run in deterministic mode (fixed seed, record & replay) for reproducible testing. |
+| **Capability‑based security** | Each environment receives a sub‑root capability that limits its resources and access. Nested environments derive sub‑sub‑roots. |
+| **Live migration** | Vaults can be snapshotted and migrated between hosts using the `p2p` service, with post‑migration validation. |
+| **Hot‑reloadable** | The environment supervisor and guest agents can be updated atomically without stopping workloads. |
+| **AI‑optional** | An optional advisor predicts resource needs and suggests live migration or scaling; deterministic core works without it. |
+| **Observable & replayable** | Every event (create, start, exec, migrate) is logged to `audit-log`; execution traces can be replayed. |
+
+---
+
+## 2. High‑Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      build env CLI / API                                │
+│  (create, start, exec, stop, destroy, list, logs, snapshot, migrate)   │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────────┐
+│                    Environment Fabric Service                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Environment Manager                                              │  │
+│  │  • Parses environment specs (YAML/TOML)                          │  │
+│  │  • Allocates resources via quota tracker                         │  │
+│  │  • Derives sub‑root capabilities                                 │  │
+│  │  • Spawns Sanctum vaults with appropriate payloads               │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Payload Builder                                                 │  │
+│  │  • Emulation: loads QEMU + guest image                           │  │
+│  │  • Simulation: loads BUSH simulator + model description         │  │
+│  │  • VM: loads hypervisor shim + guest kernel (UOSC, Linux, etc.)  │  │
+│  │  • Container: loads rootfs + entrypoint as a process             │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Virtio Device Providers                                         │  │
+│  │  • virtio-console (console)                                      │  │
+│  │  • virtio-control (agent control)                                │  │
+│  │  • virtio-block (root disk, data volumes)                        │  │
+│  │  • virtio-net (network)                                          │  │
+│  │  • virtio-vault (nested env creation)                            │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Observability & Replay                                          │  │
+│  │  • Taps virtio queues for logging                                │  │
+│  │  • Records every I/O effect for deterministic replay            │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+All components are written in Titan/Rust, using the existing `sandbox` crate for vault creation and `p2p` for migration.
+
+---
+
+## 3. Environment Specification Schema
+
+Environments are defined in YAML or TOML. Example:
+
+```yaml
+# my_vm.yaml
+name: dev-vm
+type: vm
+description: "Development VM for Bonsai testing"
+resources:
+  memory: 2048    # MB
+  cpus: 2
+  storage: 10G    # root disk size
+  quota:
+    memory_soft: 2048
+    memory_hard: 2560
+network:
+  mode: bridge    # bridge, isolated, nat, host
+  interface: eth0
+  ip: 192.168.1.100
+  gateway: 192.168.1.1
+  dns: [8.8.8.8]
+volumes:
+  - name: data
+    size: 100G
+    mount: /var/data
+boot:
+  kernel: "uosc-kernel.elf"
+  initrd: "omnisystem-initrd.img"
+  cmdline: "console=virtio quiet"
+features:
+  deterministic: true
+  nested_vaults: true
+  record_replay: true
+  live_migration: true
+```
+
+For containers:
+
+```yaml
+name: app-container
+type: container
+image: "docker://alpine:latest"
+resources:
+  memory: 512
+  cpus: 1
+volumes:
+  - name: config
+    source: /host/config
+    mount: /etc/app
+network:
+  mode: nat
+command: ["/bin/sh", "-c", "while true; do echo hello; sleep 1; done"]
+```
+
+For emulation (QEMU):
+
+```yaml
+name: windows-emu
+type: emulation
+emulator: qemu
+arch: x86_64
+machine: pc
+bios: /path/to/bios.bin
+disk: /path/to/windows.qcow2
+cdrom: /path/to/setup.iso
+resources:
+  memory: 4096
+  cpus: 4
+```
+
+For simulation (BUSH):
+
+```yaml
+name: net-sim
+type: simulation
+simulator: bush
+model: network.toml      # BUSH network description
+deterministic: true
+record_replay: true
+```
+
+---
+
+## 4. Unified CLI – `build env`
+
+All commands are consistent regardless of environment type.
+
+### 4.1 Create an environment
+
+```bash
+build env create --file my_vm.yaml
+# or inline
+build env create --name test --type container --image alpine:latest
+```
+
+Output: environment ID (UUID) and short name.
+
+### 4.2 Start an environment
+
+```bash
+build env start test
+# with deterministic mode (forces record & replay)
+build env start test --deterministic --seed 42
+```
+
+### 4.3 Execute a command inside a running environment
+
+```bash
+build env exec test -- sylva eval 'print("hello")'
+build env exec test -- /bin/ls -la
+```
+
+If the environment is a VM, the guest agent must be running.
+
+### 4.4 Interactive shell
+
+```bash
+build env shell test
+# drops into a shell (if guest agent provides it)
+```
+
+### 4.5 Stop and destroy
+
+```bash
+build env stop test   # graceful shutdown
+build env destroy test # forceful removal
+```
+
+### 4.6 List environments
+
+```bash
+build env list
+build env list --all
+build env list --type vm
+```
+
+### 4.7 Logs
+
+```bash
+build env logs test --follow
+build env logs test --since 1h
+```
+
+### 4.8 Snapshot & restore
+
+```bash
+build env snapshot test --name before-upgrade
+build env restore test --snapshot before-upgrade
+```
+
+### 4.9 Live migration
+
+```bash
+build env migrate test --target host2.bonsai.local
+```
+
+### 4.10 Hot‑reload environment components
+
+```bash
+build env update test --service kernel --image uosc-kernel.elf
+build env update test --service agent --binary guest-agent
+```
+
+### 4.11 Resource management
+
+```bash
+build env set-resources test --memory 4096 --cpus 4
+build env get-resources test
+```
+
+---
+
+## 5. Internal Architecture – Component Details
+
+### 5.1 Environment Manager
+
+- **State storage**: A content‑addressed directory in `audit-log` keeps the spec, current status, and resource usage.
+- **Capability derivation**: For each environment, the manager requests a sub‑root capability from the host’s kernel. The derivation is bounded by the parent’s quota.
+- **Lifecycle hooks**: Pre‑start (prepare volumes), post‑stop (clean up).
+
+### 5.2 Payload Builder
+
+Each environment type uses a different payload:
+
+| Type | Payload | Implementation |
+|------|---------|----------------|
+| `vm` | UOSC kernel + initrd (or Linux kernel) | ELF loader that maps kernel into vault memory, sets up boot info |
+| `container` | Rootfs + entrypoint process | Uses `sandbox` to spawn a process with isolated mount namespace, cgroups |
+| `emulation` | QEMU binary + guest image | QEMU running as a process inside the vault, accessing virtio devices |
+| `simulation` | BUSH simulator + model | BUSH binary with the model description, deterministic PRNG |
+
+### 5.3 Virtio Device Providers
+
+- **virtio-console**: Standard serial console for logs.
+- **virtio-control**: For `build env exec` and guest agent communication; messages are protobuf‑encoded.
+- **virtio-block**: Backed by a file or block device on the host. Supports snapshots (copy‑on‑write).
+- **virtio-net**: Bridged to host network using `tap` or `macvtap`. QoS via TC.
+- **virtio-vault**: Allows a guest to spawn nested environments. The host’s vault service validates the request against the guest’s quota.
+
+### 5.4 Resource Accounting
+
+- **Memory**: Hard limit enforced by Sanctum (hardware). The host also tracks usage for quota enforcement.
+- **CPU**: Use CFS shares or real‑time throttling (via kernel).
+- **Disk**: Quota via filesystem quotas or block device size limits.
+- **Network**: Bandwidth limits via `tc` classful qdiscs.
+
+### 5.5 Deterministic Mode & Record/Replay
+
+- When `deterministic: true`, the environment is seeded with a fixed PRNG (provided at creation or start).
+- All I/O events (keyboard, network, disk) are logged to the `audit-log` service, with a timestamp and a logical sequence number.
+- To replay: `build env replay test --log-session <id>` – re‑runs the exact same input sequence and verifies the output matches.
+- This is used for regression testing, debugging, and validation mesh.
+
+### 5.6 Live Migration
+
+**Prerequisites**: Shared storage or `p2p` streaming. The environment must be deterministic (no external nondeterminism) or use a checkpointable state.
+
+**Procedure**:
+1. `build env snapshot test --state-only` – capture memory and register state of the vault (excluding device state).
+2. `p2p transfer` the snapshot to target host.
+3. On target, create a new vault with the same capabilities and resources.
+4. Restore memory and register state.
+5. Resume execution from the point of snapshot.
+6. Redirect network connections (via `conntrack` or virtual IP move).
+
+**Post‑migration validation**: Run a short deterministic workload and compare outputs with the original (if both still running) to ensure fidelity.
+
+### 5.7 Hot‑Reload of Environment Components
+
+- The guest agent listens on `virtio-control` for `HotReload` requests.
+- When received, it downloads the new binary from a content‑addressed CAS, verifies its signature and type compatibility, then triggers an atomic update using the kernel’s `inc-compile` service (if the component is a service) or a `kexec`‑style kernel update.
+- The update is logged, and the rollback path is retained.
+
+---
+
+## 6. Formal Verification
+
+Using Axiom, we prove:
+
+- **Capability confinement**: An environment cannot access resources outside its sub‑root capability.
+- **Resource isolation**: The quota tracker prevents resource exhaustion across environments.
+- **Live migration safety**: After migration, the environment’s state is bit‑identical to the state before migration (assuming no device side‑effects).
+- **Record/Replay correctness**: Replaying a recorded log reproduces the exact same sequence of guest outputs and state transitions.
+
+These proofs are integrated into the CI pipeline.
+
+---
+
+## 7. Integration with Other Systems
+
+| Component | Role |
+|-----------|------|
+| `sandbox` (Sanctum) | Creates the vault, enforces hardware isolation. |
+| `p2p` (TransferDaemon) | Transports snapshots during live migration. |
+| `discovery` (Echo) | Locates target hosts for migration. |
+| `audit-log` (Universe) | Stores environment specifications, events, and replay logs. |
+| `observability` | Provides metrics and distributed traces across environments. |
+| `ai-advisor` | Optional: predicts resource needs, suggests migration or scaling. |
+| `inc-compile` | Hot‑reloads services and kernel modules inside the environment. |
+| `validation-mesh` | Runs deterministic replay tests on migrated environments. |
+
+---
+
+## 8. Example Workflow – Full Stack
+
+```bash
+# 1. Create a VM with a development Omnisystem
+build env create --file omni-dev.yaml
+# 2. Start it in deterministic mode
+build env start omni-dev --deterministic --seed 1234
+# 3. Run a command inside
+build env exec omni-dev -- sylva eval 'print("hello from guest")'
+# 4. Create a nested container inside the VM (the guest’s build tool uses virtio-vault)
+build env exec omni-dev -- build env create --type container --name nested --image alpine
+# 5. Execute inside the nested container
+build env exec omni-dev -- build env exec nested -- echo "hello from depth 2"
+# 6. Snapshot the whole nested hierarchy
+build env snapshot omni-dev --name before-upgrade
+# 7. Live migrate the entire hierarchy to another host
+build env migrate omni-dev --target host2
+# 8. Update the guest kernel (hot‑reload)
+build env update omni-dev --service kernel --image uosc-kernel.elf
+# 9. Replay the previous session to verify correctness
+build env replay omni-dev --log-session <id>
+# 10. Destroy
+build env destroy omni-dev
+```
+
+---
+
+## 9. Implementation Roadmap (No Time Phases)
+
+1. **Core vault management** – Extend `sandbox` to support loading ELF payloads and virtio devices.
+2. **Environment specification parser** – Define schema and implement validation.
+3. **Basic CLI** – `create`, `start`, `stop`, `destroy`.
+4. **Virtio devices** – console, control, block, net.
+5. **Guest agent** – to handle `exec`, `shell`, `hot-reload`.
+6. **Resource accounting** – memory, CPU, disk quotas.
+7. **Record & replay** – Tapping virtio queues, storing logs.
+8. **Snapshot & live migration** – Using `p2p` and checkpointing.
+9. **Nested environments** – `virtio-vault` device and recursion.
+10. **AI‑optional advisor** – Feature‑gated, shadow mode.
+11. **Formal verification** – Axiom proofs for core safety properties.
+12. **Integration with observability** – Metrics, logs, tracing.
+
+---
+
+## 10. Conclusion
+
+The **Environment Fabric** turns Sanctum vaults into a universal, self‑service platform for running any kind of isolated execution environment – emulation, simulation, VM, or container – with a single, intuitive CLI. It is deterministic, formally verifiable, hot‑reloadable, and supports live migration and nested environments. By integrating with the Omnisystem’s existing services (sandbox, p2p, audit-log, observability), it provides a sovereign, production‑grade foundation for testing, development, and deployment at any scale. 🚀", "The Environment Fabric blueprint is a strong foundation. To make it truly **next‑generation and bleeding‑edge**, we must layer on capabilities that no other platform offers: fractional, composable resource allocation; true deterministic replay across heterogeneous hardware; instant, zero‑downtime live migration; hot‑swappable environment types; a universal guest agent protocol; recursive snapshot trees; GPU/NPU virtualization with dynamic sharing; and formal proofs of isolation and replay fidelity. Every enhancement is integrated into the `build env` CLI and the underlying Sanctum vaults, while remaining fully AI‑optional.
+
+---
+
+## 1. Fractional Resource Allocation and Over‑Commit Governance
+
+Instead of static CPU and memory limits, the Environment Fabric introduces **fractional shares** and **soft/hard quotas** with predictable over‑commit behavior.
+
+### 1.1 CPU Shares and Hard Limits
+
+```yaml
+resources:
+  cpu:
+    shares: 200          # proportional weight (default 1024)
+    hard_limit: 4.5      # maximum cores (fractional)
+    burst: 1.0           # extra burst capacity for <100ms
+```
+
+- **Shares** are enforced by the UOSC scheduler (CFS). A vault with shares=200 gets twice the CPU time of one with shares=100 when there is contention.
+- **Hard limit** prevents any vault from exceeding a specified core count, even if idle. Fractional cores (e.g., 0.5) map to a single vCPU that is time‑sliced.
+- **Burst** allows a vault to temporarily exceed its hard limit for short intervals, improving responsiveness for bursty workloads.
+
+### 1.2 Memory with Compression and Ballooning
+
+```yaml
+resources:
+  memory:
+    hard_limit: 2048       # MB
+    soft_limit: 1536       # MB – host attempts to reclaim above this
+    balloon: true          # enable virtio‑balloon
+    compression: zstd      # compress cold pages in the vault
+```
+
+- The vault manager can reclaim memory from a guest using virtio‑balloon, pressing the guest’s allocator to free pages.
+- Cold pages are transparently compressed with `zstd` and stored in a host‑side swap area, invisible to the guest.
+
+### 1.3 Over‑Commit Policy
+
+Administrators define a **cluster over‑commit ratio** (e.g., memory 1.5×, CPU 4×). The scheduler monitors actual usage and automatically migrates vaults if a host becomes over‑committed, using live migration. This is governed by a deterministic rule set; AI can recommend adjustments but is not required.
+
+---
+
+## 2. Advanced I/O Virtualization
+
+The Environment Fabric does not stop at virtio; it introduces **hardware‑backed I/O virtualization** for near‑native performance.
+
+### 2.1 SR‑IOV and GPU‑mediated Passthrough
+
+- For network and GPU, the fabric supports **SR‑IOV** (Single Root I/O Virtualization). A physical NIC or GPU is partitioned into Virtual Functions (VFs), and each VF is assigned directly to a vault via a hardware capability.
+- **Fractional GPU (MIG)** : NVIDIA Multi‑Instance GPU allows a single GPU to be partitioned into multiple isolated slices. The `resources.gpu` stanza in the spec requests a slice (e.g., 1g.5gb).
+- **GPU time‑sharing**: When MIG is not available, the `sandbox` service provides a **GPU scheduler** that interleaves kernel submissions from different vaults, enforcing quotas with microsecond granularity.
+
+### 2.2 Persistent Memory and CXL
+
+- Vaults can be given direct access to **persistent memory regions** (e.g., NVDIMM, CXL‑attached memory) as a `persistent_memory` resource.
+- This enables databases or file systems inside the vault to run with zero‑copy persistence.
+
+### 2.3 Unified Memory with GPU
+
+- The USOS unified memory manager (already designed) allows vaults to allocate pages that seamlessly migrate between CPU RAM and GPU VRAM. The vault’s resource specification can include a `gpu_memory` quota that maps to the same unified pool.
+
+---
+
+## 3. Recursive Snapshot Trees and Instant Forking
+
+Snapshots become the fundamental unit of environment lifecycle, not just an afterthought.
+
+### 3.1 Snapshot Trees
+
+Every environment can be **forked** (inspired by `memfork`). The result is a tree of related environments:
+
+```bash
+build env fork prod-db --name test-db --copy-on-write
+```
+
+- The child vault shares all read‑only pages with the parent (copy‑on‑write). Only diverging writes consume new memory.
+- This enables instant cloning of production environments for testing, without duplicating data.
+
+### 3.2 Recursive Snapshots
+
+A snapshot captures not just the top‑level vault but **all nested vaults recursively**, as a single consistent point‑in‑time image. This is possible because nested vaults are children of the parent’s capability tree. The snapshot includes the full capability hierarchy and can be restored as a whole or drilled into to extract a specific nested vault.
+
+### 3.3 Time‑Travel Branches
+
+A snapshot can be tagged and used as a branch point. A developer can “go back” and replay a different sequence of inputs from that point, comparing the results.
+
+```bash
+build env branch prod-db --from-snapshot before-upgrade
+```
+
+The UVM can automatically fuzz both branches to check behavioral equivalence.
+
+---
+
+## 4. Universal Guest Agent Protocol
+
+A single, lightweight agent binary (written in Titan) runs inside every environment, regardless of type. It implements a **gRPC‑like protocol over virtio‑control** with the following services:
+
+- **Exec**: Execute commands, stream stdout/stderr back.
+- **FileSystem**: Transfer files, mount volumes.
+- **Metrics**: Expose CPU, memory, I/O, GPU usage.
+- **HotReload**: Update kernel, services, or the agent itself.
+- **NestedVault**: Create, list, destroy nested vaults (via the guest’s own `build env`).
+- **Snapshot**: Trigger a guest‑coordinated filesystem freeze for consistent snapshots.
+
+The agent is sandboxed with minimal capabilities, and its communication is encrypted and signed.
+
+---
+
+## 5. Deterministic Execution – Full System Replay
+
+Deterministic mode captures **every non‑deterministic input** into a log, enabling perfect replay even for multi‑vCPU guests.
+
+### 5.1 Capturing Non‑Determinism
+
+- **Explicit I/O**: Keyboard, mouse, disk writes, network packets – logged at the virtio device level.
+- **Implicit nondeterminism**: Interrupt arrival times, DMA completion order, and CPUID results are fixed using a virtual machine extension that intercepts and records these events.
+- **Time**: The guest’s time perception is virtualised; the host injects a deterministic virtual clock.
+
+### 5.2 Replay with Verification
+
+- During replay, the recorded input log is fed in, and the output (console, network, disk writes) is compared against the original log. Any divergence immediately flags a regression.
+- The UVM uses this to continuously validate that OS updates, driver conversions, or application changes do not alter behavior.
+
+---
+
+## 6. Live Migration – Zero‑Downtime, Cross‑Cluster
+
+Live migration is not an afterthought; it is built into the vault’s capability model.
+
+### 6.1 Pre‑Copy with Post‑Copy Fallback
+
+- The migration daemon transfers memory pages iteratively while the vault continues to run. Dirty pages are retransmitted until a convergence threshold is reached.
+- If pre‑copy cannot converge, the system switches to **post‑copy**: the vault is briefly paused, only CPU state is transferred, and the rest of memory is fetched on demand from the source host over the `p2p` fabric.
+
+### 6.2 Device State Migration
+
+- **SR‑IOV VF** can be hot‑unplugged and reassigned on the target host, with minimal packet loss.
+- **GPU state** can be migrated by capturing the GPU context (using vendor APIs like NVIDIA’s MIG manager) or by replaying command buffers.
+
+### 6.3 Multi‑Vault Transaction
+
+A `build env` command can migrate an entire hierarchy (parent + nested) atomically, with a single migration token. All nested vaults are paused, snapshotted, transferred, and resumed in a coordinated manner, maintaining the tree structure.
+
+---
+
+## 7. AI‑Optional Predictive Scaling
+
+An optional AI advisor (feature‑gated, shadow mode) observes historical resource usage across the cluster and predicts when a vault will need to scale. It can suggest:
+
+- **Vertical scaling**: Increase memory or CPU shares before the guest hits its limit.
+- **Horizontal scaling**: Fork the vault into a replica set behind a load balancer.
+- **Pre‑emptive migration**: Move a vault to a host that is predicted to have lower load or better hardware affinity.
+
+All suggestions are advisory; the deterministic core enforces quotas and never grants resources beyond the cluster capacity. The advisor’s decisions are logged and audited.
+
+---
+
+## 8. Formal Verification of the Fabric Itself
+
+The entire Environment Fabric is built on the Omnisystem’s capability discipline. Axiom proofs guarantee:
+
+- **Isolation**: A vault cannot access another vault’s memory, I/O, or capabilities.
+- **Resource accounting**: The sum of allocated resources never exceeds the host’s capacity, and fractional allocation converges under over‑commit.
+- **Snapshot consistency**: A recursive snapshot captures a consistent state (i.e., no in‑flight I/O that would corrupt the image).
+- **Replay fidelity**: Replaying a recorded log produces exactly the same sequence of guest‑visible outputs.
+
+These proofs are part of the CI pipeline; any code change that breaks a proof is rejected.
+
+---
+
+## 9. CLI Refinement – Seamless Experience
+
+The `build env` CLI is extended with the following commands, all consistent across environment types:
+
+```bash
+# Create from spec or inline
+build env create --file spec.yaml
+build env create --name my-vm --type vm --memory 2G --image uosc.img
+
+# Start (with deterministic mode, seed, network profile)
+build env start my-vm --deterministic --seed 1234 --network latency=10ms
+
+# Interactive shell
+build env shell my-vm
+
+# Execute command
+build env exec my-vm -- sylva evaluate '1 + 1'
+
+# Live update kernel or services
+build env update my-vm --service kernel --image uosc-kernel.elf
+build env update my-vm --service agent --binary guest-agent
+
+# Resource adjust
+build env scale my-vm --memory 4G --cpus 4
+
+# Snapshot / fork / branch
+build env snapshot my-vm --name before-migration
+build env fork my-vm --name test-clone
+build env branch my-vm --from-snapshot before-migration
+
+# Live migrate
+build env migrate my-vm --target host2
+
+# Replay a previous session
+build env replay my-vm --session-id abc123
+
+# List and filter
+build env list --type vm --state running
+
+# Logs and metrics
+build env logs my-vm --follow
+build env metrics my-vm --cpu --memory --network
+
+# Nested environment management (inside a guest, the same CLI works)
+# The guest’s build tool proxies requests to the host via the guest agent.
+```
+
+All commands are implemented using the capability‑based API; the CLI itself is a Titan binary that communicates with the Environment Fabric service via gRPC or IPC.
+
+---
+
+## 10. Implementation Strategy
+
+The Environment Fabric is implemented as a new service (`env-fabric`) built on top of the existing `sandbox`, `p2p`, and `audit-log`. The core components are:
+
+| Component | Description |
+|-----------|-------------|
+| `env-fabric/manager` | Parses specs, manages lifecycle, enforces quotas. |
+| `env-fabric/payload-builder` | Constructs vault images for each type. |
+| `env-fabric/virtio-provider` | Host‑side virtio device implementations. |
+| `env-fabric/migration` | Handles pre‑copy, post‑copy, and device state transfer. |
+| `env-fabric/snapshot` | Implements recursive snapshot/restore and forking. |
+| `env-fabric/agent` | Guest agent protocol handler (runs inside each vault). |
+| `env-fabric/determinism` | Record/replay engine and virtual clock. |
+| `env-fabric/advisor` | AI‑optional prediction and scaling (feature‑gated). |
+
+All code is written in Titan, except for low‑level hypervisor components which may be in Rust (in the `kernel` crate). The system is fully deterministic; all non‑deterministic operations are gated behind explicit capabilities.
+
+---
+
+## 11. Conclusion
+
+The **Environment Fabric** turns Sanctum vaults into a universal substrate for any type of isolated execution. It provides a single, elegant CLI, deterministic execution and replay, live migration, recursive snapshots, nested environments, and fractional resource management – all backed by formal verification. It is the definitive foundation for development, testing, and production deployment of the entire Omnisystem and beyond. The design is sovereign, AI‑optional, and ready for the next fifty years of computing."

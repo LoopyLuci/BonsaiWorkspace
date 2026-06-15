@@ -1,0 +1,170 @@
+// services/module_registry/mod.ti – Distributed Module Registry (Aether CRDT)
+// Global, decentralized registry of modules with version resolution
+
+module module_registry
+
+use ums::ModuleManifest
+use aether::actor::Actor
+use crdt::map::MapCRDT
+use p2p::mesh::NodeId
+use blake3::Hash
+
+/// Registry entry: tracks all versions of a module
+pub struct ModuleEntry {
+    pub name: String,
+    pub latest_hash: Hash,
+    pub all_versions: Vec<(String, Hash)>,  // version string, hash
+    pub metadata: ModuleManifest,
+    pub revoked: bool,
+}
+
+/// Module registry as an Aether actor
+pub struct ModuleRegistry {
+    pub id: NodeId,
+    pub modules: MapCRDT<String, ModuleEntry>,  // CRDT: name → entry
+    pub local_cas: std::collections::HashMap<Hash, Vec<u8>>,  // CAS storage
+}
+
+impl Actor for ModuleRegistry {
+    async fn on_message(&mut self, msg: RegistryMessage) {
+        match msg {
+            RegistryMessage::Publish { manifest, binary } => {
+                self.publish(manifest, binary).await;
+            }
+            RegistryMessage::Resolve { name, version } => {
+                self.resolve(&name, &version).await;
+            }
+            RegistryMessage::Revoke { name, version } => {
+                self.revoke(&name, &version).await;
+            }
+            RegistryMessage::Gossip { entries } => {
+                self.merge_crdt(entries).await;
+            }
+        }
+    }
+}
+
+pub enum RegistryMessage {
+    Publish {
+        manifest: ModuleManifest,
+        binary: Vec<u8>,
+    },
+    Resolve {
+        name: String,
+        version: String,
+    },
+    Revoke {
+        name: String,
+        version: String,
+    },
+    Gossip {
+        entries: Vec<ModuleEntry>,
+    },
+}
+
+impl ModuleRegistry {
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            modules: MapCRDT::new(),
+            local_cas: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Publish a new module version
+    async fn publish(&mut self, manifest: ModuleManifest, binary: Vec<u8>) {
+        let hash = blake3::hash(&binary);
+
+        // Store binary in local CAS
+        self.local_cas.insert(hash.clone(), binary);
+
+        // Update CRDT entry
+        let mut entry = self.modules.get(&manifest.name)
+            .unwrap_or(ModuleEntry {
+                name: manifest.name.clone(),
+                latest_hash: hash.clone(),
+                all_versions: vec![],
+                metadata: manifest.clone(),
+                revoked: false,
+            });
+
+        entry.all_versions.push((manifest.version.clone(), hash.clone()));
+        entry.latest_hash = hash.clone();
+        entry.metadata = manifest.clone();
+
+        self.modules.insert(manifest.name.clone(), entry);
+
+        // Gossip to mesh
+        self.gossip_to_peers().await;
+    }
+
+    /// Resolve a module name + version to hash
+    async fn resolve(&self, name: &str, version: &str) {
+        let entry = self.modules.get(name);
+
+        if let Some(entry) = entry {
+            if entry.revoked {
+                return;  // Module revoked
+            }
+
+            if version == "latest" {
+                return;  // Return entry.latest_hash
+            } else {
+                // Find exact version
+                let hash = entry.all_versions.iter()
+                    .find(|(v, _)| v == version)
+                    .map(|(_, h)| h);
+                // Return hash
+            }
+        }
+    }
+
+    /// Revoke a module (CRDT tombstone)
+    async fn revoke(&mut self, name: &str, version: &str) {
+        if let Some(mut entry) = self.modules.get(name) {
+            entry.revoked = true;
+            self.modules.insert(name.to_string(), entry);
+            self.gossip_to_peers().await;
+        }
+    }
+
+    /// Merge incoming CRDT entries from peers
+    async fn merge_crdt(&mut self, entries: Vec<ModuleEntry>) {
+        for entry in entries {
+            let existing = self.modules.get(&entry.name);
+
+            // CRDT merge: take maximum version set
+            if let Some(existing) = existing {
+                let mut merged = existing.clone();
+                for (v, h) in entry.all_versions {
+                    if !merged.all_versions.iter().any(|(version, _)| version == &v) {
+                        merged.all_versions.push((v, h));
+                    }
+                }
+                self.modules.insert(entry.name.clone(), merged);
+            } else {
+                self.modules.insert(entry.name.clone(), entry);
+            }
+        }
+    }
+
+    /// Gossip CRDT state to peers
+    async fn gossip_to_peers(&self) {
+        let entries: Vec<_> = self.modules.values().cloned().collect();
+        // Send via p2p gossip
+        // self.p2p.gossip("module-registry.updates", entries).await;
+    }
+}
+
+/// Global registry mesh: run on all nodes
+pub async fn start_registry_mesh() {
+    // Create registry actor on this node
+    let registry = ModuleRegistry::new(get_node_id());
+
+    // Subscribe to gossip from peers
+    // On receiving gossip: registry.on_message(RegistryMessage::Gossip { ... })
+
+    // Serve requests from build tool and UOSC kernel
+    // On http GET /module/resolve?name=foo&version=latest: resolve and return hash
+    // On http POST /module/publish: verify signature, publish
+}

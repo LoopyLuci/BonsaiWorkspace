@@ -1,0 +1,140 @@
+# BonsAI Training Configuration
+# Edit this file to point at your local models and tune hyperparameters.
+# All paths support ~ expansion and environment variable interpolation ($HOME, etc.)
+# CRITICAL: set offline: true to prevent any network calls during training.
+
+offline: true          # Never download weights — enforce HF_HUB_OFFLINE
+
+# ── Model roles ───────────────────────────────────────────────────────────────
+# Discover your models: ls ~/.bonsai/models/ or D:/Models/general/
+# Set student.gguf to the model you want BonsAI to BE after fine-tuning.
+# Set teacher.base_model_dir to the largest model already on disk.
+
+student:
+  # GGUF used for inference after training. Must already be on disk.
+  gguf: "~/.bonsai/models/bonsai-latest.gguf"
+  # HF model directory for the same architecture (needed for gradient training).
+  # finetune.py resolves this automatically from --gguf, but you can override.
+  base_model_dir: null          # null = auto-resolve from GGUF arch
+  # LoRA rank. Higher = more capacity but larger adapter. 16 is a good default.
+  lora_rank: 16
+  lora_alpha: 32
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+teacher:
+  # Largest model on disk — used for knowledge distillation and gap scoring.
+  # Set to null to skip distillation (still runs SFT/DPO from existing data).
+  base_model_dir: null          # e.g. "D:/Models/general/Qwen3-35B-Instruct"
+  # If the teacher is a GGUF for llama-server inference (distill via API):
+  gguf: "D:/Models/general/Qwen3-35B-A22B-Q4_K_M.gguf"
+  llama_server_port: 8080       # port for distillation inference calls
+
+# ── Local model catalogue ─────────────────────────────────────────────────────
+# Windows/AMD 7900 XTX primary training machine model catalogue.
+# See config/model_registry.yaml for the full registry with domain routing.
+local_models:
+  - role: student
+    name: "Bonsai-1.7B-Q4_K"
+    gguf: "~/.bonsai/models/bonsai-latest.gguf"
+    vram_gb: 3
+  - role: teacher
+    name: "Qwen3-35B"
+    gguf: "D:/Models/general/Qwen3-35B-A22B-Q4_K_M.gguf"
+    vram_gb: 22
+  - role: teacher_code
+    name: "DeepSeek-R1-32B"
+    gguf: "D:/Models/coding/DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
+    vram_gb: 20
+  - role: critic
+    name: "Bonsai-0.5B"
+    gguf: "~/.bonsai/models/Bonsai-0.5B.gguf"
+    vram_gb: 1
+
+# ── Training data ─────────────────────────────────────────────────────────────
+data:
+  # Where the export script writes merged training data
+  export_dir: "~/.bonsai/training_export"
+  # SQLite database paths (populated by the app at runtime)
+  chat_db: "~/.bonsai/chat_sessions.db"
+  survival_db: "~/.bonsai/survival_kb.db"
+  cross_training_jsonl: "~/.bonsai/data/cross_training.jsonl"
+  # Curated baseline data always included in every training run
+  baseline_jsonl: "bonsai-workspace/data/bonsai_core/bonsai_core_train_v2.jsonl"
+  # Domain mix targets (fractions, must sum to 1.0)
+  domain_mix:
+    coding: 0.40
+    system_repair: 0.20
+    tool_use: 0.20
+    creative: 0.10
+    general: 0.10
+  # Minimum quality score to include an example (0.0–1.0)
+  min_quality: 0.70
+  # Max examples per training run (prevents OOM on large datasets)
+  max_examples: 20000
+
+# ── SFT (Supervised Fine-Tuning) ─────────────────────────────────────────────
+sft:
+  epochs: 3
+  batch_size: 1
+  grad_accum: 8
+  learning_rate: 0.0002
+  max_seq_len: 512
+  # Trigger when this many new high-quality examples accumulate
+  trigger_after_n_examples: 10000
+
+# ── DPO (Direct Preference Optimisation) ─────────────────────────────────────
+dpo:
+  beta: 0.1
+  epochs: 1
+  batch_size: 1
+  learning_rate: 0.00005
+  # Trigger when this many preference pairs accumulate
+  trigger_after_n_pairs: 500
+
+# ── Knowledge Distillation ────────────────────────────────────────────────────
+distillation:
+  num_prompts: 10000
+  temperature: 1.0        # teacher softmax temperature (higher = softer targets)
+  alpha: 0.5              # weight of KL loss vs cross-entropy loss
+  batch_size: 4
+  # Prompts for distillation are drawn from this file (one per line)
+  prompt_file: "~/.bonsai/training_export/distill_prompts.txt"
+
+# ── Continual (online) learning ───────────────────────────────────────────────
+continual:
+  lora_rank: 8            # smaller adapter for online updates
+  trigger_every_n_interactions: 100
+  max_examples_per_update: 100
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+evaluation:
+  # Path to held-out test set (never used for training)
+  test_jsonl: "bonsai-workspace/data/bonsai_core/bonsai_core_test.jsonl"
+  # Minimum improvement required to promote a new adapter (fraction)
+  min_improvement: 0.01
+  # Maximum regression allowed in any single dimension
+  max_regression: 0.02
+
+# ── Hardware ──────────────────────────────────────────────────────────────────
+hardware:
+  # Primary training machine: Windows 10, Ryzen 9 5900X, RX 7900 XTX (24 GB VRAM).
+  # "auto" detects CUDA → MPS (Apple Silicon) → DirectML (AMD/Intel Windows) → CPU.
+  # Override with "directml" on the Windows AMD machine, "cpu" as last resort.
+  backend: "auto"
+  # AMD RX 7900 XTX has 24 GB GDDR6 — keep a 2 GB buffer for system/driver overhead.
+  max_vram_gb: 22
+  # Only run training when GPU is idle (0 = always train)
+  idle_gpu_utilisation_threshold: 0.20
+  # DirectML note: transformer backward pass is NOT supported on DirectML.
+  # finetune.py and dpo_train.py fall back to CPU automatically when DirectML crashes.
+  # Workaround: pass --device cpu or use WSL2 + ROCm for GPU-accelerated training.
+  directml_fallback_to_cpu: true
+
+# ── Hot reload ────────────────────────────────────────────────────────────────
+hot_reload:
+  # Path watched for zero-downtime model swaps (see hot_reload.rs).
+  watch_path: "~/.bonsai/models/bonsai-latest.gguf"
+  # Poll interval in seconds.
+  poll_interval_secs: 2
+  # Drain grace period before the old slot is killed (seconds).
+  drain_grace_secs: 5

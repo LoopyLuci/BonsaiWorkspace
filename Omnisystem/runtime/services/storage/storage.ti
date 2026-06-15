@@ -1,0 +1,194 @@
+// services/build-storage/storage.ti — Content-addressed persistent storage (CAS)
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_BLOB:    i64 = 9700;
+const TAG_STORAGE: i64 = 9701;
+const TAG_NODE:    i64 = 9702;
+
+// Simple deterministic hash (djb2 variant): processes a list of byte values
+pub fn hash_bytes(buf: i64, len: i64) -> i64 {
+    let h: i64 = 5381;
+    let i: i64 = 0;
+    while i < len {
+        let byte = buf_get(buf, i);
+        h = h * 33 + byte;
+        i = i + 1;
+    }
+    // Return lower 32 bits as positive hash
+    if h < 0 { h = 0 - h; }
+    return h;
+}
+
+// Byte buffer (linked list of bytes)
+const TAG_BUF:  i64 = 9703;
+const TAG_BNODE: i64 = 9704;
+
+pub fn buf_new() -> i64 {
+    let b = heap_alloc_term();
+    heap_set_tag(b, TAG_BUF);
+    heap_set_body(b, 0);   // head
+    heap_set_arg(b, 0);    // length
+    heap_set_domain(b, 0); // tail
+    return b;
+}
+
+pub fn buf_push(b: i64, byte: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_BNODE);
+    heap_set_body(node, byte);
+    heap_set_arg(node, 0);
+    let tail = heap_get_domain(b);
+    if tail == 0 {
+        heap_set_body(b, node);
+        heap_set_domain(b, node);
+    } else {
+        heap_set_arg(tail, node);
+        heap_set_domain(b, node);
+    }
+    heap_set_arg(b, heap_get_arg(b) + 1);
+    return;
+}
+
+pub fn buf_len(b: i64) -> i64 { return heap_get_arg(b); }
+
+pub fn buf_get(b: i64, idx: i64) -> i64 {
+    let cur = heap_get_body(b);
+    let i = 0;
+    while cur != 0 {
+        if i == idx { return heap_get_body(cur); }
+        cur = heap_get_arg(cur);
+        i = i + 1;
+    }
+    return -1;
+}
+
+pub fn bufs_equal(a: i64, b: i64) -> i64 {
+    if buf_len(a) != buf_len(b) { return 0; }
+    let i = 0;
+    while i < buf_len(a) {
+        if buf_get(a, i) != buf_get(b, i) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Blob: body=content_hash, arg=data_buf, domain=size
+pub fn blob_new(data: i64) -> i64 {
+    let h = hash_bytes(data, buf_len(data));
+    let bl = heap_alloc_term();
+    heap_set_tag(bl, TAG_BLOB);
+    heap_set_body(bl, h);
+    heap_set_arg(bl, data);
+    heap_set_domain(bl, buf_len(data));
+    return bl;
+}
+
+pub fn blob_hash(bl: i64) -> i64 { return heap_get_body(bl); }
+pub fn blob_size(bl: i64) -> i64 { return heap_get_domain(bl); }
+pub fn blob_data(bl: i64) -> i64 { return heap_get_arg(bl); }
+
+// Storage: body=entry_list_head, arg=0, domain=total_size
+let g_storage_head: i64 = 0;
+let g_storage_size: i64 = 0;
+let g_storage_count: i64 = 0;
+
+pub fn storage_new() -> i64 {
+    g_storage_head = 0;
+    g_storage_size = 0;
+    g_storage_count = 0;
+    return 1;
+}
+
+pub fn storage_store(blob: i64) -> i64 {
+    let h = blob_hash(blob);
+    // Check for duplicate (deduplication)
+    let cur = g_storage_head;
+    while cur != 0 {
+        let bl = heap_get_body(cur);
+        if blob_hash(bl) == h { return h; }  // already stored
+        cur = heap_get_arg(cur);
+    }
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, blob);
+    heap_set_arg(node, g_storage_head);
+    g_storage_head = node;
+    g_storage_size = g_storage_size + blob_size(blob);
+    g_storage_count = g_storage_count + 1;
+    return h;
+}
+
+pub fn storage_retrieve(h: i64) -> i64 {
+    let cur = g_storage_head;
+    while cur != 0 {
+        let bl = heap_get_body(cur);
+        if blob_hash(bl) == h { return bl; }
+        cur = heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn storage_exists(h: i64) -> i64 {
+    if storage_retrieve(h) < 0 { return 0; }
+    return 1;
+}
+
+pub fn storage_total_size() -> i64 { return g_storage_size; }
+pub fn storage_count() -> i64 { return g_storage_count; }
+
+pub fn main() -> i64 {
+    storage_new();
+
+    // Test 1: hash produces non-zero value
+    let buf1 = buf_new();
+    buf_push(buf1, 104); buf_push(buf1, 101); buf_push(buf1, 108);
+    let h1 = hash_bytes(buf1, 3);
+    if h1 == 0 { return 1; }
+
+    // Test 2: blob creation
+    let buf2 = buf_new();
+    buf_push(buf2, 1); buf_push(buf2, 2); buf_push(buf2, 3);
+    let bl2 = blob_new(buf2);
+    if blob_size(bl2) != 3 { return 2; }
+
+    // Test 3: store and retrieve
+    let buf3 = buf_new();
+    buf_push(buf3, 65); buf_push(buf3, 66);  // "AB"
+    let bl3 = blob_new(buf3);
+    let key3 = storage_store(bl3);
+    if storage_exists(key3) != 1 { return 3; }
+    let retrieved = storage_retrieve(key3);
+    if retrieved < 0 { return 4; }
+
+    // Test 4: total size
+    storage_new();
+    let b4a = buf_new(); buf_push(b4a, 1); buf_push(b4a, 2); buf_push(b4a, 3); buf_push(b4a, 4); buf_push(b4a, 5);
+    let b4b = buf_new(); buf_push(b4b, 6); buf_push(b4b, 7); buf_push(b4b, 8); buf_push(b4b, 9); buf_push(b4b, 10);
+    storage_store(blob_new(b4a));
+    storage_store(blob_new(b4b));
+    if storage_total_size() != 10 { return 5; }
+
+    // Test 5: blob count
+    storage_new();
+    storage_store(blob_new(buf_new()));  // empty blob
+    let ba = buf_new(); buf_push(ba, 1);
+    let bb = buf_new(); buf_push(bb, 2);
+    let bc = buf_new(); buf_push(bc, 3);
+    storage_store(blob_new(ba));
+    storage_store(blob_new(bb));
+    storage_store(blob_new(bc));
+    if storage_count() != 4 { return 6; }
+
+    return 0;
+}

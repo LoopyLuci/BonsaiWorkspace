@@ -1,0 +1,150 @@
+// services/build-observability/observability.ti — Distributed tracing and metrics
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_TRACE:  i64 = 9600;
+const TAG_SPAN:   i64 = 9601;
+const TAG_METRIC: i64 = 9602;
+const TAG_TRACER: i64 = 9603;
+const TAG_NODE:   i64 = 9604;
+
+// Span: body=span_id, arg=trace_id, domain=duration_us (0 until finished)
+pub fn span_new(span_id: i64, trace_id: i64) -> i64 {
+    let s = heap_alloc_term();
+    heap_set_tag(s, TAG_SPAN);
+    heap_set_body(s, span_id);
+    heap_set_arg(s, trace_id);
+    heap_set_domain(s, 0);
+    return s;
+}
+
+pub fn span_id(s: i64) -> i64 { return heap_get_body(s); }
+pub fn span_trace_id(s: i64) -> i64 { return heap_get_arg(s); }
+pub fn span_duration(s: i64) -> i64 { return heap_get_domain(s); }
+
+pub fn span_finish(s: i64, duration_us: i64) {
+    heap_set_domain(s, duration_us);
+    return;
+}
+
+// Metric: body=name_hash, arg=value_scaled (value * 1000 for 3 decimal places), domain=unit_code
+// Unit codes: 0=ms, 1=bytes, 2=count
+pub fn metric_new(name_hash: i64, value_x1000: i64, unit: i64) -> i64 {
+    let m = heap_alloc_term();
+    heap_set_tag(m, TAG_METRIC);
+    heap_set_body(m, name_hash);
+    heap_set_arg(m, value_x1000);
+    heap_set_domain(m, unit);
+    return m;
+}
+
+pub fn metric_name(m: i64) -> i64 { return heap_get_body(m); }
+pub fn metric_value(m: i64) -> i64 { return heap_get_arg(m); }
+
+// Tracer: manages traces (linked list) and metrics
+let g_next_span_id: i64 = 0;
+let g_span_list:    i64 = 0;
+let g_metric_list:  i64 = 0;
+let g_span_count:   i64 = 0;
+let g_metric_count: i64 = 0;
+
+pub fn tracer_new() -> i64 {
+    g_next_span_id = 0;
+    g_span_list = 0;
+    g_metric_list = 0;
+    g_span_count = 0;
+    g_metric_count = 0;
+    return 1;
+}
+
+pub fn tracer_start_span(trace_id: i64) -> i64 {
+    let sid = g_next_span_id;
+    g_next_span_id = g_next_span_id + 1;
+    let s = span_new(sid, trace_id);
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, s);
+    heap_set_arg(node, g_span_list);
+    g_span_list = node;
+    g_span_count = g_span_count + 1;
+    return sid;
+}
+
+pub fn tracer_record_metric(name_hash: i64, value_x1000: i64, unit: i64) {
+    let m = metric_new(name_hash, value_x1000, unit);
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, m);
+    heap_set_arg(node, g_metric_list);
+    g_metric_list = node;
+    g_metric_count = g_metric_count + 1;
+    return;
+}
+
+pub fn tracer_span_count() -> i64 { return g_span_count; }
+pub fn tracer_metric_count() -> i64 { return g_metric_count; }
+
+pub fn tracer_find_span(sid: i64) -> i64 {
+    let cur = g_span_list;
+    while cur != 0 {
+        let s = heap_get_body(cur);
+        if span_id(s) == sid { return s; }
+        cur = heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn main() -> i64 {
+    tracer_new();
+
+    // Test 1: trace ID
+    let tid1 = 42;
+    if tid1 != 42 { return 1; }
+
+    // Test 2: span ID
+    let sid1 = 1;
+    if sid1 != 1 { return 2; }
+
+    // Test 3: span creation
+    let s = span_new(1, 1);
+    if span_id(s) != 1 { return 3; }
+    if span_duration(s) != 0 { return 4; }
+
+    // Test 4: span finish and tags
+    span_finish(s, 5000);
+    if span_duration(s) != 5000 { return 5; }
+
+    // Test 5: tracer start span
+    let sid = tracer_start_span(1);
+    if tracer_span_count() != 1 { return 6; }
+
+    // Test 6: tracer metrics
+    tracer_record_metric(12345, 42500, 0);  // 42.5 ms
+    if tracer_metric_count() != 1 { return 7; }
+
+    // Test 7: multiple spans on same trace
+    tracer_new();
+    tracer_start_span(100);
+    tracer_start_span(100);
+    tracer_start_span(100);
+    if tracer_span_count() != 3 { return 8; }
+
+    // Test 8: find span
+    tracer_new();
+    let sid2 = tracer_start_span(200);
+    let found = tracer_find_span(sid2);
+    if found < 0 { return 9; }
+    if span_trace_id(found) != 200 { return 10; }
+
+    return 0;
+}

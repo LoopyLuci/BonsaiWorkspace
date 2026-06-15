@@ -1,0 +1,488 @@
+module omnisystem.monitoring.system_monitor
+
+# System Monitoring & Observability Infrastructure
+# Comprehensive monitoring for CPU, GPU, Memory, and Network
+
+# ============================================================================
+# SYSTEM METRICS COLLECTION
+# ============================================================================
+
+type SystemMetrics = struct {
+    timestamp: u64,
+
+    # CPU Metrics
+    cpu_utilization: f64,           // 0.0-1.0
+    cpu_user_time: u64,             // microseconds
+    cpu_system_time: u64,
+    cpu_idle_time: u64,
+    context_switches: u64,
+
+    # GPU Metrics
+    gpu_utilization: f64,
+    gpu_memory_used: u64,           // bytes
+    gpu_memory_free: u64,
+    gpu_temperature_celsius: f64,
+    gpu_power_watts: f64,
+
+    # Memory Metrics
+    memory_total: u64,              // bytes
+    memory_used: u64,
+    memory_free: u64,
+    memory_cached: u64,
+    swap_used: u64,
+    swap_free: u64,
+
+    # Network Metrics
+    network_rx_bytes: u64,          // bytes
+    network_tx_bytes: u64,
+    network_rx_packets: u64,
+    network_tx_packets: u64,
+    network_errors: u64,
+
+    # Process Metrics
+    process_count: u32,
+    thread_count: u32,
+    file_descriptors: u32,
+
+    # System Health
+    load_average_1min: f64,
+    load_average_5min: f64,
+    load_average_15min: f64,
+    uptime_seconds: u64,
+}
+
+# ============================================================================
+# METRICS COLLECTOR
+# ============================================================================
+
+type MetricsCollector = struct {
+    current_metrics: SystemMetrics,
+    previous_metrics: SystemMetrics,
+
+    history: Vec<SystemMetrics>,
+    max_history: usize,
+
+    collection_interval_ms: u64,
+    last_collection_time: u64,
+
+    total_samples: u64,
+    dropped_samples: u64,
+}
+
+impl MetricsCollector {
+    fun new(interval_ms: u64, max_history: usize) -> Self {
+        MetricsCollector {
+            current_metrics: create_empty_metrics(),
+            previous_metrics: create_empty_metrics(),
+            history: Vec::new(),
+            max_history,
+            collection_interval_ms: interval_ms,
+            last_collection_time: 0,
+            total_samples: 0,
+            dropped_samples: 0,
+        }
+    }
+
+    fun collect_metrics(&mut self) -> Result<(), string> {
+        let now = get_timestamp()
+
+        if now - self.last_collection_time < self.collection_interval_ms as u64 {
+            self.dropped_samples += 1
+            return Ok(())
+        }
+
+        // Shift current to previous
+        self.previous_metrics = self.current_metrics.clone()
+
+        // Collect new metrics
+        self.current_metrics = SystemMetrics {
+            timestamp: now,
+            cpu_utilization: read_cpu_utilization()?,
+            cpu_user_time: read_cpu_user_time()?,
+            cpu_system_time: read_cpu_system_time()?,
+            cpu_idle_time: read_cpu_idle_time()?,
+            context_switches: read_context_switches()?,
+
+            gpu_utilization: read_gpu_utilization()?,
+            gpu_memory_used: read_gpu_memory_used()?,
+            gpu_memory_free: read_gpu_memory_free()?,
+            gpu_temperature_celsius: read_gpu_temperature()?,
+            gpu_power_watts: read_gpu_power()?,
+
+            memory_total: read_memory_total()?,
+            memory_used: read_memory_used()?,
+            memory_free: read_memory_free()?,
+            memory_cached: read_memory_cached()?,
+            swap_used: read_swap_used()?,
+            swap_free: read_swap_free()?,
+
+            network_rx_bytes: read_network_rx_bytes()?,
+            network_tx_bytes: read_network_tx_bytes()?,
+            network_rx_packets: read_network_rx_packets()?,
+            network_tx_packets: read_network_tx_packets()?,
+            network_errors: read_network_errors()?,
+
+            process_count: read_process_count()?,
+            thread_count: read_thread_count()?,
+            file_descriptors: read_file_descriptors()?,
+
+            load_average_1min: read_load_average_1min()?,
+            load_average_5min: read_load_average_5min()?,
+            load_average_15min: read_load_average_15min()?,
+            uptime_seconds: read_uptime()?,
+        }
+
+        // Store in history
+        self.history.push(self.current_metrics.clone())
+        if self.history.len() > self.max_history {
+            self.history.remove(0)
+        }
+
+        self.total_samples += 1
+        self.last_collection_time = now
+
+        Ok(())
+    }
+
+    fun get_cpu_rate(&self) -> f64 {
+        let dt = (self.current_metrics.timestamp - self.previous_metrics.timestamp) as f64
+        if dt <= 0.0 { return 0.0 }
+
+        let user_delta = (self.current_metrics.cpu_user_time - self.previous_metrics.cpu_user_time) as f64
+        let system_delta = (self.current_metrics.cpu_system_time - self.previous_metrics.cpu_system_time) as f64
+
+        ((user_delta + system_delta) / dt).min(1.0)  // Clamp to 1.0
+    }
+
+    fun get_memory_utilization(&self) -> f64 {
+        if self.current_metrics.memory_total == 0 {
+            return 0.0
+        }
+
+        (self.current_metrics.memory_used as f64) / (self.current_metrics.memory_total as f64)
+    }
+
+    fun get_network_throughput(&self) -> (u64, u64) {
+        // RX/TX bytes per second
+        let dt = (self.current_metrics.timestamp - self.previous_metrics.timestamp).max(1);
+
+        let rx_rate = (self.current_metrics.network_rx_bytes - self.previous_metrics.network_rx_bytes) / dt;
+        let tx_rate = (self.current_metrics.network_tx_bytes - self.previous_metrics.network_tx_bytes) / dt;
+
+        (rx_rate, tx_rate)
+    }
+
+    fun get_avg_metrics(&self, samples: usize) -> AverageMetrics {
+        if self.history.is_empty() {
+            return AverageMetrics::default()
+        }
+
+        let sample_count = samples.min(self.history.len())
+        let start_idx = self.history.len() - sample_count
+
+        let mut avg = AverageMetrics {
+            cpu_utilization: 0.0,
+            gpu_utilization: 0.0,
+            memory_utilization: 0.0,
+            load_average: 0.0,
+        }
+
+        for i in start_idx..self.history.len() {
+            avg.cpu_utilization += self.history[i].cpu_utilization
+            avg.gpu_utilization += self.history[i].gpu_utilization
+            avg.memory_utilization += (self.history[i].memory_used as f64 / self.history[i].memory_total.max(1) as f64)
+            avg.load_average += self.history[i].load_average_1min
+        }
+
+        avg.cpu_utilization /= sample_count as f64
+        avg.gpu_utilization /= sample_count as f64
+        avg.memory_utilization /= sample_count as f64
+        avg.load_average /= sample_count as f64
+
+        avg
+    }
+
+    fun check_thresholds(&self) -> Vec<AlertCondition> {
+        let mut alerts = Vec::new()
+
+        if self.current_metrics.cpu_utilization > 0.9 {
+            alerts.push(AlertCondition {
+                severity: AlertSeverity::High,
+                message: format!("CPU utilization {:.1}%", self.current_metrics.cpu_utilization * 100.0),
+            })
+        }
+
+        if self.current_metrics.gpu_utilization > 0.9 {
+            alerts.push(AlertCondition {
+                severity: AlertSeverity::High,
+                message: format!("GPU utilization {:.1}%", self.current_metrics.gpu_utilization * 100.0),
+            })
+        }
+
+        let mem_util = self.get_memory_utilization()
+        if mem_util > 0.95 {
+            alerts.push(AlertCondition {
+                severity: AlertSeverity::Critical,
+                message: format!("Memory utilization {:.1}%", mem_util * 100.0),
+            })
+        }
+
+        if self.current_metrics.gpu_temperature_celsius > 85.0 {
+            alerts.push(AlertCondition {
+                severity: AlertSeverity::High,
+                message: format!("GPU temperature {:.1}°C", self.current_metrics.gpu_temperature_celsius),
+            })
+        }
+
+        if self.current_metrics.gpu_power_watts > 350.0 {
+            alerts.push(AlertCondition {
+                severity: AlertSeverity::Medium,
+                message: format!("GPU power {:.1}W", self.current_metrics.gpu_power_watts),
+            })
+        }
+
+        alerts
+    }
+
+    fun print_dashboard(&self) {
+        println!("═════════════════════════════════════════════════════");
+        println!("OMNISYSTEM MONITORING DASHBOARD");
+        println!("═════════════════════════════════════════════════════");
+        println!();
+
+        println!("CPU:");
+        println!("  Utilization:         {:.1}%", self.current_metrics.cpu_utilization * 100.0);
+        println!("  Load (1min):         {:.2}", self.current_metrics.load_average_1min);
+        println!("  Context Switches:    {}", self.current_metrics.context_switches);
+        println!();
+
+        println!("GPU:");
+        println!("  Utilization:         {:.1}%", self.current_metrics.gpu_utilization * 100.0);
+        println!("  Memory:              {:.1}GB / {:.1}GB",
+                 (self.current_metrics.gpu_memory_used as f64) / 1e9,
+                 ((self.current_metrics.gpu_memory_used + self.current_metrics.gpu_memory_free) as f64) / 1e9);
+        println!("  Temperature:         {:.1}°C", self.current_metrics.gpu_temperature_celsius);
+        println!("  Power:               {:.1}W", self.current_metrics.gpu_power_watts);
+        println!();
+
+        println!("Memory:");
+        let mem_util = self.get_memory_utilization();
+        println!("  Utilization:         {:.1}%", mem_util * 100.0);
+        println!("  Used:                {:.1}GB", (self.current_metrics.memory_used as f64) / 1e9);
+        println!("  Free:                {:.1}GB", (self.current_metrics.memory_free as f64) / 1e9);
+        println!();
+
+        let (rx, tx) = self.get_network_throughput()
+        println!("Network:");
+        println!("  RX:                  {:.1} MB/s", (rx as f64) / 1e6);
+        println!("  TX:                  {:.1} MB/s", (tx as f64) / 1e6);
+        println!();
+
+        println!("System:");
+        println!("  Processes:           {}", self.current_metrics.process_count);
+        println!("  Threads:             {}", self.current_metrics.thread_count);
+        println!("  Uptime:              {} hours", self.current_metrics.uptime_seconds / 3600);
+
+        println!("═════════════════════════════════════════════════════");
+    }
+}
+
+# ============================================================================
+# ALERT MANAGEMENT
+# ============================================================================
+
+enum AlertSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+type AlertCondition = struct {
+    severity: AlertSeverity,
+    message: string,
+}
+
+type AlertManager = struct {
+    active_alerts: Vec<AlertCondition>,
+    alert_history: Vec<AlertCondition>,
+    max_history: usize,
+    alert_count: u64,
+}
+
+impl AlertManager {
+    fun new(max_history: usize) -> Self {
+        AlertManager {
+            active_alerts: Vec::new(),
+            alert_history: Vec::new(),
+            max_history,
+            alert_count: 0,
+        }
+    }
+
+    fun process_alerts(&mut self, conditions: Vec<AlertCondition>) {
+        self.active_alerts.clear()
+
+        for condition in conditions {
+            self.active_alerts.push(condition.clone())
+            self.alert_history.push(condition)
+            self.alert_count += 1
+
+            if self.alert_history.len() > self.max_history {
+                self.alert_history.remove(0)
+            }
+        }
+    }
+
+    fun has_critical_alerts(&self) -> bool {
+        self.active_alerts.iter().any(|a| matches!(a.severity, AlertSeverity::Critical))
+    }
+
+    fun get_alert_count(&self, severity: AlertSeverity) -> u32 {
+        self.active_alerts.iter()
+            .filter(|a| matches!((a.severity, &severity),
+                               (AlertSeverity::Critical, AlertSeverity::Critical) |
+                               (AlertSeverity::High, AlertSeverity::High) |
+                               (AlertSeverity::Medium, AlertSeverity::Medium) |
+                               (AlertSeverity::Low, AlertSeverity::Low)))
+            .count() as u32
+    }
+}
+
+type AverageMetrics = struct {
+    cpu_utilization: f64,
+    gpu_utilization: f64,
+    memory_utilization: f64,
+    load_average: f64,
+}
+
+impl Default for AverageMetrics {
+    fn default() -> Self {
+        AverageMetrics {
+            cpu_utilization: 0.0,
+            gpu_utilization: 0.0,
+            memory_utilization: 0.0,
+            load_average: 0.0,
+        }
+    }
+}
+
+impl Clone for SystemMetrics {
+    fn clone(&self) -> Self {
+        SystemMetrics {
+            timestamp: self.timestamp,
+            cpu_utilization: self.cpu_utilization,
+            cpu_user_time: self.cpu_user_time,
+            cpu_system_time: self.cpu_system_time,
+            cpu_idle_time: self.cpu_idle_time,
+            context_switches: self.context_switches,
+            gpu_utilization: self.gpu_utilization,
+            gpu_memory_used: self.gpu_memory_used,
+            gpu_memory_free: self.gpu_memory_free,
+            gpu_temperature_celsius: self.gpu_temperature_celsius,
+            gpu_power_watts: self.gpu_power_watts,
+            memory_total: self.memory_total,
+            memory_used: self.memory_used,
+            memory_free: self.memory_free,
+            memory_cached: self.memory_cached,
+            swap_used: self.swap_used,
+            swap_free: self.swap_free,
+            network_rx_bytes: self.network_rx_bytes,
+            network_tx_bytes: self.network_tx_bytes,
+            network_rx_packets: self.network_rx_packets,
+            network_tx_packets: self.network_tx_packets,
+            network_errors: self.network_errors,
+            process_count: self.process_count,
+            thread_count: self.thread_count,
+            file_descriptors: self.file_descriptors,
+            load_average_1min: self.load_average_1min,
+            load_average_5min: self.load_average_5min,
+            load_average_15min: self.load_average_15min,
+            uptime_seconds: self.uptime_seconds,
+        }
+    }
+}
+
+impl Clone for AlertCondition {
+    fn clone(&self) -> Self {
+        AlertCondition {
+            severity: match &self.severity {
+                AlertSeverity::Low => AlertSeverity::Low,
+                AlertSeverity::Medium => AlertSeverity::Medium,
+                AlertSeverity::High => AlertSeverity::High,
+                AlertSeverity::Critical => AlertSeverity::Critical,
+            },
+            message: self.message.clone(),
+        }
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fn create_empty_metrics() -> SystemMetrics {
+    SystemMetrics {
+        timestamp: 0,
+        cpu_utilization: 0.0,
+        cpu_user_time: 0,
+        cpu_system_time: 0,
+        cpu_idle_time: 0,
+        context_switches: 0,
+        gpu_utilization: 0.0,
+        gpu_memory_used: 0,
+        gpu_memory_free: 0,
+        gpu_temperature_celsius: 0.0,
+        gpu_power_watts: 0.0,
+        memory_total: 0,
+        memory_used: 0,
+        memory_free: 0,
+        memory_cached: 0,
+        swap_used: 0,
+        swap_free: 0,
+        network_rx_bytes: 0,
+        network_tx_bytes: 0,
+        network_rx_packets: 0,
+        network_tx_packets: 0,
+        network_errors: 0,
+        process_count: 0,
+        thread_count: 0,
+        file_descriptors: 0,
+        load_average_1min: 0.0,
+        load_average_5min: 0.0,
+        load_average_15min: 0.0,
+        uptime_seconds: 0,
+    }
+}
+
+fn get_timestamp() -> u64 { 0 }
+
+// Stub functions for metrics reading
+fn read_cpu_utilization() -> Result<f64, string> { Ok(0.0) }
+fn read_cpu_user_time() -> Result<u64, string> { Ok(0) }
+fn read_cpu_system_time() -> Result<u64, string> { Ok(0) }
+fn read_cpu_idle_time() -> Result<u64, string> { Ok(0) }
+fn read_context_switches() -> Result<u64, string> { Ok(0) }
+fn read_gpu_utilization() -> Result<f64, string> { Ok(0.0) }
+fn read_gpu_memory_used() -> Result<u64, string> { Ok(0) }
+fn read_gpu_memory_free() -> Result<u64, string> { Ok(0) }
+fn read_gpu_temperature() -> Result<f64, string> { Ok(0.0) }
+fn read_gpu_power() -> Result<f64, string> { Ok(0.0) }
+fn read_memory_total() -> Result<u64, string> { Ok(0) }
+fn read_memory_used() -> Result<u64, string> { Ok(0) }
+fn read_memory_free() -> Result<u64, string> { Ok(0) }
+fn read_memory_cached() -> Result<u64, string> { Ok(0) }
+fn read_swap_used() -> Result<u64, string> { Ok(0) }
+fn read_swap_free() -> Result<u64, string> { Ok(0) }
+fn read_network_rx_bytes() -> Result<u64, string> { Ok(0) }
+fn read_network_tx_bytes() -> Result<u64, string> { Ok(0) }
+fn read_network_rx_packets() -> Result<u64, string> { Ok(0) }
+fn read_network_tx_packets() -> Result<u64, string> { Ok(0) }
+fn read_network_errors() -> Result<u64, string> { Ok(0) }
+fn read_process_count() -> Result<u32, string> { Ok(0) }
+fn read_thread_count() -> Result<u32, string> { Ok(0) }
+fn read_file_descriptors() -> Result<u32, string> { Ok(0) }
+fn read_load_average_1min() -> Result<f64, string> { Ok(0.0) }
+fn read_load_average_5min() -> Result<f64, string> { Ok(0.0) }
+fn read_load_average_15min() -> Result<f64, string> { Ok(0.0) }
+fn read_uptime() -> Result<u64, string> { Ok(0) }

@@ -1,0 +1,162 @@
+// adapters/mistral_adapter.ti – Mistral AI adapter
+module omnisystem::adapters::mistral
+
+use omnisystem::ai::provider::{AiProvider, Message, ChatConfig, ChatResponse, Usage, StreamHandle, StreamChunk}
+use omnisystem::secrets::SecretsVault
+use http::client::HttpClient
+use async::async_trait
+use serde_json
+
+pub struct MistralAdapter {
+    secret_name: String,
+    secrets: Arc<SecretsVault>,
+    http: HttpClient,
+    base_url: String,
+}
+
+impl MistralAdapter {
+    pub fn new(secret_name: &str, secrets: Arc<SecretsVault>) -> Self {
+        Self {
+            secret_name: secret_name.to_string(),
+            secrets,
+            http: HttpClient::new(),
+            base_url: "https://api.mistral.ai/v1".to_string(),
+        }
+    }
+
+    fn get_api_key(&self) -> Result<String, String> {
+        self.secrets.get_secret("default", &self.secret_name, None)
+            .map(|bytes| String::from_utf8(bytes).unwrap_or_default())
+    }
+}
+
+#[async_trait]
+impl AiProvider for MistralAdapter {
+    fn name(&self) -> &str { "mistral" }
+    fn display_name(&self) -> &str { "Mistral AI" }
+    fn supports_streaming(&self) -> bool { true }
+
+    fn list_models(&self) -> Vec<String> {
+        vec![
+            "mistral-large".to_string(),
+            "mistral-medium".to_string(),
+            "mistral-small".to_string(),
+            "mistral-tiny".to_string(),
+        ]
+    }
+
+    fn cost_per_token(&self, model: &str) -> (f64, f64) {
+        match model {
+            m if m.contains("large") => (2.0, 6.0),
+            m if m.contains("medium") => (0.27, 0.81),
+            m if m.contains("small") => (0.14, 0.42),
+            m if m.contains("tiny") => (0.14, 0.42),
+            _ => (0.27, 0.81),
+        }
+    }
+
+    async fn chat(&self, messages: &[Message], config: &ChatConfig) -> Result<ChatResponse, String> {
+        let api_key = self.get_api_key()?;
+
+        let formatted_messages: Vec<Value> = messages.iter()
+            .map(|m| json!({
+                "role": if m.role == "system" { "system" } else if m.role == "user" { "user" } else { "assistant" },
+                "content": m.content
+            }))
+            .collect();
+
+        let body = json!({
+            "model": config.model,
+            "messages": formatted_messages,
+            "temperature": config.temperature,
+            "top_p": config.top_p,
+            "max_tokens": config.max_tokens,
+        });
+
+        let response = self.http.post(&self.base_url + "/chat/completions", &body, "")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .send().await?;
+
+        let data: Value = serde_json::from_str(&response)?;
+
+        let content = data["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        let input_tokens = data["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+        let output_tokens = data["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+
+        Ok(ChatResponse {
+            content,
+            provider: self.name().to_string(),
+            model: config.model.clone(),
+            confidence: 0.92,
+            usage: Usage {
+                input_tokens,
+                output_tokens,
+                total_tokens: input_tokens + output_tokens,
+            },
+            finish_reason: data["choices"][0]["finish_reason"].as_str().unwrap_or("stop").to_string(),
+            metadata: map!{},
+        })
+    }
+
+    async fn stream_chat(&self, messages: &[Message], config: &ChatConfig) -> Result<StreamHandle, String> {
+        let api_key = self.get_api_key()?;
+        let (tx, rx) = async_channel::unbounded();
+
+        let formatted_messages: Vec<Value> = messages.iter()
+            .map(|m| json!({
+                "role": if m.role == "system" { "system" } else if m.role == "user" { "user" } else { "assistant" },
+                "content": m.content
+            }))
+            .collect();
+
+        let body = json!({
+            "model": config.model,
+            "messages": formatted_messages,
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+            "stream": true,
+        });
+
+        let http_clone = self.http.clone();
+        let base_url = self.base_url.clone();
+        let auth_header = format!("Bearer {}", api_key);
+
+        spawn(async move {
+            if let Ok(stream) = http_clone.post_stream(&base_url + "/chat/completions", &body, "")
+                .header("Authorization", auth_header)
+                .send_stream().await {
+                for chunk in stream.lines() {
+                    if chunk.starts_with("data: ") {
+                        let json_str = &chunk[6..];
+                        if let Ok(json) = serde_json::from_str::<Value>(json_str) {
+                            if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                                let is_final = json["choices"][0]["finish_reason"].is_string();
+                                let _ = tx.send(StreamChunk {
+                                    delta: delta.to_string(),
+                                    finish_reason: None,
+                                    is_final,
+                                }).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(StreamHandle { receiver: rx })
+    }
+
+    async fn health_check(&self) -> Result<(), String> {
+        let api_key = self.get_api_key()?;
+        let url = format!("{}/models", self.base_url);
+        self.http.get(&url, "")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send().await?;
+        Ok(())
+    }
+}

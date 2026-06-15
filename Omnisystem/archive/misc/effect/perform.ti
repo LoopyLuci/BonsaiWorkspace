@@ -1,0 +1,186 @@
+// effect/perform.ti — Unified effect perform interface
+// Single entry point for all effectful operations in all four Omni-languages.
+// Titan, Sylva, Aether, and Axiom all call perform() at effect sites;
+// the active handler on the stack determines what actually happens.
+// This module is the canonical location for effect definitions and dispatch.
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+// ── Effect identifiers ────────────────────────────────────────────────────
+const EFF_PURE:   i64 = 0;    // no effect (pure)
+const EFF_IO:     i64 = 1;    // console, file, process I/O
+const EFF_GPU:    i64 = 2;    // GPU computation
+const EFF_MEM:    i64 = 4;    // heap allocation
+const EFF_RACE:   i64 = 8;    // shared-state concurrency
+const EFF_HW:     i64 = 16;   // hardware access (MMIO, DMA)
+const EFF_NET:    i64 = 32;   // network I/O
+const EFF_FS:     i64 = 64;   // filesystem
+const EFF_RAND:   i64 = 128;  // randomness
+const EFF_TIME:   i64 = 256;  // time queries
+const EFF_IPC:    i64 = 512;  // inter-process communication
+
+// Composite effect sets (frequently used)
+const EFF_SYS:    i64 = 77;   // IO | HW | NET | IPC subset for system services
+const EFF_ALL:    i64 = 1023; // all effects (only the kernel may hold this)
+
+// ── Handler tags ──────────────────────────────────────────────────────────
+const TAG_HANDLER: i64 = 68400;
+const TAG_HSTACK:  i64 = 68401;
+const TAG_LOG:     i64 = 68402;
+
+// ── Handler kinds ─────────────────────────────────────────────────────────
+const HK_REAL:    i64 = 0;   // pass through to kernel
+const HK_SANDBOX: i64 = 1;   // deny effects not in mask
+const HK_LOG:     i64 = 2;   // record + forward
+const HK_MOCK:    i64 = 3;   // return canned value, no I/O
+
+// ── Handler record: body=kind, arg=allowed_mask, domain=stats ─────────────
+pub fn handler_new(kind:i64, mask:i64) -> i64 {
+    let h=heap_alloc_term(); heap_set_tag(h,TAG_HANDLER);
+    heap_set_body(h,kind); heap_set_arg(h,mask); heap_set_domain(h,0); return h;
+}
+pub fn handler_kind(h:i64) -> i64 { return heap_get_body(h); }
+pub fn handler_mask(h:i64) -> i64 { return heap_get_arg(h); }
+
+// ── Per-task handler stack ────────────────────────────────────────────────
+let g_hstack:  i64 = 0;
+let g_hdepth:  i64 = 0;
+let g_log_head: i64 = 0;
+let g_log_len:  i64 = 0;
+
+pub fn effect_reset() { g_hstack=0; g_hdepth=0; g_log_head=0; g_log_len=0; return; }
+
+pub fn with_handler(h:i64) {
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_HSTACK);
+    heap_set_body(n,h); heap_set_arg(n,g_hstack);
+    g_hstack=n; g_hdepth=g_hdepth+1;
+    return;
+}
+
+pub fn drop_handler() {
+    if g_hstack==0 { return; }
+    g_hstack=heap_get_arg(g_hstack); g_hdepth=g_hdepth-1;
+    return;
+}
+
+pub fn current_handler() -> i64 {
+    if g_hstack==0 { return -1; }
+    return heap_get_body(g_hstack);
+}
+
+pub fn handler_depth() -> i64 { return g_hdepth; }
+
+// ── Core perform function ─────────────────────────────────────────────────
+// Returns 1 = allowed/handled, 0 = denied
+pub fn perform(eff:i64) -> i64 {
+    let h = current_handler();
+    if h < 0 { return 1; }   // no handler — kernel context, allow all
+
+    let kind = handler_kind(h);
+    let mask = handler_mask(h);
+
+    // Pure effects are always allowed
+    if eff == EFF_PURE { return 1; }
+
+    if kind == HK_SANDBOX {
+        if (mask & eff) == eff { return 1; }
+        return 0;   // denied
+    }
+
+    if kind == HK_LOG {
+        // Record the effect
+        let entry=heap_alloc_term(); heap_set_tag(entry,TAG_LOG);
+        heap_set_body(entry,eff); heap_set_arg(entry,g_log_head);
+        g_log_head=entry; g_log_len=g_log_len+1;
+        return 1;
+    }
+
+    if kind == HK_MOCK { return 1; }   // mock always allows, but doesn't actually perform
+
+    return 1;   // HK_REAL: always allow
+}
+
+// ── Convenience: perform_or_abort ─────────────────────────────────────────
+// Like perform, but on denial returns -1 (caller must check and abort)
+pub fn perform_strict(eff:i64) -> i64 {
+    if perform(eff)==1 { return 0; }  // 0 = ok
+    return -1;                         // -1 = denied
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────
+pub fn effect_log_len() -> i64   { return g_log_len; }
+pub fn effect_log_last() -> i64  { if g_log_head==0 { return -1; } return heap_get_body(g_log_head); }
+
+// ── Effect algebra ────────────────────────────────────────────────────────
+pub fn eff_union(a:i64, b:i64) -> i64 { return a | b; }
+pub fn eff_intersect(a:i64, b:i64) -> i64 { return a & b; }
+pub fn eff_subset(sub:i64, super:i64) -> i64 {
+    if sub == EFF_PURE { return 1; }
+    if (super & sub) == sub { return 1; } return 0;
+}
+pub fn eff_has(mask:i64, eff:i64) -> i64 { return eff_subset(eff, mask); }
+
+pub fn main() -> i64 {
+    effect_reset();
+
+    // Test 1: effect algebra
+    if eff_union(EFF_IO, EFF_NET) != (EFF_IO | EFF_NET)    { return 1; }
+    if eff_subset(EFF_IO, EFF_ALL) != 1                     { return 2; }
+    if eff_subset(EFF_ALL, EFF_IO) != 0                     { return 3; }
+    if eff_subset(EFF_PURE, EFF_IO) != 1                    { return 4; }
+
+    // Test 2: REAL handler allows everything
+    let real = handler_new(HK_REAL, EFF_ALL);
+    with_handler(real);
+    if perform(EFF_IO)  != 1 { return 5; }
+    if perform(EFF_GPU) != 1 { return 6; }
+    if perform(EFF_NET) != 1 { return 7; }
+    drop_handler();
+
+    // Test 3: SANDBOX denies disallowed effects
+    let sb = handler_new(HK_SANDBOX, EFF_IO);
+    with_handler(sb);
+    if perform(EFF_IO)  != 1 { return 8; }   // allowed
+    if perform(EFF_GPU) != 0 { return 9; }   // denied
+    if perform(EFF_NET) != 0 { return 10; }  // denied
+    if perform(EFF_PURE) != 1 { return 11; } // PURE always allowed
+    drop_handler();
+
+    // Test 4: LOG handler records effects
+    let lg = handler_new(HK_LOG, EFF_ALL);
+    with_handler(lg);
+    perform(EFF_IO); perform(EFF_FS); perform(EFF_NET);
+    drop_handler();
+    if effect_log_len() != 3 { return 12; }
+    if effect_log_last() != EFF_NET { return 13; }
+
+    // Test 5: handler stack depth
+    effect_reset();
+    let h1=handler_new(HK_LOG, EFF_IO);
+    let h2=handler_new(HK_SANDBOX, EFF_GPU);
+    with_handler(h1); with_handler(h2);
+    if handler_depth() != 2 { return 14; }
+    if current_handler() != h2 { return 15; }
+    drop_handler();
+    if current_handler() != h1 { return 16; }
+
+    // Test 6: MOCK handler
+    let mock=handler_new(HK_MOCK, EFF_ALL);
+    with_handler(mock);
+    if perform(EFF_IO)  != 1 { return 17; }
+    if perform(EFF_NET) != 1 { return 18; }
+    drop_handler();
+
+    // Test 7: perform_strict returns -1 on denial
+    let sb2=handler_new(HK_SANDBOX, EFF_IO);
+    with_handler(sb2);
+    if perform_strict(EFF_IO)  != 0  { return 19; }  // 0 = ok
+    if perform_strict(EFF_GPU) != -1 { return 20; }  // denied
+    drop_handler();
+
+    // Test 8: EFF_SYS composite
+    if eff_has(EFF_SYS, EFF_IO) != 1  { return 21; }
+    if eff_has(EFF_SYS, EFF_HW) != 1  { return 22; }
+
+    return 111;
+}

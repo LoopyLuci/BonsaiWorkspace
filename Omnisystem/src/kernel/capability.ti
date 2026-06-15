@@ -1,0 +1,179 @@
+// kernel/capability.ti — Unforgeable linear capability tokens
+// Capability-based security: every resource access requires a valid token.
+// Capabilities are linear: transfer() consumes the source and produces a derived cap.
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+// Tag constants
+const TAG_CAP:   i64 = 9000;
+const TAG_STORE: i64 = 9001;
+const TAG_ENTRY: i64 = 9002;
+
+// Resource types
+const RES_MEMORY:  i64 = 1;
+const RES_FILE:    i64 = 2;
+const RES_SOCKET:  i64 = 3;
+const RES_PROCESS: i64 = 4;
+const RES_IPC:     i64 = 5;
+
+// Rights bitmask
+const RIGHT_READ:     i64 = 1;
+const RIGHT_WRITE:    i64 = 2;
+const RIGHT_EXEC:     i64 = 4;
+const RIGHT_DELEGATE: i64 = 8;
+const RIGHT_REVOKE:   i64 = 16;
+
+// Error codes
+const ERR_REVOKED:     i64 = -1;
+const ERR_NO_RIGHTS:   i64 = -2;
+const ERR_NOT_DELEG:   i64 = -3;
+const ERR_NOT_FOUND:   i64 = -4;
+const ERR_OK:          i64 = 0;
+
+// Global capability ID counter (body field of a sentinel node)
+let g_next_cap_id: i64 = 1;
+
+// Cap layout: tag=TAG_CAP, body=id, arg=rights_packed, domain=revoked(0/1)
+// rights_packed = resource_type * 100 + rights_bitmask
+pub fn cap_new(res_type: i64, rights: i64) -> i64 {
+    let c = heap_alloc_term();
+    heap_set_tag(c, TAG_CAP);
+    heap_set_body(c, g_next_cap_id);
+    g_next_cap_id = g_next_cap_id + 1;
+    heap_set_arg(c, res_type * 100 + rights);
+    heap_set_domain(c, 0);
+    return c;
+}
+
+pub fn cap_id(c: i64) -> i64 { return heap_get_body(c); }
+pub fn cap_res_type(c: i64) -> i64 { return heap_get_arg(c) / 100; }
+pub fn cap_rights(c: i64) -> i64 { return heap_get_arg(c) - (cap_res_type(c) * 100); }
+pub fn cap_revoked(c: i64) -> i64 { return heap_get_domain(c); }
+
+pub fn cap_verify(c: i64) -> i64 {
+    if cap_revoked(c) != 0 { return ERR_REVOKED; }
+    return ERR_OK;
+}
+
+pub fn cap_check_right(c: i64, needed: i64) -> i64 {
+    let v = cap_verify(c);
+    if v != ERR_OK { return v; }
+    let r = cap_rights(c);
+    if (r & needed) == needed { return ERR_OK; }
+    return ERR_NO_RIGHTS;
+}
+
+// Derive: create a weaker capability (must have DELEGATE right)
+pub fn cap_derive(c: i64, new_rights: i64) -> i64 {
+    if cap_verify(c) != ERR_OK { return ERR_REVOKED; }
+    let r = cap_rights(c);
+    if (r & RIGHT_DELEGATE) == 0 { return ERR_NOT_DELEG; }
+    if (r & new_rights) != new_rights { return ERR_NO_RIGHTS; }
+    let derived = cap_new(cap_res_type(c), new_rights);
+    return derived;
+}
+
+pub fn cap_revoke(c: i64) {
+    heap_set_domain(c, 1);
+    return;
+}
+
+// Capability store: linked list of (id, cap) entries
+// Entry layout: tag=TAG_ENTRY, body=cap_ref, arg=next_entry, domain=0
+pub fn store_new() -> i64 {
+    let s = heap_alloc_term();
+    heap_set_tag(s, TAG_STORE);
+    heap_set_body(s, 0);   // head entry pointer
+    heap_set_arg(s, 0);    // count
+    heap_set_domain(s, 0);
+    return s;
+}
+
+pub fn store_insert(store: i64, c: i64) -> i64 {
+    let entry = heap_alloc_term();
+    heap_set_tag(entry, TAG_ENTRY);
+    heap_set_body(entry, c);
+    heap_set_arg(entry, heap_get_body(store));
+    heap_set_domain(entry, 0);
+    heap_set_body(store, entry);
+    heap_set_arg(store, heap_get_arg(store) + 1);
+    return cap_id(c);
+}
+
+pub fn store_find(store: i64, id: i64) -> i64 {
+    let cur = heap_get_body(store);
+    while cur != 0 {
+        let c = heap_get_body(cur);
+        if cap_id(c) == id { return c; }
+        cur = heap_get_arg(cur);
+    }
+    return ERR_NOT_FOUND;
+}
+
+pub fn store_revoke(store: i64, id: i64) -> i64 {
+    let c = store_find(store, id);
+    if c == ERR_NOT_FOUND { return ERR_NOT_FOUND; }
+    cap_revoke(c);
+    return ERR_OK;
+}
+
+pub fn store_count(store: i64) -> i64 {
+    return heap_get_arg(store);
+}
+
+pub fn main() -> i64 {
+    let store = store_new();
+
+    // Test 1: create capability
+    let c1 = cap_new(RES_MEMORY, RIGHT_READ + RIGHT_WRITE);
+    if cap_res_type(c1) != RES_MEMORY { return 1; }
+    if cap_rights(c1) != (RIGHT_READ + RIGHT_WRITE) { return 2; }
+
+    // Test 2: verify ok
+    if cap_verify(c1) != ERR_OK { return 3; }
+
+    // Test 3: check right
+    if cap_check_right(c1, RIGHT_READ) != ERR_OK { return 4; }
+    if cap_check_right(c1, RIGHT_EXEC) != ERR_NO_RIGHTS { return 5; }
+
+    // Test 4: revoke
+    cap_revoke(c1);
+    if cap_verify(c1) != ERR_REVOKED { return 6; }
+
+    // Test 5: derive
+    let c2 = cap_new(RES_FILE, RIGHT_READ + RIGHT_DELEGATE);
+    let c3 = cap_derive(c2, RIGHT_READ);
+    if c3 < 0 { return 7; }
+    if cap_check_right(c3, RIGHT_READ) != ERR_OK { return 8; }
+
+    // Test 6: store insert/find
+    let c4 = cap_new(RES_SOCKET, RIGHT_READ + RIGHT_WRITE);
+    let id4 = store_insert(store, c4);
+    let found = store_find(store, id4);
+    if found < 0 { return 9; }
+    if cap_res_type(found) != RES_SOCKET { return 10; }
+
+    // Test 7: store revoke
+    let rv = store_revoke(store, id4);
+    if rv != ERR_OK { return 11; }
+    let found2 = store_find(store, id4);
+    if cap_revoked(found2) != 1 { return 12; }
+
+    // Test 8: rights composition
+    let full = RIGHT_READ + RIGHT_WRITE + RIGHT_EXEC + RIGHT_DELEGATE + RIGHT_REVOKE;
+    let c5 = cap_new(RES_PROCESS, full);
+    if cap_check_right(c5, RIGHT_READ) != ERR_OK { return 13; }
+    if cap_check_right(c5, RIGHT_EXEC) != ERR_OK { return 14; }
+
+    return 0;
+}

@@ -1,0 +1,312 @@
+// uplad/hot_reload_integration.ti – Integration with atomic hot-reloading system
+// Bridges language registry with kernel's atomic symbol table updates
+// Enables zero-downtime frontend swapping
+
+module uplad::hot_reload_integration
+
+use uplad::schema::LanguageSpec
+use uplad::registry_client::{RegistryClient, FrontendCapability}
+use uplad::inference::generate_parser_ir
+use core::vec::Vec
+use core::string::String
+use core::option::Option
+use core::result::Result
+
+/// Generation counter for atomic symbol table updates
+pub struct GenerationCounter {
+    current: u64,
+}
+
+impl GenerationCounter {
+    pub fn new() -> Self {
+        Self { current: 0 }
+    }
+
+    pub fn increment(&mut self) -> u64 {
+        self.current += 1;
+        self.current
+    }
+
+    pub fn get(&self) -> u64 {
+        self.current
+    }
+}
+
+/// In-flight call tracker for safe draining
+pub struct InflightTracker {
+    active_calls: Vec<(String, u64)>, // (function_name, gen)
+}
+
+impl InflightTracker {
+    pub fn new() -> Self {
+        Self {
+            active_calls: Vec::new(),
+        }
+    }
+
+    pub fn enter(&mut self, function: &str, gen: u64) {
+        self.active_calls.push((function.to_string(), gen));
+    }
+
+    pub fn exit(&mut self, function: &str) {
+        self.active_calls.retain(|(f, _)| f != function);
+    }
+
+    pub fn drain_for_generation(&self, gen: u64) -> bool {
+        // Check if all remaining calls are newer than gen
+        self.active_calls.iter().all(|(_, g)| g > &gen)
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.active_calls.len()
+    }
+}
+
+/// Atomic frontend hot-reload manager
+pub struct HotReloadManager {
+    registry: RegistryClient,
+    gen_counter: GenerationCounter,
+    inflight_tracker: InflightTracker,
+}
+
+impl HotReloadManager {
+    /// Create a new hot-reload manager
+    pub fn new(registry_addr: &str) -> Result<Self, String> {
+        let registry = RegistryClient::new(registry_addr)?;
+        Ok(Self {
+            registry,
+            gen_counter: GenerationCounter::new(),
+            inflight_tracker: InflightTracker::new(),
+        })
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // ATOMIC RELOAD PROCEDURE
+    // ────────────────────────────────────────────────────────────────
+
+    /// Perform atomic hot-reload of a language frontend
+    /// Returns new generation number
+    pub fn reload_language(&mut self, language_name: &str) -> Result<u64, String> {
+        // Step 1: Fetch language spec from registry
+        let spec = self.registry.lookup(language_name)?
+            .ok_or_else(|| format!("Language '{}' not found", language_name))?;
+
+        // Step 2: Generate new frontend IR
+        let parser_ir = generate_parser_ir(&spec)?;
+
+        // Step 3: Compile IR to native code (BACE – fast)
+        let compiled_code = self.compile_frontend(parser_ir)?;
+
+        // Step 4: Begin atomic generation transition
+        let new_gen = self.gen_counter.increment();
+
+        // Step 5: Perform atomic symbol table update (kernel operation)
+        self.atomic_symbol_update(language_name, compiled_code, new_gen)?;
+
+        // Step 6: Drain in-flight calls to old code
+        self.drain_inflight_calls(new_gen)?;
+
+        // Step 7: Register frontend capability in registry
+        let capability = FrontendCapability {
+            language: language_name.to_string(),
+            version: spec.version.clone(),
+            compiled_at: current_timestamp(),
+            parser_hash: hash_frontend(&compiled_code),
+        };
+
+        self.registry.update_frontend(language_name, capability)?;
+
+        Ok(new_gen)
+    }
+
+    /// Reload multiple languages atomically
+    pub fn reload_batch(&mut self, language_names: &[String]) -> Result<Vec<u64>, String> {
+        let mut generations = Vec::new();
+
+        for name in language_names {
+            match self.reload_language(name) {
+                Ok(gen) => generations.push(gen),
+                Err(e) => return Err(format!("Failed to reload {}: {}", name, e)),
+            }
+        }
+
+        Ok(generations)
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // KERNEL-LEVEL OPERATIONS
+    // ────────────────────────────────────────────────────────────────
+
+    /// Atomic symbol table update (kernel-level operation)
+    /// This is where the CAS (compare-and-swap) magic happens
+    fn atomic_symbol_update(
+        &self,
+        language_name: &str,
+        compiled_code: Vec<u8>,
+        new_gen: u64,
+    ) -> Result<(), String> {
+        // In real implementation, this would:
+        // 1. Allocate new memory region for compiled code
+        // 2. Copy compiled code into new region
+        // 3. Perform CAS on symbol table generation pointer
+        // 4. Update all function pointers atomically
+        //
+        // The CAS ensures that from one CPU instruction onwards,
+        // all new calls use the new code (no race window).
+
+        // Placeholder: would call kernel::symbol_table::atomic_update()
+        Ok(())
+    }
+
+    /// Drain in-flight calls to old code generation
+    fn drain_inflight_calls(&mut self, new_gen: u64) -> Result<(), String> {
+        // In real implementation, this would:
+        // 1. Spin until all in-flight calls complete
+        // 2. Check that pending calls are for newer generations
+        // 3. Deallocate old code region when safe
+
+        let max_wait_us = 100_000; // 100ms timeout
+        let mut waited = 0u64;
+
+        while !self.inflight_tracker.drain_for_generation(new_gen) && waited < max_wait_us {
+            // Busy-wait with backoff (in real impl: event-based)
+            // small_sleep(100); // 100 microseconds
+            waited += 100;
+        }
+
+        if waited >= max_wait_us {
+            return Err(format!("Timeout draining in-flight calls (pending: {})",
+                self.inflight_tracker.pending_count()));
+        }
+
+        Ok(())
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // TYPE-AWARE DATA MIGRATION
+    // ────────────────────────────────────────────────────────────────
+
+    /// Check type compatibility between old and new frontends
+    /// Returns true if migration is safe (automatic or via user function)
+    pub fn check_type_compatibility(
+        &self,
+        old_spec: &LanguageSpec,
+        new_spec: &LanguageSpec,
+    ) -> Result<bool, String> {
+        // Compare type descriptors from grammar
+        // If identical: automatic migration
+        // If compatible (e.g., field added at end): auto-migrate
+        // If incompatible: require user-provided migration function
+
+        // Placeholder: always return true (would check real type info)
+        Ok(true)
+    }
+
+    /// Perform type-aware data migration for global state
+    pub fn migrate_globals(
+        &self,
+        old_globals: Vec<u8>,
+        migration_function: Option<Box<dyn Fn(Vec<u8>) -> Result<Vec<u8>, String>>>,
+    ) -> Result<Vec<u8>, String> {
+        match migration_function {
+            Some(f) => f(old_globals),
+            None => {
+                // Automatic migration: copy bytes as-is if types are identical
+                Ok(old_globals)
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // SUBSCRIPTION AND AUTO-RELOAD
+    // ────────────────────────────────────────────────────────────────
+
+    /// Watch language registry for updates and auto-reload
+    pub fn watch_and_reload(&mut self) -> Result<(), String> {
+        // In real implementation:
+        // 1. Subscribe to registry updates
+        // 2. On "language.registered" or "frontend.updated" events
+        // 3. Automatically call reload_language()
+
+        Ok(())
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // STATISTICS AND MONITORING
+    // ────────────────────────────────────────────────────────────────
+
+    /// Get current generation number
+    pub fn current_generation(&self) -> u64 {
+        self.gen_counter.get()
+    }
+
+    /// Get number of in-flight calls
+    pub fn pending_inflight_calls(&self) -> usize {
+        self.inflight_tracker.pending_count()
+    }
+
+    /// Get reload statistics
+    pub fn stats(&self) -> ReloadStats {
+        ReloadStats {
+            total_reloads: self.gen_counter.get(),
+            pending_calls: self.inflight_tracker.pending_count(),
+            registry_languages: 0, // would query registry
+        }
+    }
+}
+
+/// Frontend compilation (placeholder – would use BACE)
+fn compile_frontend(parser_ir: String) -> Result<Vec<u8>, String> {
+    // In real implementation: call BACE incrementally
+    // For now: placeholder returning empty bytes
+    Ok(Vec::new())
+}
+
+/// Hash a compiled frontend for integrity checking
+fn hash_frontend(code: &[u8]) -> String {
+    // In real implementation: BLAKE3 hash
+    "hash".to_string()
+}
+
+/// Get current timestamp
+fn current_timestamp() -> u64 {
+    // In real implementation: system time
+    0
+}
+
+/// Reload statistics
+#[derive(Clone, Debug)]
+pub struct ReloadStats {
+    pub total_reloads: u64,
+    pub pending_calls: usize,
+    pub registry_languages: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generation_counter() {
+        let mut gen = GenerationCounter::new();
+        assert_eq!(gen.get(), 0);
+        assert_eq!(gen.increment(), 1);
+        assert_eq!(gen.get(), 1);
+    }
+
+    #[test]
+    fn test_inflight_tracker() {
+        let mut tracker = InflightTracker::new();
+        tracker.enter("foo", 1);
+        assert_eq!(tracker.pending_count(), 1);
+        assert!(tracker.drain_for_generation(0));
+        tracker.exit("foo");
+        assert_eq!(tracker.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_hot_reload_manager_new() {
+        let manager = HotReloadManager::new("aether://language-registry").unwrap();
+        assert_eq!(manager.current_generation(), 0);
+    }
+}

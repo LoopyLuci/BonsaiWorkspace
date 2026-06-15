@@ -1,0 +1,370 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bonsai-ai
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-shim-config
+  namespace: bonsai-ai
+data:
+  config.toml: |
+    [server]
+    http_port = 8117
+    ws_port = 8217
+
+    [resilience]
+    circuit_breaker_threshold = 5
+    circuit_breaker_timeout_secs = 30
+    retry_max_attempts = 3
+    retry_initial_delay_ms = 100
+
+    [cache]
+    semantic_cache_enabled = true
+    semantic_cache_threshold = 0.92
+    deduplication_window_secs = 60
+
+    [ensemble]
+    enabled = true
+    min_providers = 2
+    consensus_threshold = 0.8
+
+    [providers]
+    claude_enabled = true
+    gpt_enabled = true
+    gemini_enabled = true
+    mistral_enabled = true
+    ollama_enabled = true
+    ollama_url = "http://ollama:11434"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-provider-secrets
+  namespace: bonsai-ai
+type: Opaque
+stringData:
+  claude_api_key: "${CLAUDE_API_KEY}"
+  gpt_api_key: "${OPENAI_API_KEY}"
+  gemini_api_key: "${GEMINI_API_KEY}"
+  mistral_api_key: "${MISTRAL_API_KEY}"
+  deepseek_api_key: "${DEEPSEEK_API_KEY}"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+  labels:
+    app: ai-shim
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ai-shim
+  template:
+    metadata:
+      labels:
+        app: ai-shim
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8117"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ai-shim
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ai-shim
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: ai-shim
+        image: bonsai/ai-shim:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8117
+          protocol: TCP
+        - name: ws
+          containerPort: 8217
+          protocol: TCP
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: AI_SHIM_HTTP_PORT
+          value: "8117"
+        - name: AI_SHIM_WS_PORT
+          value: "8217"
+        - name: SECURITY_MGR_ADDR
+          value: "security-mgr.bonsai-system:9001"
+        - name: SECRETS_VAULT_ADDR
+          value: "secrets-vault.bonsai-system:9002"
+        - name: AHF_GATEWAY_ADDR
+          value: "ahf-gateway.bonsai-system:9010"
+        - name: HDE_ORCHESTRATOR_ADDR
+          value: "hde-orchestrator.bonsai-system:9011"
+        - name: STATE_STORE_ADDR
+          value: "state-store.bonsai-system:9003"
+        - name: MONITORING_ADDR
+          value: "monitoring.bonsai-system:9004"
+        - name: REDIS_URL
+          value: "redis://redis-ai:6379"
+        - name: POSTGRES_URL
+          value: "postgresql://bonsai:bonsai_secure_password@postgres-ai:5432/bonsai_ai"
+        - name: JAEGER_AGENT_HOST
+          value: "jaeger-ai"
+        - name: JAEGER_AGENT_PORT
+          value: "6831"
+        - name: CLAUDE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ai-provider-secrets
+              key: claude_api_key
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ai-provider-secrets
+              key: gpt_api_key
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ai-provider-secrets
+              key: gemini_api_key
+        - name: MISTRAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ai-provider-secrets
+              key: mistral_api_key
+        volumeMounts:
+        - name: config
+          mountPath: /etc/bonsai
+          readOnly: true
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: config
+        configMap:
+          name: ai-shim-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+  labels:
+    app: ai-shim
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8117
+    targetPort: http
+    protocol: TCP
+  - name: ws
+    port: 8217
+    targetPort: ws
+    protocol: TCP
+  selector:
+    app: ai-shim
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ai-shim
+subjects:
+- kind: ServiceAccount
+  name: ai-shim
+  namespace: bonsai-ai
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ai-shim
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-shim
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ai-shim
+  namespace: bonsai-ai
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-shim
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: bonsai-ai
+    - namespaceSelector:
+        matchLabels:
+          name: bonsai-system
+    ports:
+    - protocol: TCP
+      port: 8117
+    - protocol: TCP
+      port: 8217
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: bonsai-system
+    ports:
+    - protocol: TCP
+      port: 9001  # security-mgr
+    - protocol: TCP
+      port: 9002  # secrets-vault
+    - protocol: TCP
+      port: 9003  # state-store
+    - protocol: TCP
+      port: 9004  # monitoring
+    - protocol: TCP
+      port: 9010  # ahf-gateway
+    - protocol: TCP
+      port: 9011  # hde-orchestrator
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: bonsai-ai
+    ports:
+    - protocol: TCP
+      port: 6379  # redis
+    - protocol: TCP
+      port: 5432  # postgres
+    - protocol: TCP
+      port: 11434 # ollama
+    - protocol: UDP
+      port: 6831  # jaeger
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443   # External API calls
+    - protocol: TCP
+      port: 80

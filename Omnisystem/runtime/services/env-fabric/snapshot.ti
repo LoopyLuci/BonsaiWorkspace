@@ -1,0 +1,234 @@
+// services/env-fabric/snapshot.ti – Recursive snapshots, forking, and live migration
+// Enables instant cloning, point-in-time branches, and zero-downtime migration
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_SNAPSHOT: i64 = 10000;
+const TAG_FORK: i64 = 10001;
+const TAG_MIGRATION_STATE: i64 = 10002;
+const TAG_SNAPSHOT_TREE: i64 = 10003;
+
+// Snapshot: point-in-time capture of an environment
+pub fn snapshot_new(env_id: i64, name: i64, timestamp: i64) -> i64 {
+    let snap = heap_alloc_term();
+    heap_set_tag(snap, TAG_SNAPSHOT);
+    heap_set_body(snap, env_id);         // parent environment ID
+    heap_set_arg(snap, name);            // snapshot name
+    heap_set_domain(snap, timestamp);    // creation timestamp
+    return snap;
+}
+
+pub fn snapshot_env_id(snap: i64) -> i64 { return heap_get_body(snap); }
+pub fn snapshot_name(snap: i64) -> i64 { return heap_get_arg(snap); }
+pub fn snapshot_timestamp(snap: i64) -> i64 { return heap_get_domain(snap); }
+
+// Create a snapshot of an environment (all nested vaults included)
+pub fn snapshot_create(env_state: i64, name: i64) -> i64 {
+    // Freeze all I/O in environment (sync disks, flush network buffers)
+    // Capture memory state of top-level vault
+    // Recursively capture all nested vaults
+    // Record capability tree
+    // Store to audit-log as immutable snapshot
+
+    let timestamp = get_current_timestamp(); // would query kernel clock
+
+    let snap = snapshot_new(0, name, timestamp); // placeholder env_id
+    return snap;
+}
+
+// Fork an environment: create child with copy-on-write pages
+pub fn fork_environment(snap: i64, fork_name: i64) -> i64 {
+    // Create new environment with same spec as snapshot parent
+    // Map all snapshot pages as copy-on-write
+    // Child environment starts at snapshot state
+    // Diverging writes create new pages
+    // Parent and child share read-only pages
+
+    let fork = heap_alloc_term();
+    heap_set_tag(fork, TAG_FORK);
+    heap_set_body(fork, snap);           // source snapshot
+    heap_set_arg(fork, fork_name);       // fork name
+    heap_set_domain(fork, 0);            // used memory (grows on write)
+    return fork;
+}
+
+pub fn fork_source(f: i64) -> i64 { return heap_get_body(f); }
+pub fn fork_name(f: i64) -> i64 { return heap_get_arg(f); }
+
+// Create a branch: fork from a snapshot but with different seed/inputs
+pub fn branch_from_snapshot(snap: i64, branch_name: i64) -> i64 {
+    // Create new environment identical to snapshot
+    // Same memory state, but independent execution
+    // Useful for replaying different sequences of inputs from same point
+
+    let fork = fork_environment(snap, branch_name);
+    return fork;
+}
+
+// Replayed session: deterministic replay of recorded events
+pub fn replay_session(env_state: i64, session_id: i64) -> i64 {
+    // Fetch session log from audit-log
+    // Extract recorded I/O events (keyboard, network, disk, clock)
+    // Re-initialize environment to starting state
+    // Feed events in same order
+    // Verify output matches original log
+    // Return success/failure
+
+    return 0; // placeholder
+}
+
+// Migration: prepare vault for transfer to target host
+pub fn migration_prepare(env_state: i64, target_host: i64) -> i64 {
+    let mig = heap_alloc_term();
+    heap_set_tag(mig, TAG_MIGRATION_STATE);
+    heap_set_body(mig, env_state);       // environment to migrate
+    heap_set_arg(mig, target_host);      // target host address
+    heap_set_domain(mig, 0);             // transferred bytes (progress)
+    return mig;
+}
+
+pub fn migration_env(mig: i64) -> i64 { return heap_get_body(mig); }
+pub fn migration_target(mig: i64) -> i64 { return heap_get_arg(mig); }
+
+// Pre-copy phase: iteratively transfer memory pages while vault runs
+pub fn migration_precopy(mig: i64) -> i64 {
+    // Start migration daemon
+    // Iterate: scan for dirty pages, transfer to target host
+    // If convergence (few dirty pages), stop
+    // Otherwise, continue for bounded iterations
+
+    let progress = 0i64; // bytes transferred
+    let max_iterations = 10i64;
+    let iteration = 0i64;
+
+    while iteration < max_iterations {
+        // Get dirty pages from this iteration
+        let dirty_count = get_dirty_pages_count(migration_env(mig));
+        if dirty_count == 0 {
+            return 1; // converged
+        }
+
+        // Transfer dirty pages via p2p
+        progress = progress + transfer_pages(mig, dirty_count);
+
+        iteration = iteration + 1;
+    }
+
+    // Did not converge; fall back to post-copy
+    return 2;
+}
+
+// Post-copy phase: brief pause, transfer CPU state, fetch memory on demand
+pub fn migration_postcopy(mig: i64) -> i64 {
+    // Pause environment (stop vCPUs)
+    pause_environment(migration_env(mig));
+
+    // Transfer remaining CPU state (registers, stack)
+    transfer_cpu_state(mig);
+
+    // Resume environment on target host
+    // Missing pages fetched from source on demand over p2p
+    resume_environment_on_target(mig);
+
+    return 0; // success
+}
+
+// Complete live migration workflow
+pub fn migrate_environment(env_state: i64, target_host: i64) -> i64 {
+    let mig = migration_prepare(env_state, target_host);
+
+    // Try pre-copy first
+    let precopy_result = migration_precopy(mig);
+    if precopy_result == 1 {
+        // Converged; safe to pause and complete
+        return migration_complete(mig);
+    }
+
+    // Pre-copy did not converge; use post-copy
+    return migration_postcopy(mig);
+}
+
+// Complete migration: finalize state, update location
+pub fn migration_complete(mig: i64) -> i64 {
+    // Update audit-log: environment now at target host
+    // Update DNS/discovery so new connections go to target
+    // Keep source as fallback briefly (for live connection handover)
+
+    return 0; // success
+}
+
+// Multi-vault transaction: migrate entire hierarchy atomically
+pub fn migrate_hierarchy(root_env: i64, target_host: i64) -> i64 {
+    // Collect all nested environments recursively
+    // Create single atomic migration transaction
+    // Migrate all vaults together, preserving parent-child relationships
+    // Verify hierarchy is intact on target
+
+    return 0; // placeholder
+}
+
+// Helpers for migration
+fn get_dirty_pages_count(env_state: i64) -> i64 {
+    // Query Sanctum for dirty page bitmap
+    return 0; // placeholder
+}
+
+fn transfer_pages(mig: i64, count: i64) -> i64 {
+    // Send count pages via p2p to target host
+    // Use CAS for deduplication
+    // Return bytes transferred
+    return count * 4096; // assume 4KB pages
+}
+
+fn transfer_cpu_state(mig: i64) {
+    // Capture vCPU registers, stack, etc.
+    // Send to target via p2p
+}
+
+fn pause_environment(env_state: i64) {
+    // Stop all vCPUs
+    // Flush all pending I/O
+}
+
+fn resume_environment_on_target(mig: i64) {
+    // Start vCPUs on target host
+    // Environment continues as if nothing happened
+}
+
+// Snapshot tree: hierarchy of related snapshots and forks
+pub fn snapshot_tree_new() -> i64 {
+    let tree = heap_alloc_term();
+    heap_set_tag(tree, TAG_SNAPSHOT_TREE);
+    heap_set_body(tree, 0);              // root snapshot
+    heap_set_arg(tree, 0);               // forks list
+    heap_set_domain(tree, 0);            // branches list
+    return tree;
+}
+
+pub fn snapshot_tree_add_snapshot(tree: i64, snap: i64) {
+    heap_set_body(tree, snap); // set as root
+}
+
+pub fn snapshot_tree_add_fork(tree: i64, fork: i64) {
+    let forks = heap_get_arg(tree);
+    heap_set_domain(fork, forks); // link to list
+    heap_set_arg(tree, fork);     // add to head
+}
+
+pub fn snapshot_tree_root(tree: i64) -> i64 { return heap_get_body(tree); }
+pub fn snapshot_tree_forks(tree: i64) -> i64 { return heap_get_arg(tree); }
+
+fn get_current_timestamp() -> i64 {
+    // Query kernel's clock
+    return 0; // placeholder
+}

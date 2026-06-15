@@ -1,0 +1,262 @@
+---
+# Omnisystem Monitoring & Observability Stack
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: omnisystem
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: omnisystem
+        environment: production
+
+    scrape_configs:
+    - job_name: 'omnisystem-crates'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - omnisystem
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: omnisystem-.*
+
+    - job_name: 'prometheus'
+      static_configs:
+      - targets: ['localhost:9090']
+
+    alerting:
+      alertmanagers:
+      - static_configs:
+        - targets: ['alertmanager:9093']
+
+---
+# Prometheus Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: omnisystem
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.48.0
+        ports:
+        - containerPort: 9090
+        args:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--storage.tsdb.path=/prometheus'
+        - '--storage.tsdb.retention.time=30d'
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: storage
+          mountPath: /prometheus
+        resources:
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+      - name: storage
+        emptyDir: {}
+
+---
+# Grafana Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: omnisystem
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:10.2.0
+        ports:
+        - containerPort: 3000
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: admin
+        - name: GF_INSTALL_PLUGINS
+          value: grafana-piechart-panel
+        volumeMounts:
+        - name: storage
+          mountPath: /var/lib/grafana
+        resources:
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+      volumes:
+      - name: storage
+        emptyDir: {}
+
+---
+# Prometheus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: omnisystem
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+  - port: 9090
+    targetPort: 9090
+
+---
+# Grafana Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: omnisystem
+spec:
+  type: LoadBalancer
+  selector:
+    app: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+
+---
+# Jaeger (Distributed Tracing) Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: omnisystem
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:latest
+        ports:
+        - name: jaeger-agent-zipkin-thrift
+          containerPort: 5775
+          protocol: UDP
+        - name: jaeger-agent-compact
+          containerPort: 6831
+          protocol: UDP
+        - name: jaeger-agent-binary
+          containerPort: 6832
+          protocol: UDP
+        - name: jaeger-collector
+          containerPort: 14268
+          protocol: TCP
+        - name: jaeger-ui
+          containerPort: 16686
+          protocol: TCP
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+
+---
+# Jaeger Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: omnisystem
+spec:
+  type: LoadBalancer
+  selector:
+    app: jaeger
+  ports:
+  - name: jaeger-ui
+    port: 16686
+    targetPort: 16686
+  - name: jaeger-collector
+    port: 14268
+    targetPort: 14268
+  - name: jaeger-agent-zipkin
+    port: 5775
+    targetPort: 5775
+    protocol: UDP
+  - name: jaeger-agent-compact
+    port: 6831
+    targetPort: 6831
+    protocol: UDP
+  - name: jaeger-agent-binary
+    port: 6832
+    targetPort: 6832
+    protocol: UDP
+
+---
+# Alert Rules ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerts
+  namespace: omnisystem
+data:
+  alerts.yml: |
+    groups:
+    - name: omnisystem
+      interval: 30s
+      rules:
+      - alert: CrateHighErrorRate
+        expr: rate(errors_total[5m]) > 0.05
+        for: 5m
+        annotations:
+          summary: "High error rate detected in {{ $labels.crate }}"
+
+      - alert: CrateHighLatency
+        expr: histogram_quantile(0.99, request_duration_seconds) > 1.0
+        for: 10m
+        annotations:
+          summary: "High latency detected in {{ $labels.crate }}"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: db_connections_used / db_connections_total > 0.9
+        for: 5m
+        annotations:
+          summary: "Database connection pool near exhaustion"
+
+      - alert: ServiceDown
+        expr: up{job="omnisystem-crates"} == 0
+        for: 1m
+        annotations:
+          summary: "Service {{ $labels.instance }} is down"
+
+      - alert: HighMemoryUsage
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        annotations:
+          summary: "High memory usage in {{ $labels.pod }}"

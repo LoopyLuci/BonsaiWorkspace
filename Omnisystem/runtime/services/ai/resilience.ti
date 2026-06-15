@@ -1,0 +1,290 @@
+// services/resilience.ti – Circuit breaker, retry logic, and request batching
+module omnisystem::ai::resilience
+
+use omnisystem::ai::provider::{AiProvider, Message, ChatConfig, ChatResponse}
+use core::time::Duration
+use core::collections::HashMap
+use async::async_trait
+
+/// Circuit breaker states for fault tolerance
+pub enum CircuitState {
+    Closed,          // Normal operation
+    Open,            // Failing; reject requests
+    HalfOpen,        // Testing if recovered
+}
+
+/// Tracks circuit breaker state for a provider
+pub struct CircuitBreaker {
+    state: CircuitState,
+    failure_count: u64,
+    success_count: u64,
+    failure_threshold: u64,
+    success_threshold: u64,
+    last_failure_time: u64,
+    timeout_ms: u64,
+}
+
+impl CircuitBreaker {
+    pub fn new(failure_threshold: u64, success_threshold: u64, timeout_ms: u64) -> Self {
+        Self {
+            state: CircuitState::Closed,
+            failure_count: 0,
+            success_count: 0,
+            failure_threshold,
+            success_threshold,
+            last_failure_time: 0,
+            timeout_ms,
+        }
+    }
+
+    /// Record a success and potentially close the circuit
+    pub fn record_success(&mut self) {
+        match self.state {
+            CircuitState::Closed => {
+                self.failure_count = self.failure_count.saturating_sub(1);
+            }
+            CircuitState::HalfOpen => {
+                self.success_count += 1;
+                if self.success_count >= self.success_threshold {
+                    self.state = CircuitState::Closed;
+                    self.success_count = 0;
+                    self.failure_count = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Record a failure and potentially open the circuit
+    pub fn record_failure(&mut self) {
+        self.last_failure_time = now();
+        match self.state {
+            CircuitState::Closed => {
+                self.failure_count += 1;
+                if self.failure_count >= self.failure_threshold {
+                    self.state = CircuitState::Open;
+                    self.failure_count = 0;
+                }
+            }
+            CircuitState::HalfOpen => {
+                self.state = CircuitState::Open;
+                self.success_count = 0;
+            }
+            _ => {}
+        }
+    }
+
+    /// Attempt to transition from Open to HalfOpen
+    pub fn check_timeout(&mut self) -> bool {
+        match self.state {
+            CircuitState::Open => {
+                if now() - self.last_failure_time > self.timeout_ms * 1000 {
+                    self.state = CircuitState::HalfOpen;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, CircuitState::Open)
+    }
+}
+
+/// Exponential backoff retry strategy
+pub struct RetryPolicy {
+    max_attempts: u32,
+    initial_delay_ms: u64,
+    max_delay_ms: u64,
+    backoff_multiplier: f64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 10000,
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
+impl RetryPolicy {
+    pub fn new(max_attempts: u32) -> Self {
+        Self {
+            max_attempts,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_delays(mut self, initial: u64, max: u64) -> Self {
+        self.initial_delay_ms = initial;
+        self.max_delay_ms = max;
+        self
+    }
+
+    /// Calculate delay for a given attempt number
+    pub fn get_delay_ms(&self, attempt: u32) -> u64 {
+        let delay = self.initial_delay_ms as f64 * self.backoff_multiplier.powi(attempt as i32);
+        (delay.min(self.max_delay_ms as f64)) as u64
+    }
+}
+
+/// Request batching for efficient API usage
+pub struct RequestBatcher {
+    batch_size: usize,
+    flush_interval_ms: u64,
+    queue: Vec<BatchedRequest>,
+    last_flush: u64,
+}
+
+pub struct BatchedRequest {
+    id: String,
+    messages: Vec<Message>,
+    config: ChatConfig,
+    callback: Box<dyn Fn(Result<ChatResponse, String>)>,
+}
+
+impl RequestBatcher {
+    pub fn new(batch_size: usize, flush_interval_ms: u64) -> Self {
+        Self {
+            batch_size,
+            flush_interval_ms,
+            queue: Vec::new(),
+            last_flush: now(),
+        }
+    }
+
+    /// Add a request to the batch
+    pub fn add_request(&mut self, request: BatchedRequest) -> bool {
+        self.queue.push(request);
+        self.should_flush()
+    }
+
+    /// Check if batch should be flushed
+    pub fn should_flush(&self) -> bool {
+        self.queue.len() >= self.batch_size
+            || (now() - self.last_flush) > self.flush_interval_ms * 1000
+    }
+
+    /// Get batched requests and clear queue
+    pub fn get_batch(&mut self) -> Vec<BatchedRequest> {
+        self.last_flush = now();
+        self.queue.drain(..).collect()
+    }
+}
+
+/// Intelligent fallback chain for provider failover
+pub struct FallbackChain {
+    providers: Vec<String>,  // Ordered list of provider names to try
+    current_index: usize,
+}
+
+impl FallbackChain {
+    pub fn new(providers: Vec<String>) -> Self {
+        Self {
+            providers,
+            current_index: 0,
+        }
+    }
+
+    /// Get the next provider to try
+    pub fn next_provider(&mut self) -> Option<String> {
+        if self.current_index < self.providers.len() {
+            let provider = self.providers[self.current_index].clone();
+            self.current_index += 1;
+            Some(provider)
+        } else {
+            None
+        }
+    }
+
+    /// Reset to the first provider
+    pub fn reset(&mut self) {
+        self.current_index = 0;
+    }
+
+    /// Get current provider without advancing
+    pub fn current(&self) -> Option<&str> {
+        if self.current_index < self.providers.len() {
+            Some(&self.providers[self.current_index])
+        } else {
+            None
+        }
+    }
+}
+
+/// Request deduplication for identical queries within a time window
+pub struct RequestDeduplicator {
+    cache: HashMap<String, (ChatResponse, u64)>,  // (cache_key, (response, timestamp))
+    ttl_ms: u64,
+}
+
+impl RequestDeduplicator {
+    pub fn new(ttl_ms: u64) -> Self {
+        Self {
+            cache: HashMap::new(),
+            ttl_ms,
+        }
+    }
+
+    /// Check if an identical request was recently processed
+    pub fn check(&mut self, request_hash: &str) -> Option<ChatResponse> {
+        if let Some((response, timestamp)) = self.cache.get(request_hash) {
+            if now() - timestamp <= self.ttl_ms * 1000 {
+                return Some(response.clone());
+            }
+        }
+        self.cache.remove(request_hash);
+        None
+    }
+
+    /// Store a response for deduplication
+    pub fn store(&mut self, request_hash: String, response: ChatResponse) {
+        self.cache.insert(request_hash, (response, now()));
+    }
+
+    /// Clean up expired entries
+    pub fn cleanup(&mut self) {
+        let cutoff = now() - self.ttl_ms * 1000;
+        self.cache.retain(|_, (_, ts)| *ts > cutoff);
+    }
+}
+
+/// Proof-of-work throttling for expensive operations
+pub struct ProofOfWorkThrottle {
+    difficulty: u32,  // Leading zeros in hash
+    nonce_counter: u64,
+}
+
+impl ProofOfWorkThrottle {
+    pub fn new(difficulty: u32) -> Self {
+        Self {
+            difficulty,
+            nonce_counter: 0,
+        }
+    }
+
+    /// Compute a proof-of-work token (mitigates abuse without tokens)
+    pub fn compute_token(&mut self, data: &str) -> String {
+        let mut nonce = self.nonce_counter;
+        loop {
+            let payload = format!("{}:{}", data, nonce);
+            let hash = blake3::hash(payload.as_bytes()).to_hex();
+            if hash.starts_with(&"0".repeat(self.difficulty as usize)) {
+                self.nonce_counter = nonce + 1;
+                return hash;
+            }
+            nonce += 1;
+        }
+    }
+
+    /// Verify a proof-of-work token
+    pub fn verify(&self, data: &str, token: &str) -> bool {
+        token.starts_with(&"0".repeat(self.difficulty as usize))
+    }
+}

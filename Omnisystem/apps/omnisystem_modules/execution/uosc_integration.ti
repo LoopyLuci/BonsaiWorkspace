@@ -1,0 +1,390 @@
+module omnisystem.execution.uosc_integration
+
+# UOSC ProcessScheduler Integration with HybridExecutor
+# Direct integration of GPU acceleration into UOSC microkernel
+
+import omnisystem.hardware_detection
+import omnisystem.hybrid_executor
+import omnisystem.gpu_abstraction
+
+# ============================================================================
+# HYBRID PROCESS CONTROL BLOCK
+# ============================================================================
+
+type HybridProcessControlBlock = struct {
+    # Standard UOSC fields
+    pid: u32,
+    state: ProcessState,
+    priority: u32,
+    parent_pid: u32,
+
+    # Hybrid execution fields
+    execution_mode: ExecutionMode,
+    gpu_device: Option<u32>,
+    gpu_memory_allocated: u64,
+    cpu_affinity: Option<u32>,
+
+    # Task information
+    workload_estimate: u32,  # 0-100 complexity
+    required_flops: u64,
+    estimated_duration_ms: u32,
+
+    # Performance tracking
+    cpu_time_used: u64,
+    gpu_time_used: u64,
+    context_switches: u32,
+    page_faults: u32,
+}
+
+enum ProcessState {
+    New,
+    Ready,
+    Running,
+    Blocked,
+    Sleeping,
+    WaitingForGpu,
+    Terminated,
+}
+
+enum ExecutionMode {
+    CpuOnly,
+    GpuOnly,
+    HybridGpuCpu,
+    Automatic,
+}
+
+# ============================================================================
+# HYBRID SCHEDULER
+# ============================================================================
+
+type HybridProcessScheduler = struct {
+    # Hardware configuration
+    hardware_config: HardwareConfig,
+
+    # Core scheduler components
+    ready_queue: Vec<HybridProcessControlBlock>,
+    running_process: Option<HybridProcessControlBlock>,
+
+    # Hybrid execution
+    hybrid_executor: HybridExecutor,
+
+    # Load tracking
+    cpu_load: f64,
+    gpu_load: f64,
+    context_switches_total: u64,
+
+    # Statistics
+    total_processes: u32,
+    completed_processes: u32,
+    average_turnaround_time: f64,
+}
+
+impl HybridProcessScheduler {
+    fun new(cpu_count: u32) -> Result<Self, string> {
+        let hardware = detect_hardware()?
+        let gpu_context = if hardware.gpu_available {
+            Some(create_gpu_context(&hardware)?)
+        } else {
+            None
+        }
+
+        let executor = HybridExecutor::new(cpu_count, gpu_context)
+
+        Ok(HybridProcessScheduler {
+            hardware_config: hardware,
+            ready_queue: Vec::new(),
+            running_process: None,
+            hybrid_executor: executor,
+            cpu_load: 0.0,
+            gpu_load: 0.0,
+            context_switches_total: 0,
+            total_processes: 0,
+            completed_processes: 0,
+            average_turnaround_time: 0.0,
+        })
+    }
+
+    fun schedule_process(&mut self, pcb: HybridProcessControlBlock) -> Result<(), string> {
+        # Determine execution target
+        let target = self.select_execution_target(&pcb)?
+
+        let mut process = pcb
+        process.execution_mode = target
+
+        # If GPU selected, allocate memory
+        if matches!(target, ExecutionMode::GpuOnly | ExecutionMode::HybridGpuCpu) {
+            if let Some(gpu_id) = self.hardware_config.gpu_device {
+                process.gpu_device = Some(gpu_id)
+                // Allocate GPU memory
+                process.gpu_memory_allocated = calculate_gpu_memory_needed(&process)
+            }
+        }
+
+        # Add to ready queue
+        self.ready_queue.push(process)
+        self.total_processes += 1
+
+        Ok(())
+    }
+
+    fun select_next_process(&mut self) -> Option<HybridProcessControlBlock> {
+        if self.ready_queue.is_empty() {
+            return None
+        }
+
+        # Priority-based scheduling with hybrid awareness
+        let mut best_idx = 0
+        let mut best_priority = self.ready_queue[0].priority
+        let mut best_score = 0.0
+
+        for (i, process) in self.ready_queue.iter().enumerate() {
+            let mut score = (process.priority as f64) * 10.0  // Base priority
+
+            # Boost GPU-bound processes if GPU available
+            if self.hardware_config.gpu_available && process.workload_estimate > 60 {
+                score += 5.0
+            }
+
+            # Penalize processes requiring more resources than available
+            if process.gpu_memory_allocated > self.hardware_config.gpu_vram_mb as u64 {
+                score -= 10.0
+            }
+
+            if score > best_score {
+                best_score = score
+                best_idx = i
+                best_priority = process.priority
+            }
+        }
+
+        Some(self.ready_queue.remove(best_idx))
+    }
+
+    fun execute_process(&mut self, mut process: HybridProcessControlBlock) -> Result<(), string> {
+        process.state = ProcessState::Running
+        self.running_process = Some(process.clone())
+
+        let execution_time = match process.execution_mode {
+            ExecutionMode::CpuOnly => {
+                self.execute_on_cpu(&process)?
+            },
+            ExecutionMode::GpuOnly => {
+                self.execute_on_gpu(&process)?
+            },
+            ExecutionMode::HybridGpuCpu => {
+                self.execute_on_hybrid(&process)?
+            },
+            ExecutionMode::Automatic => {
+                self.hybrid_executor.get_overall_utilization();
+                if self.gpu_load < 0.5 && self.hardware_config.gpu_available {
+                    self.execute_on_gpu(&process)?
+                } else {
+                    self.execute_on_cpu(&process)?
+                }
+            }
+        }
+
+        # Update statistics
+        match process.execution_mode {
+            ExecutionMode::CpuOnly => process.cpu_time_used += execution_time,
+            ExecutionMode::GpuOnly => process.gpu_time_used += execution_time,
+            ExecutionMode::HybridGpuCpu => {
+                process.cpu_time_used += execution_time / 2
+                process.gpu_time_used += execution_time / 2
+            },
+            _ => {}
+        }
+
+        process.state = ProcessState::Terminated
+        self.completed_processes += 1
+        self.running_process = None
+
+        Ok(())
+    }
+
+    fun execute_on_cpu(&mut self, process: &HybridProcessControlBlock) -> Result<u64, string> {
+        # Execute on CPU core
+        let core = self.select_cpu_core()?
+
+        # Simulate execution time
+        let execution_time = process.estimated_duration_ms as u64
+        self.cpu_load = (self.cpu_load * 0.9) + (0.8 * 0.1)  // Exponential moving average
+
+        Ok(execution_time)
+    }
+
+    fun execute_on_gpu(&mut self, process: &HybridProcessControlBlock) -> Result<u64, string> {
+        if !self.hardware_config.gpu_available {
+            return Err("GPU not available".to_string())
+        }
+
+        # Submit to GPU
+        let task = omnisystem::hybrid_executor::ExecutionTask {
+            id: process.pid as u64,
+            name: format!("Process-{}", process.pid),
+            target: omnisystem::hybrid_executor::TaskTarget::GpuOnly,
+            workload_estimate: process.workload_estimate,
+            data_input: (),
+            affinity: None,
+        }
+
+        let _ = self.hybrid_executor.submit_task(task)?
+
+        # Simulate GPU execution (would be faster)
+        let execution_time = ((process.estimated_duration_ms as f64) * 0.3) as u64
+        self.gpu_load = (self.gpu_load * 0.9) + (0.7 * 0.1)
+
+        Ok(execution_time.max(1))  // At least 1ms
+    }
+
+    fun execute_on_hybrid(&mut self, process: &HybridProcessControlBlock) -> Result<u64, string> {
+        # Split work between CPU and GPU
+        let task = omnisystem::hybrid_executor::ExecutionTask {
+            id: process.pid as u64,
+            name: format!("Process-{}-Hybrid", process.pid),
+            target: omnisystem::hybrid_executor::TaskTarget::Hybrid,
+            workload_estimate: process.workload_estimate,
+            data_input: (),
+            affinity: None,
+        }
+
+        let _ = self.hybrid_executor.submit_task(task)?
+
+        let execution_time = ((process.estimated_duration_ms as f64) * 0.4) as u64
+        self.cpu_load = (self.cpu_load * 0.9) + (0.5 * 0.1)
+        self.gpu_load = (self.gpu_load * 0.9) + (0.4 * 0.1)
+
+        Ok(execution_time.max(1))
+    }
+
+    fun select_cpu_core(&self) -> Result<u32, string> {
+        # Find least busy core
+        let core = self.hybrid_executor.load_balancer.get_least_busy_cpu()
+        Ok(core)
+    }
+
+    fun select_execution_target(&self, process: &HybridProcessControlBlock) -> Result<ExecutionMode, string> {
+        match process.execution_mode {
+            ExecutionMode::Automatic => {
+                let optimal = self.hybrid_executor.load_balancer.get_optimal_target(process.workload_estimate)
+                Ok(optimal)
+            },
+            mode => Ok(mode)
+        }
+    }
+
+    fun get_scheduler_stats(&self) -> SchedulerStats {
+        SchedulerStats {
+            total_processes: self.total_processes,
+            completed_processes: self.completed_processes,
+            cpu_load: self.cpu_load,
+            gpu_load: self.gpu_load,
+            context_switches: self.context_switches_total,
+            average_turnaround_time: self.average_turnaround_time,
+            gpu_available: self.hardware_config.gpu_available,
+            gpu_type: format!("{:?}", self.hardware_config.gpu_type),
+        }
+    }
+
+    fun print_statistics(&self) {
+        let stats = self.get_scheduler_stats()
+        println!("═════════════════════════════════════════════════════")
+        println!("OMNISYSTEM HYBRID SCHEDULER STATISTICS")
+        println!("═════════════════════════════════════════════════════")
+        println!()
+        println!("Process Statistics:")
+        println!("  Total Processes:         {}", stats.total_processes)
+        println!("  Completed:               {}", stats.completed_processes)
+        println!("  Completion Rate:         {:.1}%",
+                 (stats.completed_processes as f64 / stats.total_processes as f64) * 100.0)
+        println!()
+        println!("Load Statistics:")
+        println!("  CPU Load:                {:.1}%", stats.cpu_load * 100.0)
+        println!("  GPU Load:                {:.1}%", stats.gpu_load * 100.0)
+        println!("  GPU Available:           {}", stats.gpu_available)
+        println!("  GPU Type:                {}", stats.gpu_type)
+        println!()
+        println!("Performance Metrics:")
+        println!("  Context Switches:        {}", stats.context_switches)
+        println!("  Avg Turnaround Time:     {:.2} ms", stats.average_turnaround_time)
+        println!("═════════════════════════════════════════════════════")
+    }
+}
+
+type SchedulerStats = struct {
+    total_processes: u32,
+    completed_processes: u32,
+    cpu_load: f64,
+    gpu_load: f64,
+    context_switches: u64,
+    average_turnaround_time: f64,
+    gpu_available: bool,
+    gpu_type: string,
+}
+
+impl Clone for HybridProcessControlBlock {
+    fn clone(&self) -> Self {
+        HybridProcessControlBlock {
+            pid: self.pid,
+            state: self.state.clone(),
+            priority: self.priority,
+            parent_pid: self.parent_pid,
+            execution_mode: self.execution_mode.clone(),
+            gpu_device: self.gpu_device,
+            gpu_memory_allocated: self.gpu_memory_allocated,
+            cpu_affinity: self.cpu_affinity,
+            workload_estimate: self.workload_estimate,
+            required_flops: self.required_flops,
+            estimated_duration_ms: self.estimated_duration_ms,
+            cpu_time_used: self.cpu_time_used,
+            gpu_time_used: self.gpu_time_used,
+            context_switches: self.context_switches,
+            page_faults: self.page_faults,
+        }
+    }
+}
+
+impl Clone for ProcessState {
+    fn clone(&self) -> Self {
+        match self {
+            ProcessState::New => ProcessState::New,
+            ProcessState::Ready => ProcessState::Ready,
+            ProcessState::Running => ProcessState::Running,
+            ProcessState::Blocked => ProcessState::Blocked,
+            ProcessState::Sleeping => ProcessState::Sleeping,
+            ProcessState::WaitingForGpu => ProcessState::WaitingForGpu,
+            ProcessState::Terminated => ProcessState::Terminated,
+        }
+    }
+}
+
+impl Clone for ExecutionMode {
+    fn clone(&self) -> Self {
+        match self {
+            ExecutionMode::CpuOnly => ExecutionMode::CpuOnly,
+            ExecutionMode::GpuOnly => ExecutionMode::GpuOnly,
+            ExecutionMode::HybridGpuCpu => ExecutionMode::HybridGpuCpu,
+            ExecutionMode::Automatic => ExecutionMode::Automatic,
+        }
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fun create_gpu_context(hardware: &HardwareConfig) -> Result<*dyn omnisystem::gpu_abstraction::GpuContext, string> {
+    // In real implementation, would create appropriate context based on GPU type
+    Err("GPU context creation would be backend-specific".to_string())
+}
+
+fun calculate_gpu_memory_needed(process: &HybridProcessControlBlock) -> u64 {
+    // Estimate based on workload
+    let base_memory = 256 * 1024 * 1024  // 256MB base
+    let workload_factor = process.workload_estimate as u64
+    base_memory + (workload_factor * 10 * 1024 * 1024)  // 10MB per complexity unit
+}
+
+fn detect_hardware() -> Result<HardwareConfig, string> {
+    omnisystem::hardware_detection::detect_hardware()
+}

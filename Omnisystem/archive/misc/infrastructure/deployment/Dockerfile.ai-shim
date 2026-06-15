@@ -1,0 +1,55 @@
+# Multi-stage build for AI Shim
+FROM rust:1.75 as builder
+
+WORKDIR /build
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace
+COPY Omnisystem/services/ai /build/ai
+COPY Omnisystem/Cargo.toml /build/
+COPY Omnisystem/Cargo.lock /build/
+
+# Build with optimizations
+ENV RUSTFLAGS="-C target-cpu=native -C link-arg=-fuse-ld=lld"
+RUN cargo build --release \
+    --manifest-path=/build/ai/Cargo.toml \
+    --features "production,distributed-tracing,semantic-cache,ensemble-mode"
+
+# Final runtime image
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/ai-shim /app/ai-shim
+
+# Create non-root user
+RUN useradd -m -u 1000 bonsai && \
+    chown -R bonsai:bonsai /app
+
+USER bonsai
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8117/health || exit 1
+
+# Expose ports
+EXPOSE 8117 8217
+
+# Run
+ENTRYPOINT ["/app/ai-shim"]
+CMD ["--listen", "0.0.0.0:8117", "--ws-listen", "0.0.0.0:8217"]

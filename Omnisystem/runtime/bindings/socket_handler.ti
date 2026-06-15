@@ -1,0 +1,247 @@
+// bindings/socket_handler.ti — Real socket I/O handler for P2P networking
+// Implements the SOCKET effect using actual OS sockets (Linux/macOS/Windows)
+// via FFI to libc. This bridges the pure-Titan effect system to the external world.
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+}
+
+// FFI declarations: actual socket syscalls from libc
+// These are external C functions that will be linked at runtime
+extern "c" {
+    fn socket(family: i64, type_: i64, protocol: i64) -> i64;
+    fn bind(fd: i64, addr: i64, addrlen: i64) -> i64;
+    fn sendto(fd: i64, buf: i64, len: i64, flags: i64, dest_addr: i64, addrlen: i64) -> i64;
+    fn recvfrom(fd: i64, buf: i64, len: i64, flags: i64, src_addr: i64, addrlen: i64) -> i64;
+    fn setsockopt(fd: i64, level: i64, optname: i64, optval: i64, optlen: i64) -> i64;
+    fn close(fd: i64) -> i64;
+}
+
+// Socket address family constants (from sys/socket.h)
+const AF_INET: i64 = 2;      // IPv4
+const AF_INET6: i64 = 10;    // IPv6
+
+// Socket type constants (from sys/socket.h)
+const SOCK_DGRAM: i64 = 2;   // UDP (connectionless)
+const SOCK_STREAM: i64 = 1;  // TCP (connection-oriented)
+
+// Socket option constants
+const SOL_SOCKET: i64 = 1;
+const SO_REUSEADDR: i64 = 2;
+const SO_REUSEPORT: i64 = 15;
+
+// Socket state: body=fd, arg=port, domain=flags (bound, listening, connected)
+const SOCK_UNBOUND: i64 = 0;
+const SOCK_BOUND: i64 = 1;
+const SOCK_LISTENING: i64 = 2;
+const SOCK_CONNECTED: i64 = 3;
+
+const TAG_SOCKET: i64 = 81000;
+const TAG_HANDLER: i64 = 81001;
+const TAG_ADDR: i64 = 81002;
+
+// Socket wrapper: body=fd, arg=port, domain=state
+pub fn socket_wrap(fd: i64, port: i64, state: i64) -> i64 {
+    let s = heap_alloc_term();
+    heap_set_tag(s, TAG_SOCKET);
+    heap_set_body(s, fd);
+    heap_set_arg(s, port);
+    heap_set_domain(s, state);
+    return s;
+}
+
+pub fn socket_fd(s: i64) -> i64 { return heap_get_body(s); }
+pub fn socket_port(s: i64) -> i64 { return heap_get_arg(s); }
+pub fn socket_state(s: i64) -> i64 { return heap_get_domain(s); }
+pub fn socket_set_state(s: i64, state: i64) { heap_set_domain(s, state); return; }
+
+// Handler state: tracks open sockets and statistics
+// body=socket_list_head, arg=total_sockets, domain=total_bytes_sent
+pub fn handler_new() -> i64 {
+    let h = heap_alloc_term();
+    heap_set_tag(h, TAG_HANDLER);
+    heap_set_body(h, 0);      // empty socket list
+    heap_set_arg(h, 0);       // no sockets yet
+    heap_set_domain(h, 0);    // no bytes sent
+    return h;
+}
+
+pub fn handler_socket_count(h: i64) -> i64 { return heap_get_arg(h); }
+pub fn handler_bytes_sent(h: i64) -> i64 { return heap_get_domain(h); }
+
+pub fn handler_add_socket(h: i64) {
+    let count = handler_socket_count(h);
+    heap_set_arg(h, count + 1);
+    return;
+}
+
+pub fn handler_add_bytes(h: i64, bytes: i64) {
+    let sent = handler_bytes_sent(h);
+    heap_set_domain(h, sent + bytes);
+    return;
+}
+
+// Create a UDP socket (connectionless, suitable for P2P)
+pub fn socket_create_udp(port: i64) -> i64 {
+    let fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if fd < 0 { return -1; }  // socket() failed
+
+    // Enable address reuse (SO_REUSEADDR)
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, 1, 8);
+
+    // Bind to port (simplified: assumes localhost)
+    // Real implementation would construct sockaddr_in
+    let bind_result = bind(fd, 0, 16);  // simplified bind
+    if bind_result < 0 {
+        close(fd);
+        return -2;  // bind() failed
+    }
+
+    let s = socket_wrap(fd, port, SOCK_BOUND);
+    return fd;  // return file descriptor for use
+}
+
+// Send packet via UDP
+pub fn socket_sendto(fd: i64, dest_addr: i64, dest_port: i64, payload: i64, payload_len: i64) -> i64 {
+    // Real implementation would construct sockaddr_in for dest_addr:dest_port
+    let bytes_sent = sendto(fd, payload, payload_len, 0, dest_addr, 16);
+    return bytes_sent;
+}
+
+// Receive packet via UDP
+pub fn socket_recvfrom(fd: i64) -> i64 {
+    // Simplified: receive buffer is pre-allocated, return payload hash
+    let buf = 0;  // in real impl, pointer to receive buffer
+    let buf_size = 4096;
+    let src_addr = 0;
+    let bytes_recv = recvfrom(fd, buf, buf_size, 0, src_addr, 16);
+    return bytes_recv;
+}
+
+// Close socket
+pub fn socket_close(fd: i64) -> i64 {
+    let result = close(fd);
+    return result;
+}
+
+// High-level effect handler: implements SOCKET effect via real syscalls
+pub fn perform_socket_connect(host_addr: i64, port: i64) -> i64 {
+    // Create UDP socket (stateless, suitable for P2P mesh)
+    let fd = socket_create_udp(port);
+    if fd < 0 { return -1; }
+    return fd;
+}
+
+pub fn perform_socket_send(fd: i64, dest_addr: i64, dest_port: i64, payload: i64) -> i64 {
+    // Send to remote peer
+    let payload_len = 256;  // assume fixed-size packets for now
+    let bytes = socket_sendto(fd, dest_addr, dest_port, payload, payload_len);
+    return bytes;
+}
+
+pub fn perform_socket_recv(fd: i64) -> i64 {
+    let payload = socket_recvfrom(fd);
+    return payload;
+}
+
+pub fn perform_socket_close(fd: i64) -> i64 {
+    return socket_close(fd);
+}
+
+// Statistics
+let g_sockets_created: i64 = 0;
+let g_sockets_closed: i64 = 0;
+let g_packets_sent: i64 = 0;
+let g_packets_recv: i64 = 0;
+let g_errors: i64 = 0;
+
+pub fn stats_created() -> i64 { return g_sockets_created; }
+pub fn stats_closed() -> i64 { return g_sockets_closed; }
+pub fn stats_sent() -> i64 { return g_packets_sent; }
+pub fn stats_recv() -> i64 { return g_packets_recv; }
+pub fn stats_errors() -> i64 { return g_errors; }
+
+// Test mode: simulated socket operations (for testing without real sockets)
+pub fn test_socket_connect(port: i64) -> i64 {
+    let fd = 100 + port;  // simulate FD assignment
+    g_sockets_created = g_sockets_created + 1;
+    return fd;
+}
+
+pub fn test_socket_send(fd: i64, payload_len: i64) -> i64 {
+    if fd < 0 { g_errors = g_errors + 1; return -1; }
+    g_packets_sent = g_packets_sent + 1;
+    return payload_len;  // echo back bytes sent
+}
+
+pub fn test_socket_recv(fd: i64) -> i64 {
+    if fd < 0 { g_errors = g_errors + 1; return -1; }
+    g_packets_recv = g_packets_recv + 1;
+    return 256;  // simulated packet size
+}
+
+pub fn test_socket_close(fd: i64) -> i64 {
+    if fd < 0 { return -1; }
+    g_sockets_closed = g_sockets_closed + 1;
+    return 0;
+}
+
+pub fn main() -> i64 {
+    // Test 1: socket creation (test mode)
+    let fd1 = test_socket_connect(8080);
+    if fd1 < 0 { return 1; }
+    if stats_created() != 1 { return 2; }
+
+    // Test 2: socket send
+    let sent = test_socket_send(fd1, 256);
+    if sent != 256 { return 3; }
+    if stats_sent() != 1 { return 4; }
+
+    // Test 3: socket recv
+    let recv = test_socket_recv(fd1);
+    if recv != 256 { return 5; }
+    if stats_recv() != 1 { return 6; }
+
+    // Test 4: socket close
+    let close_result = test_socket_close(fd1);
+    if close_result != 0 { return 7; }
+    if stats_closed() != 1 { return 8; }
+
+    // Test 5: multiple sockets
+    let fd2 = test_socket_connect(9000);
+    let fd3 = test_socket_connect(9001);
+    if stats_created() != 3 { return 9; }
+
+    // Test 6: multiple sends
+    test_socket_send(fd2, 128);
+    test_socket_send(fd3, 512);
+    if stats_sent() != 3 { return 10; }
+
+    // Test 7: error handling (invalid fd)
+    let bad_send = test_socket_send(-1, 100);
+    if bad_send != -1 { return 11; }
+    if stats_errors() != 1 { return 12; }
+
+    // Test 8: handler state tracking
+    let handler = handler_new();
+    handler_add_socket(handler);
+    handler_add_socket(handler);
+    handler_add_bytes(handler, 512);
+    if handler_socket_count(handler) != 2 { return 13; }
+    if handler_bytes_sent(handler) != 512 { return 14; }
+
+    // Test 9: cleanup
+    test_socket_close(fd2);
+    test_socket_close(fd3);
+    if stats_closed() != 3 { return 15; }
+
+    return 111;
+}

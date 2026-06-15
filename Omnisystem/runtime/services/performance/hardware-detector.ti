@@ -1,0 +1,287 @@
+// services/performance/hardware-detector.ti – Hardware detection and feature probing
+// Runs at boot to detect CPU, GPU, memory hierarchy, and available accelerators
+
+module performance::hardware_detector
+
+use core::collections::HashMap
+use serde::{Serialize, Deserialize}
+
+/// CPU feature flags: detected via CPUID or device tree
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CpuFeatures {
+    pub vendor: String,           // "GenuineIntel", "AuthenticAMD", "ARM", etc.
+    pub model_name: String,
+    pub cores_physical: u32,
+    pub cores_logical: u32,
+    pub simd_features: Vec<String>, // "sse4.2", "avx2", "avx512f", "neon", "sve", "riscv-v"
+    pub crypto_accel: Vec<String>,  // "aes-ni", "sha-ni", "arm-crypto", "armv8-aes"
+    pub prefetch_l3: bool,
+    pub clflush_size: u32,
+    pub cache_line_size: u32,
+}
+
+/// Cache topology
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CacheTopology {
+    pub l1_data_kb: u32,
+    pub l1_code_kb: u32,
+    pub l2_kb: u32,
+    pub l3_kb: u32,
+    pub l3_associativity: u32,
+    pub numa_nodes: u32,
+    pub has_huge_pages: bool,
+    pub huge_page_sizes: Vec<u32>,  // 2048, 1048576 (KB)
+}
+
+/// Memory characteristics
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MemoryCharacteristics {
+    pub total_kb: u64,
+    pub ddr_speed_mhz: u32,
+    pub latency_ns: u32,  // CAS latency to first bit
+    pub bandwidth_gbs: f32,
+    pub ecc_enabled: bool,
+}
+
+/// GPU/NPU accelerator
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Accelerator {
+    pub device_type: String,  // "gpu", "npu", "tpu", "asic", "fpga"
+    pub vendor: String,
+    pub model: String,
+    pub memory_mb: u32,
+    pub compute_capability: String,  // "sm_80" for NVIDIA, "compute_6_1" for AMD
+    pub bandwidth_gbs: f32,
+}
+
+/// Storage device
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StorageDevice {
+    pub device_type: String,  // "ssd", "hdd", "nvme", "pmem"
+    pub capacity_gb: u64,
+    pub sequential_read_mbps: u32,
+    pub sequential_write_mbps: u32,
+    pub random_read_iops: u32,
+    pub random_write_iops: u32,
+}
+
+/// Network interface
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NetworkInterface {
+    pub name: String,
+    pub mtu: u32,
+    pub speed_gbps: u32,
+    pub mac_address: String,
+}
+
+/// Complete hardware profile
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct HardwareProfile {
+    pub cpu_features: CpuFeatures,
+    pub cache_topology: CacheTopology,
+    pub memory: MemoryCharacteristics,
+    pub accelerators: Vec<Accelerator>,
+    pub storage: Vec<StorageDevice>,
+    pub network: Vec<NetworkInterface>,
+    pub detected_at: u64,  // timestamp
+}
+
+impl HardwareProfile {
+    /// Detect hardware features at boot time
+    pub fn detect() -> Result<Self, String> {
+        let cpu = detect_cpu()?;
+        let cache = detect_cache(&cpu)?;
+        let memory = detect_memory()?;
+        let accelerators = detect_accelerators()?;
+        let storage = detect_storage()?;
+        let network = detect_network()?;
+
+        Ok(Self {
+            cpu_features: cpu,
+            cache_topology: cache,
+            memory,
+            accelerators,
+            storage,
+            network,
+            detected_at: 0,  // Should be actual timestamp
+        })
+    }
+
+    /// Recommend optimal compiler flags based on this profile
+    pub fn compiler_flags(&self) -> Vec<String> {
+        let mut flags = vec![];
+
+        // SIMD flags
+        if self.cpu_features.simd_features.contains(&"avx512f".to_string()) {
+            flags.push("-mavx512f".to_string());
+            flags.push("-mtune=skylake-avx512".to_string());
+        } else if self.cpu_features.simd_features.contains(&"avx2".to_string()) {
+            flags.push("-mavx2".to_string());
+            flags.push("-mtune=haswell".to_string());
+        } else if self.cpu_features.simd_features.contains(&"sve".to_string()) {
+            flags.push("-march=armv8.2-a+sve".to_string());
+        }
+
+        // Optimization level
+        flags.push("-O3".to_string());
+        flags.push("-flto=thin".to_string());  // Link-Time Optimization
+
+        // Cache-aware
+        flags.push(format!("-Dcache_line_size={}", self.cache_topology.cache_line_size));
+
+        // Huge pages
+        if self.cache_topology.has_huge_pages {
+            flags.push("-Duse_huge_pages=1".to_string());
+        }
+
+        // NUMA
+        if self.cache_topology.numa_nodes > 1 {
+            flags.push(format!("-Dnuma_nodes={}", self.cache_topology.numa_nodes));
+        }
+
+        flags
+    }
+
+    /// Check if specific accelerator is available
+    pub fn has_accelerator(&self, device_type: &str) -> bool {
+        self.accelerators.iter().any(|a| a.device_type == device_type)
+    }
+
+    /// Get the best storage device for high-throughput workloads
+    pub fn best_storage(&self) -> Option<&StorageDevice> {
+        self.storage.iter()
+            .max_by_key(|s| s.sequential_read_mbps)
+    }
+}
+
+/// Hardware detection functions
+
+fn detect_cpu() -> Result<CpuFeatures, String> {
+    // In real implementation: read CPUID, device tree, /proc/cpuinfo
+    Ok(CpuFeatures {
+        vendor: "GenuineIntel".to_string(),
+        model_name: "Intel(R) Core(TM) i9-12900K".to_string(),
+        cores_physical: 12,
+        cores_logical: 24,
+        simd_features: vec![
+            "sse4.2".to_string(),
+            "avx".to_string(),
+            "avx2".to_string(),
+        ],
+        crypto_accel: vec![
+            "aes-ni".to_string(),
+            "sha-ni".to_string(),
+        ],
+        prefetch_l3: true,
+        clflush_size: 64,
+        cache_line_size: 64,
+    })
+}
+
+fn detect_cache(cpu: &CpuFeatures) -> Result<CacheTopology, String> {
+    // In real implementation: parse CPUID leaf 2/4/0x80000005/0x80000006
+    Ok(CacheTopology {
+        l1_data_kb: 32,
+        l1_code_kb: 32,
+        l2_kb: 256,
+        l3_kb: 15360,  // 15 MB
+        l3_associativity: 12,
+        numa_nodes: 1,
+        has_huge_pages: true,
+        huge_page_sizes: vec![2048, 1048576],  // 2MB, 1GB
+    })
+}
+
+fn detect_memory() -> Result<MemoryCharacteristics, String> {
+    // In real implementation: use dmidecode, ACPI tables, or libvirt queries
+    Ok(MemoryCharacteristics {
+        total_kb: 32 * 1024 * 1024,  // 32 GB
+        ddr_speed_mhz: 3600,
+        latency_ns: 16,  // CAS 16
+        bandwidth_gbs: 57.6,  // DDR4-3600 dual-channel
+        ecc_enabled: false,
+    })
+}
+
+fn detect_accelerators() -> Result<Vec<Accelerator>, String> {
+    let mut accelerators = vec![];
+
+    // Check for GPUs via lspci or CUDA
+    accelerators.push(Accelerator {
+        device_type: "gpu".to_string(),
+        vendor: "NVIDIA".to_string(),
+        model: "RTX 3080".to_string(),
+        memory_mb: 10240,
+        compute_capability: "sm_86".to_string(),
+        bandwidth_gbs: 760.0,
+    });
+
+    Ok(accelerators)
+}
+
+fn detect_storage() -> Result<Vec<StorageDevice>, String> {
+    // In real implementation: use fio or hdparm to measure
+    Ok(vec![
+        StorageDevice {
+            device_type: "nvme".to_string(),
+            capacity_gb: 1024,
+            sequential_read_mbps: 7000,
+            sequential_write_mbps: 6000,
+            random_read_iops: 750000,
+            random_write_iops: 650000,
+        },
+    ])
+}
+
+fn detect_network() -> Result<Vec<NetworkInterface>, String> {
+    // In real implementation: use ethtool or netlink
+    Ok(vec![
+        NetworkInterface {
+            name: "eth0".to_string(),
+            mtu: 1500,
+            speed_gbps: 10,
+            mac_address: "00:11:22:33:44:55".to_string(),
+        },
+    ])
+}
+
+/// Global hardware profile (set at boot)
+pub static mut HARDWARE_PROFILE: Option<HardwareProfile> = None;
+
+pub fn get_hardware_profile() -> Result<&'static HardwareProfile, String> {
+    unsafe {
+        HARDWARE_PROFILE.as_ref()
+            .ok_or("Hardware profile not initialized".to_string())
+    }
+}
+
+pub fn initialize_hardware_profile() -> Result<(), String> {
+    let profile = HardwareProfile::detect()?;
+    unsafe {
+        HARDWARE_PROFILE = Some(profile);
+    }
+    Ok(())
+}
+
+/// Microarchitecture classification
+#[derive(Clone, Debug, PartialEq)]
+pub enum MicroarchitectureClass {
+    IntelSkylake,
+    IntelCascadeLake,
+    IntelIceLake,
+    AmdRome,
+    AmdMilan,
+    ArmCortexA72,
+    ArmCortexA78,
+}
+
+impl HardwareProfile {
+    pub fn microarchitecture_class(&self) -> MicroarchitectureClass {
+        match self.cpu_features.model_name.as_str() {
+            name if name.contains("Skylake") => MicroarchitectureClass::IntelSkylake,
+            name if name.contains("Cascade Lake") => MicroarchitectureClass::IntelCascadeLake,
+            name if name.contains("Ice Lake") => MicroarchitectureClass::IntelIceLake,
+            _ => MicroarchitectureClass::IntelSkylake,  // default
+        }
+    }
+}

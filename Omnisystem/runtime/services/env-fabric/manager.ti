@@ -1,0 +1,218 @@
+// services/env-fabric/manager.ti – Environment Fabric Manager
+// Unified management of emulations, simulations, VMs, and containers via Sanctum vaults
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_ENV_SPEC: i64 = 9950;
+const TAG_ENV_STATE: i64 = 9951;
+const TAG_ENV_TYPE: i64 = 9952;
+const TAG_RESOURCE_QUOTA: i64 = 9953;
+const TAG_ENV_REGISTRY: i64 = 9954;
+
+// Environment types
+const ENV_TYPE_VM: i64 = 1;
+const ENV_TYPE_CONTAINER: i64 = 2;
+const ENV_TYPE_EMULATION: i64 = 3;
+const ENV_TYPE_SIMULATION: i64 = 4;
+
+// Environment state
+const ENV_STATE_CREATED: i64 = 0;
+const ENV_STATE_RUNNING: i64 = 1;
+const ENV_STATE_PAUSED: i64 = 2;
+const ENV_STATE_STOPPED: i64 = 3;
+const ENV_STATE_TERMINATED: i64 = 4;
+
+// Environment specification (from YAML/TOML)
+pub fn env_spec_new(name: i64, env_type: i64) -> i64 {
+    let spec = heap_alloc_term();
+    heap_set_tag(spec, TAG_ENV_SPEC);
+    heap_set_body(spec, name);           // name
+    heap_set_arg(spec, env_type);        // type (vm, container, emulation, simulation)
+    heap_set_domain(spec, 0);            // resource quota (linked)
+    return spec;
+}
+
+pub fn env_spec_name(spec: i64) -> i64 { return heap_get_body(spec); }
+pub fn env_spec_type(spec: i64) -> i64 { return heap_get_arg(spec); }
+pub fn env_spec_quota(spec: i64) -> i64 { return heap_get_domain(spec); }
+
+// Resource quota for environment
+pub fn resource_quota_new(mem_mb: i64, cpus: i64, storage_gb: i64) -> i64 {
+    let quota = heap_alloc_term();
+    heap_set_tag(quota, TAG_RESOURCE_QUOTA);
+    heap_set_body(quota, mem_mb);        // memory in MB
+    heap_set_arg(quota, cpus);           // CPU quota (fractional as i64 * 1000)
+    heap_set_domain(quota, storage_gb);  // storage in GB
+    return quota;
+}
+
+pub fn quota_memory(q: i64) -> i64 { return heap_get_body(q); }
+pub fn quota_cpus(q: i64) -> i64 { return heap_get_arg(q); }
+pub fn quota_storage(q: i64) -> i64 { return heap_get_domain(q); }
+
+// Environment instance state
+pub fn env_state_new(spec: i64, vault_cap: i64) -> i64 {
+    let state = heap_alloc_term();
+    heap_set_tag(state, TAG_ENV_STATE);
+    heap_set_body(state, spec);          // spec reference
+    heap_set_arg(state, ENV_STATE_CREATED); // current state
+    heap_set_domain(state, vault_cap);   // vault capability ID
+    return state;
+}
+
+pub fn env_state_spec(state: i64) -> i64 { return heap_get_body(state); }
+pub fn env_state_status(state: i64) -> i64 { return heap_get_arg(state); }
+pub fn env_state_set_status(state: i64, status: i64) { heap_set_arg(state, status); }
+pub fn env_state_vault_cap(state: i64) -> i64 { return heap_get_domain(state); }
+
+// Environment Manager – registry of all environments
+pub fn env_manager_new() -> i64 {
+    let mgr = heap_alloc_term();
+    heap_set_tag(mgr, TAG_ENV_REGISTRY);
+    heap_set_body(mgr, 0);               // environment list (head)
+    heap_set_arg(mgr, 0);                // next env ID
+    heap_set_domain(mgr, 0);             // total resources used
+    return mgr;
+}
+
+// Create a new environment from spec
+pub fn env_manager_create(mgr: i64, spec: i64) -> i64 {
+    // Validate spec: check name, type, quota
+    let name = env_spec_name(spec);
+    let env_type = env_spec_type(spec);
+    if name == 0 || env_type < 1 || env_type > 4 {
+        return -1; // invalid spec
+    }
+
+    // Allocate environment ID
+    let env_id = heap_get_arg(mgr);
+    heap_set_arg(mgr, env_id + 1);
+
+    // Request Sanctum vault via hypercall
+    // vault_cap = hypercall_create_vault(mem, cpu, root_cap)
+    // For now, return stub
+    let vault_cap = 0x200i64 + env_id; // placeholder
+
+    // Create environment state
+    let state = env_state_new(spec, vault_cap);
+
+    // Add to manager's environment list
+    let list = heap_get_body(mgr);
+    if list == 0 {
+        heap_set_body(mgr, state);
+    } else {
+        heap_set_domain(state, list);
+        heap_set_body(mgr, state);
+    }
+
+    return env_id;
+}
+
+// Start an environment
+pub fn env_manager_start(mgr: i64, env_id: i64) -> i64 {
+    let state = env_manager_get_env(mgr, env_id);
+    if state == 0 { return -1; } // not found
+
+    if env_state_status(state) != ENV_STATE_CREATED {
+        return -1; // cannot start non-created env
+    }
+
+    // Initialize payload based on environment type
+    let spec = env_state_spec(state);
+    let env_type = env_spec_type(spec);
+
+    // Load appropriate payload (handled by payload builder)
+    // For now, assume payload is loaded
+
+    env_state_set_status(state, ENV_STATE_RUNNING);
+    return 0; // success
+}
+
+// Stop an environment gracefully
+pub fn env_manager_stop(mgr: i64, env_id: i64) -> i64 {
+    let state = env_manager_get_env(mgr, env_id);
+    if state == 0 { return -1; }
+
+    if env_state_status(state) != ENV_STATE_RUNNING {
+        return -1; // cannot stop non-running env
+    }
+
+    env_state_set_status(state, ENV_STATE_STOPPED);
+    return 0;
+}
+
+// Destroy an environment permanently
+pub fn env_manager_destroy(mgr: i64, env_id: i64) -> i64 {
+    let state = env_manager_get_env(mgr, env_id);
+    if state == 0 { return -1; }
+
+    // Stop if running
+    if env_state_status(state) == ENV_STATE_RUNNING {
+        env_manager_stop(mgr, env_id);
+    }
+
+    // Revoke vault capability
+    let vault_cap = env_state_vault_cap(state);
+    // hypercall_destroy_vault(vault_cap)
+
+    env_state_set_status(state, ENV_STATE_TERMINATED);
+    return 0;
+}
+
+// Get environment by ID
+fn env_manager_get_env(mgr: i64, env_id: i64) -> i64 {
+    let list = heap_get_body(mgr);
+    let idx = 0i64;
+    while list != 0 && idx != env_id {
+        list = heap_get_domain(list);
+        idx = idx + 1;
+    }
+    return if idx == env_id { list } else { 0 };
+}
+
+// List all environments
+pub fn env_manager_list(mgr: i64) -> i64 {
+    return heap_get_body(mgr); // return list head
+}
+
+// Set resource limits (vertical scaling)
+pub fn env_manager_set_resources(mgr: i64, env_id: i64, mem_mb: i64, cpus: i64) -> i64 {
+    let state = env_manager_get_env(mgr, env_id);
+    if state == 0 { return -1; }
+
+    let spec = env_state_spec(state);
+    let quota = env_spec_quota(spec);
+
+    // Update quota (in real impl, would check host limits)
+    let new_quota = resource_quota_new(mem_mb, cpus, quota_storage(quota));
+    heap_set_domain(spec, new_quota);
+
+    return 0;
+}
+
+// Main environment manager service loop
+pub fn env_fabric_service_main(mgr: i64) {
+    loop {
+        // Poll for management requests (from CLI via gRPC or IPC)
+        // For now, just a stub
+        let req = receive_env_request();
+        if req == 0 { break; }
+
+        // Dispatch based on request type
+        // ...
+    }
+}
+
+fn receive_env_request() -> i64 {
+    return 0; // would receive from IPC/gRPC
+}

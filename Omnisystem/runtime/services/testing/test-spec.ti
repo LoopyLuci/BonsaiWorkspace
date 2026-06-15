@@ -1,0 +1,362 @@
+// services/testing/test-spec.ti – Universal test specification and execution framework
+// Defines reproducible, capability-scoped test specifications
+
+module testing::test_spec
+
+use serde::{Serialize, Deserialize}
+use blake3::Hash
+use core::collections::HashMap
+use core::option::Option
+use core::vec::Vec
+
+/// Test specification: defines a reproducible, deterministic test
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TestSpec {
+    pub name: String,
+    pub test_type: TestType,
+    pub description: String,
+
+    // Environment
+    pub environment: TestEnvironment,
+
+    // Test steps
+    pub steps: Vec<TestStep>,
+
+    // Validation
+    pub validation: TestValidation,
+
+    // Resources
+    pub resources: ResourceRequirements,
+
+    // Metadata
+    pub timeout_seconds: u32,
+    pub retries: u32,
+    pub tags: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum TestType {
+    Unit,
+    Integration,
+    Formal,
+    Performance,
+    Security,
+    Chaos,
+    UI,
+    Polyglot,
+    Asset,
+}
+
+/// Test environment: defines the execution context
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TestEnvironment {
+    pub env_type: EnvironmentType,
+    pub image: Option<String>,              // CAS hash or name
+    pub memory_mb: u32,
+    pub cpus: u32,
+    pub capabilities: Vec<String>,          // Capabilities granted to test vault
+    pub mounts: Vec<(String, String)>,      // (host_path, guest_path)
+    pub network_enabled: bool,
+    pub deterministic: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum EnvironmentType {
+    Vault,                 // Isolated Sanctum vault
+    Container,            // Lightweight container
+    VM,                   // Full VM
+    Simulation,           // BUSH simulation
+}
+
+/// A test step to execute
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TestStep {
+    pub name: String,
+    pub command: String,  // e.g., "build build --release"
+    pub env_vars: HashMap<String, String>,
+    pub expected_exit_code: i32,
+    pub timeout_seconds: Option<u32>,
+}
+
+/// Validation criteria for test results
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TestValidation {
+    pub check_output: Option<OutputCheck>,
+    pub check_performance: Option<PerformanceCheck>,
+    pub check_memory: Option<MemoryCheck>,
+    pub check_fidelity: Option<FidelityCheck>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OutputCheck {
+    pub expected_output_hash: Option<Hash>,  // BLAKE3 of stdout
+    pub expected_patterns: Vec<String>,      // Regex patterns that must appear
+    pub forbidden_patterns: Vec<String>,     // Regex patterns that must NOT appear
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PerformanceCheck {
+    pub metric: String,                      // "compilation_time", "syscall_latency", etc.
+    pub threshold_ms: f32,
+    pub regression_threshold_percent: f32,   // Allow up to X% regression from baseline
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MemoryCheck {
+    pub max_rss_mb: u32,
+    pub no_leaks: bool,
+    pub no_use_after_free: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FidelityCheck {
+    pub expected_fidelity: f32,  // 0.0 to 1.0
+    pub compare_against: String, // Hash of reference execution
+}
+
+/// Resource requirements for a test
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResourceRequirements {
+    pub min_memory_mb: u32,
+    pub min_cpus: u32,
+    pub disk_space_mb: u32,
+    pub network_bandwidth_mbps: Option<u32>,
+    pub requires_gpu: bool,
+    pub requires_tpm: bool,
+}
+
+/// Test result
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TestResult {
+    pub spec_hash: Hash,
+    pub test_id: String,
+    pub passed: bool,
+    pub duration_ms: u32,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub metrics: HashMap<String, f32>,
+    pub failures: Vec<String>,
+    pub timestamp: u64,
+}
+
+impl TestSpec {
+    pub fn new(name: &str, test_type: TestType) -> Self {
+        Self {
+            name: name.to_string(),
+            test_type,
+            description: String::new(),
+            environment: TestEnvironment {
+                env_type: EnvironmentType::Vault,
+                image: None,
+                memory_mb: 256,
+                cpus: 1,
+                capabilities: vec![],
+                mounts: vec![],
+                network_enabled: false,
+                deterministic: true,
+            },
+            steps: vec![],
+            validation: TestValidation {
+                check_output: None,
+                check_performance: None,
+                check_memory: None,
+                check_fidelity: None,
+            },
+            resources: ResourceRequirements {
+                min_memory_mb: 256,
+                min_cpus: 1,
+                disk_space_mb: 1024,
+                network_bandwidth_mbps: None,
+                requires_gpu: false,
+                requires_tpm: false,
+            },
+            timeout_seconds: 300,
+            retries: 1,
+            tags: vec![],
+        }
+    }
+
+    /// Compute deterministic hash of this spec
+    pub fn compute_hash(&self) -> Result<Hash, String> {
+        let canonical = serde_json::to_vec(&self)
+            .map_err(|e| e.to_string())?;
+        Ok(blake3::hash(&canonical))
+    }
+
+    /// Add a test step
+    pub fn add_step(&mut self, step: TestStep) {
+        self.steps.push(step);
+    }
+
+    /// Validate that the spec is well-formed
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = vec![];
+
+        if self.name.is_empty() {
+            errors.push("Test name cannot be empty".to_string());
+        }
+
+        if self.steps.is_empty() {
+            errors.push("Test must have at least one step".to_string());
+        }
+
+        if self.timeout_seconds == 0 {
+            errors.push("Timeout must be > 0".to_string());
+        }
+
+        if self.environment.memory_mb < self.resources.min_memory_mb {
+            errors.push(format!(
+                "Allocated memory {} < required {}",
+                self.environment.memory_mb, self.resources.min_memory_mb
+            ));
+        }
+
+        if !errors.is_empty() {
+            Err(errors)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Test runner: executes a test spec in isolation
+pub struct TestRunner {
+    pub spec: TestSpec,
+    pub vault_id: String,
+}
+
+impl TestRunner {
+    pub fn new(spec: TestSpec, vault_id: &str) -> Self {
+        Self {
+            spec,
+            vault_id: vault_id.to_string(),
+        }
+    }
+
+    /// Execute the test spec
+    pub async fn run(&self) -> Result<TestResult, String> {
+        // Validate spec first
+        self.spec.validate()?;
+
+        let spec_hash = self.spec.compute_hash()?;
+        let mut result = TestResult {
+            spec_hash,
+            test_id: format!("{}-{}", self.spec.name, uuid::Uuid::new_v4()),
+            passed: true,
+            duration_ms: 0,
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            metrics: HashMap::new(),
+            failures: vec![],
+            timestamp: 0,
+        };
+
+        let start = timestamp_now();
+
+        // Execute each step
+        for step in &self.spec.steps {
+            match execute_step(&self.vault_id, step).await {
+                Ok(step_result) => {
+                    if step_result.exit_code != step.expected_exit_code {
+                        result.passed = false;
+                        result.failures.push(format!(
+                            "Step '{}' exit code {} != expected {}",
+                            step.name, step_result.exit_code, step.expected_exit_code
+                        ));
+                    }
+                    result.stdout.push_str(&step_result.stdout);
+                    result.stderr.push_str(&step_result.stderr);
+                }
+                Err(e) => {
+                    result.passed = false;
+                    result.failures.push(format!("Step '{}' failed: {}", step.name, e));
+                }
+            }
+        }
+
+        // Validate output
+        if let Some(output_check) = &self.spec.validation.check_output {
+            validate_output(&result.stdout, output_check, &mut result)?;
+        }
+
+        // Validate performance
+        if let Some(perf_check) = &self.spec.validation.check_performance {
+            // In real implementation: fetch baseline from cache and compare
+        }
+
+        result.duration_ms = (timestamp_now() - start) as u32;
+        Ok(result)
+    }
+}
+
+/// Execute a single test step
+async fn execute_step(vault_id: &str, step: &TestStep) -> Result<StepResult, String> {
+    // In real implementation: run command inside vault
+    Ok(StepResult {
+        exit_code: 0,
+        stdout: format!("Step '{}' completed\n", step.name),
+        stderr: String::new(),
+    })
+}
+
+struct StepResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn validate_output(
+    output: &str,
+    check: &OutputCheck,
+    result: &mut TestResult,
+) -> Result<(), String> {
+    // Check expected patterns
+    for pattern in &check.expected_patterns {
+        if !output.contains(pattern) {
+            result.failures.push(format!("Expected pattern not found: {}", pattern));
+            result.passed = false;
+        }
+    }
+
+    // Check forbidden patterns
+    for pattern in &check.forbidden_patterns {
+        if output.contains(pattern) {
+            result.failures.push(format!("Forbidden pattern found: {}", pattern));
+            result.passed = false;
+        }
+    }
+
+    Ok(())
+}
+
+fn timestamp_now() -> u64 {
+    0  // Should use actual system time
+}
+
+/// Test suite: a collection of related test specs
+#[derive(Clone, Debug)]
+pub struct TestSuite {
+    pub name: String,
+    pub specs: Vec<TestSpec>,
+    pub tags: Vec<String>,
+}
+
+impl TestSuite {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            specs: vec![],
+            tags: vec![],
+        }
+    }
+
+    pub fn add_spec(&mut self, spec: TestSpec) {
+        self.specs.push(spec);
+    }
+
+    pub fn total_timeout_seconds(&self) -> u32 {
+        self.specs.iter().map(|s| s.timeout_seconds).sum()
+    }
+}

@@ -1,0 +1,294 @@
+# BonsAI Mobile Model Training Pipeline Configuration
+#
+# Knowledge distillation from large teacher (Bonsai-8B) to small student (TinyLlama-500M).
+# Optimized for edge deployment: mobile, embedded, CPU-only inference.
+#
+# Usage:
+#   python scripts/train_bonsai_mobile.py \
+#     --config config/bonsai_mobile_config.yaml \
+#     --student-model TinyLlama-1.1B-Instruct \
+#     --teacher-api http://127.0.0.1:8080 \
+#     --training-data ~/.bonsai/training_export/combined_mobile_training.jsonl \
+#     --output-dir ~/.bonsai/models/checkpoints/bonsai-mobile-v1
+
+# ── Student Model Configuration ───────────────────────────────────────────────
+# The model BonsAI will become after distillation training.
+# Must be small enough to run on mobile/edge devices.
+
+student_model:
+  # Architecture options: tinyllama, phi-3-mini, llama2-7b (adjust to your needs)
+  architecture: "tinyllama"
+
+  # Approximate parameter count
+  parameters: 1_100_000_000  # 1.1B
+
+  # Context window in tokens (mobile tradeoff: smaller = faster inference)
+  context_length: 2048
+
+  # LoRA adapter configuration
+  lora:
+    rank: 16                  # 8-16 is typical for mobile; higher = more capacity but larger
+    alpha: 32                 # = rank * 2
+    target_modules:
+      - "q_proj"
+      - "k_proj"
+      - "v_proj"
+      - "o_proj"
+    dropout: 0.05
+    bias: "none"              # Use "none" for smaller adapters
+
+# ── Teacher Model Configuration ──────────────────────────────────────────────
+# Large model from which student learns. Teacher stays on GPU, student trains on CPU.
+
+teacher_model:
+  # Strategy: "local_weights" or "llama_server_api"
+  strategy: "llama_server_api"
+
+  # If llama_server_api: teacher runs as GGUF sidecar on llama-server
+  # This is recommended for large teachers (8B-35B).
+  # Start with: llama-server -m <teacher.gguf> -ngl 99 --port 8080
+  api_url: "http://127.0.0.1:8080"
+
+  # If local_weights: path to HuggingFace model directory
+  # Only use if you have 24+ GB VRAM for both models.
+  local_weights_dir: null  # e.g. "D:/Models/general/Bonsai-8B-Instruct"
+
+  # Distillation hyperparameters
+  distillation:
+    temperature: 4.0         # Higher = softer targets. 1.0 is vanilla softmax.
+    alpha: 0.5               # 0.0 = pure SFT, 0.5 = balanced KL+CE, 1.0 = pure KL
+    enable_kl_loss: true     # If false, fallback to supervised fine-tuning
+    kl_divergence_threshold: 1.0  # If KL > this, switch to SFT (stability check)
+
+# ── Training Data Configuration ──────────────────────────────────────────────
+# Specifies which data sources to use and how to weight them.
+
+data:
+  # Main training dataset (JSONL with {text, domain, quality, ...})
+  # Export with: scripts/export_survival_training_data.py
+  training_jsonl: "~/.bonsai/training_export/combined_mobile_training.jsonl"
+
+  # Domain weights: how much of each topic to include
+  # Must sum to 1.0. Adjust based on model's intended use.
+  domain_weights:
+    code: 0.40               # Programming (highest value for generalist models)
+    system_repair: 0.20      # Survival/crash fixes
+    tool_use: 0.20           # MCP integration, tool calling
+    chat: 0.15               # General conversation
+    qa: 0.05                 # Question answering
+
+  # Quality filtering: only include examples with quality >= min_quality
+  # Quality is 0.0 (generated) to 1.0 (human-written, verified).
+  min_quality: 0.70
+
+  # Hard cap on total examples (prevents OOM on large datasets)
+  max_examples: 100_000
+
+  # Validation split: fraction held out for monitoring overfitting
+  # Default (in script): 0.1 (10%)
+  validation_split: 0.1
+
+  # Reproducibility: random seed for data shuffling
+  seed: 42
+
+# ── Training Loop Configuration ──────────────────────────────────────────────
+# Hyperparameters that control the training process.
+
+training:
+  # Basic
+  epochs: 3                  # Usually 1-3 for distillation (teacher already converged)
+  batch_size: 4              # CPU constraint on Windows: 4-8. GPU: up to 32.
+  gradient_accumulation_steps: 1  # Higher for effective larger batches without VRAM cost
+  learning_rate: 5.0e-4      # Typical for LoRA: 5e-4 to 5e-3
+  weight_decay: 0.01         # L2 regularization
+
+  # Gradient clipping (stability)
+  max_grad_norm: 1.0
+
+  # Sequence length
+  max_seq_length: 2048       # Token budget per example. Smaller = faster but loses context.
+
+  # Checkpointing
+  checkpoint_every_n_steps: 100
+  keep_last_n_checkpoints: 3
+  save_best_checkpoint: true # Save model with lowest validation loss
+
+# ── Optimization Configuration ───────────────────────────────────────────────
+
+optimization:
+  optimizer: "adamw"         # "adamw" is standard
+
+  # Learning rate scheduling (optional)
+  lr_scheduler:
+    enabled: false
+    type: "linear"           # "linear", "cosine", "constant"
+    warmup_steps: 100
+    total_steps: null        # Computed from epochs and data size
+
+# ── Hardware Configuration ───────────────────────────────────────────────────
+# Device detection and memory management.
+
+hardware:
+  # Auto-detect device: cuda (NVIDIA) → mps (Apple Silicon) → directml (AMD/Intel Windows) → cpu
+  # Override with --device flag if auto-detection fails.
+  device: "auto"
+
+  # Maximum VRAM to use (GB). Set lower if OOM occurs.
+  # Windows + AMD 7900 XTX: 22 GB (24 GB minus 2 GB buffer)
+  max_vram_gb: 22
+
+  # Memory check interval (seconds). Warn if usage exceeds max_vram_gb.
+  memory_check_interval_sec: 10
+
+  # Automatically switch to CPU if GPU training crashes (DirectML fallback)
+  gpu_fallback_to_cpu: true
+
+# ── Output Configuration ─────────────────────────────────────────────────────
+
+output:
+  # Directory for checkpoints, logs, and final model
+  checkpoint_dir: "~/.bonsai/models/checkpoints/bonsai-mobile-v1"
+
+  # After training, convert to GGUF with this quantization
+  quantization:
+    enabled: true
+    type: "Q4_K_M"           # Q4_K_M (4-bit, recommended), Q5_K_M, Q8_0, F16
+    target_size_mb: 250      # Approximate target (for reference)
+
+  # Create .bkp distribution package
+  create_distribution_package: true
+
+# ── Model Registration Configuration ────────────────────────────────────────
+# Auto-register the trained model with BonsAI's model registry.
+
+model_registry:
+  # Enable auto-registration
+  enabled: true
+
+  # After training, move GGUF to this directory
+  release_dir: "~/.bonsai/models/releases"
+
+  # Model registry entry
+  registry_entry:
+    name: "bonsai-mobile-v1"
+    role: "student_mobile"
+    domains:
+      - "coding"
+      - "system_repair"
+      - "tool_use"
+      - "chat"
+      - "qa"
+    vram_gb: 1               # VRAM needed for inference
+    context_len: 2048
+    quantisation: "Q4_K_M"
+    hot_reload_target: false # Only one model can have this = true
+
+# ── Evaluation Configuration ────────────────────────────────────────────────
+# Validation metrics and quality gates.
+
+evaluation:
+  # Hold-out test set (never touches training data)
+  # Generate with: scripts/generate_mobile_test_set.py
+  test_jsonl: "~/.bonsai/data/mobile_test_set.jsonl"
+
+  # Trigger evaluation every N validation steps
+  eval_every_n_steps: 100
+
+  # Metrics to track
+  metrics:
+    - "loss"
+    - "perplexity"
+    - "kl_divergence"        # Only if KL loss enabled
+    - "task_accuracy"        # If task labels available
+
+  # Quality gates: abort training if metrics degrade too much
+  quality_gates:
+    max_loss_increase: 0.05  # Fail if val loss increases by >5%
+    min_convergence: 0.001   # Consider converged if loss < 0.001
+
+# ── Logging and Monitoring ───────────────────────────────────────────────────
+
+monitoring:
+  # Weights & Biases (wandb) integration
+  wandb:
+    enabled: false
+    project: "bonsai-mobile-training"
+    entity: null             # Your wandb entity/team
+
+  # Log intervals
+  log_every_n_steps: 10
+
+  # Save metrics to file
+  metrics_file: "training_metrics.jsonl"
+
+# ── Reproducibility Configuration ──────────────────────────────────────────
+
+reproducibility:
+  # Random seeds for deterministic training
+  seed: 42
+
+  # Ensure deterministic algorithms (may be slower)
+  deterministic: true
+
+  # Seed all components
+  seed_all_sources: true
+
+# ── Advanced ─────────────────────────────────────────────────────────────────
+
+advanced:
+  # Use mixed precision training (faster, lower memory)
+  mixed_precision: false  # Set to true for CUDA; CPU doesn't support it well
+
+  # Gradient checkpointing (trades compute for memory)
+  gradient_checkpointing: false
+
+  # Compile model with torch.compile() (PyTorch 2.0+, experimental)
+  compile_model: false
+
+  # Number of data loader workers
+  num_workers: 0  # 0 for Windows + CPU
+
+# ── Domain-Specific Data Sources ───────────────────────────────────────────
+# Where to find each domain's data. Optional; only used if file exists.
+
+data_sources:
+  code_examples: "~/.bonsai/training_export/code_examples.jsonl"
+  survival_fixes: "~/.bonsai/training_export/survival_fixes.jsonl"
+  tool_use_examples: "~/.bonsai/training_export/tool_use_examples.jsonl"
+  chat_conversations: "~/.bonsai/training_export/chat_conversations.jsonl"
+  qa_pairs: "~/.bonsai/training_export/qa_pairs.jsonl"
+
+# ── Notes ────────────────────────────────────────────────────────────────────
+#
+# 1. On Windows with AMD 7900 XTX:
+#    - GPU training (backward pass) is NOT supported in PyTorch on AMD (no HIP).
+#    - Use llama-server for teacher inference (GGUF API mode).
+#    - Student trains on CPU or use WSL2 + ROCm if available.
+#
+# 2. Temperature tuning:
+#    - temperature = 1.0: vanilla softmax (sharp targets)
+#    - temperature = 4.0: very soft targets (helps small models)
+#    - temperature = 10.0: very smooth (slower convergence)
+#    Typical: 2.0-4.0 for mobile distillation.
+#
+# 3. Alpha (KL vs CE balance):
+#    - alpha = 0.0: pure supervised fine-tuning (no distillation)
+#    - alpha = 0.5: equal KL and CE loss (recommended)
+#    - alpha = 1.0: pure knowledge distillation
+#    If KL loss diverges, reduce alpha or increase temperature.
+#
+# 4. Batch size on CPU:
+#    - Windows CPU: max 4-8 due to RAM constraints
+#    - 12-core Ryzen 5900X + 64 GB RAM: 4-8 per batch
+#    - If OOM: reduce batch_size, max_seq_length, or lora_rank
+#
+# 5. Distillation timing:
+#    - Teacher API mode: teacher doesn't block student gradient steps
+#    - In-process mode: slower but no network overhead
+#    - Typical: 1-3 epochs sufficient (teacher already converged)
+#
+# 6. Mobile deployment:
+#    - Quantize to Q4_K_M (~250 MB for 1.1B model)
+#    - Use context_length = 2048 (tradeoff vs latency)
+#    - For phones: Q2_K or Q3_K further compress
+#

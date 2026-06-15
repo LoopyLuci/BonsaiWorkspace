@@ -1,0 +1,157 @@
+// adapters/ollama_adapter.ti – Ollama local models adapter
+module omnisystem::adapters::ollama
+
+use omnisystem::ai::provider::{AiProvider, Message, ChatConfig, ChatResponse, Usage, StreamHandle, StreamChunk}
+use http::client::HttpClient
+use async::async_trait
+use serde_json
+
+/// Ollama adapter for running open-source models locally (Llama 2, Mistral, etc.)
+pub struct OllamaAdapter {
+    http: HttpClient,
+    base_url: String,  // default: http://localhost:11434
+    models: Vec<String>,
+}
+
+impl OllamaAdapter {
+    pub fn new(base_url: Option<&str>) -> Self {
+        let url = base_url.unwrap_or("http://localhost:11434").to_string();
+        Self {
+            http: HttpClient::new(),
+            base_url: url,
+            models: vec![
+                "llama2".to_string(),
+                "mistral".to_string(),
+                "neural-chat".to_string(),
+                "openchat".to_string(),
+                "orca-mini".to_string(),
+            ],
+        }
+    }
+
+    pub fn with_models(mut self, models: Vec<String>) -> Self {
+        self.models = models;
+        self
+    }
+}
+
+#[async_trait]
+impl AiProvider for OllamaAdapter {
+    fn name(&self) -> &str { "ollama" }
+    fn display_name(&self) -> &str { "Ollama Local Models" }
+    fn supports_streaming(&self) -> bool { true }
+
+    fn list_models(&self) -> Vec<String> {
+        self.models.clone()
+    }
+
+    fn cost_per_token(&self, _model: &str) -> (f64, f64) {
+        // Local models have zero cost (just compute)
+        (0.0, 0.0)
+    }
+
+    async fn chat(&self, messages: &[Message], config: &ChatConfig) -> Result<ChatResponse, String> {
+        let url = format!("{}/api/chat", self.base_url);
+
+        let formatted_messages: Vec<Value> = messages.iter()
+            .map(|m| json!({
+                "role": m.role,
+                "content": m.content
+            }))
+            .collect();
+
+        let body = json!({
+            "model": config.model,
+            "messages": formatted_messages,
+            "stream": false,
+            "options": {
+                "temperature": config.temperature,
+                "top_p": config.top_p,
+                "num_predict": config.max_tokens,
+            }
+        });
+
+        let response = self.http.post(&url, &body, "")
+            .send().await?;
+
+        let data: Value = serde_json::from_str(&response)?;
+
+        let content = data["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        // Ollama doesn't return token counts directly; estimate from content
+        let estimated_input_tokens = messages.iter()
+            .map(|m| m.content.split_whitespace().count() as u64 / 4) // rough estimate: 4 chars per token
+            .sum();
+        let estimated_output_tokens = content.split_whitespace().count() as u64 / 4;
+
+        Ok(ChatResponse {
+            content,
+            provider: self.name().to_string(),
+            model: config.model.clone(),
+            confidence: 0.85,
+            usage: Usage {
+                input_tokens: estimated_input_tokens,
+                output_tokens: estimated_output_tokens,
+                total_tokens: estimated_input_tokens + estimated_output_tokens,
+            },
+            finish_reason: "stop".to_string(),
+            metadata: map!{
+                "local": "true",
+                "requires_gpu": data["eval_count"].as_u64().map(|c| c > 0).unwrap_or(false).to_string(),
+            },
+        })
+    }
+
+    async fn stream_chat(&self, messages: &[Message], config: &ChatConfig) -> Result<StreamHandle, String> {
+        let url = format!("{}/api/chat", self.base_url);
+        let (tx, rx) = async_channel::unbounded();
+
+        let formatted_messages: Vec<Value> = messages.iter()
+            .map(|m| json!({
+                "role": m.role,
+                "content": m.content
+            }))
+            .collect();
+
+        let body = json!({
+            "model": config.model,
+            "messages": formatted_messages,
+            "stream": true,
+        });
+
+        let http_clone = self.http.clone();
+
+        spawn(async move {
+            if let Ok(stream) = http_clone.post_stream(&url, &body, "").await {
+                // Parse newline-delimited JSON from Ollama streaming response
+                for chunk in stream.lines() {
+                    if let Ok(json) = serde_json::from_str::<Value>(&chunk) {
+                        if let Some(msg) = json["message"]["content"].as_str() {
+                            let is_final = json["done"].as_bool().unwrap_or(false);
+                            let delta = msg.to_string();
+                            let _ = tx.send(StreamChunk {
+                                delta,
+                                finish_reason: if is_final { Some("stop".to_string()) } else { None },
+                                is_final,
+                            }).await;
+                            if is_final { break; }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(StreamHandle { receiver: rx })
+    }
+
+    async fn health_check(&self) -> Result<(), String> {
+        let url = format!("{}/api/tags", self.base_url);
+        match self.http.get(&url, "").send().await {
+            Ok(_) => Ok(()),
+            Err(_) => Err("Ollama service not available at {}, ensure Ollama is running".format(self.base_url)),
+        }
+    }
+}

@@ -1,0 +1,197 @@
+// uvm/chaos.ti — Chaos testing framework
+// Injects controlled faults into a simulated cluster and verifies recovery.
+// Fault injection is deterministic (seeded); recovery must be complete within SLA.
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+const TAG_NODE:    i64 = 68500;
+const TAG_CLUSTER: i64 = 68501;
+const TAG_SCENARIO: i64 = 68502;
+const TAG_RESULT:  i64 = 68503;
+const TAG_LIST:    i64 = 68504;
+
+// ── Fault types ───────────────────────────────────────────────────────────
+const FAULT_NONE:      i64 = 0;
+const FAULT_NET_PART:  i64 = 1;  // network partition between two groups
+const FAULT_NODE_KILL: i64 = 2;  // kill a node outright
+const FAULT_MEM_PRESS: i64 = 3;  // force memory pressure on a node
+const FAULT_SLOW_DISK: i64 = 4;  // slow storage on a node
+const FAULT_CLOCK_SKW: i64 = 5;  // clock skew on a node
+
+// ── Recovery SLA (in ticks) ───────────────────────────────────────────────
+const SLA_NET_RECOVERY:  i64 = 10;   // network partition heals in ≤10 ticks
+const SLA_NODE_RECOVERY: i64 = 20;   // node restart in ≤20 ticks
+const SLA_MEM_RECOVERY:  i64 = 5;    // memory pressure clears in ≤5 ticks
+const SLA_DISK_RECOVERY: i64 = 15;   // slow disk resolves in ≤15 ticks
+
+// ── Simulated node ────────────────────────────────────────────────────────
+// body=node_id, arg=state(0=ok,1=partitioned,2=dead,3=stressed), domain=next
+pub fn node_new(id:i64) -> i64 {
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_NODE);
+    heap_set_body(n,id); heap_set_arg(n,0); heap_set_domain(n,0); return n;
+}
+pub fn node_id(n:i64) -> i64    { return heap_get_body(n); }
+pub fn node_state(n:i64) -> i64 { return heap_get_arg(n); }
+pub fn node_ok(n:i64) -> i64    { if heap_get_arg(n)==0 { return 1; } return 0; }
+pub fn node_set_state(n:i64, s:i64) { heap_set_arg(n,s); return; }
+pub fn node_recover(n:i64)      { heap_set_arg(n,0); return; }
+
+// ── Cluster ───────────────────────────────────────────────────────────────
+// body=node_list_head, arg=count, domain=tick
+let g_cluster_head:  i64 = 0;
+let g_cluster_count: i64 = 0;
+let g_cluster_tick:  i64 = 0;
+let g_fault_active:  i64 = FAULT_NONE;
+let g_fault_tick:    i64 = 0;
+
+pub fn cluster_new(node_count:i64) -> i64 {
+    g_cluster_head=0; g_cluster_count=0; g_cluster_tick=0;
+    g_fault_active=FAULT_NONE; g_fault_tick=0;
+    let i=0;
+    while i<node_count {
+        let n=node_new(i+1);
+        let ln=heap_alloc_term(); heap_set_tag(ln,TAG_LIST);
+        heap_set_body(ln,n); heap_set_arg(ln,g_cluster_head);
+        g_cluster_head=ln; g_cluster_count=g_cluster_count+1;
+        i=i+1;
+    }
+    return node_count;
+}
+
+pub fn cluster_healthy_count() -> i64 {
+    let ok=0; let cur=g_cluster_head;
+    while cur!=0 {
+        if node_ok(heap_get_body(cur))==1 { ok=ok+1; }
+        cur=heap_get_arg(cur);
+    }
+    return ok;
+}
+
+pub fn cluster_majority() -> i64 { return g_cluster_count/2 + 1; }
+
+// ── Fault injection ───────────────────────────────────────────────────────
+pub fn inject_fault(fault_type:i64, target_node_id:i64) {
+    g_fault_active = fault_type;
+    g_fault_tick   = g_cluster_tick;
+    let cur=g_cluster_head;
+    while cur!=0 {
+        let n=heap_get_body(cur);
+        if node_id(n)==target_node_id {
+            if fault_type==FAULT_NODE_KILL { node_set_state(n,2); }
+            if fault_type==FAULT_NET_PART  { node_set_state(n,1); }
+            if fault_type==FAULT_MEM_PRESS { node_set_state(n,3); }
+            if fault_type==FAULT_SLOW_DISK { node_set_state(n,3); }
+            if fault_type==FAULT_CLOCK_SKW { node_set_state(n,3); }
+        }
+        cur=heap_get_arg(cur);
+    }
+    return;
+}
+
+// ── Recovery simulation ───────────────────────────────────────────────────
+// Recover all non-killed nodes after SLA ticks
+pub fn tick_recovery() -> i64 {
+    g_cluster_tick = g_cluster_tick + 1;
+    let sla = 0;
+    if g_fault_active == FAULT_NET_PART  { sla = SLA_NET_RECOVERY; }
+    if g_fault_active == FAULT_NODE_KILL { sla = SLA_NODE_RECOVERY; }
+    if g_fault_active == FAULT_MEM_PRESS { sla = SLA_MEM_RECOVERY; }
+    if g_fault_active == FAULT_SLOW_DISK { sla = SLA_DISK_RECOVERY; }
+
+    let elapsed = g_cluster_tick - g_fault_tick;
+    if elapsed >= sla {
+        // Recover all non-killed nodes
+        let cur=g_cluster_head;
+        while cur!=0 {
+            let n=heap_get_body(cur);
+            if node_state(n) != 2 { node_recover(n); }  // skip killed nodes
+            cur=heap_get_arg(cur);
+        }
+        g_fault_active = FAULT_NONE;
+    }
+    return g_cluster_tick;
+}
+
+// ── Chaos scenario ────────────────────────────────────────────────────────
+// A scenario: inject a fault, tick until recovery, verify SLA met
+pub fn run_scenario(fault:i64, target:i64, sla:i64) -> i64 {
+    // Check quorum is maintained during fault
+    inject_fault(fault, target);
+    let healthy = cluster_healthy_count();
+    let majority = cluster_majority();
+    // After fault: must still have quorum (majority of nodes healthy)
+    if healthy < majority { return 0; }
+
+    // Tick until recovered or SLA exceeded
+    let ticks = 0;
+    while g_fault_active != FAULT_NONE && ticks < sla + 5 {
+        tick_recovery();
+        ticks = ticks + 1;
+    }
+
+    // Must recover within SLA
+    if ticks > sla { return 0; }
+    // All non-killed nodes must be healthy after recovery
+    let cur=g_cluster_head;
+    while cur!=0 {
+        let n=heap_get_body(cur);
+        if fault != FAULT_NODE_KILL && node_ok(n)==0 { return 0; }
+        cur=heap_get_arg(cur);
+    }
+    return 1;
+}
+
+pub fn main() -> i64 {
+    // Test 1: baseline — all nodes healthy
+    cluster_new(5);
+    if cluster_healthy_count() != 5 { return 1; }
+    if cluster_majority() != 3      { return 2; }
+
+    // Test 2: node state machine
+    let n = node_new(99);
+    if node_ok(n) != 1 { return 3; }
+    node_set_state(n, 2);
+    if node_ok(n) != 0 { return 4; }
+    node_recover(n);
+    if node_ok(n) != 1 { return 5; }
+
+    // Test 3: network partition — quorum maintained, recovery within SLA
+    cluster_new(5);
+    g_cluster_tick = 0;
+    let result3 = run_scenario(FAULT_NET_PART, 1, SLA_NET_RECOVERY);
+    if result3 != 1 { return 6; }
+
+    // Test 4: memory pressure — quick recovery
+    cluster_new(5);
+    g_cluster_tick = 0;
+    let result4 = run_scenario(FAULT_MEM_PRESS, 2, SLA_MEM_RECOVERY);
+    if result4 != 1 { return 7; }
+
+    // Test 5: slow disk recovery
+    cluster_new(5);
+    g_cluster_tick = 0;
+    let result5 = run_scenario(FAULT_SLOW_DISK, 3, SLA_DISK_RECOVERY);
+    if result5 != 1 { return 8; }
+
+    // Test 6: node kill — remaining nodes still have quorum (5 nodes, 1 killed = 4 healthy ≥ 3)
+    cluster_new(5);
+    inject_fault(FAULT_NODE_KILL, 1);
+    if cluster_healthy_count() != 4 { return 9; }
+    if cluster_majority() != 3      { return 10; }
+    if cluster_healthy_count() < cluster_majority() { return 11; }
+
+    // Test 7: clock skew — non-fatal, recovery within MEM SLA (same category)
+    cluster_new(7);
+    g_cluster_tick = 0;
+    let result7 = run_scenario(FAULT_CLOCK_SKW, 4, SLA_MEM_RECOVERY);
+    if result7 != 1 { return 12; }
+
+    // Test 8: multiple scenarios back to back
+    cluster_new(5);
+    g_cluster_tick = 0;
+    run_scenario(FAULT_NET_PART, 1, SLA_NET_RECOVERY);
+    run_scenario(FAULT_MEM_PRESS, 2, SLA_MEM_RECOVERY);
+    if cluster_healthy_count() < cluster_majority() { return 13; }
+
+    return 111;
+}

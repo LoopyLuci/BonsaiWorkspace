@@ -1,0 +1,306 @@
+// services/asset/manifest.ti – Universal asset manifest and representation
+// Every asset is a self-contained, deterministic, content-addressed module
+
+module asset::manifest
+
+use serde::{Serialize, Deserialize}
+use blake3::Hash
+use core::collections::HashMap
+use core::option::Option
+use core::vec::Vec
+
+/// Asset type enumeration: covers all creative asset classes
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum AssetType {
+    ImageRaster,      // RGBA pixel array
+    ImageVector,      // SVG-like paths, fills, strokes
+    Mesh3dStatic,     // Vertices, normals, indices, materials
+    Mesh3dAnimated,   // Mesh + skeletal animation + keyframes
+    AudioWave,        // PCM waveform (WAV-compatible)
+    AudioMidi,        // MIDI note events with timing
+    VideoSequence,    // Frame sequence + audio tracks
+    Document,         // Markdown + metadata
+    UiComponent,      // Sylva component definition
+    Shader,           // GLSL or compute shader
+    Dataset,          // Tabular or unstructured data
+    Custom(String),   // User-defined asset type
+}
+
+/// Canonical representation format for each asset type
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum CanonicalFormat {
+    RasterImage {
+        width: u32,
+        height: u32,
+        color_space: String,  // "srgb", "linear", "rec2020"
+        bits_per_channel: u8,
+    },
+    VectorImage {
+        viewbox_width: f32,
+        viewbox_height: f32,
+    },
+    Mesh3d {
+        vertex_format: String,  // "position3f_normal3f_uv2f"
+        index_format: String,   // "u16", "u32"
+        material_count: u32,
+    },
+    AudioWaveform {
+        sample_rate: u32,
+        channels: u32,
+        bit_depth: u8,
+    },
+    VideoFrameSequence {
+        width: u32,
+        height: u32,
+        fps: f32,
+        frame_count: u32,
+    },
+}
+
+/// Provenance chain: ordered list of transformations applied to create this asset
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Operation {
+    pub id: String,           // Unique operation ID
+    pub function: String,     // "scale", "crop", "rotate", "blur", "composite", etc.
+    pub parameters: HashMap<String, String>,
+    pub timestamp: u64,
+    pub applied_by: String,   // User or agent ID
+}
+
+/// Asset metadata
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AssetMetadata {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub created_at: u64,
+    pub modified_at: u64,
+    pub tags: Vec<String>,
+    pub category: String,
+    pub license: String,         // "CC0", "CC-BY", "proprietary", etc.
+    pub rating: Option<f32>,     // 0.0 to 5.0 stars
+}
+
+/// Core asset manifest: describes any asset unambiguously
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AssetManifest {
+    pub name: String,
+    pub version: String,
+    pub uuid: Hash,                          // BLAKE3 of canonical form
+    pub asset_type: AssetType,
+    pub format: CanonicalFormat,
+    pub metadata: AssetMetadata,
+
+    // Raw data references (content-addressed)
+    pub raw_data_hash: Hash,                 // Points to raw pixels/vertices/samples in storage
+    pub raw_data_size_bytes: u64,
+    pub preview_hash: Option<Hash>,          // Low-res preview (JPEG-XL)
+
+    // Composition and dependencies
+    pub dependencies: Vec<Hash>,             // Hashes of assets used in composition
+    pub operations: Vec<Operation>,          // Provenance chain (fully reproducible)
+
+    // Capability requirements
+    pub required_capabilities: Vec<String>,  // "GPU", "AudioHW", "NetworkIO", etc.
+
+    // Storage
+    pub storage_location: String,            // "local", "mesh://peer-id", "cache://..."
+    pub signature: Option<Vec<u8>>,          // BLS signature (optional)
+}
+
+impl AssetManifest {
+    pub fn new(name: &str, asset_type: AssetType) -> Self {
+        Self {
+            name: name.to_string(),
+            version: "1.0".to_string(),
+            uuid: Hash::default(),
+            asset_type,
+            format: CanonicalFormat::RasterImage {
+                width: 1024,
+                height: 1024,
+                color_space: "srgb".to_string(),
+                bits_per_channel: 8,
+            },
+            metadata: AssetMetadata {
+                name: name.to_string(),
+                description: String::new(),
+                author: "unknown".to_string(),
+                created_at: 0,
+                modified_at: 0,
+                tags: vec![],
+                category: "uncategorized".to_string(),
+                license: "CC0".to_string(),
+                rating: None,
+            },
+            raw_data_hash: Hash::default(),
+            raw_data_size_bytes: 0,
+            preview_hash: None,
+            dependencies: vec![],
+            operations: vec![],
+            required_capabilities: vec![],
+            storage_location: "local".to_string(),
+            signature: None,
+        }
+    }
+
+    /// Compute deterministic hash (BLAKE3 of canonical CBOR)
+    pub fn compute_hash(&mut self) -> Result<Hash, String> {
+        let canonical = serde_json::to_vec(&self)
+            .map_err(|e| e.to_string())?;
+        let hash = blake3::hash(&canonical);
+        self.uuid = hash.clone();
+        Ok(hash)
+    }
+
+    /// Add an operation to the provenance chain
+    pub fn add_operation(&mut self, op: Operation) {
+        self.operations.push(op);
+    }
+
+    /// Verify that all dependencies exist (and are reachable)
+    pub fn verify_dependencies(&self) -> Result<(), String> {
+        for dep_hash in &self.dependencies {
+            // In a real implementation, check storage service for dep_hash
+            // For now, just succeed
+        }
+        Ok(())
+    }
+
+    /// Get the canonical representation summary
+    pub fn format_summary(&self) -> String {
+        match &self.format {
+            CanonicalFormat::RasterImage { width, height, .. } => {
+                format!("{}x{} raster image", width, height)
+            }
+            CanonicalFormat::VectorImage { .. } => {
+                "vector graphic (SVG)".to_string()
+            }
+            CanonicalFormat::Mesh3d { .. } => {
+                "3D mesh".to_string()
+            }
+            CanonicalFormat::AudioWaveform { sample_rate, channels, .. } => {
+                format!("{} Hz {} ch audio", sample_rate, channels)
+            }
+            CanonicalFormat::VideoFrameSequence { width, height, fps, frame_count } => {
+                format!("{}x{}@{}fps video ({} frames)", width, height, fps, frame_count)
+            }
+        }
+    }
+}
+
+/// Asset handle: proof of ownership and access capability
+#[derive(Clone, Debug)]
+pub struct AssetHandle {
+    pub manifest_hash: Hash,
+    pub capability: AssetCapability,
+}
+
+/// Capabilities that can be granted for an asset
+#[derive(Clone, Debug, PartialEq)]
+pub enum AssetCapability {
+    Read,       // Can view/use the asset
+    Write,      // Can modify the asset
+    Derive,     // Can create new assets from this one
+    Execute,    // For code assets (shaders, plugins)
+    Share,      // Can publish to library
+}
+
+/// Asset transformation function (pure, deterministic, reproducible)
+pub trait AssetTransformation: Send + Sync {
+    fn apply(&self, input: &AssetManifest) -> Result<AssetManifest, String>;
+    fn reverse(&self, output: &AssetManifest) -> Result<AssetManifest, String>;
+    fn is_deterministic(&self) -> bool;
+}
+
+/// Canonical transformation operations
+pub struct TransformationRegistry {
+    transformations: HashMap<String, Box<dyn AssetTransformation>>,
+}
+
+impl TransformationRegistry {
+    pub fn new() -> Self {
+        Self {
+            transformations: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, name: &str, transform: Box<dyn AssetTransformation>) {
+        self.transformations.insert(name.to_string(), transform);
+    }
+
+    pub fn apply(&self, name: &str, input: &AssetManifest) -> Result<AssetManifest, String> {
+        let transform = self.transformations
+            .get(name)
+            .ok_or(format!("Transformation {} not found", name))?;
+        transform.apply(input)
+    }
+
+    pub fn is_deterministic(&self, name: &str) -> bool {
+        self.transformations
+            .get(name)
+            .map(|t| t.is_deterministic())
+            .unwrap_or(false)
+    }
+}
+
+/// Asset composition: combine multiple assets with blending/layering
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AssetComposition {
+    pub base_asset: Hash,
+    pub layers: Vec<CompositionLayer>,
+    pub blend_mode: String,  // "normal", "multiply", "screen", "overlay", etc.
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CompositionLayer {
+    pub asset_hash: Hash,
+    pub opacity: f32,        // 0.0 to 1.0
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub blend_mode: String,
+}
+
+impl AssetComposition {
+    pub fn finalize(&self) -> Result<AssetManifest, String> {
+        // Composite layers into a single asset manifest
+        // In a real implementation, this would call the image composition engine
+        Ok(AssetManifest::new("composed", AssetType::ImageRaster))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_asset_manifest_creation() {
+        let manifest = AssetManifest::new("test-asset", AssetType::ImageRaster);
+        assert_eq!(manifest.name, "test-asset");
+        assert_eq!(manifest.asset_type, AssetType::ImageRaster);
+    }
+
+    #[test]
+    fn test_manifest_hash_deterministic() {
+        let mut manifest1 = AssetManifest::new("test", AssetType::ImageRaster);
+        let mut manifest2 = AssetManifest::new("test", AssetType::ImageRaster);
+
+        let hash1 = manifest1.compute_hash().unwrap();
+        let hash2 = manifest2.compute_hash().unwrap();
+
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_operation_provenance() {
+        let mut manifest = AssetManifest::new("test", AssetType::ImageRaster);
+        manifest.add_operation(Operation {
+            id: "op1".to_string(),
+            function: "scale".to_string(),
+            parameters: vec![("factor".to_string(), "2.0".to_string())].into_iter().collect(),
+            timestamp: 0,
+            applied_by: "user1".to_string(),
+        });
+
+        assert_eq!(manifest.operations.len(), 1);
+    }
+}

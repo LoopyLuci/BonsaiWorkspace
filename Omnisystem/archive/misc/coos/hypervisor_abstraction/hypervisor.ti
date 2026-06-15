@@ -1,0 +1,247 @@
+// Hypervisor Abstraction Layer
+// Platform-agnostic interface for KVM, Hyper-V, Virtualization.framework, bhyve, etc.
+
+namespace hypervisor;
+
+// Hypervisor backend enumeration
+type HypervisorType = enum {
+    KVM,                      // Linux KVM
+    HyperV,                   // Windows Hyper-V
+    VirtualizationFramework,  // macOS Virtualization.framework
+    BHYVE,                    // FreeBSD bhyve
+    QEMU,                     // QEMU full-system emulation
+    Xen,                      // Xen hypervisor
+    VirtualBox,               // VirtualBox (fallback)
+};
+
+// VM configuration (host-to-VM parameters)
+type VMConfiguration = struct {
+    vm_id: string,
+    vm_name: string,
+    hypervisor: HypervisorType,
+    cpu_cores: i32,
+    memory_mb: i64,
+    disk_size_gb: i64,
+    disk_path: string,
+    boot_image: string,       // Path to kernel/ISO
+    kernel_path: string,      // For direct kernel boot
+    initrd_path: string,      // Initial ramdisk (optional)
+    boot_args: string,        // Kernel command-line arguments
+    enable_nested_vm: bool,
+    enable_uefi: bool,
+    console_type: ConsoleType,
+    network_backends: vec<NetworkBackend>,
+    disk_backends: vec<DiskBackend>,
+    device_assignments: vec<DeviceAssignment>,
+};
+
+// Console output configuration
+type ConsoleType = enum {
+    Serial,                   // UART console (virtio-serial)
+    VNC,                      // VNC remote display
+    SPICE,                    // SPICE remote display
+    EarlyBootConsole,         // Raw console before OS boots
+};
+
+// Virtual network backend
+type NetworkBackend = struct {
+    backend_id: string,
+    backend_type: NetworkBackendType,
+    mac_address: string,
+    ip_config: Option<IPConfiguration>,
+    bandwidth_limit_mbps: Option<i32>,
+    packet_loss_percent: Option<f32>,
+};
+
+type NetworkBackendType = enum {
+    TAP,                      // Linux TAP device
+    Bridge,                   // Bridge to physical network
+    NAT,                      // Host-side NAT
+    UserNetwork,              // Simple user-mode network
+    VirtioNet,                // Virtio network device
+    SRIOVNet,                 // SR-IOV passthrough (if available)
+};
+
+type IPConfiguration = struct {
+    ip_address: string,
+    netmask: string,
+    gateway: string,
+    dns_servers: vec<string>,
+};
+
+// Virtual disk backend
+type DiskBackend = struct {
+    backend_id: string,
+    backend_type: DiskBackendType,
+    path: string,
+    size_gb: i64,
+    format: string,           // "qcow2", "raw", "vdi", etc.
+    cache_mode: string,       // "writethrough", "writeback", "none"
+    io_backend: string,       // "threads", "aio", "io_uring"
+};
+
+type DiskBackendType = enum {
+    File,                     // File-backed disk
+    BlockDevice,              // Block device (raw partition)
+    LVM,                      // LVM volume
+    ZFS,                      // ZFS volume
+};
+
+// Passthrough device assignment
+type DeviceAssignment = struct {
+    device_id: string,
+    device_type: DeviceType,
+    host_path: string,
+    vm_path: string,
+    options: map<string, string>,
+};
+
+type DeviceType = enum {
+    USB,
+    PCI,
+    GPU,
+    NVMe,
+    SCSI,
+};
+
+// VM runtime state
+type VMState = enum {
+    Created,
+    Starting,
+    Running,
+    Paused,
+    Suspending,
+    Suspended,
+    Resuming,
+    Stopping,
+    Stopped,
+    Error,
+};
+
+// VM runtime snapshot
+type VMSnapshot = struct {
+    snapshot_id: string,
+    vm_id: string,
+    timestamp: i64,
+    state: VMState,
+    memory_snapshot: string,  // Path to memory dump
+    disk_snapshot: string,    // Path to disk snapshot
+    metadata: map<string, string>,
+};
+
+// Hypervisor capability reporting
+type HypervisorCapabilities = struct {
+    hypervisor_type: HypervisorType,
+    version: string,
+    supports_nested_vm: bool,
+    supports_gpu_passthrough: bool,
+    supports_sr_iov: bool,
+    supports_uefi: bool,
+    supports_secure_boot: bool,
+    supports_nested_paging: bool,
+    supports_ept: bool,        // Extended Page Tables (Intel)
+    supports_npt: bool,        // Nested Page Tables (AMD)
+    max_vms: i32,
+    max_cpus_per_vm: i32,
+    max_memory_gb: i64,
+    hardware_features: vec<string>,
+};
+
+// Main hypervisor interface
+interface Hypervisor {
+    // VM lifecycle
+    fn create_vm(config: VMConfiguration) -> string;  // Returns VM ID
+    fn start_vm(vm_id: string) -> bool;
+    fn stop_vm(vm_id: string) -> bool;
+    fn pause_vm(vm_id: string) -> bool;
+    fn resume_vm(vm_id: string) -> bool;
+    fn delete_vm(vm_id: string) -> bool;
+    fn get_vm_state(vm_id: string) -> VMState;
+
+    // Snapshots
+    fn create_snapshot(vm_id: string, snapshot_id: string) -> VMSnapshot;
+    fn restore_snapshot(vm_id: string, snapshot_id: string) -> bool;
+    fn delete_snapshot(vm_id: string, snapshot_id: string) -> bool;
+    fn list_snapshots(vm_id: string) -> vec<VMSnapshot>;
+
+    // Resource adjustment
+    fn set_cpu_cores(vm_id: string, cores: i32) -> bool;
+    fn set_memory(vm_id: string, memory_mb: i64) -> bool;
+    fn resize_disk(vm_id: string, disk_id: string, size_gb: i64) -> bool;
+
+    // Devices and I/O
+    fn add_network_backend(vm_id: string, backend: NetworkBackend) -> bool;
+    fn remove_network_backend(vm_id: string, backend_id: string) -> bool;
+    fn add_disk_backend(vm_id: string, backend: DiskBackend) -> bool;
+    fn remove_disk_backend(vm_id: string, backend_id: string) -> bool;
+    fn assign_device(vm_id: string, assignment: DeviceAssignment) -> bool;
+    fn deassign_device(vm_id: string, device_id: string) -> bool;
+
+    // Console and serial I/O
+    fn get_console_output(vm_id: string) -> string;
+    fn send_console_input(vm_id: string, input: string) -> bool;
+    fn set_console_type(vm_id: string, console_type: ConsoleType) -> bool;
+
+    // Query and monitoring
+    fn get_capabilities() -> HypervisorCapabilities;
+    fn get_vm_stats(vm_id: string) -> VMStats;
+    fn get_host_stats() -> HostStats;
+
+    // Hypercalls (from guest to host)
+    fn register_hypercall_handler(name: string, handler: fn(args: vec<any>) -> any) -> bool;
+    fn invoke_hypercall(vm_id: string, name: string, args: vec<any>) -> any;
+};
+
+// VM statistics (runtime monitoring)
+type VMStats = struct {
+    vm_id: string,
+    timestamp: i64,
+    cpu_usage_percent: f32,
+    memory_used_mb: i64,
+    memory_available_mb: i64,
+    disk_io_read_mbps: f32,
+    disk_io_write_mbps: f32,
+    network_rx_mbps: f32,
+    network_tx_mbps: f32,
+    cpu_context_switches: i64,
+    disk_operations_per_sec: i32,
+    network_packets_rx: i64,
+    network_packets_tx: i64,
+};
+
+// Host statistics
+type HostStats = struct {
+    timestamp: i64,
+    cpu_usage_percent: f32,
+    memory_used_gb: f64,
+    memory_total_gb: f64,
+    disk_used_gb: f64,
+    disk_total_gb: f64,
+    network_rx_mbps: f32,
+    network_tx_mbps: f32,
+    running_vms: i32,
+};
+
+// Virtio device definitions
+type VirtioDevice = enum {
+    Console,                  // virtio-console (serial I/O)
+    Block,                    // virtio-blk (disk)
+    Net,                      // virtio-net (networking)
+    SCSI,                     // virtio-scsi
+    RNG,                      // virtio-rng (random number generator)
+    MemBalloon,               // virtio-balloon (memory management)
+    9P,                       // 9P filesystem passthrough
+    VSOCK,                    // VSOCK communication
+    GPU,                      // virtio-gpu
+};
+
+// Virtio device configuration
+type VirtioDeviceConfig = struct {
+    device_type: VirtioDevice,
+    device_id: string,
+    queue_size: i32,          // Number of queue entries
+    num_queues: i32,          // Number of parallel queues
+    msi_enabled: bool,        // Message-signaled interrupts
+    features: vec<string>,
+    config_data: map<string, string>,
+};

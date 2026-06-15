@@ -1,0 +1,157 @@
+// services/env-fabric/payload.ti – Payload Builder for environment types
+// Constructs appropriate vault images: VM (kernel+initrd), Container (rootfs),
+// Emulation (QEMU+image), Simulation (BUSH+model)
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_PAYLOAD: i64 = 9980;
+const TAG_KERNEL_PAYLOAD: i64 = 9981;
+const TAG_CONTAINER_PAYLOAD: i64 = 9982;
+const TAG_EMULATION_PAYLOAD: i64 = 9983;
+const TAG_SIMULATION_PAYLOAD: i64 = 9984;
+
+// Generic payload container
+pub fn payload_new(env_type: i64, base_addr: i64) -> i64 {
+    let payload = heap_alloc_term();
+    heap_set_tag(payload, TAG_PAYLOAD);
+    heap_set_body(payload, env_type);    // environment type
+    heap_set_arg(payload, base_addr);    // memory base in vault
+    heap_set_domain(payload, 0);         // size/metadata
+    return payload;
+}
+
+// VM Payload: kernel + initrd + boot info
+pub fn payload_vm_new(kernel: i64, initrd: i64, cmdline: i64) -> i64 {
+    let p = heap_alloc_term();
+    heap_set_tag(p, TAG_KERNEL_PAYLOAD);
+    heap_set_body(p, kernel);            // kernel ELF binary
+    heap_set_arg(p, initrd);             // initrd image
+    heap_set_domain(p, cmdline);         // kernel command line
+    return p;
+}
+
+pub fn payload_vm_kernel(p: i64) -> i64 { return heap_get_body(p); }
+pub fn payload_vm_initrd(p: i64) -> i64 { return heap_get_arg(p); }
+pub fn payload_vm_cmdline(p: i64) -> i64 { return heap_get_domain(p); }
+
+// Build VM payload: load kernel at entry point, initrd at standard offset
+pub fn build_vm_payload(spec: i64) -> i64 {
+    // Extract kernel and initrd paths from spec
+    // Load from CAS (content-addressed storage)
+    let kernel = load_from_cas("uosc-kernel.elf"); // placeholder
+    let initrd = load_from_cas("omnisystem-initrd.img");
+    let cmdline = "console=virtio quiet";
+
+    let payload = payload_vm_new(kernel, initrd, cmdline);
+    return payload;
+}
+
+// Container Payload: rootfs + entrypoint
+pub fn payload_container_new(rootfs: i64, entrypoint: i64) -> i64 {
+    let p = heap_alloc_term();
+    heap_set_tag(p, TAG_CONTAINER_PAYLOAD);
+    heap_set_body(p, rootfs);            // rootfs archive or mount
+    heap_set_arg(p, entrypoint);         // entrypoint command
+    heap_set_domain(p, 0);               // reserved for environment
+    return p;
+}
+
+pub fn payload_container_rootfs(p: i64) -> i64 { return heap_get_body(p); }
+pub fn payload_container_entrypoint(p: i64) -> i64 { return heap_get_arg(p); }
+
+// Build container payload: extract rootfs, set up entrypoint
+pub fn build_container_payload(spec: i64) -> i64 {
+    // Extract image from spec (e.g., "docker://alpine:latest")
+    // Pull from image registry or cache
+    let rootfs = load_image("alpine:latest");
+    let entrypoint = "/bin/sh";
+
+    let payload = payload_container_new(rootfs, entrypoint);
+    return payload;
+}
+
+// Emulation Payload: QEMU binary + guest disk image
+pub fn payload_emulation_new(emulator: i64, disk: i64, machine: i64) -> i64 {
+    let p = heap_alloc_term();
+    heap_set_tag(p, TAG_EMULATION_PAYLOAD);
+    heap_set_body(p, emulator);          // QEMU or other emulator
+    heap_set_arg(p, disk);               // guest disk image
+    heap_set_domain(p, machine);         // machine type/arch
+    return p;
+}
+
+pub fn payload_emulation_binary(p: i64) -> i64 { return heap_get_body(p); }
+pub fn payload_emulation_disk(p: i64) -> i64 { return heap_get_arg(p); }
+
+// Build emulation payload: load QEMU, link guest disk
+pub fn build_emulation_payload(spec: i64) -> i64 {
+    // Extract emulator type and disk path
+    // For QEMU: load qemu-system-x86_64
+    let emulator = load_from_cas("qemu-system-x86_64");
+    let disk = load_from_cas("windows.qcow2"); // example
+    let machine = "pc";
+
+    let payload = payload_emulation_new(emulator, disk, machine);
+    return payload;
+}
+
+// Simulation Payload: BUSH simulator + network model
+pub fn payload_simulation_new(simulator: i64, model: i64) -> i64 {
+    let p = heap_alloc_term();
+    heap_set_tag(p, TAG_SIMULATION_PAYLOAD);
+    heap_set_body(p, simulator);         // BUSH or other simulator
+    heap_set_arg(p, model);              // model description (TOML)
+    heap_set_domain(p, 0);               // reserved
+    return p;
+}
+
+pub fn payload_simulation_binary(p: i64) -> i64 { return heap_get_body(p); }
+pub fn payload_simulation_model(p: i64) -> i64 { return heap_get_arg(p); }
+
+// Build simulation payload: load BUSH, link model
+pub fn build_simulation_payload(spec: i64) -> i64 {
+    // Extract simulator and model
+    let simulator = load_from_cas("bush-simulator");
+    let model = load_from_cas("network-model.toml");
+
+    let payload = payload_simulation_new(simulator, model);
+    return payload;
+}
+
+// Universal payload builder: dispatch by environment type
+pub fn build_payload_for_type(spec: i64, env_type: i64) -> i64 {
+    if env_type == 1 {
+        return build_vm_payload(spec);
+    } else if env_type == 2 {
+        return build_container_payload(spec);
+    } else if env_type == 3 {
+        return build_emulation_payload(spec);
+    } else if env_type == 4 {
+        return build_simulation_payload(spec);
+    }
+    return 0; // error: unknown type
+}
+
+// Load artifact from content-addressed storage (CAS)
+fn load_from_cas(hash: i64) -> i64 {
+    // Query audit-log or CAS service for artifact
+    // Return memory address of loaded artifact
+    return 0; // placeholder
+}
+
+// Load container image from registry
+fn load_image(image_name: i64) -> i64 {
+    // Pull from Docker Hub, OCI registry, or local cache
+    // Extract rootfs and return
+    return 0; // placeholder
+}

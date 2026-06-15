@@ -1,0 +1,377 @@
+// services/performance/profiler.ti – System-wide profiling and performance analysis
+// Collects CPU, memory, I/O, and GPU metrics; drives PGO and auto-tuning
+
+module performance::profiler
+
+use blake3::Hash
+use core::collections::HashMap
+use serde::{Serialize, Deserialize}
+
+/// CPU performance sample: collects every 100ms by default
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CpuSample {
+    pub timestamp: u64,
+    pub process_id: u32,
+    pub thread_id: u32,
+    pub cpu_time_us: u64,            // User + kernel time
+    pub wall_time_us: u64,
+    pub instruction_count: Option<u64>,  // If PMU available
+    pub cache_misses: Option<u64>,
+    pub branch_mispredictions: Option<u64>,
+    pub function_stack: Vec<StackFrame>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StackFrame {
+    pub function_name: String,
+    pub file: String,
+    pub line: u32,
+}
+
+/// Memory allocation profile
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MemorySample {
+    pub timestamp: u64,
+    pub process_id: u32,
+    pub rss_bytes: u64,                // Resident set size
+    pub vms_bytes: u64,                // Virtual memory size
+    pub allocation_count: u64,
+    pub deallocation_count: u64,
+    pub peak_rss_bytes: u64,
+}
+
+/// I/O operation
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct IoSample {
+    pub timestamp: u64,
+    pub process_id: u32,
+    pub operation: String,             // "read", "write", "mmap", "open"
+    pub device: String,
+    pub offset: u64,
+    pub size_bytes: u64,
+    pub latency_us: u64,
+    pub throughput_mbps: Option<f32>,
+}
+
+/// GPU utilization sample
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GpuSample {
+    pub timestamp: u64,
+    pub device_id: u32,
+    pub gpu_utilization_percent: f32,
+    pub memory_used_mb: u32,
+    pub memory_total_mb: u32,
+    pub power_draw_watts: f32,
+    pub temperature_celsius: f32,
+    pub kernel_executions: u32,
+}
+
+/// Aggregated profiling data
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProfilingData {
+    pub cpu_samples: Vec<CpuSample>,
+    pub memory_samples: Vec<MemorySample>,
+    pub io_samples: Vec<IoSample>,
+    pub gpu_samples: Vec<GpuSample>,
+    pub function_heat: HashMap<String, u64>,  // function_name -> sample count
+    pub pgo_data: HashMap<String, u64>,       // function_name -> call count
+    pub profile_duration_seconds: u32,
+}
+
+impl ProfilingData {
+    pub fn new() -> Self {
+        Self {
+            cpu_samples: vec![],
+            memory_samples: vec![],
+            io_samples: vec![],
+            gpu_samples: vec![],
+            function_heat: HashMap::new(),
+            pgo_data: HashMap::new(),
+            profile_duration_seconds: 0,
+        }
+    }
+
+    /// Identify the hottest functions
+    pub fn hottest_functions(&self, count: usize) -> Vec<(String, u64)> {
+        let mut functions: Vec<_> = self.function_heat.iter().collect();
+        functions.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        functions.iter()
+            .take(count)
+            .map(|(name, count)| (name.to_string(), *count))
+            .collect()
+    }
+
+    /// Get memory allocation hot spots
+    pub fn memory_hot_spots(&self) -> Vec<(u64, u64)> {
+        // Return [(timestamp, peak_rss), ...] during growth periods
+        let mut hot_spots = vec![];
+        for i in 1..self.memory_samples.len() {
+            let prev = &self.memory_samples[i - 1];
+            let curr = &self.memory_samples[i];
+            if curr.rss_bytes > prev.rss_bytes * 11 / 10 {  // 10% growth
+                hot_spots.push((curr.timestamp, curr.rss_bytes));
+            }
+        }
+        hot_spots
+    }
+
+    /// Compute call counts for PGO
+    pub fn compute_pgo_data(&mut self) {
+        for sample in &self.cpu_samples {
+            for frame in &sample.function_stack {
+                *self.pgo_data.entry(frame.function_name.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+/// Profiler service
+pub struct Profiler {
+    pub enabled: bool,
+    pub sampling_interval_ms: u32,
+    pub buffer: ProfilingData,
+    pub max_samples: usize,
+}
+
+impl Profiler {
+    pub fn new() -> Self {
+        Self {
+            enabled: true,
+            sampling_interval_ms: 100,
+            buffer: ProfilingData::new(),
+            max_samples: 100000,
+        }
+    }
+
+    /// Start profiling
+    pub fn start(&mut self) {
+        self.enabled = true;
+        self.buffer = ProfilingData::new();
+    }
+
+    /// Record a CPU sample
+    pub fn record_cpu_sample(&mut self, sample: CpuSample) {
+        if !self.enabled || self.buffer.cpu_samples.len() >= self.max_samples {
+            return;
+        }
+        self.buffer.cpu_samples.push(sample);
+    }
+
+    /// Record an I/O operation
+    pub fn record_io(&mut self, sample: IoSample) {
+        if !self.enabled || self.buffer.io_samples.len() >= self.max_samples {
+            return;
+        }
+        self.buffer.io_samples.push(sample);
+    }
+
+    /// Record memory usage
+    pub fn record_memory(&mut self, sample: MemorySample) {
+        if !self.enabled {
+            return;
+        }
+        self.buffer.memory_samples.push(sample);
+    }
+
+    /// Record GPU utilization
+    pub fn record_gpu(&mut self, sample: GpuSample) {
+        if !self.enabled || self.buffer.gpu_samples.len() >= self.max_samples {
+            return;
+        }
+        self.buffer.gpu_samples.push(sample);
+    }
+
+    /// Stop profiling and finalize
+    pub fn finalize(&mut self) -> ProfilingData {
+        self.enabled = false;
+        let mut result = std::mem::take(&mut self.buffer);
+        result.compute_pgo_data();
+        result
+    }
+}
+
+/// Performance regression detector
+pub struct RegressionDetector {
+    pub baseline: HashMap<String, f32>,  // benchmark_name -> baseline_time_ms
+    pub current: HashMap<String, f32>,   // benchmark_name -> current_time_ms
+    pub threshold_percent: f32,          // 5% threshold for regression alert
+}
+
+impl RegressionDetector {
+    pub fn new() -> Self {
+        Self {
+            baseline: HashMap::new(),
+            current: HashMap::new(),
+            threshold_percent: 5.0,
+        }
+    }
+
+    /// Record a baseline benchmark result
+    pub fn record_baseline(&mut self, name: &str, time_ms: f32) {
+        self.baseline.insert(name.to_string(), time_ms);
+    }
+
+    /// Record a current benchmark result
+    pub fn record_current(&mut self, name: &str, time_ms: f32) {
+        self.current.insert(name.to_string(), time_ms);
+    }
+
+    /// Detect regressions
+    pub fn detect_regressions(&self) -> Vec<(String, f32)> {
+        let mut regressions = vec![];
+
+        for (name, baseline_time) in &self.baseline {
+            if let Some(current_time) = self.current.get(name) {
+                let percent_change = ((current_time - baseline_time) / baseline_time) * 100.0;
+
+                if percent_change > self.threshold_percent {
+                    regressions.push((name.clone(), percent_change));
+                }
+            }
+        }
+
+        regressions.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        regressions
+    }
+}
+
+/// Benchmark suite
+pub struct BenchmarkSuite {
+    pub benchmarks: Vec<Benchmark>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Benchmark {
+    pub name: String,
+    pub description: String,
+    pub category: String,  // "kernel", "compression", "network", "asset", etc.
+    pub workload: Box<dyn Fn() -> u64>,  // Returns time in microseconds
+}
+
+impl BenchmarkSuite {
+    pub fn new() -> Self {
+        Self {
+            benchmarks: vec![],
+        }
+    }
+
+    pub fn add_benchmark(&mut self, benchmark: Benchmark) {
+        self.benchmarks.push(benchmark);
+    }
+
+    /// Run all benchmarks and collect results
+    pub fn run_all(&self) -> HashMap<String, f32> {
+        let mut results = HashMap::new();
+
+        for bench in &self.benchmarks {
+            let start = timestamp_now();
+            let elapsed_us = (bench.workload)();
+            let elapsed_ms = (elapsed_us as f32) / 1000.0;
+            results.insert(bench.name.clone(), elapsed_ms);
+        }
+
+        results
+    }
+
+    /// Run a specific benchmark by name
+    pub fn run(&self, name: &str) -> Option<f32> {
+        self.benchmarks.iter()
+            .find(|b| b.name == name)
+            .map(|b| {
+                let elapsed_us = (b.workload)();
+                (elapsed_us as f32) / 1000.0
+            })
+    }
+}
+
+fn timestamp_now() -> u64 {
+    // Should use actual system time
+    0
+}
+
+/// Frame-to-frame timing (for interactive workloads)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FrameMetrics {
+    pub frame_number: u64,
+    pub frame_time_ms: f32,
+    pub fps: f32,
+    pub gpu_time_ms: f32,
+    pub cpu_time_ms: f32,
+    pub vsync_missed: bool,
+}
+
+impl FrameMetrics {
+    pub fn from_timings(gpu_us: u64, cpu_us: u64) -> Self {
+        let gpu_ms = (gpu_us as f32) / 1000.0;
+        let cpu_ms = (cpu_us as f32) / 1000.0;
+        let frame_time_ms = gpu_ms.max(cpu_ms);
+        let fps = 1000.0 / frame_time_ms;
+
+        Self {
+            frame_number: 0,
+            frame_time_ms,
+            fps,
+            gpu_time_ms: gpu_ms,
+            cpu_time_ms: cpu_ms,
+            vsync_missed: frame_time_ms > 16.67,  // > 60 FPS threshold
+        }
+    }
+}
+
+/// Frame profiler for interactive applications
+pub struct FrameProfiler {
+    pub frames: Vec<FrameMetrics>,
+    pub target_fps: f32,
+}
+
+impl FrameProfiler {
+    pub fn new(target_fps: f32) -> Self {
+        Self {
+            frames: vec![],
+            target_fps,
+        }
+    }
+
+    pub fn record_frame(&mut self, metrics: FrameMetrics) {
+        self.frames.push(metrics);
+    }
+
+    /// Compute frame time statistics
+    pub fn stats(&self) -> FrameStats {
+        if self.frames.is_empty() {
+            return FrameStats::default();
+        }
+
+        let frame_times: Vec<f32> = self.frames.iter().map(|f| f.frame_time_ms).collect();
+        let avg = frame_times.iter().sum::<f32>() / frame_times.len() as f32;
+        let min = frame_times.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = frame_times.iter().copied().fold(0.0, f32::max);
+
+        // 95th percentile
+        let mut sorted = frame_times.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p95_idx = (sorted.len() * 95) / 100;
+        let p95 = sorted.get(p95_idx).copied().unwrap_or(0.0);
+
+        let frame_drops = self.frames.iter().filter(|f| f.vsync_missed).count();
+
+        FrameStats {
+            average_frame_time_ms: avg,
+            min_frame_time_ms: min,
+            max_frame_time_ms: max,
+            p95_frame_time_ms: p95,
+            frame_drops,
+            total_frames: self.frames.len() as u32,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FrameStats {
+    pub average_frame_time_ms: f32,
+    pub min_frame_time_ms: f32,
+    pub max_frame_time_ms: f32,
+    pub p95_frame_time_ms: f32,
+    pub frame_drops: usize,
+    pub total_frames: u32,
+}

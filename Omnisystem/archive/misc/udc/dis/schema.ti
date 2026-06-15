@@ -1,0 +1,299 @@
+// dis/schema.ti – Universal Device Interface Specification (DIS)
+// Canonical, language-agnostic device representation
+// All devices (USB, PCIe, I2C, SPI, etc.) compile to this schema
+
+module udc::dis::schema
+
+use core::option::Option
+use core::string::String
+use core::vec::Vec
+use core::collections::HashMap
+
+/// The canonical Device Interface Specification
+/// Every hardware device is described by a DeviceInterface
+pub struct DeviceInterface {
+    pub name: String,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub bus_type: BusType,
+    pub resources: Vec<Resource>,
+    pub interrupts: Vec<Interrupt>,
+    pub registers: Vec<Register>,
+    pub operations: Vec<Operation>,
+    pub state_machine: Option<StateMachine>,
+    pub protocols: Vec<Protocol>,
+    pub invariants: Vec<Invariant>,
+    pub timing_constraints: Vec<TimingConstraint>,
+    pub power_states: Vec<PowerState>,
+    pub quirks: Vec<HardwareQuirk>,
+}
+
+impl DeviceInterface {
+    pub fn new(name: &str, vendor_id: u16, device_id: u16, bus_type: BusType) -> Self {
+        DeviceInterface {
+            name: name.to_string(),
+            vendor_id,
+            device_id,
+            bus_type,
+            resources: vec![],
+            interrupts: vec![],
+            registers: vec![],
+            operations: vec![],
+            state_machine: None,
+            protocols: vec![],
+            invariants: vec![],
+            timing_constraints: vec![],
+            power_states: vec![],
+            quirks: vec![],
+        }
+    }
+
+    pub fn add_operation(&mut self, op: Operation) {
+        self.operations.push(op);
+    }
+
+    pub fn add_register(&mut self, reg: Register) {
+        self.registers.push(reg);
+    }
+}
+
+/// Bus type: how the device is connected to the system
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BusType {
+    Pci,
+    Usb,
+    I2c,
+    Spi,
+    Mmio,
+    Ata,
+    Scsi,
+    Unknown,
+}
+
+/// A hardware resource (memory, I/O port, DMA, interrupt)
+#[derive(Clone, Debug)]
+pub struct Resource {
+    pub kind: ResourceKind,
+    pub address: u64,
+    pub size: u64,
+    pub flags: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ResourceKind {
+    Memory,
+    Io,
+    Dma,
+    Irq,
+}
+
+/// An interrupt line and its trigger type
+#[derive(Clone, Debug)]
+pub struct Interrupt {
+    pub line: u32,
+    pub trigger: TriggerType,
+    pub handler_priority: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TriggerType {
+    Edge,
+    Level,
+}
+
+/// A memory-mapped or I/O-port register
+#[derive(Clone, Debug)]
+pub struct Register {
+    pub name: String,
+    pub offset: u64,
+    pub width: u8, // 8, 16, 32, 64 bits
+    pub read_only: bool,
+    pub write_only: bool,
+    pub fields: Vec<RegField>,
+    pub reset_value: u64,
+}
+
+/// A field within a register (bit-field)
+#[derive(Clone, Debug)]
+pub struct RegField {
+    pub name: String,
+    pub bit_low: u8,
+    pub bit_high: u8,
+    pub values: Option<Vec<FieldValue>>, // Enumeration of valid values
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldValue {
+    pub name: String,
+    pub value: u64,
+}
+
+/// A device operation (e.g., "enable device", "read data", "write data")
+#[derive(Clone, Debug)]
+pub struct Operation {
+    pub name: String,
+    pub inputs: Vec<Param>,
+    pub outputs: Vec<Param>,
+    pub side_effects: Vec<Effect>,
+    pub preconditions: Vec<String>, // Boolean expressions
+    pub postconditions: Vec<String>,
+}
+
+/// Side effects of an operation (register access, DMA, interrupts, etc.)
+#[derive(Clone, Debug)]
+pub enum Effect {
+    WriteRegister(String),      // Write to named register
+    ReadRegister(String),       // Read from named register
+    BulkWrite(u8),              // Write data to endpoint
+    BulkRead(u8),               // Read data from endpoint
+    ControlTransfer {           // USB control transfer
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    },
+    TriggerDma {                // Start DMA transfer
+        direction: DmaDirection,
+        length: u64,
+    },
+    GenerateInterrupt(u32),     // Trigger interrupt line
+    ModifyState(String),        // State machine transition
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DmaDirection {
+    In,
+    Out,
+}
+
+/// A parameter to an operation
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Type {
+    U8,
+    U16,
+    U32,
+    U64,
+    Bytes,
+    String,
+    Boolean,
+}
+
+/// A finite state machine for the device
+#[derive(Clone, Debug)]
+pub struct StateMachine {
+    pub name: String,
+    pub initial: String,
+    pub states: Vec<State>,
+    pub transitions: Vec<Transition>,
+}
+
+#[derive(Clone, Debug)]
+pub struct State {
+    pub name: String,
+    pub description: String,
+    pub is_error: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Transition {
+    pub from: String,
+    pub to: String,
+    pub condition: String,      // Boolean expression
+    pub action: String,         // Action to take
+}
+
+/// A protocol supported by the device (e.g., USB HID, Mass Storage)
+#[derive(Clone, Debug)]
+pub struct Protocol {
+    pub name: String,
+    pub version: String,
+    pub operations_required: Vec<String>,
+}
+
+/// An invariant that must always be true
+#[derive(Clone, Debug)]
+pub struct Invariant {
+    pub name: String,
+    pub description: String,
+    pub expr: String,           // Boolean expression
+    pub severity: SeverityLevel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SeverityLevel {
+    Critical,  // Violation is a security issue
+    High,      // Violation causes functional failure
+    Medium,    // Violation may cause data corruption
+    Low,       // Violation is a performance issue
+}
+
+/// A timing constraint (setup time, hold time, max latency, etc.)
+#[derive(Clone, Debug)]
+pub struct TimingConstraint {
+    pub name: String,
+    pub kind: TimingKind,
+    pub value_us: u64,
+    pub between: (String, String),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TimingKind {
+    MinDelay,      // Minimum time between events
+    MaxLatency,    // Maximum time to respond
+    SetupTime,     // Time data must be stable before clock
+    HoldTime,      // Time data must be stable after clock
+}
+
+/// A power state (e.g., Sleep, Active, Shutdown)
+#[derive(Clone, Debug)]
+pub struct PowerState {
+    pub name: String,
+    pub description: String,
+    pub entry_latency_us: u64,   // Time to enter state
+    pub exit_latency_us: u64,    // Time to exit state
+    pub power_consumption_uw: u64, // Microwatts
+}
+
+/// A hardware quirk (e.g., "need to wait 100ms after reset")
+#[derive(Clone, Debug)]
+pub struct HardwareQuirk {
+    pub description: String,
+    pub workaround: String,      // Code or procedure to work around
+    pub applies_to: String,      // Device/revision this applies to
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_device_interface_creation() {
+        let mut dev = DeviceInterface::new("test_device", 0x1234, 0x5678, BusType::Usb);
+        assert_eq!(dev.name, "test_device");
+        assert_eq!(dev.vendor_id, 0x1234);
+        assert_eq!(dev.device_id, 0x5678);
+        assert_eq!(dev.bus_type, BusType::Usb);
+    }
+
+    #[test]
+    fn test_register_creation() {
+        let reg = Register {
+            name: "CONTROL".to_string(),
+            offset: 0x00,
+            width: 32,
+            read_only: false,
+            write_only: false,
+            fields: vec![],
+            reset_value: 0x00000000,
+        };
+        assert_eq!(reg.name, "CONTROL");
+        assert_eq!(reg.width, 32);
+    }
+}

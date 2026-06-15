@@ -1,0 +1,53 @@
+// kernel/hypercall.ti – Hypercalls for nested vault management
+// Low-level interface between guest kernel and host Sanctum
+
+extern "titan" {
+    fn mmio_read64(addr: i64) -> i64;
+    fn mmio_write64(addr: i64, val: i64);
+}
+
+const HYPERCALL_CREATE_VAULT: i64 = 1;
+const HYPERCALL_DESTROY_VAULT: i64 = 2;
+const HYPERCALL_VAULT_STATS: i64 = 3;
+
+// Invoke a hypercall via syscall/virtio mechanism
+fn hypercall(number: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
+    // In x86_64 with syscall:
+    // rax = hypercall number
+    // rdi = arg1
+    // rsi = arg2
+    // rdx = arg3
+    // return in rax
+    //
+    // For now, use MMIO to a privileged register (Sanctum-specific)
+    let control_base = 0x5000i64; // hypercall control region
+    mmio_write64(control_base + 0, number);
+    mmio_write64(control_base + 8, arg1);
+    mmio_write64(control_base + 16, arg2);
+    mmio_write64(control_base + 24, arg3);
+
+    // Trigger hypercall (write to control register)
+    mmio_write64(control_base + 0xE0, 1);
+
+    // Poll for result
+    let result = mmio_read64(control_base + 32);
+    return result;
+}
+
+// Create a nested vault with given resources and parent capability
+pub fn create_vault(mem_size: i64, cpu_quota: i64, parent_cap: i64) -> i64 {
+    let result = hypercall(HYPERCALL_CREATE_VAULT, mem_size, cpu_quota, parent_cap);
+    return result;
+}
+
+// Destroy a vault by capability ID
+pub fn destroy_vault(vault_cap: i64) -> i64 {
+    let result = hypercall(HYPERCALL_DESTROY_VAULT, vault_cap, 0, 0);
+    return if result == 0 { 1 } else { 0 }; // 1=success, 0=error
+}
+
+// Get statistics about a vault
+pub fn vault_stats(vault_cap: i64) -> i64 {
+    let result = hypercall(HYPERCALL_VAULT_STATS, vault_cap, 0, 0);
+    return result;
+}

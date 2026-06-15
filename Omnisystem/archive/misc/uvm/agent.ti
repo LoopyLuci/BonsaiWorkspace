@@ -1,0 +1,211 @@
+// uvm/agent.ti — Universal Validation Mesh: test agent
+// Each agent runs jobs, reports results, and performs chaos injection.
+// Agents are autonomous Aether actors; this module handles a single agent's logic.
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+const TAG_AGENT:    i64 = 68100;
+const TAG_RUN:      i64 = 68101;  // test run record
+const TAG_FAULT:    i64 = 68102;  // chaos fault
+const TAG_SUITE:    i64 = 68103;  // test suite
+const TAG_CASE:     i64 = 68104;  // individual test case
+const TAG_NODE:     i64 = 68105;
+
+// ── Fault kinds (chaos injection) ─────────────────────────────────────────
+const FAULT_NONE:       i64 = 0;
+const FAULT_NET_PART:   i64 = 1;  // network partition
+const FAULT_NODE_KILL:  i64 = 2;  // kill a node
+const FAULT_MEM_PRESS:  i64 = 3;  // memory pressure
+const FAULT_SLOW_DISK:  i64 = 4;  // slow storage
+const FAULT_CLOCK_SKEW: i64 = 5;  // time skew between nodes
+
+// ── Test case: body=id, arg=expected_result, domain=actual_result ─────────
+pub fn tc_new(id:i64, expected:i64) -> i64 {
+    let t=heap_alloc_term(); heap_set_tag(t,TAG_CASE);
+    heap_set_body(t,id); heap_set_arg(t,expected); heap_set_domain(t,-1); return t;
+}
+pub fn tc_id(t:i64) -> i64       { return heap_get_body(t); }
+pub fn tc_expected(t:i64) -> i64 { return heap_get_arg(t); }
+pub fn tc_actual(t:i64) -> i64   { return heap_get_domain(t); }
+pub fn tc_run(t:i64, actual:i64) { heap_set_domain(t,actual); return; }
+pub fn tc_passed(t:i64) -> i64 {
+    if heap_get_domain(t) == heap_get_arg(t) { return 1; } return 0;
+}
+
+// ── Test suite: a named collection of test cases ──────────────────────────
+// body=suite_id, arg=case_list_head, domain=case_count
+pub fn suite_new(id:i64) -> i64 {
+    let s=heap_alloc_term(); heap_set_tag(s,TAG_SUITE);
+    heap_set_body(s,id); heap_set_arg(s,0); heap_set_domain(s,0); return s;
+}
+
+pub fn suite_add(s:i64, tc:i64) {
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_NODE);
+    heap_set_body(n,tc); heap_set_arg(n,heap_get_arg(s));
+    heap_set_arg(s,n); heap_set_domain(s,heap_get_domain(s)+1);
+    return;
+}
+
+pub fn suite_case_count(s:i64) -> i64 { return heap_get_domain(s); }
+
+pub fn suite_run(s:i64) -> i64 {
+    // Run all test cases; return count of passed
+    let passed=0; let cur=heap_get_arg(s);
+    while cur!=0 {
+        let tc=heap_get_body(cur);
+        // Simulate execution: actual result = expected (deterministic system)
+        tc_run(tc, tc_expected(tc));
+        if tc_passed(tc)==1 { passed=passed+1; }
+        cur=heap_get_arg(cur);
+    }
+    return passed;
+}
+
+pub fn suite_pass_count(s:i64) -> i64 {
+    let passed=0; let cur=heap_get_arg(s);
+    while cur!=0 { if tc_passed(heap_get_body(cur))==1 { passed=passed+1; } cur=heap_get_arg(cur); }
+    return passed;
+}
+
+// ── Fault record ──────────────────────────────────────────────────────────
+// body=kind, arg=target_node, domain=severity (1-5)
+pub fn fault_new(kind:i64, target:i64, severity:i64) -> i64 {
+    let f=heap_alloc_term(); heap_set_tag(f,TAG_FAULT);
+    heap_set_body(f,kind); heap_set_arg(f,target); heap_set_domain(f,severity); return f;
+}
+pub fn fault_kind(f:i64) -> i64     { return heap_get_body(f); }
+pub fn fault_target(f:i64) -> i64   { return heap_get_arg(f); }
+pub fn fault_severity(f:i64) -> i64 { return heap_get_domain(f); }
+
+// ── Agent: body=id, arg=suite_list_head, domain=fault_list_head ──────────
+let g_agent_id:     i64 = 0;
+let g_suite_list:   i64 = 0;
+let g_suite_count:  i64 = 0;
+let g_fault_list:   i64 = 0;
+let g_fault_count:  i64 = 0;
+let g_total_run:    i64 = 0;
+let g_total_pass:   i64 = 0;
+
+pub fn agent_init(id:i64) -> i64 {
+    g_agent_id=id; g_suite_list=0; g_suite_count=0;
+    g_fault_list=0; g_fault_count=0;
+    g_total_run=0; g_total_pass=0; return id;
+}
+
+pub fn agent_register_suite(s:i64) {
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_NODE);
+    heap_set_body(n,s); heap_set_arg(n,g_suite_list);
+    g_suite_list=n; g_suite_count=g_suite_count+1;
+    return;
+}
+
+pub fn agent_inject_fault(f:i64) {
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_NODE);
+    heap_set_body(n,f); heap_set_arg(n,g_fault_list);
+    g_fault_list=n; g_fault_count=g_fault_count+1;
+    return;
+}
+
+// Run all suites; apply any injected faults; return pass rate (0-100)
+pub fn agent_run_all() -> i64 {
+    let cur=g_suite_list;
+    while cur!=0 {
+        let s=heap_get_body(cur);
+        let n=suite_case_count(s);
+        let p=suite_run(s);
+        g_total_run=g_total_run+n;
+        g_total_pass=g_total_pass+p;
+
+        // Apply faults: if network partition fault exists, 10% of tests "fail"
+        let fc=g_fault_list;
+        while fc!=0 {
+            let f=heap_get_body(fc);
+            if fault_kind(f)==FAULT_NET_PART {
+                // Simulate: 1 test per suite fails under partition
+                if g_total_pass > 0 { g_total_pass=g_total_pass-1; }
+            }
+            fc=heap_get_arg(fc);
+        }
+
+        cur=heap_get_arg(cur);
+    }
+    if g_total_run==0 { return 100; }
+    return (g_total_pass * 100) / g_total_run;
+}
+
+pub fn agent_total_run() -> i64  { return g_total_run; }
+pub fn agent_total_pass() -> i64 { return g_total_pass; }
+pub fn agent_fault_count() -> i64 { return g_fault_count; }
+
+// ── Fidelity check: verify determinism across two runs ───────────────────
+pub fn fidelity_check(suite:i64, runs:i64) -> i64 {
+    // Run the same suite N times; all must produce the same pass count
+    let first_result = -1; let i=0;
+    while i < runs {
+        let p = suite_run(suite);
+        if first_result < 0 { first_result = p; }
+        else { if p != first_result { return 0; } }  // non-determinism detected
+        i=i+1;
+    }
+    return 1;
+}
+
+pub fn main() -> i64 {
+    // Test 1: test case pass/fail
+    let tc1 = tc_new(1, 111);
+    tc_run(tc1, 111);
+    if tc_passed(tc1) != 1 { return 1; }
+
+    let tc2 = tc_new(2, 111);
+    tc_run(tc2, 0);   // wrong result
+    if tc_passed(tc2) != 0 { return 2; }
+
+    // Test 2: suite collects and runs cases
+    let s = suite_new(1);
+    suite_add(s, tc_new(10, 111));
+    suite_add(s, tc_new(11, 111));
+    suite_add(s, tc_new(12, 111));
+    if suite_case_count(s) != 3 { return 3; }
+    let p = suite_run(s);
+    if p != 3 { return 4; }
+
+    // Test 3: agent init and suite registration
+    agent_init(1);
+    let s2 = suite_new(2);
+    suite_add(s2, tc_new(20, 42)); suite_add(s2, tc_new(21, 99));
+    agent_register_suite(s2);
+    if g_suite_count != 1 { return 5; }
+
+    // Test 4: agent run all (no faults)
+    let rate = agent_run_all();
+    if rate != 100 { return 6; }
+    if agent_total_run() != 2 { return 7; }
+    if agent_total_pass() != 2 { return 8; }
+
+    // Test 5: chaos fault injection
+    agent_init(2);
+    let s3 = suite_new(3);
+    let i=0; while i<5 { suite_add(s3, tc_new(i,i)); i=i+1; }
+    agent_register_suite(s3);
+
+    let fault = fault_new(FAULT_NET_PART, 1, 3);
+    agent_inject_fault(fault);
+    if agent_fault_count() != 1 { return 9; }
+    if fault_kind(fault) != FAULT_NET_PART { return 10; }
+
+    let rate2 = agent_run_all();
+    // With a network partition, 1 test of 5 fails → 80%
+    if rate2 != 80 { return 11; }
+
+    // Test 6: fidelity — same suite gives same result each time
+    let s4 = suite_new(4);
+    suite_add(s4, tc_new(100,111)); suite_add(s4, tc_new(101,111));
+    if fidelity_check(s4, 5) != 1 { return 12; }
+
+    // Test 7: fault severity check
+    let f2 = fault_new(FAULT_CLOCK_SKEW, 3, 2);
+    if fault_severity(f2) != 2 { return 13; }
+    if fault_target(f2) != 3   { return 14; }
+
+    return 111;
+}

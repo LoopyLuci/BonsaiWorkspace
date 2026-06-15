@@ -1,0 +1,338 @@
+// services/ui-registry/mod.ti – UI element registry for automated enforcement
+// Ensures 100% of UI elements are registered, verified, and consistent
+
+module ui_registry
+
+use blake3::Hash
+use core::collections::HashMap
+use core::option::Option
+use core::vec::Vec
+
+/// UI element: a registered window, dialog, button, menu item, etc.
+#[derive(Clone, Debug)]
+pub struct UiElement {
+    pub id: String,               // Unique ID (e.g., "create-env-dialog", "save-button")
+    pub path: String,             // Source code location (e.g., "Omnisystem/cli/create_env.ti:123")
+    pub element_type: UiElementType,
+    pub description: String,
+    pub component_used: Option<String>,  // Reference to design component (e.g., "Button:primary")
+    pub screenshot_hash: Option<Hash>,   // BLAKE3 of reference screenshot
+    pub states: Vec<ElementState>,       // normal, hover, focus, disabled, error
+    pub accessibility_labels: AccessibilityInfo,
+    pub responsive: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiElementType {
+    Window,
+    Dialog,
+    Button,
+    Menu,
+    MenuItem,
+    Input,
+    Card,
+    Table,
+    Icon,
+    Alert,
+    Modal,
+    Sidebar,
+    ContextMenu,
+    Tooltip,
+    Badge,
+    Custom(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct ElementState {
+    pub state_name: String,  // "normal", "hover", "focus", "disabled", "error"
+    pub screenshot_hash: Hash,
+    pub color_hash: Hash,    // Aggregated color values
+}
+
+#[derive(Clone, Debug)]
+pub struct AccessibilityInfo {
+    pub aria_label: String,
+    pub aria_role: String,
+    pub keyboard_accessible: bool,
+    pub screen_reader_friendly: bool,
+}
+
+/// Visual regression test result
+#[derive(Clone, Debug)]
+pub struct VisualRegressionTest {
+    pub element_id: String,
+    pub reference_hash: Hash,
+    pub current_hash: Hash,
+    pub similarity: f32,  // 0.0 to 1.0 (SSIM score)
+    pub passed: bool,
+    pub diff_image: Option<Vec<u8>>,
+}
+
+/// UI registry: central database of all UI elements
+pub struct UiRegistry {
+    pub elements: HashMap<String, UiElement>,
+    pub themes: Vec<String>,  // "light", "dark", etc.
+    pub last_audit: u64,
+    pub total_elements: u32,
+    pub verified_elements: u32,
+}
+
+impl UiRegistry {
+    pub fn new() -> Self {
+        Self {
+            elements: HashMap::new(),
+            themes: vec!["light".to_string(), "dark".to_string()],
+            last_audit: 0,
+            total_elements: 0,
+            verified_elements: 0,
+        }
+    }
+
+    /// Register a new UI element
+    pub fn register(&mut self, element: UiElement) -> Result<(), String> {
+        if element.id.is_empty() {
+            return Err("Element ID cannot be empty".to_string());
+        }
+
+        // Validate that component is used (unless custom element)
+        if element.component_used.is_none() && element.element_type != UiElementType::Custom("raw".to_string()) {
+            return Err(format!("Element {} must specify a component", element.id));
+        }
+
+        self.elements.insert(element.id.clone(), element);
+        self.total_elements += 1;
+        Ok(())
+    }
+
+    /// Run visual regression test for an element
+    pub fn run_visual_test(&mut self, element_id: &str, current_screenshot: &[u8]) -> Result<VisualRegressionTest, String> {
+        let element = self.elements
+            .get(element_id)
+            .ok_or("Element not found".to_string())?;
+
+        let current_hash = blake3::hash(current_screenshot);
+
+        // For now, assume perfect match if hashes match
+        let reference_hash = element.screenshot_hash
+            .clone()
+            .ok_or("Reference screenshot not set".to_string())?;
+
+        let passed = reference_hash == current_hash;
+
+        let result = VisualRegressionTest {
+            element_id: element_id.to_string(),
+            reference_hash,
+            current_hash,
+            similarity: if passed { 1.0 } else { 0.5 },
+            passed,
+            diff_image: None,
+        };
+
+        if passed {
+            self.verified_elements += 1;
+        }
+
+        Ok(result)
+    }
+
+    /// Verify that all elements in a window use consistent design tokens
+    pub fn verify_consistency(&self, window_id: &str) -> Result<bool, String> {
+        let mut window_elements = vec![];
+
+        for (id, element) in &self.elements {
+            if id.starts_with(&format!("{}:", window_id)) {
+                window_elements.push(element);
+            }
+        }
+
+        if window_elements.is_empty() {
+            return Err("Window not found".to_string());
+        }
+
+        // Check that all elements have a component
+        for element in &window_elements {
+            if element.component_used.is_none() {
+                return Err(format!("Element {} missing component", element.id));
+            }
+        }
+
+        // All checks passed
+        Ok(true)
+    }
+
+    /// Get all elements of a specific type
+    pub fn get_elements_by_type(&self, element_type: &UiElementType) -> Vec<&UiElement> {
+        self.elements
+            .values()
+            .filter(|e| e.element_type == *element_type)
+            .collect()
+    }
+
+    /// Audit: verify that all source code UI elements are registered
+    pub fn audit(&mut self, expected_count: u32) -> Result<AuditResult, String> {
+        let registered = self.total_elements;
+        let unregistered = expected_count.saturating_sub(registered);
+        let coverage = if expected_count > 0 {
+            (registered as f32 / expected_count as f32) * 100.0
+        } else {
+            100.0
+        };
+
+        Ok(AuditResult {
+            total_expected: expected_count,
+            total_registered: registered,
+            unregistered_count: unregistered,
+            coverage_percentage: coverage,
+            timestamp: 0,
+        })
+    }
+
+    /// Get a summary of coverage by element type
+    pub fn coverage_summary(&self) -> HashMap<String, u32> {
+        let mut summary: HashMap<String, u32> = HashMap::new();
+
+        for element in self.elements.values() {
+            let type_str = format!("{:?}", element.element_type);
+            *summary.entry(type_str).or_insert(0) += 1;
+        }
+
+        summary
+    }
+}
+
+/// Audit result
+#[derive(Clone, Debug)]
+pub struct AuditResult {
+    pub total_expected: u32,
+    pub total_registered: u32,
+    pub unregistered_count: u32,
+    pub coverage_percentage: f32,
+    pub timestamp: u64,
+}
+
+/// Design council approval
+#[derive(Clone, Debug)]
+pub struct DesignApproval {
+    pub change_id: String,
+    pub approvers: Vec<String>,  // Signer public keys
+    pub threshold: u32,           // Threshold for approval
+    pub timestamp: u64,
+    pub approved: bool,
+}
+
+impl DesignApproval {
+    pub fn new(change_id: &str, threshold: u32) -> Self {
+        Self {
+            change_id: change_id.to_string(),
+            approvers: vec![],
+            threshold,
+            timestamp: 0,
+            approved: false,
+        }
+    }
+
+    pub fn add_approval(&mut self, approver: &str) {
+        if !self.approvers.contains(&approver.to_string()) {
+            self.approvers.push(approver.to_string());
+        }
+
+        if self.approvers.len() as u32 >= self.threshold {
+            self.approved = true;
+        }
+    }
+
+    pub fn is_approved(&self) -> bool {
+        self.approved
+    }
+}
+
+/// UI consistency checker: runs in CI to verify all elements
+pub struct ConsistencyChecker {
+    pub registry: UiRegistry,
+    pub test_results: Vec<VisualRegressionTest>,
+}
+
+impl ConsistencyChecker {
+    pub fn new(registry: UiRegistry) -> Self {
+        Self {
+            registry,
+            test_results: vec![],
+        }
+    }
+
+    /// Run all visual regression tests
+    pub async fn run_all_tests(&mut self, screenshots: &HashMap<String, Vec<u8>>) -> Result<(), String> {
+        for (element_id, screenshot) in screenshots {
+            match self.registry.run_visual_test(element_id, screenshot) {
+                Ok(test_result) => {
+                    if !test_result.passed {
+                        return Err(format!("Visual regression in {}: {:.2}% match", element_id, test_result.similarity * 100.0));
+                    }
+                    self.test_results.push(test_result);
+                }
+                Err(e) => {
+                    return Err(format!("Failed to test {}: {}", element_id, e));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify accessibility compliance
+    pub fn verify_accessibility(&self) -> Result<AccessibilityReport, String> {
+        let mut report = AccessibilityReport::default();
+
+        for element in self.registry.elements.values() {
+            if element.accessibility_labels.aria_label.is_empty() {
+                report.missing_aria_labels += 1;
+            }
+
+            if !element.accessibility_labels.keyboard_accessible {
+                report.not_keyboard_accessible += 1;
+            }
+
+            if !element.accessibility_labels.screen_reader_friendly {
+                report.not_screen_reader_friendly += 1;
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Generate a report of coverage gaps
+    pub fn generate_coverage_report(&self) -> CoverageReport {
+        CoverageReport {
+            registry_size: self.registry.elements.len() as u32,
+            verified_count: self.registry.verified_elements,
+            coverage_by_type: self.registry.coverage_summary(),
+            test_results: self.test_results.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AccessibilityReport {
+    pub missing_aria_labels: u32,
+    pub not_keyboard_accessible: u32,
+    pub not_screen_reader_friendly: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct CoverageReport {
+    pub registry_size: u32,
+    pub verified_count: u32,
+    pub coverage_by_type: HashMap<String, u32>,
+    pub test_results: Vec<VisualRegressionTest>,
+}
+
+impl CoverageReport {
+    pub fn success(&self) -> bool {
+        for test in &self.test_results {
+            if !test.passed {
+                return false;
+            }
+        }
+        true
+    }
+}

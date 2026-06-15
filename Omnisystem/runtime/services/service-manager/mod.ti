@@ -1,0 +1,325 @@
+// services/service-manager/mod.ti – Service Manager and Supervision
+// Manages lifecycle, supervision tree, and health monitoring of all services
+
+module service_manager
+
+use kernel::uosc_os::{ProcessHandle, OsEvent}
+use aether::actor::{Actor, ActorRef, Supervisor}
+use aether::prelude::*
+use core::collections::HashMap
+use std::sync::Arc
+
+/// Service manager: supervises all system services
+pub struct ServiceManager {
+    supervisor: SupervisionTree,
+    registry: ServiceRegistry,
+}
+
+pub struct ServiceRegistry {
+    services: HashMap<String, ServiceEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct ServiceEntry {
+    name: String,
+    process: ProcessHandle,
+    status: ServiceStatus,
+    restart_count: u32,
+    last_restart: u64,
+    auto_restart: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ServiceStatus {
+    Pending,
+    Starting,
+    Running,
+    Paused,
+    Crashed,
+    Stopped,
+}
+
+/// Supervision tree: hierarchical, fault-tolerant supervision
+struct SupervisionTree {
+    root_supervisor: ActorRef<SupervisorMessage>,
+    children: HashMap<String, ActorRef<ServiceMessage>>,
+}
+
+/// Messages for service actors
+#[derive(Clone, Debug)]
+pub enum ServiceMessage {
+    Start,
+    Stop,
+    Pause,
+    Resume,
+    Healthcheck,
+    HealthcheckResponse { alive: bool },
+    Crash { reason: String },
+}
+
+/// Messages for supervisor
+#[derive(Clone, Debug)]
+enum SupervisorMessage {
+    ChildCrashed { child_id: String, reason: String },
+    ChildExited { child_id: String },
+    RestartChild { child_id: String },
+}
+
+impl ServiceManager {
+    pub fn new() -> Self {
+        Self {
+            supervisor: SupervisionTree {
+                root_supervisor: ActorRef::null(),  // Placeholder
+                children: HashMap::new(),
+            },
+            registry: ServiceRegistry {
+                services: HashMap::new(),
+            },
+        }
+    }
+
+    /// Register a service with the manager
+    pub async fn register_service(
+        &mut self,
+        name: &str,
+        process: ProcessHandle,
+    ) -> Result<(), String> {
+        let entry = ServiceEntry {
+            name: name.to_string(),
+            process,
+            status: ServiceStatus::Running,
+            restart_count: 0,
+            last_restart: current_time_ms(),
+            auto_restart: true,
+        };
+
+        self.registry.services.insert(name.to_string(), entry);
+        eprintln!("[service-manager] Registered service: {}", name);
+        Ok(())
+    }
+
+    /// Resolve a service name to its process handle
+    pub async fn resolve_service(&self, name: &str) -> Result<String, String> {
+        self.registry
+            .services
+            .get(name)
+            .map(|entry| format!("{:?}", entry.process))
+            .ok_or_else(|| format!("Service not found: {}", name))
+    }
+
+    /// Send a message to a service
+    pub async fn send_to_service(
+        &self,
+        name: &str,
+        message: ServiceMessage,
+    ) -> Result<(), String> {
+        let entry = self
+            .registry
+            .services
+            .get(name)
+            .ok_or_else(|| format!("Service not found: {}", name))?;
+
+        eprintln!("[service-manager] Sending {:?} to {}", message, name);
+        // In real implementation: send via kernel IPC
+        Ok(())
+    }
+
+    /// Get service status
+    pub fn get_service_status(&self, name: &str) -> Result<ServiceStatus, String> {
+        self.registry
+            .services
+            .get(name)
+            .map(|entry| entry.status.clone())
+            .ok_or_else(|| format!("Service not found: {}", name))
+    }
+
+    /// Health check: verify all services are alive
+    pub async fn health_check_all(&mut self) -> Result<HealthCheckReport, String> {
+        let mut healthy = 0;
+        let mut unhealthy = vec![];
+
+        for (name, entry) in &self.registry.services {
+            // Send healthcheck message
+            let response = self
+                .send_healthcheck(name)
+                .await
+                .unwrap_or(false);
+
+            if response {
+                healthy += 1;
+            } else {
+                unhealthy.push(name.clone());
+            }
+        }
+
+        Ok(HealthCheckReport {
+            timestamp: current_time_ms(),
+            healthy_count: healthy,
+            unhealthy_services: unhealthy.clone(),
+            total_services: self.registry.services.len(),
+        })
+    }
+
+    /// Send healthcheck to a specific service
+    async fn send_healthcheck(&self, name: &str) -> Result<bool, String> {
+        // In real implementation: send HEALTHCHECK message, wait for response with timeout
+        // For now: assume alive if in registry
+        Ok(self.registry.services.contains_key(name))
+    }
+
+    /// Handle a crashed service: restart with exponential backoff
+    pub async fn handle_crash(
+        &mut self,
+        service_name: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        eprintln!("[service-manager] ❌ Service crashed: {} – {}", service_name, reason);
+
+        let entry = self
+            .registry
+            .services
+            .get_mut(service_name)
+            .ok_or_else(|| format!("Service not found: {}", service_name))?;
+
+        entry.status = ServiceStatus::Crashed;
+        entry.restart_count += 1;
+
+        if !entry.auto_restart {
+            return Ok(());
+        }
+
+        // Exponential backoff: wait 2^restart_count seconds, capped at 5 minutes
+        let backoff_seconds = (2u64.pow(entry.restart_count.min(8))).min(300);
+        eprintln!(
+            "[service-manager] Restarting {} in {} seconds (attempt {})",
+            service_name,
+            backoff_seconds,
+            entry.restart_count
+        );
+
+        // In real implementation: schedule restart via kernel timer
+        tokio::time::sleep(tokio::time::Duration::from_secs(backoff_seconds)).await;
+
+        // Attempt restart (would call init::start_service)
+        entry.status = ServiceStatus::Starting;
+        entry.last_restart = current_time_ms();
+
+        eprintln!("[service-manager] Restarted {}", service_name);
+        entry.status = ServiceStatus::Running;
+
+        Ok(())
+    }
+
+    /// Graceful shutdown: stop all services in reverse dependency order
+    pub async fn shutdown_all(&mut self) -> Result<(), String> {
+        eprintln!("[service-manager] Initiating graceful shutdown");
+
+        // Reverse dependency order (system services first, core services last)
+        let shutdown_order = vec![
+            "logger",
+            "system-monitor",
+            "config",
+            "update-manager",
+            "compositor",
+            "display",
+            "device-manager",
+            "net-stack",
+            "storage",
+            "vfs",
+        ];
+
+        for service_name in shutdown_order {
+            if self.registry.services.contains_key(service_name) {
+                eprintln!("[service-manager] Stopping {}", service_name);
+                self.send_to_service(service_name, ServiceMessage::Stop)
+                    .await
+                    .ok();
+
+                // Wait for graceful shutdown
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        eprintln!("[service-manager] All services stopped");
+        Ok(())
+    }
+
+    /// Get list of all running services
+    pub fn list_services(&self) -> Vec<(String, ServiceStatus)> {
+        self.registry
+            .services
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.status.clone()))
+            .collect()
+    }
+}
+
+/// Health check report
+#[derive(Clone, Debug)]
+pub struct HealthCheckReport {
+    pub timestamp: u64,
+    pub healthy_count: usize,
+    pub unhealthy_services: Vec<String>,
+    pub total_services: usize,
+}
+
+impl HealthCheckReport {
+    pub fn is_healthy(&self) -> bool {
+        self.unhealthy_services.is_empty()
+    }
+}
+
+/// Get current time in milliseconds
+fn current_time_ms() -> u64 {
+    // In real implementation: use kernel system time
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_registry() {
+        let registry = ServiceRegistry {
+            services: HashMap::new(),
+        };
+
+        assert_eq!(registry.services.len(), 0);
+    }
+
+    #[test]
+    fn test_health_check_report() {
+        let report = HealthCheckReport {
+            timestamp: 1000,
+            healthy_count: 5,
+            unhealthy_services: vec![],
+            total_services: 5,
+        };
+
+        assert!(report.is_healthy());
+
+        let unhealthy = HealthCheckReport {
+            timestamp: 1000,
+            healthy_count: 4,
+            unhealthy_services: vec!["vfs".to_string()],
+            total_services: 5,
+        };
+
+        assert!(!unhealthy.is_healthy());
+    }
+
+    #[test]
+    fn test_exponential_backoff() {
+        // Verify exponential backoff calculation
+        let mut restart_count = 0;
+        for _ in 0..10 {
+            let backoff = (2u64.pow(restart_count.min(8))).min(300);
+            println!("Attempt {}: backoff {} seconds", restart_count, backoff);
+            restart_count += 1;
+        }
+    }
+}

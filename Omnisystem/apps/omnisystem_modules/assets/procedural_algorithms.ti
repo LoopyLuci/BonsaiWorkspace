@@ -1,0 +1,529 @@
+module omnisystem.assets.procedural_algorithms
+
+# Procedural Generation Algorithms
+# Advanced noise and pattern generation for asset creation
+
+# ============================================================================
+# PERLIN NOISE IMPLEMENTATION
+# ============================================================================
+
+type PerlinNoiseGenerator = struct {
+    seed: u32,
+    octaves: u32,
+    persistence: f32,
+    lacunarity: f32,
+    scale: f32,
+}
+
+fun create_perlin_generator(seed: u32) -> PerlinNoiseGenerator {
+    PerlinNoiseGenerator {
+        seed,
+        octaves: 4,
+        persistence: 0.5,
+        lacunarity: 2.0,
+        scale: 100.0,
+    }
+}
+
+fun perlin_noise_2d(
+    gen: &PerlinNoiseGenerator,
+    x: f32,
+    y: f32,
+) -> f32 {
+    let mut amplitude = 1.0f32
+    let mut frequency = 1.0f32
+    let mut noise_value = 0.0f32
+    let mut max_value = 0.0f32
+
+    for octave in 0..gen.octaves {
+        let sample_x = x * frequency / gen.scale
+        let sample_y = y * frequency / gen.scale
+
+        noise_value += perlin_sample_2d(gen.seed, sample_x, sample_y) * amplitude
+        max_value += amplitude
+
+        amplitude *= gen.persistence
+        frequency *= gen.lacunarity
+    }
+
+    noise_value / max_value
+}
+
+fn perlin_sample_2d(seed: u32, x: f32, y: f32) -> f32 {
+    // Perlin noise computation for 2D coordinates
+    let xi = (x as u32) & 255
+    let yi = (y as u32) & 255
+
+    let xf = x - (x as u32 as f32)
+    let yf = y - (y as u32 as f32)
+
+    let u = fade(xf)
+    let v = fade(yf)
+
+    let n00 = grad_2d(seed ^ xi ^ yi, xf, yf)
+    let n10 = grad_2d(seed ^ (xi + 1) ^ yi, xf - 1.0, yf)
+    let n01 = grad_2d(seed ^ xi ^ (yi + 1), xf, yf - 1.0)
+    let n11 = grad_2d(seed ^ (xi + 1) ^ (yi + 1), xf - 1.0, yf - 1.0)
+
+    let nx0 = lerp(n00, n10, u)
+    let nx1 = lerp(n01, n11, u)
+    lerp(nx0, nx1, v)
+}
+
+fn fade(t: f32) -> f32 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+fn grad_2d(hash: u32, x: f32, y: f32) -> f32 {
+    let h = hash & 15
+    let u = if h < 8 { x } else { y }
+    let v = if h < 8 { y } else { x }
+    (if (h & 1) == 0 { u } else { -u }) + (if (h & 2) == 0 { v } else { -v })
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+# ============================================================================
+# SIMPLEX NOISE IMPLEMENTATION
+# ============================================================================
+
+type SimplexNoiseGenerator = struct {
+    seed: u32,
+    scale: f32,
+    octaves: u32,
+}
+
+fun create_simplex_generator(seed: u32) -> SimplexNoiseGenerator {
+    SimplexNoiseGenerator {
+        seed,
+        scale: 50.0,
+        octaves: 4,
+    }
+}
+
+fun simplex_noise_2d(
+    gen: &SimplexNoiseGenerator,
+    x: f32,
+    y: f32,
+) -> f32 {
+    let sx = x / gen.scale
+    let sy = y / gen.scale
+
+    // Simplex noise skewing
+    let s = (sx + sy) * 0.366025
+    let i = (sx + s) as u32
+    let j = (sy + s) as u32
+
+    let t = ((i + j) as f32) * 0.211325
+    let x0 = (i as f32) - t
+    let y0 = (j as f32) - t
+
+    let dx0 = sx - x0
+    let dy0 = sy - y0
+
+    let (i1, j1) = if dx0 > dy0 { (1u32, 0u32) } else { (0u32, 1u32) }
+
+    let x1 = x0 - (i1 as f32) + 0.211325
+    let y1 = y0 - (j1 as f32) + 0.211325
+    let x2 = x0 - 1.0 + 2.0 * 0.211325
+    let y2 = y0 - 1.0 + 2.0 * 0.211325
+
+    let n0 = grad_dot_2d(gen.seed, i, j, dx0, dy0)
+    let n1 = grad_dot_2d(gen.seed, i + i1, j + j1, x1, y1)
+    let n2 = grad_dot_2d(gen.seed, i + 1, j + 1, x2, y2)
+
+    (n0 + n1 + n2) * 70.0
+}
+
+fn grad_dot_2d(seed: u32, i: u32, j: u32, x: f32, y: f32) -> f32 {
+    let hash = seed ^ i ^ j
+    let angle = ((hash & 15) as f32) * 1.5707963 // pi/2
+    (angle.cos() * x + angle.sin() * y) * 0.5
+}
+
+# ============================================================================
+# VORONOI DIAGRAM GENERATION
+# ============================================================================
+
+type VoronoiPoint = struct {
+    x: f32,
+    y: f32,
+    id: u32,
+    color_r: u8,
+    color_g: u8,
+    color_b: u8,
+}
+
+type VoronoiGenerator = struct {
+    seed: u32,
+    width: u32,
+    height: u32,
+    cell_count: u32,
+    points: Vec<VoronoiPoint>,
+}
+
+fun create_voronoi_generator(
+    seed: u32,
+    width: u32,
+    height: u32,
+    cell_count: u32,
+) -> VoronoiGenerator {
+    let mut points = Vec::new()
+
+    for i in 0..cell_count {
+        points.push(VoronoiPoint {
+            x: (seeded_random(seed + i, 0) % (width as u32)) as f32,
+            y: (seeded_random(seed + i, 1) % (height as u32)) as f32,
+            id: i,
+            color_r: (seeded_random(seed + i, 2) % 256) as u8,
+            color_g: (seeded_random(seed + i, 3) % 256) as u8,
+            color_b: (seeded_random(seed + i, 4) % 256) as u8,
+        })
+    }
+
+    VoronoiGenerator {
+        seed,
+        width,
+        height,
+        cell_count,
+        points,
+    }
+}
+
+fun generate_voronoi_map(gen: &VoronoiGenerator) -> Vec<Vec<u32>> {
+    let mut map = Vec::new()
+
+    for y in 0..gen.height {
+        let mut row = Vec::new()
+
+        for x in 0..gen.width {
+            let mut closest_id = 0u32
+            let mut closest_dist = f32::MAX
+
+            for point in gen.points.iter() {
+                let dx = (x as f32) - point.x
+                let dy = (y as f32) - point.y
+                let dist = (dx * dx + dy * dy).sqrt()
+
+                if dist < closest_dist {
+                    closest_dist = dist
+                    closest_id = point.id
+                }
+            }
+
+            row.push(closest_id)
+        }
+
+        map.push(row)
+    }
+
+    map
+}
+
+fn seeded_random(seed: u32, index: u32) -> u32 {
+    let x = (seed.wrapping_mul(73856093)) ^ (index.wrapping_mul(19349663))
+    (x ^ (x >> 13)).wrapping_mul(377801861) % 1000000
+}
+
+# ============================================================================
+# FRACTAL GENERATION
+# ============================================================================
+
+type FractalGenerator = struct {
+    seed: u32,
+    iterations: u32,
+    scale: f32,
+}
+
+fun create_fractal_generator(seed: u32, iterations: u32) -> FractalGenerator {
+    FractalGenerator {
+        seed,
+        iterations,
+        scale: 1.0,
+    }
+}
+
+fun generate_mandelbrot(
+    gen: &FractalGenerator,
+    width: u32,
+    height: u32,
+    zoom: f32,
+) -> Vec<Vec<u32>> {
+    let mut map = Vec::new()
+
+    for y in 0..height {
+        let mut row = Vec::new()
+
+        for x in 0..width {
+            let cx = ((x as f32) - (width as f32) / 2.0) / ((width as f32) * zoom)
+            let cy = ((y as f32) - (height as f32) / 2.0) / ((height as f32) * zoom)
+
+            let iterations = mandelbrot_iterations(cx, cy, gen.iterations)
+            row.push(iterations)
+        }
+
+        map.push(row)
+    }
+
+    map
+}
+
+fn mandelbrot_iterations(cx: f32, cy: f32, max_iter: u32) -> u32 {
+    let mut x = 0.0f32
+    let mut y = 0.0f32
+    let mut iter = 0u32
+
+    while iter < max_iter && x * x + y * y < 4.0 {
+        let temp = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = temp
+        iter += 1
+    }
+
+    iter
+}
+
+fun generate_julia_set(
+    gen: &FractalGenerator,
+    width: u32,
+    height: u32,
+    cx: f32,
+    cy: f32,
+) -> Vec<Vec<u32>> {
+    let mut map = Vec::new()
+
+    for y in 0..height {
+        let mut row = Vec::new()
+
+        for x in 0..width {
+            let zx = ((x as f32) - (width as f32) / 2.0) / ((width as f32) * 0.3)
+            let zy = ((y as f32) - (height as f32) / 2.0) / ((height as f32) * 0.3)
+
+            let iterations = julia_iterations(zx, zy, cx, cy, gen.iterations)
+            row.push(iterations)
+        }
+
+        map.push(row)
+    }
+
+    map
+}
+
+fn julia_iterations(zx: f32, zy: f32, cx: f32, cy: f32, max_iter: u32) -> u32 {
+    let mut x = zx
+    let mut y = zy
+    let mut iter = 0u32
+
+    while iter < max_iter && x * x + y * y < 4.0 {
+        let temp = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = temp
+        iter += 1
+    }
+
+    iter
+}
+
+# ============================================================================
+# CELLULAR AUTOMATA
+# ============================================================================
+
+type CellularAutomata = struct {
+    seed: u32,
+    width: u32,
+    height: u32,
+    rule: u32,
+    generations: u32,
+}
+
+fun create_cellular_automata(
+    seed: u32,
+    width: u32,
+    height: u32,
+    rule: u32,
+) -> CellularAutomata {
+    CellularAutomata {
+        seed,
+        width,
+        height,
+        rule,
+        generations: 10,
+    }
+}
+
+fun generate_cellular_automata(
+    automata: &CellularAutomata,
+) -> Vec<Vec<u32>> {
+    let mut grid = Vec::new()
+
+    // Initialize grid
+    for y in 0..automata.height {
+        let mut row = Vec::new()
+        for x in 0..automata.width {
+            let val = seeded_random(automata.seed + x + y * automata.width, 0) % 2
+            row.push(val)
+        }
+        grid.push(row)
+    }
+
+    // Iterate
+    for _gen in 0..automata.generations {
+        let mut new_grid = grid.clone()
+
+        for y in 1..(automata.height - 1) {
+            for x in 1..(automata.width - 1) {
+                let neighbors = count_neighbors(&grid, x, y)
+                let rule_index = (neighbors & 7) as u32
+                let new_state = (automata.rule >> rule_index) & 1
+                new_grid[y as usize][x as usize] = new_state
+            }
+        }
+
+        grid = new_grid
+    }
+
+    grid
+}
+
+fn count_neighbors(grid: &Vec<Vec<u32>>, x: u32, y: u32) -> u8 {
+    let mut count = 0u8
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 { continue }
+            let nx = (x as i32 + dx) as usize
+            let ny = (y as i32 + dy) as usize
+            if grid[ny][nx] == 1 {
+                count += 1
+            }
+        }
+    }
+    count
+}
+
+# ============================================================================
+# TEXTURE GENERATION
+# ============================================================================
+
+fun generate_wood_texture(
+    width: u32,
+    height: u32,
+    seed: u32,
+) -> Vec<Vec<(u8, u8, u8)>> {
+    let gen = create_perlin_generator(seed)
+    let mut texture = Vec::new()
+
+    for y in 0..height {
+        let mut row = Vec::new()
+        for x in 0..width {
+            let value = perlin_noise_2d(&gen, x as f32, y as f32)
+            let clamped = ((value * 0.5 + 0.5) * 255.0) as u8
+
+            let r = (clamped as f32 * 0.8) as u8
+            let g = (clamped as f32 * 0.6) as u8
+            let b = (clamped as f32 * 0.4) as u8
+
+            row.push((r, g, b))
+        }
+        texture.push(row)
+    }
+
+    texture
+}
+
+fun generate_stone_texture(
+    width: u32,
+    height: u32,
+    seed: u32,
+) -> Vec<Vec<(u8, u8, u8)>> {
+    let gen = create_simplex_generator(seed)
+    let mut texture = Vec::new()
+
+    for y in 0..height {
+        let mut row = Vec::new()
+        for x in 0..width {
+            let value = simplex_noise_2d(&gen, x as f32, y as f32)
+            let clamped = ((value * 0.5 + 0.5) * 255.0) as u8
+
+            row.push((clamped, clamped, clamped))
+        }
+        texture.push(row)
+    }
+
+    texture
+}
+
+fun generate_cloud_texture(
+    width: u32,
+    height: u32,
+    seed: u32,
+) -> Vec<Vec<u8>> {
+    let gen = create_perlin_generator(seed)
+    let mut texture = Vec::new()
+
+    for y in 0..height {
+        let mut row = Vec::new()
+        for x in 0..width {
+            let value = perlin_noise_2d(&gen, x as f32, y as f32)
+            let clamped = ((value * 0.5 + 0.5) * 255.0) as u8
+            row.push(clamped)
+        }
+        texture.push(row)
+    }
+
+    texture
+}
+
+# ============================================================================
+# DEMONSTRATION
+# ============================================================================
+
+fun demonstrate_procedural_generation() -> Result<(), string> {
+    println!("\n╔═══════════════════════════════════════════════════════╗")
+    println!("║  PROCEDURAL GENERATION ALGORITHMS DEMONSTRATION       ║")
+    println!("╚═══════════════════════════════════════════════════════╝\n")
+
+    // Perlin Noise
+    println!("1. Perlin Noise Generation")
+    let perlin_gen = create_perlin_generator(12345)
+    let perlin_value = perlin_noise_2d(&perlin_gen, 50.0, 50.0)
+    println!("   Generated value: {:.4}", perlin_value)
+    println!("   ✅ Perlin noise ready for terrain, textures\n")
+
+    // Simplex Noise
+    println!("2. Simplex Noise Generation")
+    let simplex_gen = create_simplex_generator(12345)
+    let simplex_value = simplex_noise_2d(&simplex_gen, 50.0, 50.0)
+    println!("   Generated value: {:.4}", simplex_value)
+    println!("   ✅ Simplex noise ready for particle effects\n")
+
+    // Voronoi Diagram
+    println!("3. Voronoi Diagram Generation")
+    let voronoi_gen = create_voronoi_generator(12345, 256, 256, 50)
+    let _voronoi_map = generate_voronoi_map(&voronoi_gen)
+    println!("   Generated 256x256 Voronoi diagram with 50 cells")
+    println!("   ✅ Voronoi ready for tiles, regions\n")
+
+    // Mandelbrot Set
+    println!("4. Mandelbrot Set Generation")
+    let fractal_gen = create_fractal_generator(12345, 100)
+    let _mandelbrot = generate_mandelbrot(&fractal_gen, 256, 256, 1.0)
+    println!("   Generated 256x256 Mandelbrot set")
+    println!("   ✅ Fractals ready for artistic generation\n")
+
+    // Textures
+    println!("5. Procedural Texture Generation")
+    let _wood = generate_wood_texture(256, 256, 12345)
+    let _stone = generate_stone_texture(256, 256, 12345)
+    let _cloud = generate_cloud_texture(256, 256, 12345)
+    println!("   ✅ Wood texture generated")
+    println!("   ✅ Stone texture generated")
+    println!("   ✅ Cloud texture generated\n")
+
+    println!("═══════════════════════════════════════════════════════")
+    println!("✅ PROCEDURAL GENERATION READY");
+    println!("═══════════════════════════════════════════════════════\n")
+
+    Ok(())
+}

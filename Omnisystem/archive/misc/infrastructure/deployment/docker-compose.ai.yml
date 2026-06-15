@@ -1,0 +1,183 @@
+version: '3.8'
+
+services:
+  # AI Shim with enhanced features
+  ai-shim:
+    image: bonsai/ai-shim:latest
+    container_name: ai-shim
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+      - AI_SHIM_HTTP_PORT=8117
+      - AI_SHIM_WS_PORT=8217
+      - SECURITY_MGR_ADDR=security-mgr:9001
+      - SECRETS_VAULT_ADDR=secrets-vault:9002
+      - AHF_GATEWAY_ADDR=ahf-gateway:9010
+      - HDE_ORCHESTRATOR_ADDR=hde-orchestrator:9011
+      - STATE_STORE_ADDR=state-store:9003
+      - MONITORING_ADDR=monitoring:9004
+    ports:
+      - "8117:8117"  # HTTP API
+      - "8217:8217"  # WebSocket
+    depends_on:
+      - security-mgr
+      - secrets-vault
+      - ahf-gateway
+      - hde-orchestrator
+      - state-store
+      - monitoring
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8117/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./config/ai-shim.toml:/etc/bonsai/ai-shim.toml:ro
+      - ai-cache:/var/cache/bonsai/ai
+
+  # Ollama for local models (optional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Provider marketplace service
+  provider-marketplace:
+    image: bonsai/provider-marketplace:latest
+    container_name: provider-marketplace
+    restart: unless-stopped
+    environment:
+      - AI_SHIM_ADDR=ai-shim:8117
+      - STATE_STORE_ADDR=state-store:9003
+      - HTTP_PORT=8118
+    ports:
+      - "8118:8118"
+    depends_on:
+      - ai-shim
+      - state-store
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8118/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring for AI requests
+  prometheus-ai:
+    image: prom/prometheus:latest
+    container_name: prometheus-ai
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus-ai.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - bonsai-net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana dashboards for AI metrics
+  grafana-ai:
+    image: grafana/grafana:latest
+    container_name: grafana-ai
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=bonsai
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus-ai
+    networks:
+      - bonsai-net
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: redis-ai
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for request logging and analytics
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-ai
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=bonsai_ai
+      - POSTGRES_USER=bonsai
+      - POSTGRES_PASSWORD=bonsai_secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bonsai"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger-ai
+    restart: unless-stopped
+    ports:
+      - "6831:6831/udp"  # Jaeger agent
+      - "16686:16686"    # Jaeger UI
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    networks:
+      - bonsai-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:16686/api/services"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  ai-cache:
+  ollama-models:
+  prometheus-data:
+  grafana-data:
+  redis-data:
+  postgres-data:
+
+networks:
+  bonsai-net:
+    driver: bridge

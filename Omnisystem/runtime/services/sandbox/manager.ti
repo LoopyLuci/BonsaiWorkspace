@@ -1,0 +1,420 @@
+// services/sandbox/manager.ti – Sandbox lifecycle and syscall dispatch
+// Creates, runs, monitors, snapshots, and destroys sandboxes
+
+module sandbox::manager
+
+use aether::actor::Actor
+use sandbox::capabilities::{CapabilityTable, CapabilityEnforcer, ResourceType}
+use sandbox::isolation::{IsolationManager, IsolationStrategy, DeterministicMode}
+use core::option::Option
+use core::collections::HashMap
+
+/// Sandbox state machine
+#[derive(Clone, Debug, PartialEq)]
+pub enum SandboxState {
+    Created,    // Allocated but not running
+    Running,    // Executing code
+    Paused,     // Suspended (for debugging)
+    Stopped,    // Terminated
+    Crashed,    // Terminated abnormally
+}
+
+/// Sandbox instance: represents a running or stopped sandbox environment
+pub struct Sandbox {
+    pub id: String,
+    pub state: SandboxState,
+    pub image: String,  // CAS hash or image name
+    pub memory_mb: u64,
+    pub cpu_cores: u32,
+    pub capabilities: CapabilityTable,
+    pub creation_time: u64,
+    pub started_time: Option<u64>,
+    pub stopped_time: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub syscall_count: u64,
+    pub snapshot_name: Option<String>,
+}
+
+impl Sandbox {
+    pub fn new(id: &str, image: &str, memory_mb: u64, cpu_cores: u32) -> Self {
+        Self {
+            id: id.to_string(),
+            state: SandboxState::Created,
+            image: image.to_string(),
+            memory_mb,
+            cpu_cores,
+            capabilities: CapabilityTable::new(id),
+            creation_time: timestamp_now(),
+            started_time: None,
+            stopped_time: None,
+            exit_code: None,
+            syscall_count: 0,
+            snapshot_name: None,
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state == SandboxState::Running
+    }
+
+    pub fn is_isolated(&self) -> bool {
+        // Returns true if sandbox is properly isolated (running or paused)
+        self.state == SandboxState::Running || self.state == SandboxState::Paused
+    }
+}
+
+/// Syscall request from sandboxed code
+#[derive(Clone, Debug)]
+pub struct SyscallRequest {
+    pub id: u32,  // Syscall number
+    pub args: [u64; 6],  // Standard x86-64 syscall args (rdi, rsi, rdx, rcx, r8, r9)
+    pub sandbox_id: String,
+}
+
+/// Syscall result
+#[derive(Clone, Debug)]
+pub struct SyscallResult {
+    pub request_id: u32,
+    pub result: i64,  // Return value or error code
+    pub errno: u32,  // Error number if result < 0
+}
+
+/// Syscall handler: executes syscalls with capability checking
+pub struct SyscallHandler {
+    pub capability_enforcer: CapabilityEnforcer,
+    pub deterministic_mode: HashMap<String, DeterministicMode>,
+}
+
+impl SyscallHandler {
+    pub fn new() -> Self {
+        Self {
+            capability_enforcer: CapabilityEnforcer::new(),
+            deterministic_mode: HashMap::new(),
+        }
+    }
+
+    /// Dispatch syscall: check capabilities, mediate access, return result
+    pub async fn dispatch(&mut self, request: SyscallRequest) -> SyscallResult {
+        let result = match request.id {
+            // File operations (open, read, write, unlink, etc.)
+            2 => self.syscall_open(&request.sandbox_id, request.args),
+            0 => self.syscall_read(&request.sandbox_id, request.args),
+            1 => self.syscall_write(&request.sandbox_id, request.args),
+            87 => self.syscall_unlink(&request.sandbox_id, request.args),
+
+            // Network operations (socket, connect, bind, etc.)
+            41 => self.syscall_socket(&request.sandbox_id, request.args),
+            42 => self.syscall_connect(&request.sandbox_id, request.args),
+            49 => self.syscall_bind(&request.sandbox_id, request.args),
+
+            // Clock operations
+            228 => self.syscall_clock_gettime(&request.sandbox_id, request.args),
+
+            // Process operations (exit, fork, exec)
+            60 => self.syscall_exit(&request.sandbox_id, request.args),
+            57 => self.syscall_fork(&request.sandbox_id, request.args),
+
+            // GPU operations (custom)
+            1000 => self.syscall_gpu_map(&request.sandbox_id, request.args),
+
+            _ => Err("Unsupported syscall".to_string()),
+        };
+
+        // Record in deterministic log if enabled
+        if let Some(log) = self.deterministic_mode.get_mut(&request.sandbox_id) {
+            log.record_syscall(request.id, vec![request.args[0], request.args[1], request.args[2]], result.unwrap_or(-1));
+        }
+
+        SyscallResult {
+            request_id: request.id,
+            result: result.unwrap_or(-1),
+            errno: if result.is_err() { 13 } else { 0 },  // EACCES for denied
+        }
+    }
+
+    fn syscall_open(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = path pointer, args[1] = flags
+        // Convert pointer to path string (simplified)
+        let path = format!("/sandbox/{}/fs/{}", sandbox_id, args[0]);
+
+        // Check capability
+        self.capability_enforcer.check_filesystem_access(sandbox_id, &path, "read")?;
+
+        // Virtualize: create a handle for this sandbox-local path
+        Ok(100 + (args[0] as i64 % 256))
+    }
+
+    fn syscall_read(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = fd, args[1] = buffer pointer, args[2] = count
+        // Simplified: just return success with some bytes
+        Ok(args[2] as i64)
+    }
+
+    fn syscall_write(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = fd, args[1] = buffer pointer, args[2] = count
+        Ok(args[2] as i64)
+    }
+
+    fn syscall_unlink(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        let path = format!("/sandbox/{}/fs/{}", sandbox_id, args[0]);
+        self.capability_enforcer.check_filesystem_access(sandbox_id, &path, "delete")?;
+        Ok(0)
+    }
+
+    fn syscall_socket(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = domain, args[1] = type, args[2] = protocol
+        self.capability_enforcer.check_network_access(sandbox_id, "net:outbound")?;
+        Ok(101)
+    }
+
+    fn syscall_connect(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = fd, args[1] = sockaddr pointer
+        self.capability_enforcer.check_network_access(sandbox_id, "net:outbound")?;
+        Ok(0)
+    }
+
+    fn syscall_bind(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = fd, args[1] = sockaddr pointer
+        self.capability_enforcer.check_network_access(sandbox_id, "net:inbound")?;
+        Ok(0)
+    }
+
+    fn syscall_clock_gettime(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = clock id, args[1] = timespec pointer
+        self.capability_enforcer.check_clock_access(sandbox_id)?;
+        Ok(0)
+    }
+
+    fn syscall_exit(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = exit code
+        Ok(args[0] as i64)
+    }
+
+    fn syscall_fork(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // Disallow fork inside sandbox (prevent resource explosion)
+        Err("fork() disabled in sandbox".to_string())
+    }
+
+    fn syscall_gpu_map(&self, sandbox_id: &str, args: [u64; 6]) -> Result<i64, String> {
+        // args[0] = gpu_type (0=virgl, 1=sr-iov)
+        self.capability_enforcer.check_gpu_access(sandbox_id, if args[0] == 0 { "virgl" } else { "sr-iov" })?;
+        Ok(200)
+    }
+}
+
+/// Sandbox manager: acts as an Aether service
+pub struct SandboxManager {
+    pub sandboxes: HashMap<String, Sandbox>,
+    pub isolation: IsolationManager,
+    pub syscall_handler: SyscallHandler,
+    pub snapshots: HashMap<String, SnapshotData>,
+}
+
+pub struct SnapshotData {
+    pub name: String,
+    pub sandbox_id: String,
+    pub timestamp: u64,
+    pub memory_image: Vec<u8>,  // Simplified
+    pub cpu_state: Vec<u8>,
+}
+
+impl SandboxManager {
+    pub fn new(isolation_strategy: IsolationStrategy) -> Self {
+        Self {
+            sandboxes: HashMap::new(),
+            isolation: IsolationManager::new(isolation_strategy),
+            syscall_handler: SyscallHandler::new(),
+            snapshots: HashMap::new(),
+        }
+    }
+
+    /// Create a new sandbox
+    pub async fn create(
+        &mut self,
+        sandbox_id: &str,
+        image: &str,
+        memory_mb: u64,
+        cpu_cores: u32,
+        deterministic: bool,
+    ) -> Result<Sandbox, String> {
+        // Create sandbox instance
+        let sandbox = Sandbox::new(sandbox_id, image, memory_mb, cpu_cores);
+
+        // Configure isolation
+        self.isolation.create_sandbox(
+            sandbox_id,
+            memory_mb,
+            cpu_cores,
+            deterministic,
+        )?;
+
+        // Register capability table
+        self.syscall_handler.capability_enforcer
+            .create_sandbox(sandbox_id);
+
+        // If deterministic, create deterministic mode
+        if deterministic {
+            self.syscall_handler.deterministic_mode.insert(
+                sandbox_id.to_string(),
+                DeterministicMode::new(42),
+            );
+        }
+
+        self.sandboxes.insert(sandbox_id.to_string(), sandbox.clone());
+        Ok(sandbox)
+    }
+
+    /// Start a sandbox
+    pub async fn start(&mut self, sandbox_id: &str) -> Result<(), String> {
+        let sandbox = self.sandboxes.get_mut(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        if sandbox.state != SandboxState::Created {
+            return Err("Sandbox is not in Created state".to_string());
+        }
+
+        sandbox.state = SandboxState::Running;
+        sandbox.started_time = Some(timestamp_now());
+        Ok(())
+    }
+
+    /// Pause a sandbox (for debugging)
+    pub async fn pause(&mut self, sandbox_id: &str) -> Result<(), String> {
+        let sandbox = self.sandboxes.get_mut(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        if !sandbox.is_running() {
+            return Err("Sandbox is not running".to_string());
+        }
+
+        sandbox.state = SandboxState::Paused;
+        Ok(())
+    }
+
+    /// Resume a paused sandbox
+    pub async fn resume(&mut self, sandbox_id: &str) -> Result<(), String> {
+        let sandbox = self.sandboxes.get_mut(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        if sandbox.state != SandboxState::Paused {
+            return Err("Sandbox is not paused".to_string());
+        }
+
+        sandbox.state = SandboxState::Running;
+        Ok(())
+    }
+
+    /// Stop a sandbox
+    pub async fn stop(&mut self, sandbox_id: &str, exit_code: i32) -> Result<(), String> {
+        let sandbox = self.sandboxes.get_mut(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        if !sandbox.is_isolated() {
+            return Err("Sandbox is not running or paused".to_string());
+        }
+
+        sandbox.state = SandboxState::Stopped;
+        sandbox.stopped_time = Some(timestamp_now());
+        sandbox.exit_code = Some(exit_code);
+
+        // Clean up isolation
+        self.isolation.destroy_sandbox(sandbox_id)?;
+
+        Ok(())
+    }
+
+    /// Create a snapshot of a paused sandbox
+    pub async fn snapshot(
+        &mut self,
+        sandbox_id: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let sandbox = self.sandboxes.get(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        if sandbox.state != SandboxState::Paused {
+            return Err("Sandbox must be paused to snapshot".to_string());
+        }
+
+        let snapshot = SnapshotData {
+            name: name.to_string(),
+            sandbox_id: sandbox_id.to_string(),
+            timestamp: timestamp_now(),
+            memory_image: vec![],  // Simplified
+            cpu_state: vec![],
+        };
+
+        self.snapshots.insert(name.to_string(), snapshot);
+        Ok(())
+    }
+
+    /// Fork a sandbox from a snapshot
+    pub async fn fork_from_snapshot(
+        &mut self,
+        snapshot_name: &str,
+        new_sandbox_id: &str,
+    ) -> Result<Sandbox, String> {
+        let snapshot = self.snapshots.get(snapshot_name)
+            .ok_or("Snapshot not found".to_string())?;
+
+        // Create new sandbox with same configuration
+        let mut new_sandbox = Sandbox::new(
+            new_sandbox_id,
+            "snapshot",
+            256,  // Simplified
+            4,
+        );
+
+        new_sandbox.snapshot_name = Some(snapshot_name.to_string());
+        new_sandbox.state = SandboxState::Created;
+
+        self.sandboxes.insert(new_sandbox_id.to_string(), new_sandbox.clone());
+        Ok(new_sandbox)
+    }
+
+    /// Grant a capability to a sandbox
+    pub async fn grant_capability(
+        &mut self,
+        sandbox_id: &str,
+        resource_type: ResourceType,
+        target: &str,
+        permissions: &str,
+    ) -> Result<(), String> {
+        let sandbox = self.sandboxes.get_mut(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        // Parse permissions into PermissionSet
+        use sandbox::capabilities::PermissionSet;
+        let perm_set = match permissions {
+            "ro" => PermissionSet::read_only(),
+            "rw" => PermissionSet::read_write(),
+            "x" => PermissionSet::execute_only(),
+            _ => PermissionSet::read_only(),
+        };
+
+        let cap = sandbox::capabilities::Capability {
+            id: format!("cap-{}", uuid::Uuid::new_v4()),
+            resource_type,
+            target: target.to_string(),
+            permissions: perm_set,
+            revoked: false,
+            generation: 0,
+        };
+
+        sandbox.capabilities.grant(cap)?;
+        Ok(())
+    }
+
+    pub fn get_sandbox(&self, sandbox_id: &str) -> Option<&Sandbox> {
+        self.sandboxes.get(sandbox_id)
+    }
+
+    pub fn list_sandboxes(&self) -> Vec<&Sandbox> {
+        self.sandboxes.values().collect()
+    }
+}
+
+fn timestamp_now() -> u64 {
+    // Simplified: should use actual system time
+    42
+}

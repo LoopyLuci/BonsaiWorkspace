@@ -1,0 +1,304 @@
+// kernel/scheduler.ti — EDF + CFS process scheduler with preemption
+// EDF (Earliest Deadline First): real-time tasks, sorted by deadline.
+// CFS (Completely Fair Scheduler): normal tasks, round-robin with vruntime.
+// Real-time tasks (policy=0) always preempt CFS tasks (policy=1).
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_SCHED:   i64 = 9200;
+const TAG_PROC:    i64 = 9201;
+const TAG_EDF_Q:   i64 = 9202;
+const TAG_CFS_Q:   i64 = 9203;
+
+// Scheduling policies
+const POLICY_EDF: i64 = 0;   // real-time, earliest deadline first
+const POLICY_CFS: i64 = 1;   // normal, completely fair
+
+// Priority levels
+const PRIO_REALTIME: i64 = 3;
+const PRIO_HIGH:     i64 = 2;
+const PRIO_NORMAL:   i64 = 1;
+const PRIO_LOW:      i64 = 0;
+
+// Process node layout:
+//   tag=TAG_PROC
+//   body=pid
+//   arg=(policy*1000 + priority*100 + preemptible)
+//   domain=deadline (EDF) or vruntime (CFS, integer approximation)
+// Additional fields are stored as a secondary "ext" node linked via domain when not deadline/vruntime:
+//   For CFS processes, domain = runtime (ticks consumed)
+// We simplify: use body=pid, arg=flags, domain=deadline_or_runtime
+// flags = policy*10000 + priority*1000 + preemptible*100 + state
+// state: 0=ready, 1=running, 2=stopped
+
+pub fn proc_new(pid: i64, policy: i64, priority: i64) -> i64 {
+    let p = heap_alloc_term();
+    heap_set_tag(p, TAG_PROC);
+    heap_set_body(p, pid);
+    heap_set_arg(p, policy * 10000 + priority * 1000 + 1 * 100 + 0);
+    heap_set_domain(p, 999999);  // default deadline = very large
+    return p;
+}
+
+pub fn proc_pid(p: i64) -> i64 { return heap_get_body(p); }
+pub fn proc_policy(p: i64) -> i64 { return heap_get_arg(p) / 10000; }
+pub fn proc_priority(p: i64) -> i64 { return (heap_get_arg(p) / 1000) - (proc_policy(p) * 10); }
+pub fn proc_preemptible(p: i64) -> i64 { return (heap_get_arg(p) / 100) - ((heap_get_arg(p) / 1000) * 10); }
+pub fn proc_state(p: i64) -> i64 { return heap_get_arg(p) - ((heap_get_arg(p) / 100) * 100); }
+pub fn proc_deadline(p: i64) -> i64 { return heap_get_domain(p); }
+
+pub fn proc_set_deadline(p: i64, dl: i64) {
+    heap_set_domain(p, dl);
+    return;
+}
+
+pub fn proc_set_state(p: i64, st: i64) {
+    let flags = heap_get_arg(p);
+    let base = (flags / 100) * 100;
+    heap_set_arg(p, base + st);
+    return;
+}
+
+// Queue node: body=proc, arg=next_node
+pub fn qnode_new(proc: i64) -> i64 {
+    let n = heap_alloc_term();
+    heap_set_tag(n, TAG_EDF_Q);
+    heap_set_body(n, proc);
+    heap_set_arg(n, 0);
+    heap_set_domain(n, 0);
+    return n;
+}
+
+// Scheduler layout:
+//   tag=TAG_SCHED
+//   body=edf_head  (sorted by deadline, min first)
+//   arg=cfs_tail   (CFS uses a deque; head stored in domain)
+//   domain=cfs_head
+// We also need: time, cfs_count, edf_count
+// Store those in a secondary ext node linked via a global
+let g_sched_time:  i64 = 0;
+let g_edf_count:   i64 = 0;
+let g_cfs_count:   i64 = 0;
+let g_cfs_head:    i64 = 0;
+let g_cfs_tail:    i64 = 0;
+let g_edf_head:    i64 = 0;
+
+pub fn sched_new() -> i64 {
+    g_sched_time = 0;
+    g_edf_count = 0;
+    g_cfs_count = 0;
+    g_cfs_head = 0;
+    g_cfs_tail = 0;
+    g_edf_head = 0;
+    return 1;   // sentinel "scheduler exists"
+}
+
+// Insert into EDF queue (sorted by deadline ascending)
+pub fn sched_edf_insert(proc: i64) {
+    let node = qnode_new(proc);
+    let dl = proc_deadline(proc);
+
+    if g_edf_head == 0 {
+        g_edf_head = node;
+        g_edf_count = g_edf_count + 1;
+        return;
+    }
+    // Find insertion point
+    let cur = g_edf_head;
+    let prev = 0;
+    while cur != 0 {
+        let cur_proc = heap_get_body(cur);
+        if proc_deadline(cur_proc) > dl {
+            // Insert before cur
+            heap_set_arg(node, cur);
+            if prev == 0 { g_edf_head = node; }
+            else { heap_set_arg(prev, node); }
+            g_edf_count = g_edf_count + 1;
+            return;
+        }
+        prev = cur;
+        cur = heap_get_arg(cur);
+    }
+    // Append at end
+    heap_set_arg(prev, node);
+    g_edf_count = g_edf_count + 1;
+    return;
+}
+
+// Insert into CFS queue (round-robin, append to tail)
+pub fn sched_cfs_enqueue(proc: i64) {
+    let node = qnode_new(proc);
+    if g_cfs_head == 0 {
+        g_cfs_head = node;
+        g_cfs_tail = node;
+    } else {
+        heap_set_arg(g_cfs_tail, node);
+        g_cfs_tail = node;
+    }
+    g_cfs_count = g_cfs_count + 1;
+    return;
+}
+
+pub fn sched_add_process(proc: i64) {
+    if proc_policy(proc) == POLICY_EDF {
+        if proc_deadline(proc) == 999999 {
+            proc_set_deadline(proc, g_sched_time + 1000);
+        }
+        sched_edf_insert(proc);
+    } else {
+        sched_cfs_enqueue(proc);
+    }
+    return;
+}
+
+// Peek at next EDF process (min deadline, not popped)
+pub fn sched_edf_peek() -> i64 {
+    if g_edf_head == 0 { return 0; }
+    return heap_get_body(g_edf_head);
+}
+
+// Pop head of EDF queue
+pub fn sched_edf_pop() -> i64 {
+    if g_edf_head == 0 { return 0; }
+    let node = g_edf_head;
+    g_edf_head = heap_get_arg(node);
+    g_edf_count = g_edf_count - 1;
+    return heap_get_body(node);
+}
+
+// Rotate CFS queue: pop from head, push to tail (round-robin)
+pub fn sched_cfs_rotate() -> i64 {
+    if g_cfs_head == 0 { return 0; }
+    let node = g_cfs_head;
+    let proc = heap_get_body(node);
+    g_cfs_head = heap_get_arg(node);
+    if g_cfs_head == 0 { g_cfs_tail = 0; }
+    // Re-enqueue at tail
+    heap_set_arg(node, 0);
+    if g_cfs_tail == 0 {
+        g_cfs_head = node;
+        g_cfs_tail = node;
+    } else {
+        heap_set_arg(g_cfs_tail, node);
+        g_cfs_tail = node;
+    }
+    return proc;
+}
+
+// Schedule: returns pid of next process to run (EDF takes priority)
+pub fn sched_schedule() -> i64 {
+    if g_edf_head != 0 {
+        let p = sched_edf_peek();
+        return proc_pid(p);
+    }
+    if g_cfs_head != 0 {
+        let p = sched_cfs_rotate();
+        return proc_pid(p);
+    }
+    return -1;
+}
+
+// Tick: advance time, re-insert expired EDF tasks with new deadline
+pub fn sched_tick() -> i64 {
+    g_sched_time = g_sched_time + 1;
+    // Check if EDF head's deadline has passed
+    if g_edf_head != 0 {
+        let p = heap_get_body(g_edf_head);
+        if proc_deadline(p) <= g_sched_time {
+            sched_edf_pop();
+            proc_set_deadline(p, g_sched_time + 2000);
+            sched_edf_insert(p);
+        }
+    }
+    return sched_schedule();
+}
+
+pub fn sched_time() -> i64 { return g_sched_time; }
+pub fn sched_edf_count() -> i64 { return g_edf_count; }
+pub fn sched_cfs_count() -> i64 { return g_cfs_count; }
+
+// Find a process by pid in either queue (linear scan)
+pub fn sched_find(pid: i64) -> i64 {
+    let cur = g_edf_head;
+    while cur != 0 {
+        let p = heap_get_body(cur);
+        if proc_pid(p) == pid { return p; }
+        cur = heap_get_arg(cur);
+    }
+    let cur2 = g_cfs_head;
+    while cur2 != 0 {
+        let p = heap_get_body(cur2);
+        if proc_pid(p) == pid { return p; }
+        cur2 = heap_get_arg(cur2);
+    }
+    return -1;
+}
+
+pub fn main() -> i64 {
+    sched_new();
+
+    // Test 1: scheduler creation
+    if sched_edf_count() != 0 { return 1; }
+    if sched_cfs_count() != 0 { return 2; }
+    if sched_time() != 0 { return 3; }
+
+    // Test 2: process context
+    let p1 = proc_new(1, POLICY_CFS, PRIO_NORMAL);
+    if proc_pid(p1) != 1 { return 4; }
+    if proc_policy(p1) != POLICY_CFS { return 5; }
+
+    // Test 3: add EDF process
+    let p2 = proc_new(2, POLICY_EDF, PRIO_REALTIME);
+    proc_set_deadline(p2, 100);
+    sched_add_process(p2);
+    if sched_edf_count() != 1 { return 6; }
+
+    // Test 4: add CFS process
+    sched_add_process(p1);
+    if sched_cfs_count() != 1 { return 7; }
+
+    // Test 5: EDF takes priority over CFS
+    let next_pid = sched_schedule();
+    if next_pid != 2 { return 8; }
+
+    // Test 6: tick
+    let _ = sched_tick();
+    if sched_time() != 1 { return 9; }
+
+    // Test 7: find process
+    sched_new();
+    let p3 = proc_new(99, POLICY_CFS, PRIO_LOW);
+    sched_add_process(p3);
+    let found = sched_find(99);
+    if found < 0 { return 10; }
+    if proc_pid(found) != 99 { return 11; }
+
+    // Test 8: preemption — EDF process inserted after CFS starts running
+    sched_new();
+    let p4 = proc_new(10, POLICY_CFS, PRIO_NORMAL);
+    sched_add_process(p4);
+    let scheduled = sched_schedule();
+    if scheduled != 10 { return 12; }
+    // Now add real-time process — next schedule must pick it
+    let p5 = proc_new(20, POLICY_EDF, PRIO_REALTIME);
+    proc_set_deadline(p5, 50);
+    sched_add_process(p5);
+    let preempted_by = sched_schedule();
+    if preempted_by != 20 { return 13; }
+
+    // Test 9: get process by pid
+    let found2 = sched_find(20);
+    if proc_pid(found2) != 20 { return 14; }
+
+    return 0;
+}

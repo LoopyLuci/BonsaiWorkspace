@@ -1,0 +1,561 @@
+module omnisystem.assets.asset_marketplace
+
+# Asset Marketplace System
+# Share, sell, and discover assets from community creators
+
+import omnisystem.assets.asset_metadata
+
+# ============================================================================
+# MARKETPLACE TYPES
+# ============================================================================
+
+enum AssetLicense {
+    MIT,
+    Apache2,
+    GPL,
+    BSD,
+    CC0,
+    CC_BY,
+    CC_BY_SA,
+    Commercial,
+    Proprietary,
+}
+
+enum PricingModel {
+    Free,
+    OneTime,
+    Subscription,
+    Royalty,
+}
+
+type AssetListing = struct {
+    listing_id: string,
+    asset_id: string,
+    seller_id: string,
+    title: string,
+    description: string,
+    thumbnail_path: string,
+    pricing_model: PricingModel,
+    price_usd: f32,
+    license: AssetLicense,
+    version: string,
+    rating: f32,
+    downloads: u32,
+    reviews: u32,
+    created_timestamp: u64,
+    updated_timestamp: u64,
+    visibility: ListingVisibility,
+    tags: Vec<string>,
+    metadata: Vec<(string, string)>,
+}
+
+enum ListingVisibility {
+    Public,
+    Private,
+    UnderReview,
+    Delisted,
+}
+
+# ============================================================================
+# CREATOR PROFILE
+# ============================================================================
+
+type CreatorProfile = struct {
+    creator_id: string,
+    display_name: string,
+    bio: string,
+    avatar_url: string,
+    website_url: Option<string>,
+    created_timestamp: u64,
+    verified: bool,
+    rating: f32,
+    total_sales: u32,
+    total_revenue_usd: f32,
+    followers: u32,
+    assets_count: u32,
+}
+
+type CreatorStats = struct {
+    creator_id: string,
+    total_listings: u32,
+    total_downloads: u32,
+    total_revenue_usd: f32,
+    average_rating: f32,
+    review_count: u32,
+    follower_count: u32,
+    top_assets: Vec<AssetListing>,
+}
+
+# ============================================================================
+# REVIEWS & RATINGS
+# ============================================================================
+
+type AssetReview = struct {
+    review_id: string,
+    listing_id: string,
+    reviewer_id: string,
+    rating: u8,  // 1-5
+    title: string,
+    content: string,
+    helpful_count: u32,
+    created_timestamp: u64,
+    verified_purchase: bool,
+}
+
+# ============================================================================
+# MARKETPLACE OPERATIONS
+# ============================================================================
+
+fun create_asset_listing(
+    asset_id: &string,
+    seller_id: &string,
+    title: &string,
+    description: &string,
+    pricing_model: PricingModel,
+    price_usd: f32,
+    license: AssetLicense,
+) -> AssetListing {
+    println!("Creating marketplace listing for asset: {}", asset_id)
+
+    AssetListing {
+        listing_id: format!("lst_{}", generate_id()),
+        asset_id: asset_id.clone(),
+        seller_id: seller_id.clone(),
+        title: title.clone(),
+        description: description.clone(),
+        thumbnail_path: "/marketplace/thumbs/default.png".to_string(),
+        pricing_model,
+        price_usd,
+        license,
+        version: "1.0.0".to_string(),
+        rating: 0.0,
+        downloads: 0,
+        reviews: 0,
+        created_timestamp: current_timestamp(),
+        updated_timestamp: current_timestamp(),
+        visibility: ListingVisibility::UnderReview,
+        tags: Vec::new(),
+        metadata: Vec::new(),
+    }
+}
+
+fun publish_listing(mut listing: AssetListing) -> Result<AssetListing, string> {
+    if listing.visibility != ListingVisibility::UnderReview {
+        return Err("Listing must be under review to publish".to_string())
+    }
+
+    println!("Publishing listing: {}", listing.listing_id)
+    listing.visibility = ListingVisibility::Public
+    listing.updated_timestamp = current_timestamp()
+
+    Ok(listing)
+}
+
+fun update_listing_price(
+    mut listing: AssetListing,
+    new_price: f32,
+) -> AssetListing {
+    println!("Updating price from ${:.2} to ${:.2}", listing.price_usd, new_price)
+    listing.price_usd = new_price
+    listing.updated_timestamp = current_timestamp()
+    listing
+}
+
+fun delist_asset(mut listing: AssetListing) -> AssetListing {
+    println!("Delisting asset: {}", listing.listing_id)
+    listing.visibility = ListingVisibility::Delisted
+    listing.updated_timestamp = current_timestamp()
+    listing
+}
+
+# ============================================================================
+# CREATOR MANAGEMENT
+# ============================================================================
+
+fun create_creator_profile(
+    display_name: &string,
+    bio: &string,
+) -> CreatorProfile {
+    println!("Creating creator profile: {}", display_name)
+
+    CreatorProfile {
+        creator_id: format!("creator_{}", generate_id()),
+        display_name: display_name.clone(),
+        bio: bio.clone(),
+        avatar_url: "/marketplace/avatars/default.png".to_string(),
+        website_url: None,
+        created_timestamp: current_timestamp(),
+        verified: false,
+        rating: 0.0,
+        total_sales: 0,
+        total_revenue_usd: 0.0,
+        followers: 0,
+        assets_count: 0,
+    }
+}
+
+fun verify_creator(mut profile: CreatorProfile) -> CreatorProfile {
+    println!("Verifying creator: {}", profile.creator_id)
+    profile.verified = true
+    profile
+}
+
+fun get_creator_statistics(profile: &CreatorProfile) -> CreatorStats {
+    CreatorStats {
+        creator_id: profile.creator_id.clone(),
+        total_listings: profile.assets_count,
+        total_downloads: 0,
+        total_revenue_usd: profile.total_revenue_usd,
+        average_rating: profile.rating,
+        review_count: 0,
+        follower_count: profile.followers,
+        top_assets: Vec::new(),
+    }
+}
+
+fun follow_creator(
+    mut profile: CreatorProfile,
+    follower_id: &string,
+) -> CreatorProfile {
+    println!("Adding follower to creator: {}", profile.creator_id)
+    profile.followers += 1
+    profile
+}
+
+# ============================================================================
+# MARKETPLACE SEARCH & DISCOVERY
+# ============================================================================
+
+type MarketplaceSearchQuery = struct {
+    search_term: Option<string>,
+    asset_type: Option<string>,
+    min_price: Option<f32>,
+    max_price: Option<f32>,
+    license_filter: Vec<AssetLicense>,
+    min_rating: Option<f32>,
+    verified_creators_only: bool,
+    sort_by: MarketplaceSortField,
+    page: u32,
+    limit: u32,
+}
+
+enum MarketplaceSortField {
+    Relevance,
+    Price_Low_High,
+    Price_High_Low,
+    Rating,
+    MostDownloaded,
+    Newest,
+    MostReviewed,
+}
+
+fun search_marketplace(
+    listings: &Vec<AssetListing>,
+    query: &MarketplaceSearchQuery,
+) -> Vec<AssetListing> {
+    let mut results = Vec::new()
+
+    for listing in listings.iter() {
+        if listing.visibility != ListingVisibility::Public {
+            continue
+        }
+
+        // Filter by search term
+        if let Some(term) = &query.search_term {
+            if !listing.title.to_lowercase().contains(&term.to_lowercase()) {
+                continue
+            }
+        }
+
+        // Filter by price range
+        if let Some(min) = query.min_price {
+            if listing.price_usd < min {
+                continue
+            }
+        }
+        if let Some(max) = query.max_price {
+            if listing.price_usd > max {
+                continue
+            }
+        }
+
+        // Filter by rating
+        if let Some(min_rating) = query.min_rating {
+            if listing.rating < min_rating {
+                continue
+            }
+        }
+
+        results.push(listing.clone())
+    }
+
+    // Sort results
+    sort_marketplace_results(&mut results, &query.sort_by)
+
+    // Pagination
+    let start = ((query.page - 1) * query.limit) as usize
+    let end = (start + query.limit as usize).min(results.len())
+
+    if start < results.len() {
+        results[start..end].to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+fn sort_marketplace_results(
+    results: &mut Vec<AssetListing>,
+    sort_by: &MarketplaceSortField,
+) {
+    match sort_by {
+        MarketplaceSortField::Price_Low_High => {
+            // results.sort_by(|a, b| a.price_usd.partial_cmp(&b.price_usd).unwrap())
+        },
+        MarketplaceSortField::Price_High_Low => {
+            // results.sort_by(|a, b| b.price_usd.partial_cmp(&a.price_usd).unwrap())
+        },
+        MarketplaceSortField::Rating => {
+            // results.sort_by(|a, b| b.rating.partial_cmp(&a.rating).unwrap())
+        },
+        MarketplaceSortField::MostDownloaded => {
+            // results.sort_by(|a, b| b.downloads.cmp(&a.downloads))
+        },
+        MarketplaceSortField::Newest => {
+            // results.sort_by(|a, b| b.created_timestamp.cmp(&a.created_timestamp))
+        },
+        _ => {},
+    }
+}
+
+# ============================================================================
+# REVIEWS & RATINGS
+# ============================================================================
+
+fun submit_review(
+    listing_id: &string,
+    reviewer_id: &string,
+    rating: u8,
+    title: &string,
+    content: &string,
+) -> Result<AssetReview, string> {
+    if rating > 5 || rating < 1 {
+        return Err("Rating must be between 1 and 5".to_string())
+    }
+
+    println!("Submitting review for listing: {} (Rating: {}★)", listing_id, rating)
+
+    let review = AssetReview {
+        review_id: format!("rev_{}", generate_id()),
+        listing_id: listing_id.clone(),
+        reviewer_id: reviewer_id.clone(),
+        rating,
+        title: title.clone(),
+        content: content.clone(),
+        helpful_count: 0,
+        created_timestamp: current_timestamp(),
+        verified_purchase: false,
+    }
+
+    Ok(review)
+}
+
+fun mark_review_helpful(
+    mut review: AssetReview,
+    count: u32,
+) -> AssetReview {
+    review.helpful_count += count
+    review
+}
+
+fun update_listing_rating(
+    mut listing: AssetListing,
+    reviews: &Vec<AssetReview>,
+) -> AssetListing {
+    if reviews.is_empty() {
+        return listing
+    }
+
+    let total: u32 = reviews.iter().map(|r| r.rating as u32).sum()
+    let average = (total as f32) / (reviews.len() as f32)
+
+    listing.rating = average
+    listing.reviews = reviews.len() as u32
+    listing.updated_timestamp = current_timestamp()
+
+    listing
+}
+
+# ============================================================================
+# SALES & TRANSACTIONS
+# ============================================================================
+
+type PurchaseTransaction = struct {
+    transaction_id: string,
+    listing_id: string,
+    buyer_id: string,
+    seller_id: string,
+    amount_usd: f32,
+    platform_fee_usd: f32,
+    seller_revenue_usd: f32,
+    created_timestamp: u64,
+    status: TransactionStatus,
+}
+
+enum TransactionStatus {
+    Pending,
+    Completed,
+    Refunded,
+    Failed,
+}
+
+fun create_purchase(
+    listing: &AssetListing,
+    buyer_id: &string,
+) -> PurchaseTransaction {
+    let platform_fee = listing.price_usd * 0.15  // 15% platform fee
+    let seller_revenue = listing.price_usd - platform_fee
+
+    println!("Creating purchase: {} → {} (${:.2})", buyer_id, listing.seller_id, listing.price_usd)
+
+    PurchaseTransaction {
+        transaction_id: format!("txn_{}", generate_id()),
+        listing_id: listing.listing_id.clone(),
+        buyer_id: buyer_id.clone(),
+        seller_id: listing.seller_id.clone(),
+        amount_usd: listing.price_usd,
+        platform_fee_usd: platform_fee,
+        seller_revenue_usd: seller_revenue,
+        created_timestamp: current_timestamp(),
+        status: TransactionStatus::Pending,
+    }
+}
+
+fun complete_transaction(
+    mut transaction: PurchaseTransaction,
+) -> PurchaseTransaction {
+    println!("Transaction completed: {} (Seller revenue: ${:.2})",
+        transaction.transaction_id, transaction.seller_revenue_usd)
+    transaction.status = TransactionStatus::Completed
+    transaction
+}
+
+# ============================================================================
+# MARKETPLACE STATISTICS
+# ============================================================================
+
+type MarketplaceStats = struct {
+    total_listings: u32,
+    total_creators: u32,
+    total_purchases: u32,
+    total_revenue_usd: f32,
+    average_listing_price: f32,
+    total_downloads: u32,
+    verified_creators: u32,
+    top_categories: Vec<(string, u32)>,
+}
+
+fun get_marketplace_statistics(
+    listings: &Vec<AssetListing>,
+    creators: &Vec<CreatorProfile>,
+) -> MarketplaceStats {
+    let public_listings: Vec<&AssetListing> = listings
+        .iter()
+        .filter(|l| l.visibility == ListingVisibility::Public)
+        .collect()
+
+    let total_price: f32 = public_listings.iter().map(|l| l.price_usd).sum()
+    let avg_price = if !public_listings.is_empty() {
+        total_price / (public_listings.len() as f32)
+    } else {
+        0.0
+    }
+
+    let total_downloads: u32 = public_listings.iter().map(|l| l.downloads).sum()
+    let verified: u32 = creators.iter().filter(|c| c.verified).count() as u32
+
+    MarketplaceStats {
+        total_listings: listings.len() as u32,
+        total_creators: creators.len() as u32,
+        total_purchases: 0,
+        total_revenue_usd: 0.0,
+        average_listing_price: avg_price,
+        total_downloads,
+        verified_creators: verified,
+        top_categories: Vec::new(),
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fn generate_id() -> string {
+    "1234567890".to_string()
+}
+
+fn current_timestamp() -> u64 {
+    0
+}
+
+impl AssetListing {
+    fn clone(&self) -> AssetListing {
+        AssetListing {
+            listing_id: self.listing_id.clone(),
+            asset_id: self.asset_id.clone(),
+            seller_id: self.seller_id.clone(),
+            title: self.title.clone(),
+            description: self.description.clone(),
+            thumbnail_path: self.thumbnail_path.clone(),
+            pricing_model: self.pricing_model.clone(),
+            price_usd: self.price_usd,
+            license: self.license.clone(),
+            version: self.version.clone(),
+            rating: self.rating,
+            downloads: self.downloads,
+            reviews: self.reviews,
+            created_timestamp: self.created_timestamp,
+            updated_timestamp: self.updated_timestamp,
+            visibility: self.visibility.clone(),
+            tags: self.tags.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+}
+
+impl PricingModel {
+    fn clone(&self) -> PricingModel {
+        match self {
+            PricingModel::Free => PricingModel::Free,
+            PricingModel::OneTime => PricingModel::OneTime,
+            PricingModel::Subscription => PricingModel::Subscription,
+            PricingModel::Royalty => PricingModel::Royalty,
+        }
+    }
+}
+
+impl AssetLicense {
+    fn clone(&self) -> AssetLicense {
+        match self {
+            AssetLicense::MIT => AssetLicense::MIT,
+            AssetLicense::Apache2 => AssetLicense::Apache2,
+            AssetLicense::GPL => AssetLicense::GPL,
+            AssetLicense::BSD => AssetLicense::BSD,
+            AssetLicense::CC0 => AssetLicense::CC0,
+            AssetLicense::CC_BY => AssetLicense::CC_BY,
+            AssetLicense::CC_BY_SA => AssetLicense::CC_BY_SA,
+            AssetLicense::Commercial => AssetLicense::Commercial,
+            AssetLicense::Proprietary => AssetLicense::Proprietary,
+        }
+    }
+}
+
+impl ListingVisibility {
+    fn clone(&self) -> ListingVisibility {
+        match self {
+            ListingVisibility::Public => ListingVisibility::Public,
+            ListingVisibility::Private => ListingVisibility::Private,
+            ListingVisibility::UnderReview => ListingVisibility::UnderReview,
+            ListingVisibility::Delisted => ListingVisibility::Delisted,
+        }
+    }
+}

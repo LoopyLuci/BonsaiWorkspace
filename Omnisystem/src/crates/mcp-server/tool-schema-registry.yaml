@@ -1,0 +1,1150 @@
+# Copilot Tool Schema Registry
+#
+# This registry defines the complete mapping between GitHub Copilot tools
+# and Bonsai MCP tools. Used by the translation engine to route and translate
+# tool invocations.
+#
+# Format Version: 1.0
+# Last Updated: 2026-06-01
+
+version: "1.0"
+last_updated: "2026-06-01"
+registry_format: "yaml"
+
+# Global defaults
+defaults:
+  timeout_seconds: 30
+  capture_output: true
+  sandbox_tier: "wasm"
+  telemetry:
+    track_parameters: false
+    track_results: false
+
+tools:
+  # ============================================================================
+  # FILE I/O TOOLS (4 tools)
+  # ============================================================================
+
+  - id: "read_file"
+    name: "read_file"
+    category: "file_io"
+    risk_level: "low"
+    description: "Read the contents of a file"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "File path to read (relative to workspace or absolute)"
+        encoding:
+          type: "string"
+          enum: ["utf-8", "ascii", "utf-16"]
+          description: "File encoding"
+          default: "utf-8"
+        max_size_bytes:
+          type: "integer"
+          description: "Optional: read at most N bytes"
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "read_file"
+
+      parameter_translation:
+        - copilot_field: "path"
+          bonsai_field: "path"
+          transform: "resolve_to_absolute"
+        - copilot_field: "encoding"
+          bonsai_field: null
+          transform: "drop"
+        - copilot_field: "max_size_bytes"
+          bonsai_field: null
+          transform: "drop"
+
+      result_translation:
+        - bonsai_field: "content"
+          copilot_field: "content"
+        - bonsai_field: "size"
+          copilot_field: "size"
+        - copilot_field: "encoding"
+          constant: "utf-8"
+        - bonsai_field: "path"
+          copilot_field: "path"
+
+    permissions_required:
+      - "file:read"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      path_validation: "must_be_within_workspace"
+      secret_scan: false
+
+    telemetry:
+      event_category: "tool_invocation"
+      track_parameters: false
+      track_results: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "write_file"
+    name: "write_file"
+    category: "file_io"
+    risk_level: "medium"
+    description: "Create or overwrite a file"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "File path"
+        content:
+          type: "string"
+          description: "File content to write"
+        mode:
+          type: "string"
+          enum: ["create", "overwrite", "append"]
+          description: "Write mode"
+          default: "overwrite"
+        encoding:
+          type: "string"
+          enum: ["utf-8", "ascii", "utf-16"]
+          default: "utf-8"
+        create_parents:
+          type: "boolean"
+          description: "Create parent directories"
+          default: true
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "write_file"
+
+      parameter_translation:
+        - copilot_field: "path"
+          bonsai_field: "path"
+          transform: "resolve_to_absolute"
+        - copilot_field: "content"
+          bonsai_field: "content"
+        - copilot_field: "mode"
+          bonsai_field: null
+          transform: "handle_in_bridge"
+        - copilot_field: "encoding"
+          bonsai_field: null
+          transform: "drop"
+        - copilot_field: "create_parents"
+          bonsai_field: null
+          transform: "drop"
+
+      result_translation:
+        - bonsai_field: "path"
+          copilot_field: "path"
+        - bonsai_field: "size"
+          copilot_field: "size"
+        - copilot_field: "encoding"
+          constant: "utf-8"
+        - copilot_field: "status"
+          constant: "ok"
+
+    permissions_required:
+      - "file:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "This will modify a file. Review the changes?"
+      path_validation: "must_be_within_workspace"
+      secret_scan: true
+      dangerous_files:
+        - ".git"
+        - ".env"
+        - "Cargo.lock"
+
+    telemetry:
+      event_category: "file_modification"
+      track_parameters: false
+      track_results: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "delete_file"
+    name: "delete_file"
+    category: "file_io"
+    risk_level: "high"
+    description: "Delete a file"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "File path to delete"
+        force:
+          type: "boolean"
+          description: "Force delete even if modified"
+          default: false
+
+    bonsai_mapping:
+      strategy: "cloud_fallback"
+      fallback_reason: "Delete operations not exposed locally; requires GitHub API"
+
+    permissions_required:
+      - "file:delete"
+
+    safety:
+      approval_required: true
+      user_prompt: "Delete file? This cannot be undone."
+      path_validation: "must_be_within_workspace"
+      secret_scan: false
+      blacklist_patterns:
+        - "**/.git/**"
+        - "**/Cargo.lock"
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "list_files"
+    name: "list_files"
+    category: "file_io"
+    risk_level: "low"
+    description: "List files in a directory"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "Directory path"
+        recursive:
+          type: "boolean"
+          description: "Recursively list subdirs"
+          default: false
+        pattern:
+          type: "string"
+          description: "Glob pattern to filter"
+        max_results:
+          type: "integer"
+          description: "Max results"
+          default: 1000
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "glob_wrapper"
+
+    permissions_required:
+      - "file:list"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      path_validation: "must_be_within_workspace"
+      secret_scan: false
+      pattern_validation: "reject_escapes"
+
+    version: "1.0"
+    deprecated: false
+
+  # ============================================================================
+  # CODE ANALYSIS TOOLS (6 tools)
+  # ============================================================================
+
+  - id: "search_codebase"
+    name: "search_codebase"
+    category: "code_analysis"
+    risk_level: "low"
+    description: "Semantic search across codebase"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Search query"
+        language:
+          type: "string"
+          enum: ["rust", "python", "js", "all"]
+          default: "all"
+        limit:
+          type: "integer"
+          minimum: 1
+          maximum: 100
+          default: 10
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "kdb_semantic_search"
+      kdb_module: "code"
+
+    permissions_required:
+      - "search:codebase"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "find_symbol_definition"
+    name: "find_symbol_definition"
+    category: "code_analysis"
+    risk_level: "medium"
+    description: "Find where a symbol is defined"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        symbol:
+          type: "string"
+          description: "Symbol name"
+        language:
+          type: "string"
+          enum: ["rust", "python", "js"]
+        file:
+          type: "string"
+          description: "Optional: search in this file first"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "symbol_lookup"
+      kdb_module: "code"
+
+    permissions_required:
+      - "search:codebase"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "get_symbol_references"
+    name: "get_symbol_references"
+    category: "code_analysis"
+    risk_level: "medium"
+    description: "Find all references to a symbol"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        symbol:
+          type: "string"
+          description: "Symbol name"
+        language:
+          type: "string"
+          enum: ["rust", "python", "js"]
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "reference_finder"
+
+    permissions_required:
+      - "search:codebase"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "get_type_info"
+    name: "get_type_info"
+    category: "code_analysis"
+    risk_level: "low"
+    description: "Get type information for a symbol"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        symbol:
+          type: "string"
+          description: "Symbol name"
+        file:
+          type: "string"
+          description: "File containing symbol"
+        line:
+          type: "integer"
+          description: "Line number"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "type_inference"
+
+    permissions_required:
+      - "search:codebase"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: false
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "get_diagnostics"
+    name: "get_diagnostics"
+    category: "code_analysis"
+    risk_level: "low"
+    description: "Get compiler/linter diagnostics"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        file:
+          type: "string"
+          description: "File path (optional)"
+        severity:
+          type: "string"
+          enum: ["error", "warning", "info"]
+          description: "Filter by severity"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "universe_crash_log"
+
+    permissions_required:
+      - "linter:read"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: false
+
+    version: "1.0"
+    deprecated: false
+
+  # ============================================================================
+  # VCS TOOLS (8 tools)
+  # ============================================================================
+
+  - id: "git_commit"
+    name: "git_commit"
+    category: "vcs"
+    risk_level: "high"
+    description: "Create a commit"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        message:
+          type: "string"
+          description: "Commit message"
+        files:
+          type: "array"
+          items:
+            type: "string"
+          description: "Files to stage (default: all)"
+        author_email:
+          type: "string"
+          description: "Override author email"
+        amend:
+          type: "boolean"
+          description: "Amend previous commit"
+          default: false
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "git_commit"
+
+    permissions_required:
+      - "vcs:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "Create commit? Review diff below:"
+      show_diff: true
+      validate_message_length: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "git_branch"
+    name: "git_branch"
+    category: "vcs"
+    risk_level: "high"
+    description: "Create or switch to a branch"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        branch_name:
+          type: "string"
+          description: "Branch name"
+        base:
+          type: "string"
+          description: "Base branch (default: main)"
+          default: "main"
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "git_branch"
+
+    permissions_required:
+      - "vcs:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "Create branch {{ branch_name }}?"
+      validate_branch_name: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "git_diff"
+    name: "git_diff"
+    category: "vcs"
+    risk_level: "low"
+    description: "Show diff between branches or commits"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        from:
+          type: "string"
+          description: "From commit/branch"
+        to:
+          type: "string"
+          description: "To commit/branch"
+        context_lines:
+          type: "integer"
+          description: "Context lines around changes"
+          default: 3
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "git_diff"
+
+    permissions_required:
+      - "vcs:read"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "git_log"
+    name: "git_log"
+    category: "vcs"
+    risk_level: "low"
+    description: "Show commit history"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        branch:
+          type: "string"
+          description: "Branch to show log for"
+          default: "HEAD"
+        limit:
+          type: "integer"
+          description: "Number of commits"
+          default: 10
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "git_log"
+
+    permissions_required:
+      - "vcs:read"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "git_merge"
+    name: "git_merge"
+    category: "vcs"
+    risk_level: "high"
+    description: "Merge a branch"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        source_branch:
+          type: "string"
+          description: "Branch to merge"
+        target_branch:
+          type: "string"
+          description: "Target branch"
+          default: "main"
+        strategy:
+          type: "string"
+          enum: ["recursive", "resolve", "ours", "theirs"]
+          default: "recursive"
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "git_merge"
+
+    permissions_required:
+      - "vcs:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "Merge {{ source_branch }} into {{ target_branch }}?"
+      check_conflicts: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "create_pr"
+    name: "create_pr"
+    category: "vcs"
+    risk_level: "high"
+    description: "Create a GitHub pull request"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        title:
+          type: "string"
+          description: "PR title"
+        description:
+          type: "string"
+          description: "PR description"
+        base_branch:
+          type: "string"
+          description: "Target branch"
+          default: "main"
+        head_branch:
+          type: "string"
+          description: "Source branch"
+        draft:
+          type: "boolean"
+          description: "Create as draft"
+          default: false
+        labels:
+          type: "array"
+          items:
+            type: "string"
+        reviewers:
+          type: "array"
+          items:
+            type: "string"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "github_pr_creator"
+      requires_github_token: true
+
+    permissions_required:
+      - "github:write"
+      - "vcs:read"
+
+    safety:
+      approval_required: true
+      user_prompt: "Create PR '{{ title }}'?"
+      github_auth_required: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "merge_pr"
+    name: "merge_pr"
+    category: "vcs"
+    risk_level: "high"
+    description: "Merge a GitHub pull request"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        pr_number:
+          type: "integer"
+          description: "PR number"
+        merge_method:
+          type: "string"
+          enum: ["squash", "rebase", "merge"]
+          default: "squash"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "github_pr_merger"
+      requires_github_token: true
+
+    permissions_required:
+      - "github:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "Merge PR #{{ pr_number }}?"
+      github_auth_required: true
+
+    version: "1.0"
+    deprecated: false
+
+  # ============================================================================
+  # EXECUTION TOOLS (4 tools)
+  # ============================================================================
+
+  - id: "run_tests"
+    name: "run_tests"
+    category: "execution"
+    risk_level: "medium"
+    description: "Run test suite"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        filter:
+          type: "string"
+          description: "Test name filter"
+        timeout_seconds:
+          type: "integer"
+          default: 300
+        verbose:
+          type: "boolean"
+          default: false
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "run_cargo_test"
+
+    permissions_required:
+      - "exec:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      timeout: 600
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "run_build"
+    name: "run_build"
+    category: "execution"
+    risk_level: "medium"
+    description: "Run build"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        timeout_seconds:
+          type: "integer"
+          default: 600
+        release:
+          type: "boolean"
+          default: false
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "run_cargo_check"
+
+    permissions_required:
+      - "exec:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      timeout: 900
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "run_lint"
+    name: "run_lint"
+    category: "execution"
+    risk_level: "low"
+    description: "Run linter"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        fix:
+          type: "boolean"
+          description: "Auto-fix issues"
+          default: false
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "clippy_runner"
+
+    permissions_required:
+      - "linter:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "execute_shell"
+    name: "execute_shell"
+    category: "execution"
+    risk_level: "high"
+    description: "Execute a shell command"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        command:
+          type: "string"
+          description: "Shell command"
+        cwd:
+          type: "string"
+          description: "Working directory"
+        timeout_seconds:
+          type: "integer"
+          default: 60
+        capture_output:
+          type: "boolean"
+          default: true
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "sandboxed_shell"
+
+    permissions_required:
+      - "exec:shell"
+
+    safety:
+      approval_required: true
+      user_prompt: "Execute command: {{ command }}?"
+      sandbox: true
+      blacklist_commands:
+        - "rm -rf"
+        - "dd "
+        - "mkfs"
+        - "format"
+      timeout: 120
+
+    version: "1.0"
+    deprecated: false
+
+  # ============================================================================
+  # NETWORK TOOLS (3 tools)
+  # ============================================================================
+
+  - id: "web_search"
+    name: "web_search"
+    category: "network"
+    risk_level: "medium"
+    description: "Search the web"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        query:
+          type: "string"
+          description: "Search query"
+        num_results:
+          type: "integer"
+          minimum: 1
+          maximum: 50
+          default: 10
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "web_search"
+
+    permissions_required:
+      - "network:search"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "fetch_url"
+    name: "fetch_url"
+    category: "network"
+    risk_level: "medium"
+    description: "Fetch content from a URL"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+          description: "URL to fetch"
+        timeout_seconds:
+          type: "integer"
+          default: 30
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "fetch_url"
+
+    permissions_required:
+      - "network:fetch"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+      secret_scan: true
+      url_validation: "allowlist_denylist"
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "api_call"
+    name: "api_call"
+    category: "network"
+    risk_level: "high"
+    description: "Make an HTTP API call"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        url:
+          type: "string"
+        method:
+          type: "string"
+          enum: ["GET", "POST", "PUT", "DELETE"]
+        headers:
+          type: "object"
+          additionalProperties:
+            type: "string"
+        body:
+          type: "string"
+        timeout_seconds:
+          type: "integer"
+          default: 30
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "secure_api_proxy"
+
+    permissions_required:
+      - "network:api"
+
+    safety:
+      approval_required: true
+      user_prompt: "Call API: {{ method }} {{ url }}?"
+      url_validation: "allowlist_denylist"
+      secret_scan: true
+      header_filtering: true
+
+    version: "1.0"
+    deprecated: false
+
+  # ============================================================================
+  # AI GENERATION TOOLS (6 tools)
+  # ============================================================================
+
+  - id: "generate_tests"
+    name: "generate_tests"
+    category: "ai_generation"
+    risk_level: "medium"
+    description: "Generate test cases"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        function_path:
+          type: "string"
+          description: "File#function_name"
+        count:
+          type: "integer"
+          minimum: 1
+          maximum: 20
+          default: 5
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "local_inference_test_gen"
+
+    permissions_required:
+      - "inference:run"
+
+    safety:
+      approval_required: true
+      user_prompt: "Generate {{ count }} tests for {{ function_path }}?"
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "generate_documentation"
+    name: "generate_documentation"
+    category: "ai_generation"
+    risk_level: "medium"
+    description: "Generate documentation"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        target:
+          type: "string"
+          description: "File or function to document"
+        style:
+          type: "string"
+          enum: ["jsdoc", "rustdoc", "pydoc"]
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "local_inference_docs"
+
+    permissions_required:
+      - "inference:run"
+
+    safety:
+      approval_required: true
+      user_prompt: "Generate documentation for {{ target }}?"
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "refactor_code"
+    name: "refactor_code"
+    category: "ai_generation"
+    risk_level: "high"
+    description: "Refactor code"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        target:
+          type: "string"
+          description: "Code range to refactor"
+        style:
+          type: "string"
+          description: "Refactoring style"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "local_inference_refactor"
+
+    permissions_required:
+      - "inference:run"
+      - "file:write"
+
+    safety:
+      approval_required: true
+      user_prompt: "Refactor {{ target }}? Review changes below:"
+      show_diff: true
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "suggest_variable_name"
+    name: "suggest_variable_name"
+    category: "ai_generation"
+    risk_level: "low"
+    description: "Suggest a variable name"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        context:
+          type: "string"
+          description: "Code context"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "local_inference_naming"
+
+    permissions_required:
+      - "inference:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "explain_code"
+    name: "explain_code"
+    category: "ai_generation"
+    risk_level: "low"
+    description: "Explain code"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        code:
+          type: "string"
+          description: "Code to explain"
+        language:
+          type: "string"
+          description: "Programming language"
+
+    bonsai_mapping:
+      strategy: "bridge"
+      bridge_implementation: "local_inference_explain"
+
+    permissions_required:
+      - "inference:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+
+    version: "1.0"
+    deprecated: false
+
+  - id: "fix_compile_error"
+    name: "fix_compile_error"
+    category: "ai_generation"
+    risk_level: "medium"
+    description: "Suggest a fix for compile error"
+
+    copilot_schema:
+      type: "object"
+      properties:
+        error_message:
+          type: "string"
+          description: "Compiler error message"
+        file:
+          type: "string"
+          description: "File with error"
+        line:
+          type: "integer"
+          description: "Line number"
+
+    bonsai_mapping:
+      strategy: "direct"
+      tool_name: "suggest_fix"
+
+    permissions_required:
+      - "inference:run"
+
+    safety:
+      approval_required: false
+      user_prompt: null
+
+    version: "1.0"
+    deprecated: false
+
+# ============================================================================
+# METADATA
+# ============================================================================
+
+metadata:
+  total_tools: 42
+  categories:
+    file_io: 4
+    code_analysis: 6
+    vcs: 8
+    execution: 4
+    network: 3
+    ai_generation: 6
+
+  mapping_strategies:
+    direct: 15  # Mapped to existing Bonsai tools
+    bridge: 20  # Custom bridge implementations
+    cloud_fallback: 7  # Delegate to cloud APIs
+
+  risk_distribution:
+    low: 18
+    medium: 18
+    high: 6
+
+  approval_required_count: 17  # Tools that always need approval

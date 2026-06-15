@@ -1,0 +1,241 @@
+---
+# Omnisystem Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omnisystem
+  labels:
+    app: omnisystem
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnisystem-config
+  namespace: omnisystem
+data:
+  DATABASE_URL: "postgresql://omnisystem:password@postgresql:5432/omnisystem"
+  REDIS_URL: "redis://:password@redis:6379"
+  RUST_LOG: "info,omnisystem=debug"
+  ENVIRONMENT: "production"
+
+---
+# Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omnisystem
+  namespace: omnisystem
+
+---
+# Omnisystem API Gateway Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+  labels:
+    app: omnisystem-gateway
+    version: "1.0.0"
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: omnisystem-gateway
+  template:
+    metadata:
+      labels:
+        app: omnisystem-gateway
+        version: "1.0.0"
+    spec:
+      serviceAccountName: omnisystem
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+      - name: gateway
+        image: omnisystem/gateway:1.0.0
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+
+        envFrom:
+        - configMapRef:
+            name: omnisystem-config
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+              - ALL
+
+---
+# Omnisystem Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+  labels:
+    app: omnisystem-gateway
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: omnisystem-gateway
+
+---
+# HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: omnisystem-gateway
+  minReplicas: 3
+  maxReplicas: 100
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# PodDisruptionBudget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: omnisystem-gateway
+
+---
+# NetworkPolicy - Deny all ingress by default
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: omnisystem
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+
+---
+# NetworkPolicy - Allow Prometheus scraping
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus
+  namespace: omnisystem
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+
+---
+# NetworkPolicy - Allow inter-pod communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: omnisystem
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+
+---
+# ServiceMonitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: omnisystem-gateway
+  namespace: omnisystem
+  labels:
+    app: omnisystem-gateway
+spec:
+  selector:
+    matchLabels:
+      app: omnisystem-gateway
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics

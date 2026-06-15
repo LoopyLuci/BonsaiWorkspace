@@ -1,0 +1,438 @@
+module omnisystem.gpu_abstraction
+
+# Unified GPU abstraction layer supporting CUDA, ROCm, Intel, and Metal
+# Provides backend-agnostic interface for GPU operations
+
+import omnisystem.hardware_detection
+
+enum GpuBackend {
+    Cuda,
+    Rocm,
+    Intel,
+    Metal,
+}
+
+# Unified GPU context interface
+trait GpuContext {
+    fun get_device_count() -> Result<u32, string>
+    fun set_device(id: u32) -> Result<(), string>
+    fun get_device_name() -> Result<string, string>
+    fun allocate_memory(bytes: u64) -> Result<GpuMemory, string>
+    fun free_memory(mem: GpuMemory) -> Result<(), string>
+    fun copy_h2d(host: *u8, device: GpuMemory, size: u64) -> Result<(), string>
+    fun copy_d2h(device: GpuMemory, host: *u8, size: u64) -> Result<(), string>
+    fun copy_d2d(src: GpuMemory, dst: GpuMemory, size: u64) -> Result<(), string>
+    fun synchronize() -> Result<(), string>
+}
+
+type GpuMemory = struct {
+    backend: GpuBackend
+    device_id: u32
+    ptr: u64
+    size: u64
+}
+
+# CUDA-specific implementation
+type CudaContext = struct {
+    device_id: u32
+    stream: u64
+    context: u64
+}
+
+impl GpuContext for CudaContext {
+    fun get_device_count() -> Result<u32, string> {
+        cuda_device_get_count()
+    }
+
+    fun set_device(id: u32) -> Result<(), string> {
+        cuda_device_set(id)
+    }
+
+    fun get_device_name() -> Result<string, string> {
+        cuda_device_get_name(self.device_id)
+    }
+
+    fun allocate_memory(bytes: u64) -> Result<GpuMemory, string> {
+        let ptr = cuda_malloc(bytes)?
+        Ok(GpuMemory {
+            backend: GpuBackend::Cuda,
+            device_id: self.device_id,
+            ptr,
+            size: bytes,
+        })
+    }
+
+    fun free_memory(mem: GpuMemory) -> Result<(), string> {
+        cuda_free(mem.ptr)
+    }
+
+    fun copy_h2d(host: *u8, device: GpuMemory, size: u64) -> Result<(), string> {
+        cuda_memcpy_h2d(device.ptr, host as u64, size, self.stream)
+    }
+
+    fun copy_d2h(device: GpuMemory, host: *u8, size: u64) -> Result<(), string> {
+        cuda_memcpy_d2h(host as u64, device.ptr, size, self.stream)
+    }
+
+    fun copy_d2d(src: GpuMemory, dst: GpuMemory, size: u64) -> Result<(), string> {
+        cuda_memcpy_d2d(dst.ptr, src.ptr, size, self.stream)
+    }
+
+    fun synchronize() -> Result<(), string> {
+        cuda_stream_synchronize(self.stream)
+    }
+}
+
+# ROCm (HIP) implementation
+type RocmContext = struct {
+    device_id: u32
+    stream: u64
+}
+
+impl GpuContext for RocmContext {
+    fun get_device_count() -> Result<u32, string> {
+        hip_device_get_count()
+    }
+
+    fun set_device(id: u32) -> Result<(), string> {
+        hip_device_set(id)
+    }
+
+    fun get_device_name() -> Result<string, string> {
+        hip_device_get_name(self.device_id)
+    }
+
+    fun allocate_memory(bytes: u64) -> Result<GpuMemory, string> {
+        let ptr = hip_malloc(bytes)?
+        Ok(GpuMemory {
+            backend: GpuBackend::Rocm,
+            device_id: self.device_id,
+            ptr,
+            size: bytes,
+        })
+    }
+
+    fun free_memory(mem: GpuMemory) -> Result<(), string> {
+        hip_free(mem.ptr)
+    }
+
+    fun copy_h2d(host: *u8, device: GpuMemory, size: u64) -> Result<(), string> {
+        hip_memcpy_h2d(device.ptr, host as u64, size, self.stream)
+    }
+
+    fun copy_d2h(device: GpuMemory, host: *u8, size: u64) -> Result<(), string> {
+        hip_memcpy_d2h(host as u64, device.ptr, size, self.stream)
+    }
+
+    fun copy_d2d(src: GpuMemory, dst: GpuMemory, size: u64) -> Result<(), string> {
+        hip_memcpy_d2d(dst.ptr, src.ptr, size, self.stream)
+    }
+
+    fun synchronize() -> Result<(), string> {
+        hip_stream_synchronize(self.stream)
+    }
+}
+
+# Intel Arc/oneAPI implementation
+type IntelGpuContext = struct {
+    device_id: u32
+    queue: u64
+}
+
+impl GpuContext for IntelGpuContext {
+    fun get_device_count() -> Result<u32, string> {
+        sycl_device_get_count()
+    }
+
+    fun set_device(id: u32) -> Result<(), string> {
+        sycl_device_set(id)
+    }
+
+    fun get_device_name() -> Result<string, string> {
+        sycl_device_get_name(self.device_id)
+    }
+
+    fun allocate_memory(bytes: u64) -> Result<GpuMemory, string> {
+        let ptr = sycl_malloc(bytes)?
+        Ok(GpuMemory {
+            backend: GpuBackend::Intel,
+            device_id: self.device_id,
+            ptr,
+            size: bytes,
+        })
+    }
+
+    fun free_memory(mem: GpuMemory) -> Result<(), string> {
+        sycl_free(mem.ptr)
+    }
+
+    fun copy_h2d(host: *u8, device: GpuMemory, size: u64) -> Result<(), string> {
+        sycl_memcpy_h2d(device.ptr, host as u64, size, self.queue)
+    }
+
+    fun copy_d2h(device: GpuMemory, host: *u8, size: u64) -> Result<(), string> {
+        sycl_memcpy_d2h(host as u64, device.ptr, size, self.queue)
+    }
+
+    fun copy_d2d(src: GpuMemory, dst: GpuMemory, size: u64) -> Result<(), string> {
+        sycl_memcpy_d2d(dst.ptr, src.ptr, size, self.queue)
+    }
+
+    fun synchronize() -> Result<(), string> {
+        sycl_queue_wait(self.queue)
+    }
+}
+
+# Kernel execution interface
+trait GpuKernel {
+    type Input
+    type Output
+
+    fun prepare() -> Result<(), string>
+    fun execute(input: Self::Input) -> Result<Self::Output, string>
+    fun cleanup() -> Result<(), string>
+}
+
+# Example: Matrix multiplication kernel
+type MatmulKernel = struct {
+    m: u32,
+    n: u32,
+    k: u32,
+    block_size: u32,
+    a_ptr: u64,
+    b_ptr: u64,
+    c_ptr: u64,
+}
+
+type MatmulInput = struct {
+    a: GpuMemory,
+    b: GpuMemory,
+    c: GpuMemory,
+}
+
+type MatmulOutput = struct {
+    result: GpuMemory,
+}
+
+impl GpuKernel for MatmulKernel {
+    type Input = MatmulInput
+    type Output = MatmulOutput
+
+    fun prepare() -> Result<(), string> {
+        # Pre-compute grid/block dimensions
+        Ok(())
+    }
+
+    fun execute(input: MatmulInput) -> Result<MatmulOutput, string> {
+        # Launch kernel with optimal parameters
+        let grid_x = (self.m + self.block_size - 1) / self.block_size
+        let grid_y = (self.n + self.block_size - 1) / self.block_size
+
+        # Kernel invocation (backend-specific)
+        cuda_matmul_kernel(
+            self.m, self.n, self.k,
+            input.a.ptr,
+            input.b.ptr,
+            input.c.ptr,
+            grid_x, grid_y, self.block_size
+        )?
+
+        Ok(MatmulOutput {
+            result: input.c,
+        })
+    }
+
+    fun cleanup() -> Result<(), string> {
+        Ok(())
+    }
+}
+
+# GPU memory manager for efficient allocation
+type GpuMemoryManager = struct {
+    context: *dyn GpuContext,
+    allocations: Vec<(u64, u64)>,  # (ptr, size) pairs
+    total_allocated: u64,
+    max_memory: u64,
+}
+
+impl GpuMemoryManager {
+    fun new(context: *dyn GpuContext, max_memory: u64) -> GpuMemoryManager {
+        GpuMemoryManager {
+            context,
+            allocations: Vec::new(),
+            total_allocated: 0,
+            max_memory,
+        }
+    }
+
+    fun allocate(&mut self, size: u64) -> Result<GpuMemory, string> {
+        if self.total_allocated + size > self.max_memory {
+            return Err("GPU memory exceeded".to_string())
+        }
+
+        let mem = self.context.allocate_memory(size)?
+        self.allocations.push((mem.ptr, size))
+        self.total_allocated += size
+
+        Ok(mem)
+    }
+
+    fun free(&mut self, mem: GpuMemory) -> Result<(), string> {
+        self.context.free_memory(mem)?
+
+        # Update tracking
+        self.allocations.retain(|(ptr, _)| *ptr != mem.ptr)
+        self.total_allocated -= mem.size
+
+        Ok(())
+    }
+
+    fun get_available(&self) -> u64 {
+        self.max_memory - self.total_allocated
+    }
+
+    fun get_utilization(&self) -> f64 {
+        (self.total_allocated as f64) / (self.max_memory as f64)
+    }
+}
+
+# GPU kernel builder for fluent API
+type GpuKernelBuilder = struct {
+    backend: GpuBackend,
+    kernel_name: string,
+    block_size: u32,
+    grid_size: (u32, u32),
+    shared_memory: u64,
+}
+
+impl GpuKernelBuilder {
+    fun new(backend: GpuBackend, name: string) -> Self {
+        GpuKernelBuilder {
+            backend,
+            kernel_name: name,
+            block_size: 256,
+            grid_size: (1, 1),
+            shared_memory: 0,
+        }
+    }
+
+    fun with_block_size(mut self, size: u32) -> Self {
+        self.block_size = size
+        self
+    }
+
+    fun with_grid_size(mut self, x: u32, y: u32) -> Self {
+        self.grid_size = (x, y)
+        self
+    }
+
+    fun with_shared_memory(mut self, bytes: u64) -> Self {
+        self.shared_memory = bytes
+        self
+    }
+
+    fun build(self) -> Result<GpuKernelConfig, string> {
+        Ok(GpuKernelConfig {
+            backend: self.backend,
+            kernel_name: self.kernel_name,
+            block_size: self.block_size,
+            grid_size: self.grid_size,
+            shared_memory: self.shared_memory,
+        })
+    }
+}
+
+type GpuKernelConfig = struct {
+    backend: GpuBackend,
+    kernel_name: string,
+    block_size: u32,
+    grid_size: (u32, u32),
+    shared_memory: u64,
+}
+
+# Profiling support for kernel performance analysis
+type GpuKernelProfile = struct {
+    kernel_name: string,
+    execution_time_ms: f64,
+    flops: u64,
+    memory_bandwidth: u64,
+    sm_utilization: f64,
+    power_watts: f64,
+}
+
+type GpuProfiler = struct {
+    profiles: Vec<GpuKernelProfile>,
+}
+
+impl GpuProfiler {
+    fun new() -> Self {
+        GpuProfiler {
+            profiles: Vec::new(),
+        }
+    }
+
+    fun record_kernel(&mut self, profile: GpuKernelProfile) {
+        self.profiles.push(profile)
+    }
+
+    fun get_average_utilization(&self) -> f64 {
+        if self.profiles.len() == 0 {
+            return 0.0
+        }
+
+        let total_util: f64 = self.profiles
+            .iter()
+            .map(|p| p.sm_utilization)
+            .sum()
+
+        total_util / (self.profiles.len() as f64)
+    }
+
+    fun print_report(&self) {
+        # Print profiling summary
+        println!("GPU Kernel Profiling Report")
+        println!("────────────────────────────")
+
+        for profile in self.profiles.iter() {
+            println!("Kernel: {}", profile.kernel_name)
+            println!("  Time: {}ms", profile.execution_time_ms)
+            println!("  FLOPS: {}", profile.flops)
+            println!("  Memory BW: {}GB/s", profile.memory_bandwidth / 1_000_000_000)
+            println!("  SM Util: {:.1}%", profile.sm_utilization * 100.0)
+            println!("  Power: {}W", profile.power_watts)
+        }
+    }
+}
+
+# Kernel stubs for backend operations
+fun cuda_device_get_count() -> Result<u32, string> { Ok(0) }
+fun cuda_device_set(id: u32) -> Result<(), string> { Ok(()) }
+fun cuda_device_get_name(id: u32) -> Result<string, string> { Ok("CUDA Device".to_string()) }
+fun cuda_malloc(size: u64) -> Result<u64, string> { Ok(0) }
+fun cuda_free(ptr: u64) -> Result<(), string> { Ok(()) }
+fun cuda_memcpy_h2d(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun cuda_memcpy_d2h(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun cuda_memcpy_d2d(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun cuda_stream_synchronize(stream: u64) -> Result<(), string> { Ok(()) }
+fun cuda_matmul_kernel(m: u32, n: u32, k: u32, a: u64, b: u64, c: u64,
+                       grid_x: u32, grid_y: u32, block_size: u32) -> Result<(), string> { Ok(()) }
+
+fun hip_device_get_count() -> Result<u32, string> { Ok(0) }
+fun hip_device_set(id: u32) -> Result<(), string> { Ok(()) }
+fun hip_device_get_name(id: u32) -> Result<string, string> { Ok("ROCm Device".to_string()) }
+fun hip_malloc(size: u64) -> Result<u64, string> { Ok(0) }
+fun hip_free(ptr: u64) -> Result<(), string> { Ok(()) }
+fun hip_memcpy_h2d(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun hip_memcpy_d2h(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun hip_memcpy_d2d(dst: u64, src: u64, size: u64, stream: u64) -> Result<(), string> { Ok(()) }
+fun hip_stream_synchronize(stream: u64) -> Result<(), string> { Ok(()) }
+
+fun sycl_device_get_count() -> Result<u32, string> { Ok(0) }
+fun sycl_device_set(id: u32) -> Result<(), string> { Ok(()) }
+fun sycl_device_get_name(id: u32) -> Result<string, string> { Ok("Intel GPU".to_string()) }
+fun sycl_malloc(size: u64) -> Result<u64, string> { Ok(0) }
+fun sycl_free(ptr: u64) -> Result<(), string> { Ok(()) }
+fun sycl_memcpy_h2d(dst: u64, src: u64, size: u64, queue: u64) -> Result<(), string> { Ok(()) }
+fun sycl_memcpy_d2h(dst: u64, src: u64, size: u64, queue: u64) -> Result<(), string> { Ok(()) }
+fun sycl_memcpy_d2d(dst: u64, src: u64, size: u64, queue: u64) -> Result<(), string> { Ok(()) }
+fun sycl_queue_wait(queue: u64) -> Result<(), string> { Ok(()) }

@@ -1,0 +1,257 @@
+// bindings/bootloader.ti — UEFI bootloader integration
+// Bridges kernel/boot_integration.ti to UEFI firmware protocols.
+// Handles handoff from firmware → bootloader → kernel in protected mode.
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+}
+
+// UEFI protocol FFI (simplified)
+extern "c" {
+    // UEFI Boot Services
+    fn efi_boot_services_exit_boot_services(image_handle: i64, map_key: i64) -> i64;
+    fn efi_locate_protocol(protocol_guid: i64, registration: i64, protocol_interface: i64) -> i64;
+
+    // Memory services
+    fn efi_get_memory_map(memory_map_size: i64, memory_map: i64, map_key: i64,
+                          descriptor_size: i64, descriptor_version: i64) -> i64;
+    fn efi_allocate_pages(allocate_type: i64, memory_type: i64, pages: i64, address: i64) -> i64;
+
+    // Runtime services
+    fn efi_set_virtual_address_map(memory_map_size: i64, descriptor_size: i64,
+                                   descriptor_version: i64, virtual_map: i64) -> i64;
+}
+
+// UEFI constants
+const EFI_SUCCESS: i64 = 0;
+const EFI_LOAD_ERROR: i64 = 1;
+const ALLOCATE_ANY_PAGES: i64 = 0;
+const EFI_LOADER_CODE: i64 = 1;
+
+// Boot stages
+const STAGE_FIRMWARE: i64 = 0;
+const STAGE_BOOTLOADER_INIT: i64 = 1;
+const STAGE_LOAD_KERNEL: i64 = 2;
+const STAGE_EXIT_BOOT_SERVICES: i64 = 3;
+const STAGE_PROTECTED_MODE: i64 = 4;
+const STAGE_KERNEL_ENTRY: i64 = 5;
+
+const TAG_UEFI: i64 = 84000;
+const TAG_BOOT_PARAMS: i64 = 84001;
+const TAG_MEMORY_MAP: i64 = 84002;
+const TAG_BOOT_STAGE: i64 = 84003;
+
+// UEFI system: body=revision, arg=firmware_vendor_id, domain=boot_services_addr
+pub fn uefi_new(revision: i64, vendor_id: i64, bs_addr: i64) -> i64 {
+    let u = heap_alloc_term();
+    heap_set_tag(u, TAG_UEFI);
+    heap_set_body(u, revision);
+    heap_set_arg(u, vendor_id);
+    heap_set_domain(u, bs_addr);
+    return u;
+}
+
+pub fn uefi_revision(u: i64) -> i64 { return heap_get_body(u); }
+pub fn uefi_vendor(u: i64) -> i64 { return heap_get_arg(u); }
+pub fn uefi_boot_services(u: i64) -> i64 { return heap_get_domain(u); }
+
+// Boot parameters: body=kernel_image_addr, arg=memory_size_bytes, domain=gdt_addr
+pub fn boot_params_new(kernel_addr: i64, mem_size: i64, gdt_addr: i64) -> i64 {
+    let bp = heap_alloc_term();
+    heap_set_tag(bp, TAG_BOOT_PARAMS);
+    heap_set_body(bp, kernel_addr);
+    heap_set_arg(bp, mem_size);
+    heap_set_domain(bp, gdt_addr);
+    return bp;
+}
+
+pub fn boot_params_kernel(bp: i64) -> i64 { return heap_get_body(bp); }
+pub fn boot_params_memory(bp: i64) -> i64 { return heap_get_arg(bp); }
+pub fn boot_params_gdt(bp: i64) -> i64 { return heap_get_domain(bp); }
+
+// Memory map entry: body=physical_start, arg=page_count, domain=memory_type
+pub fn mem_map_entry(phys_start: i64, pages: i64, mem_type: i64) -> i64 {
+    let mme = heap_alloc_term();
+    heap_set_tag(mme, TAG_MEMORY_MAP);
+    heap_set_body(mme, phys_start);
+    heap_set_arg(mme, pages);
+    heap_set_domain(mme, mem_type);
+    return mme;
+}
+
+pub fn mem_phys_addr(mme: i64) -> i64 { return heap_get_body(mme); }
+pub fn mem_pages(mme: i64) -> i64 { return heap_get_arg(mme); }
+pub fn mem_type(mme: i64) -> i64 { return heap_get_domain(mme); }
+
+// Boot stage record: body=stage_id, arg=status, domain=timestamp_ms
+pub fn boot_stage_new(stage: i64, status: i64, timestamp: i64) -> i64 {
+    let bs = heap_alloc_term();
+    heap_set_tag(bs, TAG_BOOT_STAGE);
+    heap_set_body(bs, stage);
+    heap_set_arg(bs, status);
+    heap_set_domain(bs, timestamp);
+    return bs;
+}
+
+pub fn boot_stage_id(bs: i64) -> i64 { return heap_get_body(bs); }
+pub fn boot_stage_status(bs: i64) -> i64 { return heap_get_arg(bs); }
+pub fn boot_stage_time(bs: i64) -> i64 { return heap_get_domain(bs); }
+
+// Bootloader initialization (called by UEFI firmware)
+pub fn bootloader_init(uefi: i64) -> i64 {
+    if uefi_revision(uefi) < 0x00020000 { return -1; }  // UEFI 2.0+ required
+    return 1;
+}
+
+// Load kernel from disk (EFI Simple File System Protocol)
+pub fn load_kernel_image(bp: i64) -> i64 {
+    let kernel_addr = boot_params_kernel(bp);
+    // In real impl: use EFI_SIMPLE_FILE_SYSTEM_PROTOCOL to load kernel.efi
+    // For now: assume kernel is pre-loaded at kernel_addr
+    return kernel_addr;
+}
+
+// Get memory map from firmware
+pub fn get_memory_map(uefi: i64) -> i64 {
+    // In real impl: call EFI_GetMemoryMap() to get system memory layout
+    // For test: return simulated memory map entry
+    let mmap = mem_map_entry(0x0, 0x1000, 1);  // 0x0-0x1000, loader code
+    return mmap;
+}
+
+// Setup page tables for protected mode
+pub fn setup_paging(bp: i64) -> i64 {
+    // In real impl: construct CR3 page directory / page tables
+    // Map kernel physical address to virtual address (typically 0xFFFFFFFF80000000)
+    let kernel_addr = boot_params_kernel(bp);
+    return 1;  // success
+}
+
+// Setup GDT for protected mode
+pub fn setup_gdt(bp: i64) -> i64 {
+    // In real impl: load GDT register with segment descriptors
+    let gdt_addr = boot_params_gdt(bp);
+    if gdt_addr <= 0 { return -1; }
+    return gdt_addr;
+}
+
+// Exit UEFI boot services and enter protected mode
+pub fn exit_boot_services(uefi: i64, bp: i64) -> i64 {
+    // In real impl: call EFI_BootServices->ExitBootServices(image_handle, map_key)
+    // After this, all UEFI services are unavailable; we are in 32-bit protected mode
+    return EFI_SUCCESS;
+}
+
+// Jump to kernel entry point
+pub fn kernel_entry_jump(kernel_addr: i64, bp: i64) -> i64 {
+    // In real impl: long jmp to kernel_addr
+    // For test: just return success
+    return 1;
+}
+
+// Statistics
+let g_boot_attempts: i64 = 0;
+let g_boot_successful: i64 = 0;
+let g_boot_failed: i64 = 0;
+let g_stages_completed: i64 = 0;
+
+pub fn stats_attempts() -> i64 { return g_boot_attempts; }
+pub fn stats_successful() -> i64 { return g_boot_successful; }
+pub fn stats_failed() -> i64 { return g_boot_failed; }
+pub fn stats_stages() -> i64 { return g_stages_completed; }
+
+// Full boot sequence (simplified test mode)
+pub fn run_boot_sequence(kernel_addr: i64, memory_mb: i64, gdt_addr: i64) -> i64 {
+    g_boot_attempts = g_boot_attempts + 1;
+
+    // Stage 1: UEFI firmware
+    let uefi = uefi_new(0x00020000, 42, 0x1000);  // UEFI 2.0, vendor 42
+    if bootloader_init(uefi) < 0 { g_boot_failed = g_boot_failed + 1; return -1; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 2: Load kernel
+    let bp = boot_params_new(kernel_addr, memory_mb * 1024 * 1024, gdt_addr);
+    let loaded_addr = load_kernel_image(bp);
+    if loaded_addr < 0 { g_boot_failed = g_boot_failed + 1; return -2; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 3: Get memory map
+    let mmap = get_memory_map(uefi);
+    if mmap <= 0 { g_boot_failed = g_boot_failed + 1; return -3; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 4: Setup paging
+    if setup_paging(bp) < 0 { g_boot_failed = g_boot_failed + 1; return -4; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 5: Setup GDT
+    let gdt = setup_gdt(bp);
+    if gdt < 0 { g_boot_failed = g_boot_failed + 1; return -5; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 6: Exit boot services
+    if exit_boot_services(uefi, bp) != EFI_SUCCESS { g_boot_failed = g_boot_failed + 1; return -6; }
+    g_stages_completed = g_stages_completed + 1;
+
+    // Stage 7: Jump to kernel
+    if kernel_entry_jump(kernel_addr, bp) < 0 { g_boot_failed = g_boot_failed + 1; return -7; }
+    g_boot_successful = g_boot_successful + 1;
+    return 1;
+}
+
+pub fn main() -> i64 {
+    // Test 1: UEFI creation
+    let uefi = uefi_new(0x00020000, 42, 0x1000);
+    if uefi_revision(uefi) != 0x00020000 { return 1; }
+    if uefi_vendor(uefi) != 42 { return 2; }
+
+    // Test 2: Boot parameters
+    let bp = boot_params_new(0x100000, 512, 0x500);
+    if boot_params_kernel(bp) != 0x100000 { return 3; }
+    if boot_params_memory(bp) != 512 { return 4; }
+    if boot_params_gdt(bp) != 0x500 { return 5; }
+
+    // Test 3: Memory map entry
+    let mme = mem_map_entry(0x0, 0x1000, 1);
+    if mem_phys_addr(mme) != 0x0 { return 6; }
+    if mem_pages(mme) != 0x1000 { return 7; }
+
+    // Test 4: Boot stage record
+    let stage = boot_stage_new(STAGE_PROTECTED_MODE, EFI_SUCCESS, 123);
+    if boot_stage_id(stage) != STAGE_PROTECTED_MODE { return 8; }
+    if boot_stage_status(stage) != EFI_SUCCESS { return 9; }
+
+    // Test 5: Bootloader init
+    if bootloader_init(uefi) < 0 { return 10; }
+
+    // Test 6: Load kernel image
+    let loaded = load_kernel_image(bp);
+    if loaded != 0x100000 { return 11; }
+
+    // Test 7: Get memory map
+    let mmap = get_memory_map(uefi);
+    if mmap <= 0 { return 12; }
+
+    // Test 8: Full boot sequence
+    let result = run_boot_sequence(0x100000, 512, 0x500);
+    if result != 1 { return 13; }
+    if stats_attempts() != 1 { return 14; }
+    if stats_successful() != 1 { return 15; }
+    if stats_stages() != 7 { return 16; }
+
+    // Test 9: Multiple boot attempts
+    run_boot_sequence(0x100000, 256, 0x500);
+    run_boot_sequence(0x200000, 1024, 0x600);
+    if stats_attempts() != 3 { return 17; }
+    if stats_successful() != 3 { return 18; }
+
+    return 111;
+}

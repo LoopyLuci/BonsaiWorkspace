@@ -1,0 +1,355 @@
+module omnisystem.execution.work_distribution
+
+# Advanced Work Distribution & Load Balancing for Hybrid Execution
+# Intelligent distribution across CPU cores and GPU devices
+
+import omnisystem.hybrid_executor
+
+# ============================================================================
+# WORK DISTRIBUTION STRATEGIES
+# ============================================================================
+
+enum DistributionStrategy {
+    StaticRoundRobin,      # Fixed CPU/GPU split
+    DynamicLoadBalanced,   # Adjust based on load
+    WorkstealingSchedule,  # Steal from busy cores
+    DataAffinity,          # Keep data local
+    PriorityBased,         # Priority-driven distribution
+}
+
+type WorkDistributionPolicy = struct {
+    strategy: DistributionStrategy,
+    cpu_gpu_ratio: (u32, u32),  // (cpu_percentage, gpu_percentage)
+    min_batch_size: u32,
+    max_queue_depth: u32,
+    rebalance_interval_ms: u32,
+}
+
+impl Default for WorkDistributionPolicy {
+    fn default() -> Self {
+        WorkDistributionPolicy {
+            strategy: DistributionStrategy::DynamicLoadBalanced,
+            cpu_gpu_ratio: (60, 40),  // 60% CPU, 40% GPU
+            min_batch_size: 4,
+            max_queue_depth: 1024,
+            rebalance_interval_ms: 100,
+        }
+    }
+}
+
+# ============================================================================
+# INTELLIGENT WORK QUEUE
+# ============================================================================
+
+type WorkItem = struct {
+    id: u64,
+    priority: u32,
+    estimated_work: u32,
+    required_memory: u64,
+    preferred_location: PreferredLocation,
+    submitted_time: u64,
+}
+
+enum PreferredLocation {
+    AnyCpu,
+    SpecificCore(u32),
+    AnyGpu,
+    SpecificGpu(u32),
+    Automatic,
+}
+
+type IntelligentWorkQueue = struct {
+    pending_items: Vec<WorkItem>,
+    cpu_queue: Vec<WorkItem>,
+    gpu_queue: Vec<WorkItem>,
+    in_flight: Vec<(WorkItem, u64)>,  // (item, start_time)
+
+    policy: WorkDistributionPolicy,
+    rebalance_due: bool,
+    last_rebalance: u64,
+
+    stats: QueueStats,
+}
+
+type QueueStats = struct {
+    total_submitted: u64,
+    total_completed: u64,
+    current_pending: u32,
+    current_in_flight: u32,
+    avg_queue_wait_ms: f64,
+    max_queue_depth: u32,
+}
+
+impl IntelligentWorkQueue {
+    fun new(policy: WorkDistributionPolicy) -> Self {
+        IntelligentWorkQueue {
+            pending_items: Vec::new(),
+            cpu_queue: Vec::new(),
+            gpu_queue: Vec::new(),
+            in_flight: Vec::new(),
+
+            policy,
+            rebalance_due: false,
+            last_rebalance: get_timestamp(),
+
+            stats: QueueStats {
+                total_submitted: 0,
+                total_completed: 0,
+                current_pending: 0,
+                current_in_flight: 0,
+                avg_queue_wait_ms: 0.0,
+                max_queue_depth: 0,
+            },
+        }
+    }
+
+    fun submit_work(&mut self, item: WorkItem) -> Result<u64, string> {
+        if self.pending_items.len() >= self.policy.max_queue_depth as usize {
+            return Err("Work queue full".to_string())
+        }
+
+        let item_id = item.id
+        self.pending_items.push(item)
+        self.stats.total_submitted += 1
+        self.stats.current_pending = self.pending_items.len() as u32
+
+        Ok(item_id)
+    }
+
+    fun distribute_work(&mut self) -> Result<(), string> {
+        # Check if rebalancing needed
+        let now = get_timestamp()
+        if now - self.last_rebalance > self.policy.rebalance_interval_ms as u64 {
+            self.rebalance_queues()?
+            self.last_rebalance = now
+        }
+
+        # Distribute pending items
+        while !self.pending_items.is_empty() &&
+              (self.cpu_queue.len() + self.gpu_queue.len()) < self.policy.max_queue_depth as usize {
+
+            let item = self.pending_items.remove(0)
+
+            match item.preferred_location {
+                PreferredLocation::AnyCpu => {
+                    self.cpu_queue.push(item)
+                },
+                PreferredLocation::SpecificCore(_) => {
+                    self.cpu_queue.push(item)
+                },
+                PreferredLocation::AnyGpu => {
+                    self.gpu_queue.push(item)
+                },
+                PreferredLocation::SpecificGpu(_) => {
+                    self.gpu_queue.push(item)
+                },
+                PreferredLocation::Automatic => {
+                    # Auto-select based on load
+                    if self.cpu_queue.len() <= self.gpu_queue.len() {
+                        self.cpu_queue.push(item)
+                    } else {
+                        self.gpu_queue.push(item)
+                    }
+                }
+            }
+        }
+
+        self.stats.current_pending = self.pending_items.len() as u32
+        self.stats.current_in_flight = self.in_flight.len() as u32
+
+        Ok(())
+    }
+
+    fun rebalance_queues(&mut self) -> Result<(), string> {
+        let total_items = self.cpu_queue.len() + self.gpu_queue.len()
+
+        if total_items == 0 {
+            return Ok(())
+        }
+
+        let cpu_target = (total_items as u32 * self.policy.cpu_gpu_ratio.0 / 100) as usize
+        let gpu_target = (total_items as u32 * self.policy.cpu_gpu_ratio.1 / 100) as usize
+
+        # If GPU queue too small, move items from CPU
+        if self.gpu_queue.len() < gpu_target && self.cpu_queue.len() > cpu_target {
+            let move_count = (gpu_target - self.gpu_queue.len()).min(self.cpu_queue.len() - cpu_target)
+            for _ in 0..move_count {
+                if let Some(item) = self.cpu_queue.pop() {
+                    self.gpu_queue.push(item)
+                }
+            }
+        }
+
+        # If CPU queue too small, move items from GPU
+        if self.cpu_queue.len() < cpu_target && self.gpu_queue.len() > gpu_target {
+            let move_count = (cpu_target - self.cpu_queue.len()).min(self.gpu_queue.len() - gpu_target)
+            for _ in 0..move_count {
+                if let Some(item) = self.gpu_queue.pop() {
+                    self.cpu_queue.push(item)
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fun get_next_cpu_work(&mut self) -> Option<WorkItem> {
+        if self.cpu_queue.is_empty() {
+            return None
+        }
+
+        # Sort by priority
+        self.cpu_queue.sort_by_key(|item| std::cmp::Reverse(item.priority))
+
+        Some(self.cpu_queue.remove(0))
+    }
+
+    fun get_next_gpu_work(&mut self) -> Option<WorkItem> {
+        if self.gpu_queue.is_empty() {
+            return None
+        }
+
+        # Sort by priority
+        self.gpu_queue.sort_by_key(|item| std::cmp::Reverse(item.priority))
+
+        Some(self.gpu_queue.remove(0))
+    }
+
+    fun mark_completed(&mut self, item_id: u64) -> Result<u64, string> {
+        let now = get_timestamp()
+
+        if let Some(pos) = self.in_flight.iter().position(|(item, _)| item.id == item_id) {
+            let (item, start_time) = self.in_flight.remove(pos)
+            let duration = now - start_time
+
+            self.stats.total_completed += 1
+            self.stats.current_in_flight = self.in_flight.len() as u32
+
+            Ok(duration)
+        } else {
+            Err("Work item not found".to_string())
+        }
+    }
+
+    fun print_stats(&self) {
+        println!("Work Distribution Statistics")
+        println!("─────────────────────────────────────────")
+        println!("Total Submitted:    {}", self.stats.total_submitted)
+        println!("Total Completed:    {}", self.stats.total_completed)
+        println!("Pending:            {}", self.stats.current_pending)
+        println!("In Flight:          {}", self.stats.current_in_flight)
+        println!("CPU Queue Size:     {}", self.cpu_queue.len())
+        println!("GPU Queue Size:     {}", self.gpu_queue.len())
+        println!("Avg Wait Time:      {:.2} ms", self.stats.avg_queue_wait_ms)
+        println!("Max Queue Depth:    {}", self.stats.max_queue_depth)
+    }
+}
+
+# ============================================================================
+# WORKSTEALING SCHEDULER
+# ============================================================================
+
+type WorkstealingScheduler = struct {
+    worker_queues: Vec<WorkerQueue>,
+    total_steals: u64,
+    total_work_items: u64,
+}
+
+type WorkerQueue = struct {
+    worker_id: u32,
+    queue: Vec<WorkItem>,
+    completed: u64,
+    load: f64,
+}
+
+impl WorkstealingScheduler {
+    fun new(worker_count: u32) -> Self {
+        let mut queues = Vec::new()
+        for i in 0..worker_count {
+            queues.push(WorkerQueue {
+                worker_id: i,
+                queue: Vec::new(),
+                completed: 0,
+                load: 0.0,
+            })
+        }
+
+        WorkstealingScheduler {
+            worker_queues: queues,
+            total_steals: 0,
+            total_work_items: 0,
+        }
+    }
+
+    fun submit_work(&mut self, item: WorkItem, worker_hint: u32) -> Result<(), string> {
+        let worker_id = (worker_hint as usize).min(self.worker_queues.len() - 1)
+        self.worker_queues[worker_id].queue.push(item)
+        self.total_work_items += 1
+        Ok(())
+    }
+
+    fun steal_work(&mut self, worker_id: u32) -> Option<WorkItem> {
+        let worker_id = (worker_id as usize).min(self.worker_queues.len() - 1)
+
+        # If own queue has work, take from there
+        if !self.worker_queues[worker_id].queue.is_empty() {
+            return self.worker_queues[worker_id].queue.pop()
+        }
+
+        # Find busiest worker and steal from them
+        let mut max_load_idx = 0
+        let mut max_load = 0.0
+
+        for (i, q) in self.worker_queues.iter().enumerate() {
+            if i != worker_id && q.queue.len() > 0 && q.load > max_load {
+                max_load = q.load
+                max_load_idx = i
+            }
+        }
+
+        if max_load > 0.0 && !self.worker_queues[max_load_idx].queue.is_empty() {
+            self.total_steals += 1
+            return self.worker_queues[max_load_idx].queue.pop()
+        }
+
+        None
+    }
+
+    fun update_load(&mut self, worker_id: u32, load: f64) {
+        let worker_id = (worker_id as usize).min(self.worker_queues.len() - 1)
+        self.worker_queues[worker_id].load = (self.worker_queues[worker_id].load * 0.8) + (load * 0.2)
+    }
+
+    fun get_average_load(&self) -> f64 {
+        let total_load: f64 = self.worker_queues.iter().map(|q| q.load).sum()
+        total_load / (self.worker_queues.len() as f64)
+    }
+
+    fun get_steal_efficiency(&self) -> f64 {
+        if self.total_work_items > 0 {
+            (self.total_steals as f64) / (self.total_work_items as f64)
+        } else {
+            0.0
+        }
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fn get_timestamp() -> u64 {
+    0  // Would be actual timestamp in real implementation
+}
+
+impl Clone for PreferredLocation {
+    fn clone(&self) -> Self {
+        match self {
+            PreferredLocation::AnyCpu => PreferredLocation::AnyCpu,
+            PreferredLocation::SpecificCore(c) => PreferredLocation::SpecificCore(*c),
+            PreferredLocation::AnyGpu => PreferredLocation::AnyGpu,
+            PreferredLocation::SpecificGpu(g) => PreferredLocation::SpecificGpu(*g),
+            PreferredLocation::Automatic => PreferredLocation::Automatic,
+        }
+    }
+}

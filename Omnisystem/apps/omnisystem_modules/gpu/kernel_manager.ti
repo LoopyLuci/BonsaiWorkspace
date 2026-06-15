@@ -1,0 +1,522 @@
+module omnisystem.gpu.kernel_manager
+
+# GPU Kernel Manager - Unified kernel selection, compilation, and execution
+# Provides automatic kernel selection and optimization for different backends
+
+import omnisystem.gpu.cuda_kernels
+import omnisystem.gpu.rocm_kernels
+import omnisystem.gpu.intel_arc_kernels
+import omnisystem.hardware_detection
+
+# ============================================================================
+# KERNEL REGISTRY & SELECTION
+# ============================================================================
+
+type KernelRegistry = struct {
+    kernels: Vec<RegisteredKernel>,
+    backend: GpuBackend,
+    default_optimization: OptimizationLevel,
+}
+
+type RegisteredKernel = struct {
+    id: string,
+    name: string,
+    kernel_type: KernelType,
+    backends: Vec<GpuBackend>,
+    preferred_backend: GpuBackend,
+    creation_date: u64,
+    optimization_level: OptimizationLevel,
+    estimated_flops: u64,
+}
+
+enum KernelType {
+    MatrixMultiplication,
+    Convolution,
+    Reduction,
+    Transpose,
+    ElementWise,
+    Softmax,
+    FFT,
+    Stencil,
+    Custom(string),
+}
+
+enum GpuBackend {
+    Cuda,
+    Rocm,
+    IntelArc,
+    Metal,
+}
+
+enum OptimizationLevel {
+    Performance,   // Maximum throughput
+    Balanced,      // Balance speed and power
+    PowerSave,     // Minimize power usage
+}
+
+impl KernelRegistry {
+    fun new(backend: GpuBackend) -> Self {
+        KernelRegistry {
+            kernels: Vec::new(),
+            backend,
+            default_optimization: OptimizationLevel::Balanced,
+        }
+    }
+
+    fun register_kernel(&mut self, id: string, name: string, kernel_type: KernelType,
+                        backends: Vec<GpuBackend>, estimated_flops: u64) -> Result<(), string> {
+
+        let preferred = if backends.contains(self.backend) {
+            self.backend
+        } else {
+            backends[0]  // Use first available backend
+        }
+
+        let kernel = RegisteredKernel {
+            id: id.clone(),
+            name,
+            kernel_type,
+            backends,
+            preferred_backend: preferred,
+            creation_date: get_timestamp(),
+            optimization_level: self.default_optimization.clone(),
+            estimated_flops,
+        }
+
+        self.kernels.push(kernel)
+        Ok(())
+    }
+
+    fun select_kernel(&self, kernel_id: string) -> Result<RegisteredKernel, string> {
+        self.kernels
+            .iter()
+            .find(|k| k.id == kernel_id)
+            .cloned()
+            .ok_or_else(|| format!("Kernel not found: {}", kernel_id))
+    }
+
+    fun get_kernels_for_backend(&self, backend: GpuBackend) -> Vec<RegisteredKernel> {
+        self.kernels
+            .iter()
+            .filter(|k| k.backends.contains(backend))
+            .cloned()
+            .collect()
+    }
+
+    fun get_available_backends_for_kernel(&self, kernel_id: string) -> Result<Vec<GpuBackend>, string> {
+        let kernel = self.select_kernel(kernel_id)?
+        Ok(kernel.backends)
+    }
+
+    fun print_registry(&self) {
+        println!("Kernel Registry (Backend: {:?})", self.backend)
+        println!("─────────────────────────────────────────")
+        for (i, kernel) in self.kernels.iter().enumerate() {
+            println!("{}. {}", i + 1, kernel.name)
+            println!("   ID:             {}", kernel.id)
+            println!("   Type:           {:?}", kernel.kernel_type)
+            println!("   Preferred:      {:?}", kernel.preferred_backend)
+            println!("   Available:      {} backends", kernel.backends.len())
+            println!("   Est. FLOPs:     {}", kernel.estimated_flops)
+        }
+    }
+}
+
+impl Clone for RegisteredKernel {
+    fn clone(&self) -> Self {
+        RegisteredKernel {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            kernel_type: self.kernel_type.clone(),
+            backends: self.backends.clone(),
+            preferred_backend: self.preferred_backend,
+            creation_date: self.creation_date,
+            optimization_level: self.optimization_level.clone(),
+            estimated_flops: self.estimated_flops,
+        }
+    }
+}
+
+impl Clone for KernelType {
+    fn clone(&self) -> Self {
+        match self {
+            KernelType::MatrixMultiplication => KernelType::MatrixMultiplication,
+            KernelType::Convolution => KernelType::Convolution,
+            KernelType::Reduction => KernelType::Reduction,
+            KernelType::Transpose => KernelType::Transpose,
+            KernelType::ElementWise => KernelType::ElementWise,
+            KernelType::Softmax => KernelType::Softmax,
+            KernelType::FFT => KernelType::FFT,
+            KernelType::Stencil => KernelType::Stencil,
+            KernelType::Custom(s) => KernelType::Custom(s.clone()),
+        }
+    }
+}
+
+impl Clone for OptimizationLevel {
+    fn clone(&self) -> Self {
+        match self {
+            OptimizationLevel::Performance => OptimizationLevel::Performance,
+            OptimizationLevel::Balanced => OptimizationLevel::Balanced,
+            OptimizationLevel::PowerSave => OptimizationLevel::PowerSave,
+        }
+    }
+}
+
+# ============================================================================
+# KERNEL COMPILATION & CACHING
+# ============================================================================
+
+type KernelCache = struct {
+    entries: Vec<CachedKernel>,
+    max_size: usize,
+    hits: u64,
+    misses: u64,
+}
+
+type CachedKernel = struct {
+    key: string,  // Hash of kernel id + backend + optimization
+    binary: Vec<u8>,
+    compilation_time_ms: u64,
+    cache_hit_count: u32,
+    last_accessed: u64,
+}
+
+impl KernelCache {
+    fun new(max_size: usize) -> Self {
+        KernelCache {
+            entries: Vec::new(),
+            max_size,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fun get(&mut self, key: string) -> Option<Vec<u8>> {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.key == key) {
+            entry.cache_hit_count += 1
+            entry.last_accessed = get_timestamp()
+            self.hits += 1
+            Some(entry.binary.clone())
+        } else {
+            self.misses += 1
+            None
+        }
+    }
+
+    fun put(&mut self, key: string, binary: Vec<u8>, compile_time: u64) {
+        if self.entries.len() >= self.max_size {
+            # Evict least recently used
+            self.entries.sort_by_key(|e| e.last_accessed)
+            self.entries.remove(0)
+        }
+
+        self.entries.push(CachedKernel {
+            key,
+            binary,
+            compilation_time_ms: compile_time,
+            cache_hit_count: 0,
+            last_accessed: get_timestamp(),
+        })
+    }
+
+    fun get_hit_rate(&self) -> f64 {
+        let total = (self.hits + self.misses) as f64
+        if total > 0.0 {
+            (self.hits as f64) / total
+        } else {
+            0.0
+        }
+    }
+
+    fun print_stats(&self) {
+        println!("Kernel Cache Statistics")
+        println!("─────────────────────────────────────────")
+        println!("Entries:       {}/{}", self.entries.len(), self.max_size)
+        println!("Hits:          {}", self.hits)
+        println!("Misses:        {}", self.misses)
+        println!("Hit Rate:      {:.1}%", self.get_hit_rate() * 100.0)
+        println!("Total Size:    {} KB", self.entries.iter().map(|e| e.binary.len()).sum::<usize>() / 1024)
+    }
+}
+
+# ============================================================================
+# KERNEL COMPILER
+# ============================================================================
+
+type KernelCompiler = struct {
+    backend: GpuBackend,
+    optimization_level: OptimizationLevel,
+    cache: KernelCache,
+    compiler_path: string,
+}
+
+impl KernelCompiler {
+    fun new(backend: GpuBackend, max_cache_size: usize) -> Self {
+        let compiler_path = match backend {
+            GpuBackend::Cuda => "nvcc".to_string(),
+            GpuBackend::Rocm => "hipcc".to_string(),
+            GpuBackend::IntelArc => "syclcc".to_string(),
+            GpuBackend::Metal => "metalcc".to_string(),
+        }
+
+        KernelCompiler {
+            backend,
+            optimization_level: OptimizationLevel::Balanced,
+            cache: KernelCache::new(max_cache_size),
+            compiler_path,
+        }
+    }
+
+    fun compile_kernel(&mut self, source: string, kernel_name: string) -> Result<KernelBinary, string> {
+        # Generate cache key
+        let cache_key = format!("{}_{}_{:?}_{:?}",
+                                kernel_name,
+                                self.backend.to_string(),
+                                self.optimization_level.to_string(),
+                                calculate_hash(source.as_bytes()))
+
+        # Check cache first
+        if let Some(binary) = self.cache.get(cache_key.clone()) {
+            return Ok(KernelBinary {
+                kernel_name,
+                backend: self.backend,
+                binary,
+                entry_point: kernel_name,
+                properties: KernelProperties::default(),
+            })
+        }
+
+        # Compile (this would call actual compiler in real implementation)
+        let start_time = get_timestamp()
+        let binary = self.compile_internal(source.clone(), kernel_name.clone())?
+        let compile_time = get_timestamp() - start_time
+
+        # Cache result
+        self.cache.put(cache_key, binary.clone(), compile_time)
+
+        Ok(KernelBinary {
+            kernel_name,
+            backend: self.backend,
+            binary,
+            entry_point: kernel_name,
+            properties: KernelProperties::default(),
+        })
+    }
+
+    fun compile_internal(&self, source: string, name: string) -> Result<Vec<u8>, string> {
+        # In real implementation, would invoke actual compiler
+        // For now, return mock binary
+        let mut binary = Vec::new()
+        binary.extend_from_slice(b"MOCK_KERNEL_BINARY")
+        Ok(binary)
+    }
+
+    fun set_optimization_level(&mut self, level: OptimizationLevel) {
+        self.optimization_level = level
+    }
+}
+
+type KernelBinary = struct {
+    kernel_name: string,
+    backend: GpuBackend,
+    binary: Vec<u8>,
+    entry_point: string,
+    properties: KernelProperties,
+}
+
+type KernelProperties = struct {
+    max_threads_per_block: u32,
+    max_shared_memory: u64,
+    required_compute_capability: string,
+    estimated_registers_per_thread: u32,
+}
+
+impl Default for KernelProperties {
+    fn default() -> Self {
+        KernelProperties {
+            max_threads_per_block: 256,
+            max_shared_memory: 96 * 1024,
+            required_compute_capability: "7.0".to_string(),
+            estimated_registers_per_thread: 32,
+        }
+    }
+}
+
+# ============================================================================
+# KERNEL EXECUTION SCHEDULER
+# ============================================================================
+
+type KernelScheduler = struct {
+    registry: KernelRegistry,
+    compiler: KernelCompiler,
+    execution_queue: Vec<KernelJob>,
+    completed_jobs: Vec<KernelJob>,
+    performance_stats: Vec<KernelPerfStats>,
+}
+
+type KernelJob = struct {
+    job_id: u64,
+    kernel_id: string,
+    backend: GpuBackend,
+    status: JobStatus,
+    submitted_time: u64,
+    started_time: u64,
+    completed_time: u64,
+    parameters: Vec<u64>,  // Kernel parameters
+}
+
+enum JobStatus {
+    Queued,
+    Compiling,
+    Running,
+    Completed,
+    Failed(string),
+}
+
+type KernelPerfStats = struct {
+    kernel_id: string,
+    execution_count: u64,
+    total_time_ms: f64,
+    avg_time_ms: f64,
+    min_time_ms: f64,
+    max_time_ms: f64,
+    flops: u64,
+    throughput_gflops: f64,
+}
+
+impl KernelScheduler {
+    fun new(backend: GpuBackend) -> Self {
+        KernelScheduler {
+            registry: KernelRegistry::new(backend),
+            compiler: KernelCompiler::new(backend, 100),
+            execution_queue: Vec::new(),
+            completed_jobs: Vec::new(),
+            performance_stats: Vec::new(),
+        }
+    }
+
+    fun submit_job(&mut self, kernel_id: string, parameters: Vec<u64>) -> Result<u64, string> {
+        # Verify kernel exists
+        let _ = self.registry.select_kernel(kernel_id.clone())?
+
+        let job_id = get_timestamp() as u64
+        let job = KernelJob {
+            job_id,
+            kernel_id,
+            backend: self.registry.backend,
+            status: JobStatus::Queued,
+            submitted_time: get_timestamp(),
+            started_time: 0,
+            completed_time: 0,
+            parameters,
+        }
+
+        self.execution_queue.push(job)
+        Ok(job_id)
+    }
+
+    fun get_job_status(&self, job_id: u64) -> Result<JobStatus, string> {
+        # Check execution queue
+        if let Some(job) = self.execution_queue.iter().find(|j| j.job_id == job_id) {
+            return Ok(job.status.clone())
+        }
+
+        # Check completed jobs
+        if let Some(job) = self.completed_jobs.iter().find(|j| j.job_id == job_id) {
+            return Ok(job.status.clone())
+        }
+
+        Err("Job not found".to_string())
+    }
+
+    fun get_performance_stats(&self, kernel_id: string) -> Option<KernelPerfStats> {
+        self.performance_stats
+            .iter()
+            .find(|s| s.kernel_id == kernel_id)
+            .cloned()
+    }
+
+    fun print_statistics(&self) {
+        println!("Kernel Execution Statistics")
+        println!("─────────────────────────────────────────")
+        println!("Total Jobs Submitted:  {}", self.execution_queue.len() + self.completed_jobs.len())
+        println!("Completed:             {}", self.completed_jobs.len())
+        println!("Queued:                {}", self.execution_queue.len())
+
+        for stats in &self.performance_stats {
+            println!()
+            println!("Kernel: {}", stats.kernel_id)
+            println!("  Executions:        {}", stats.execution_count)
+            println!("  Avg Time:          {:.3} ms", stats.avg_time_ms)
+            println!("  Min/Max Time:      {:.3} / {:.3} ms", stats.min_time_ms, stats.max_time_ms)
+            println!("  Throughput:        {:.1} GFLOPS", stats.throughput_gflops)
+        }
+    }
+}
+
+impl Clone for JobStatus {
+    fn clone(&self) -> Self {
+        match self {
+            JobStatus::Queued => JobStatus::Queued,
+            JobStatus::Compiling => JobStatus::Compiling,
+            JobStatus::Running => JobStatus::Running,
+            JobStatus::Completed => JobStatus::Completed,
+            JobStatus::Failed(e) => JobStatus::Failed(e.clone()),
+        }
+    }
+}
+
+impl Clone for KernelPerfStats {
+    fn clone(&self) -> Self {
+        KernelPerfStats {
+            kernel_id: self.kernel_id.clone(),
+            execution_count: self.execution_count,
+            total_time_ms: self.total_time_ms,
+            avg_time_ms: self.avg_time_ms,
+            min_time_ms: self.min_time_ms,
+            max_time_ms: self.max_time_ms,
+            flops: self.flops,
+            throughput_gflops: self.throughput_gflops,
+        }
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fn get_timestamp() -> u64 {
+    0  // Would be actual timestamp in real implementation
+}
+
+fn calculate_hash(data: &[u8]) -> u64 {
+    # FNV-1a hash
+    let mut hash = 0xcbf29ce484222325u64
+    for byte in data {
+        hash ^= *byte as u64
+        hash = hash.wrapping_mul(0x100000001b3)
+    }
+    hash
+}
+
+impl GpuBackend {
+    fn to_string(&self) -> string {
+        match self {
+            GpuBackend::Cuda => "cuda".to_string(),
+            GpuBackend::Rocm => "rocm".to_string(),
+            GpuBackend::IntelArc => "intel_arc".to_string(),
+            GpuBackend::Metal => "metal".to_string(),
+        }
+    }
+}
+
+impl OptimizationLevel {
+    fn to_string(&self) -> string {
+        match self {
+            OptimizationLevel::Performance => "performance".to_string(),
+            OptimizationLevel::Balanced => "balanced".to_string(),
+            OptimizationLevel::PowerSave => "powersave".to_string(),
+        }
+    }
+}

@@ -1,0 +1,240 @@
+// uvm/scheduler.ti — Universal Validation Mesh: job scheduler
+// Distributes test and proof jobs across UVM agents.
+// Jobs are content-addressed; results are stored in the storage service.
+// The scheduler is itself deterministic and testable.
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+// ── Tags ──────────────────────────────────────────────────────────────────
+const TAG_JOB:    i64 = 68000;
+const TAG_AGENT:  i64 = 68001;
+const TAG_RESULT: i64 = 68002;
+const TAG_SCHED:  i64 = 68003;
+const TAG_NODE:   i64 = 68004;
+
+// ── Job kinds ─────────────────────────────────────────────────────────────
+const JOB_TEST:  i64 = 0;   // run a test binary
+const JOB_PROOF: i64 = 1;   // verify an Axiom proof
+const JOB_FUZZ:  i64 = 2;   // fuzz a service API
+const JOB_CHAOS: i64 = 3;   // inject faults and verify recovery
+
+// ── Job states ────────────────────────────────────────────────────────────
+const JS_QUEUED:   i64 = 0;
+const JS_RUNNING:  i64 = 1;
+const JS_DONE:     i64 = 2;
+const JS_FAILED:   i64 = 3;
+
+// ── Agent states ──────────────────────────────────────────────────────────
+const AS_IDLE:    i64 = 0;
+const AS_BUSY:    i64 = 1;
+const AS_OFFLINE: i64 = 2;
+
+// ── Job: body=id, arg=kind*100+priority, domain=state ────────────────────
+pub fn job_new(id:i64, kind:i64, priority:i64) -> i64 {
+    let j=heap_alloc_term(); heap_set_tag(j,TAG_JOB);
+    heap_set_body(j,id); heap_set_arg(j,kind*100+priority); heap_set_domain(j,JS_QUEUED);
+    return j;
+}
+pub fn job_id(j:i64) -> i64       { return heap_get_body(j); }
+pub fn job_kind(j:i64) -> i64     { return heap_get_arg(j) / 100; }
+pub fn job_priority(j:i64) -> i64 { return heap_get_arg(j) - job_kind(j)*100; }
+pub fn job_state(j:i64) -> i64    { return heap_get_domain(j); }
+pub fn job_set_state(j:i64, s:i64) { heap_set_domain(j,s); return; }
+
+// ── Agent: body=id, arg=state, domain=current_job (0=none) ───────────────
+pub fn agent_new(id:i64) -> i64 {
+    let a=heap_alloc_term(); heap_set_tag(a,TAG_AGENT);
+    heap_set_body(a,id); heap_set_arg(a,AS_IDLE); heap_set_domain(a,0); return a;
+}
+pub fn agent_id(a:i64) -> i64      { return heap_get_body(a); }
+pub fn agent_state(a:i64) -> i64   { return heap_get_arg(a); }
+pub fn agent_job(a:i64) -> i64     { return heap_get_domain(a); }
+pub fn agent_is_idle(a:i64) -> i64 { if heap_get_arg(a)==AS_IDLE { return 1; } return 0; }
+pub fn agent_assign(a:i64, j:i64) {
+    heap_set_arg(a,AS_BUSY); heap_set_domain(a,j);
+    job_set_state(j,JS_RUNNING);
+    return;
+}
+pub fn agent_complete(a:i64, passed:i64) {
+    let j = agent_job(a);
+    if j != 0 { job_set_state(j, if passed==1 { JS_DONE } else { JS_FAILED }); }
+    heap_set_arg(a,AS_IDLE); heap_set_domain(a,0);
+    return;
+}
+
+// ── Result: body=job_id, arg=passed(1/0), domain=duration_ticks ──────────
+pub fn result_new(job_id:i64, passed:i64, duration:i64) -> i64 {
+    let r=heap_alloc_term(); heap_set_tag(r,TAG_RESULT);
+    heap_set_body(r,job_id); heap_set_arg(r,passed); heap_set_domain(r,duration); return r;
+}
+pub fn result_passed(r:i64) -> i64   { return heap_get_arg(r); }
+pub fn result_job_id(r:i64) -> i64   { return heap_get_body(r); }
+pub fn result_duration(r:i64) -> i64 { return heap_get_domain(r); }
+
+// ── Scheduler state ───────────────────────────────────────────────────────
+// Priority queue: jobs ordered by priority (higher = more urgent)
+let g_job_head:    i64 = 0;  // sorted queue: high priority first
+let g_job_count:   i64 = 0;
+let g_agent_head:  i64 = 0;
+let g_agent_count: i64 = 0;
+let g_result_head: i64 = 0;
+let g_result_count: i64 = 0;
+let g_tick:        i64 = 0;
+
+pub fn sched_new() -> i64 {
+    g_job_head=0; g_job_count=0;
+    g_agent_head=0; g_agent_count=0;
+    g_result_head=0; g_result_count=0;
+    g_tick=0; return 1;
+}
+
+// ── Job queue (priority-sorted insertion) ─────────────────────────────────
+pub fn sched_submit(j:i64) {
+    let node=heap_alloc_term(); heap_set_tag(node,TAG_NODE);
+    heap_set_body(node,j); heap_set_arg(node,0);
+
+    if g_job_head==0 { g_job_head=node; g_job_count=g_job_count+1; return; }
+
+    // Insert before first job with strictly lower priority
+    let cur=g_job_head; let prev=0;
+    while cur!=0 {
+        let cj=heap_get_body(cur);
+        if job_priority(cj) < job_priority(j) {
+            heap_set_arg(node,cur);
+            if prev==0 { g_job_head=node; }
+            else { heap_set_arg(prev,node); }
+            g_job_count=g_job_count+1; return;
+        }
+        prev=cur; cur=heap_get_arg(cur);
+    }
+    // Append at end
+    heap_set_arg(prev,node);
+    g_job_count=g_job_count+1;
+    return;
+}
+
+pub fn sched_next_queued() -> i64 {
+    let cur=g_job_head;
+    while cur!=0 {
+        let j=heap_get_body(cur);
+        if job_state(j)==JS_QUEUED { return j; }
+        cur=heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn sched_job_count() -> i64 { return g_job_count; }
+
+// ── Agent management ──────────────────────────────────────────────────────
+pub fn sched_add_agent(a:i64) {
+    let node=heap_alloc_term(); heap_set_tag(node,TAG_NODE);
+    heap_set_body(node,a); heap_set_arg(node,g_agent_head);
+    g_agent_head=node; g_agent_count=g_agent_count+1;
+    return;
+}
+
+pub fn sched_find_idle_agent() -> i64 {
+    let cur=g_agent_head;
+    while cur!=0 {
+        let a=heap_get_body(cur);
+        if agent_is_idle(a)==1 { return a; }
+        cur=heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn sched_agent_count() -> i64 { return g_agent_count; }
+
+// ── Dispatch: assign next queued job to next idle agent ───────────────────
+pub fn sched_dispatch() -> i64 {
+    let j = sched_next_queued();
+    if j < 0 { return 0; }  // no jobs waiting
+
+    let a = sched_find_idle_agent();
+    if a < 0 { return 0; }  // no idle agents
+
+    agent_assign(a, j);
+    return 1;
+}
+
+// ── Tick: advance time; collect results from completed simulated agents ────
+pub fn sched_tick(job_id:i64, passed:i64) -> i64 {
+    g_tick=g_tick+1;
+    // Find the agent running this job and complete it
+    let cur=g_agent_head;
+    while cur!=0 {
+        let a=heap_get_body(cur);
+        if agent_job(a)==job_id || (agent_job(a)!=0 && job_id(agent_job(a))==job_id) {
+            agent_complete(a,passed);
+            let r=result_new(job_id, passed, g_tick);
+            let rn=heap_alloc_term(); heap_set_tag(rn,TAG_NODE);
+            heap_set_body(rn,r); heap_set_arg(rn,g_result_head);
+            g_result_head=rn; g_result_count=g_result_count+1;
+            return 1;
+        }
+        cur=heap_get_arg(cur);
+    }
+    return 0;
+}
+
+pub fn sched_result_count() -> i64 { return g_result_count; }
+pub fn sched_tick_count() -> i64   { return g_tick; }
+
+pub fn sched_pass_rate() -> i64 {
+    if g_result_count==0 { return 0; }
+    let passed=0; let cur=g_result_head;
+    while cur!=0 {
+        let r=heap_get_body(cur);
+        if result_passed(r)==1 { passed=passed+1; }
+        cur=heap_get_arg(cur);
+    }
+    return (passed * 100) / g_result_count;
+}
+
+pub fn main() -> i64 {
+    sched_new();
+
+    // Test 1: submit jobs with different priorities
+    let j1 = job_new(1, JOB_TEST, 5);
+    let j2 = job_new(2, JOB_PROOF, 9);   // higher priority
+    let j3 = job_new(3, JOB_FUZZ, 1);    // lowest priority
+    sched_submit(j1); sched_submit(j2); sched_submit(j3);
+    if sched_job_count() != 3 { return 1; }
+
+    // Test 2: next queued job should be highest priority (j2)
+    let next = sched_next_queued();
+    if job_id(next) != 2 { return 2; }
+    if job_priority(next) != 9 { return 3; }
+
+    // Test 3: add agents
+    let a1 = agent_new(1); let a2 = agent_new(2);
+    sched_add_agent(a1); sched_add_agent(a2);
+    if sched_agent_count() != 2 { return 4; }
+
+    // Test 4: dispatch assigns job to idle agent
+    let dispatched = sched_dispatch();
+    if dispatched != 1 { return 5; }
+    if agent_is_idle(a2) != 0 { return 6; }  // a2 got the job (head of list)
+
+    // Test 5: complete job and check result
+    let running_job = agent_job(a2);
+    sched_tick(running_job, 1);  // passed=1
+    if agent_is_idle(a2) != 1 { return 7; }
+    if sched_result_count() != 1 { return 8; }
+
+    // Test 6: dispatch continues with next job
+    sched_dispatch();
+    sched_tick(agent_job(a2), 1);
+    sched_dispatch();
+    sched_tick(agent_job(a2), 0);  // fuzz job fails
+
+    // Test 7: pass rate (2 pass, 1 fail = 66%)
+    let rate = sched_pass_rate();
+    if rate < 60 || rate > 70 { return 9; }
+
+    // Test 8: chaos job kind
+    let j4 = job_new(4, JOB_CHAOS, 7);
+    if job_kind(j4) != JOB_CHAOS { return 10; }
+
+    return 111;
+}

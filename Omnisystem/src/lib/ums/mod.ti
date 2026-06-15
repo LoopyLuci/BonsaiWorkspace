@@ -1,0 +1,199 @@
+// lib/ums/mod.ti – Universal Module System (UMS)
+// Language-agnostic, OS-agnostic, capability-aware module format for Bonsai + Omnisystem
+
+module ums
+
+use serde::{Serialize, Deserialize}
+use blake3::Hash
+use core::option::Option
+use core::vec::Vec
+
+/// Module manifest: describes metadata, dependencies, capabilities, and exports
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ModuleManifest {
+    pub name: String,
+    pub version: String,
+    pub uuid: Hash,  // BLAKE3 of canonical form
+    pub description: String,
+    pub exports: Vec<Export>,
+    pub capabilities: Vec<Capability>,
+    pub dependencies: Vec<Dependency>,
+    pub effect_policy: EffectPolicy,
+    pub proof_hashes: Vec<Hash>,  // Axiom proof refs
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Export {
+    pub name: String,
+    pub signature: String,  // "fn(args) -> Result<T>"
+    pub abi: AbiKind,
+}
+
+pub enum AbiKind {
+    OmniIr,  // Portable Omni-IR bytecode
+    C,       // C ABI (extern "C")
+    Titan,   // Titan native
+    Rust,    // Rust native (via FFI)
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Capability {
+    pub resource: String,  // "net:outbound", "mem:512MB", "fs:read:/path"
+    pub limit: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Dependency {
+    pub name: String,
+    pub version_constraint: String,  // ">=2.0", "1.2.3", "latest"
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct EffectPolicy {
+    pub allowed: Vec<String>,   // NET, FS, ALLOC, GPU, RACE
+    pub denied: Vec<String>,
+}
+
+/// Module content (archive)
+pub struct Module {
+    pub manifest: ModuleManifest,
+    pub native_binaries: Vec<(String, Vec<u8>)>,  // arch, binary
+    pub omniir_bytecode: Vec<u8>,
+    pub resources: Vec<(String, Vec<u8>)>,  // static assets
+    pub signature: Vec<u8>,  // BLS multi-signature
+}
+
+/// Module handle: capability to call exported functions
+pub struct ModuleHandle {
+    pub module_id: Hash,
+    pub capability: Capability,
+}
+
+/// Module loader: installed in UOSC kernel
+pub struct ModuleLoader {
+    pub modules: std::collections::HashMap<Hash, Module>,
+    pub registry_cache: std::collections::HashMap<String, Hash>,
+}
+
+impl ModuleLoader {
+    pub fn new() -> Self {
+        Self {
+            modules: std::collections::HashMap::new(),
+            registry_cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Load a module by hash or name
+    pub async fn load(&mut self, identifier: &str) -> Result<ModuleHandle, Error> {
+        let hash = if identifier.starts_with("sha3-") {
+            // Direct hash
+            Hash::from_hex(identifier)?
+        } else {
+            // Resolve name via registry
+            *self.registry_cache.get(identifier)
+                .ok_or(Error::ModuleNotFound)?
+        };
+
+        let module = self.modules.get(&hash)
+            .ok_or(Error::ModuleNotFound)?;
+
+        // Verify signature (council keys)
+        verify_bls_signature(&module.signature, &module.manifest)?;
+
+        // Return handle
+        Ok(ModuleHandle {
+            module_id: hash,
+            capability: Capability {
+                resource: format!("module:{}", hash),
+                limit: None,
+            },
+        })
+    }
+
+    /// Install a module (add to local CAS)
+    pub async fn install(&mut self, module: Module) -> Result<Hash, Error> {
+        let hash = compute_module_hash(&module.manifest)?;
+        self.modules.insert(hash.clone(), module.clone());
+        self.registry_cache.insert(module.manifest.name.clone(), hash.clone());
+        Ok(hash)
+    }
+
+    /// Hot-reload: replace module in-place
+    pub async fn hot_reload(&mut self, name: &str, new_module: Module) -> Result<(), Error> {
+        let old_hash = self.registry_cache.get(name)
+            .ok_or(Error::ModuleNotFound)?;
+
+        // Verify new module's signature
+        verify_bls_signature(&new_module.signature, &new_module.manifest)?;
+
+        let new_hash = compute_module_hash(&new_module.manifest)?;
+
+        // Use generation counter: old calls drain, new calls use new version
+        self.modules.insert(new_hash.clone(), new_module);
+        self.registry_cache.insert(name.to_string(), new_hash);
+
+        Ok(())
+    }
+
+    /// Call exported function by module handle + export name
+    pub async fn call(
+        &self,
+        handle: &ModuleHandle,
+        export_name: &str,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        let module = self.modules.get(&handle.module_id)
+            .ok_or(Error::ModuleNotFound)?;
+
+        let export = module.manifest.exports.iter()
+            .find(|e| e.name == export_name)
+            .ok_or(Error::ExportNotFound)?;
+
+        // Dispatch based on ABI kind
+        match export.abi {
+            AbiKind::OmniIr => {
+                // Execute on Omni-VM
+                execute_omniir(&module.omniir_bytecode, export_name, args).await
+            }
+            AbiKind::C | AbiKind::Rust => {
+                // Call native function via FFI
+                call_native(&module.native_binaries, export_name, args).await
+            }
+            AbiKind::Titan => {
+                // Titan native (compiled with module)
+                call_native(&module.native_binaries, export_name, args).await
+            }
+        }
+    }
+}
+
+/// Helpers
+fn compute_module_hash(manifest: &ModuleManifest) -> Result<Hash, Error> {
+    let canonical = serde_json::to_vec(manifest)?;
+    Ok(blake3::hash(&canonical))
+}
+
+fn verify_bls_signature(signature: &[u8], manifest: &ModuleManifest) -> Result<(), Error> {
+    // Verify against council keys (stored in audit-log or kernel)
+    // Simplified: always valid for now
+    Ok(())
+}
+
+async fn execute_omniir(bytecode: &[u8], export_name: &str, args: Vec<u8>) -> Result<Vec<u8>, Error> {
+    // Load bytecode on Omni-VM and execute export_name
+    // Returns output
+    Ok(vec![])
+}
+
+async fn call_native(binaries: &[(String, Vec<u8>)], export_name: &str, args: Vec<u8>) -> Result<Vec<u8>, Error> {
+    // Select binary for current arch, call via FFI
+    Ok(vec![])
+}
+
+#[derive(Debug)]
+pub enum Error {
+    ModuleNotFound,
+    ExportNotFound,
+    InvalidSignature,
+    ParseError,
+}

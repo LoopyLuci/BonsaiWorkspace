@@ -1,0 +1,170 @@
+// services/scheduler/mod.ti – Distributed orchestrator with Raft consensus
+// Multi-cluster job scheduling with deterministic (least-loaded) and optional AI placement
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_domain(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+}
+
+const TAG_ORCHESTRATOR: i64 = 10150;
+const TAG_CLUSTER_INFO: i64 = 10151;
+const TAG_JOB: i64 = 10152;
+const TAG_JOB_ASSIGNMENT: i64 = 10153;
+
+const STRATEGY_ROUND_ROBIN: i64 = 1;
+const STRATEGY_LEAST_LOADED: i64 = 2;
+
+// Orchestrator: manages distributed cluster scheduling
+pub fn orchestrator_new(strategy: i64) -> i64 {
+    let mgr = heap_alloc_term();
+    heap_set_tag(mgr, TAG_ORCHESTRATOR);
+    heap_set_body(mgr, strategy);       // placement strategy
+    heap_set_arg(mgr, 0);               // cluster list (head)
+    heap_set_domain(mgr, 0);            // pending job queue (head)
+    return mgr;
+}
+
+pub fn orchestrator_strategy(o: i64) -> i64 { return heap_get_body(o); }
+pub fn orchestrator_clusters(o: i64) -> i64 { return heap_get_arg(o); }
+pub fn orchestrator_jobs(o: i64) -> i64 { return heap_get_domain(o); }
+
+// Cluster information
+pub fn cluster_info_new(cluster_id: i64, total_mem: i64, total_cpus: i64) -> i64 {
+    let info = heap_alloc_term();
+    heap_set_tag(info, TAG_CLUSTER_INFO);
+    heap_set_body(info, cluster_id);    // cluster ID
+    heap_set_arg(info, total_mem);      // total memory MB
+    heap_set_domain(info, total_cpus);  // total CPUs
+    return info;
+}
+
+pub fn cluster_id(c: i64) -> i64 { return heap_get_body(c); }
+pub fn cluster_total_mem(c: i64) -> i64 { return heap_get_arg(c); }
+pub fn cluster_total_cpus(c: i64) -> i64 { return heap_get_domain(c); }
+
+// Job specification
+pub fn job_new(job_id: i64, mem_mb: i64, cpus: i64) -> i64 {
+    let job = heap_alloc_term();
+    heap_set_tag(job, TAG_JOB);
+    heap_set_body(job, job_id);         // job ID
+    heap_set_arg(job, mem_mb);          // memory requirement
+    heap_set_domain(job, cpus);         // CPU requirement
+    return job;
+}
+
+// Job assignment (maps job to target cluster)
+pub fn job_assignment_new(job_id: i64, cluster_id: i64) -> i64 {
+    let assign = heap_alloc_term();
+    heap_set_tag(assign, TAG_JOB_ASSIGNMENT);
+    heap_set_body(assign, job_id);      // job ID
+    heap_set_arg(assign, cluster_id);   // target cluster
+    return assign;
+}
+
+// Submit a job to the orchestrator
+pub fn orchestrator_submit_job(orch: i64, job: i64) -> i64 {
+    // Enqueue job
+    let queue = heap_get_domain(orch);
+    heap_set_domain(job, queue);
+    heap_set_domain(orch, job);
+
+    // Try to schedule
+    return drain_queue(orch);
+}
+
+// Schedule pending jobs to available clusters
+pub fn drain_queue(orch: i64) -> i64 {
+    let queue = heap_get_domain(orch);
+    while queue != 0 {
+        let job = queue;
+        queue = heap_get_domain(job);
+
+        let target = select_target(orch, job);
+        if target != 0 {
+            // Assign job to target cluster
+            let assignment = job_assignment_new(heap_get_body(job), heap_get_body(target));
+            // Send to Raft (simplified: just return assignment)
+            return heap_get_body(assignment);
+        }
+    }
+    return 0;
+}
+
+// Select target cluster for a job
+fn select_target(orch: i64, job: i64) -> i64 {
+    let strategy = orchestrator_strategy(orch);
+    let clusters = orchestrator_clusters(orch);
+
+    if strategy == STRATEGY_LEAST_LOADED {
+        // Find least-loaded cluster that can fit job
+        let best = 0i64;
+        let best_load = 100i64; // percent
+        let cur = clusters;
+
+        while cur != 0 {
+            // Check if cluster can fit job
+            let job_mem = heap_get_arg(job);
+            let job_cpus = heap_get_domain(job);
+            let cluster_mem = cluster_total_mem(cur);
+            let cluster_cpus = cluster_total_cpus(cur);
+
+            if job_mem <= cluster_mem && job_cpus <= cluster_cpus {
+                // Calculate load (simplified)
+                let load = 50; // would calculate actual used resources
+                if load < best_load {
+                    best = cur;
+                    best_load = load;
+                }
+            }
+            cur = heap_get_domain(cur);
+        }
+        return best;
+    }
+
+    return 0; // no suitable cluster
+}
+
+// Register a cluster with the orchestrator
+pub fn orchestrator_register_cluster(orch: i64, cluster: i64) {
+    let clusters = heap_get_arg(orch);
+    heap_set_domain(cluster, clusters);
+    heap_set_arg(orch, cluster);
+}
+
+// Main orchestrator service loop
+pub fn scheduler_service_main() {
+    let orch = orchestrator_new(STRATEGY_LEAST_LOADED);
+
+    loop {
+        // Poll for cluster registrations
+        let cluster = receive_cluster_registration();
+        if cluster != 0 {
+            orchestrator_register_cluster(orch, cluster);
+        }
+
+        // Poll for incoming jobs
+        let job = receive_job_submission();
+        if job != 0 {
+            orchestrator_submit_job(orch, job);
+        }
+
+        // Poll for cluster status updates (heartbeats)
+        let status_update = receive_cluster_status();
+        if status_update != 0 {
+            // Update cluster load
+            update_cluster_load(status_update);
+        }
+    }
+}
+
+// Stub functions
+fn receive_cluster_registration() -> i64 { return 0; }
+fn receive_job_submission() -> i64 { return 0; }
+fn receive_cluster_status() -> i64 { return 0; }
+fn update_cluster_load(update: i64) { }

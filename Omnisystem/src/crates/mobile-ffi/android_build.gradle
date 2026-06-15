@@ -1,0 +1,102 @@
+// Android Gradle build configuration for bonsai-mobile-ffi
+//
+// Add this to your app/build.gradle Android block to configure NDK compilation
+// and integrate Rust FFI compilation into the Android build process.
+//
+// Usage:
+//   apply from: '../crates/bonsai-mobile-ffi/android_build.gradle'
+
+android {
+    // NDK version must match your development environment
+    ndkVersion '25.1.8937393'
+
+    defaultConfig {
+        // ... other config ...
+
+        // Enable CMake for NDK support (alternative to ndk-build)
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17"
+                abiFilters 'arm64-v8a'  // 'armeabi-v7a', 'x86_64' optional
+            }
+        }
+
+        // JNI library paths
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    packagingOptions {
+        // Exclude duplicate native libraries if using multiple NDK modules
+        exclude 'lib/**/libusb*.so'
+    }
+}
+
+// Task to build Rust FFI library using cargo-ndk
+task buildRustFFI {
+    dependsOn 'compileRustFFI'
+}
+
+task compileRustFFI {
+    doLast {
+        def cargoNdkPath = System.getenv('CARGO_NDK_PATH') ?: 'cargo-ndk'
+        def ndkPath = android.ndkVersion ? System.getenv('ANDROID_NDK_HOME') : null
+        def rustTarget = 'aarch64-linux-android'
+
+        println "Building Rust FFI for Android ($rustTarget)..."
+
+        def cmd = [
+            cargoNdkPath,
+            '-p', 'bonsai-mobile-ffi',
+            'build',
+            '--release',
+            '--target', rustTarget
+        ]
+
+        // Add NDK home if available
+        if (ndkPath) {
+            cmd.addAll(['--ndk', ndkPath])
+        }
+
+        exec {
+            commandLine cmd
+            workingDir = project.rootDir
+            standardOutput = System.out
+            errorOutput = System.err
+        }
+
+        // Copy compiled .so to jniLibs directory
+        def sourceDir = "${project.rootDir}/target/${rustTarget}/release"
+        def outputDir = "${projectDir}/src/main/jniLibs/arm64-v8a"
+        def libName = 'libbonsai_mobile_ffi.so'
+
+        // Create output directory if it doesn't exist
+        file(outputDir).mkdirs()
+
+        // Copy the library
+        copy {
+            from("$sourceDir")
+            include(libName)
+            into(outputDir)
+        }
+
+        println "Successfully copied $libName to $outputDir"
+    }
+}
+
+// Automatically build Rust FFI before compiling native code
+preBuild.dependsOn compileRustFFI

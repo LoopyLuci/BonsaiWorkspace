@@ -1,0 +1,177 @@
+// uplad/similarity.ti – deterministic language similarity scoring
+// Enables discovery of similar languages without machine learning
+// Uses only syntactic and semantic features from language specs
+
+module uplad::similarity
+
+use uplad::schema::{LanguageSpec, Paradigm, TypeSystemKind, EvaluationModel}
+use core::collections::{Vec, HashSet}
+use core::option::Option
+use core::cmp::Ordering
+
+/// Find languages similar to a target, ranked by similarity score
+pub fn find_similar(
+    target: &LanguageSpec,
+    candidates: &[LanguageSpec],
+    limit: usize,
+) -> Vec<(LanguageSpec, f64)> {
+    let mut scored: Vec<(LanguageSpec, f64)> = candidates.iter()
+        .map(|c| (c.clone(), similarity_score(target, c)))
+        .collect();
+
+    // Sort by score descending
+    scored.sort_by(|a, b| {
+        match b.1.partial_cmp(&a.1) {
+            Some(Ordering::Equal) => a.0.name.cmp(&b.0.name),
+            Some(ord) => ord,
+            None => Ordering::Equal,
+        }
+    });
+
+    scored.into_iter().take(limit).collect()
+}
+
+/// Compute similarity score between two language specifications [0.0, 10.0]
+fn similarity_score(a: &LanguageSpec, b: &LanguageSpec) -> f64 {
+    let mut score = 0.0;
+
+    // Paradigm overlap (max +2.0)
+    let paradigm_score = paradigm_similarity(&a.metadata.paradigms, &b.metadata.paradigms);
+    score += paradigm_score * 2.0;
+
+    // Type system kind (max +1.0)
+    if a.type_system.kind == b.type_system.kind {
+        score += 1.0;
+    }
+
+    // Evaluation model (max +0.5)
+    if a.evaluation.model == b.evaluation.model {
+        score += 0.5;
+    }
+
+    // Memory management (max +0.5)
+    if a.evaluation.memory_management == b.evaluation.memory_management {
+        score += 0.5;
+    }
+
+    // Keyword overlap Jaccard similarity (max +2.0)
+    let keyword_jaccard = set_jaccard(
+        &string_vec_to_set(&a.syntax.keywords),
+        &string_vec_to_set(&b.syntax.keywords),
+    );
+    score += keyword_jaccard * 2.0;
+
+    // Operator symbol overlap (max +1.5)
+    let a_op_symbols: Vec<String> = a.syntax.operators.iter()
+        .map(|op| op.symbol.clone())
+        .collect();
+    let b_op_symbols: Vec<String> = b.syntax.operators.iter()
+        .map(|op| op.symbol.clone())
+        .collect();
+    let op_jaccard = set_jaccard(
+        &string_vec_to_set(&a_op_symbols),
+        &string_vec_to_set(&b_op_symbols),
+    );
+    score += op_jaccard * 1.5;
+
+    // Influence overlap (max +1.0)
+    let influence_overlap = influence_similarity(&a.metadata.influences, &b.metadata.influences);
+    score += influence_overlap;
+
+    // Comment style compatibility (max +0.5)
+    let comment_compat = comment_compatibility(&a.syntax.comments, &b.syntax.comments);
+    score += comment_compat * 0.5;
+
+    // String delimiter compatibility (max +0.5)
+    let string_compat = set_jaccard(
+        &string_vec_to_set(&a.syntax.string_delimiters),
+        &string_vec_to_set(&b.syntax.string_delimiters),
+    );
+    score += string_compat * 0.5;
+
+    score
+}
+
+/// Paradigm overlap as fraction of max(|a|, |b|)
+fn paradigm_similarity(a: &[Paradigm], b: &[Paradigm]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let intersection = a.iter()
+        .filter(|p| b.contains(p))
+        .count();
+    let max_len = if a.len() > b.len() { a.len() } else { b.len() };
+    if max_len == 0 { 0.0 } else { (intersection as f64) / (max_len as f64) }
+}
+
+/// Influence list similarity
+fn influence_similarity(a: &[String], b: &[String]) -> f64 {
+    let a_set = string_vec_to_set(a);
+    let b_set = string_vec_to_set(b);
+    set_jaccard(&a_set, &b_set)
+}
+
+/// Comment style compatibility
+fn comment_compatibility(a: &crate::schema::CommentStyle, b: &crate::schema::CommentStyle) -> f64 {
+    let mut compat = 0.0;
+
+    if a.line_comment.is_some() && b.line_comment.is_some() {
+        compat += 0.33;
+    }
+    if a.block_comment_start.is_some() && b.block_comment_start.is_some() {
+        compat += 0.33;
+    }
+    if a.block_comment_end.is_some() && b.block_comment_end.is_some() {
+        compat += 0.34;
+    }
+
+    compat
+}
+
+/// Jaccard similarity of two sets: |intersection| / |union|
+fn set_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+
+    let intersection = a.iter()
+        .filter(|item| b.contains(*item))
+        .count();
+    let union = a.iter().count() + b.iter().count() - intersection;
+
+    if union == 0 { 0.0 } else { (intersection as f64) / (union as f64) }
+}
+
+/// Convert a vector of strings to a HashSet
+fn string_vec_to_set(v: &[String]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for s in v {
+        set.insert(s.clone());
+    }
+    set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_jaccard() {
+        let a: HashSet<String> = vec!["a".to_string(), "b".to_string()]
+            .into_iter()
+            .collect();
+        let b: HashSet<String> = vec!["b".to_string(), "c".to_string()]
+            .into_iter()
+            .collect();
+        let score = set_jaccard(&a, &b);
+        assert!((score - 0.333).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_paradigm_similarity() {
+        let a = vec![Paradigm::Functional, Paradigm::Imperative];
+        let b = vec![Paradigm::Functional];
+        let score = paradigm_similarity(&a, &b);
+        assert_eq!(score, 0.5);
+    }
+}

@@ -1,0 +1,424 @@
+module omnisystem.hybrid_executor
+
+# Hybrid CPU-GPU execution engine with dynamic load balancing
+# Automatically distributes workloads for optimal performance
+
+import omnisystem.gpu_abstraction
+import omnisystem.hardware_detection
+import omnisystem.async_runtime
+
+enum TaskTarget {
+    CpuOnly,
+    GpuOnly,
+    Hybrid,
+    Automatic,
+}
+
+type ExecutionTask<T> = struct {
+    id: u64,
+    name: string,
+    target: TaskTarget,
+    workload_estimate: u32,  # 0-100 complexity score
+    data_input: T,
+    affinity: Option<u32>,   # CPU core affinity
+}
+
+type ExecutionResult<T> = struct {
+    task_id: u64,
+    executed_on: ExecutionTarget,
+    execution_time_ms: f64,
+    result: T,
+}
+
+enum ExecutionTarget {
+    Cpu(u32),    # core ID
+    Gpu(u32),    # device ID
+    CpuAndGpu((u32, u32)),  # (cpu_core, gpu_device)
+}
+
+# Dynamic load balancing state
+type LoadBalancer = struct {
+    cpu_utilization: Vec<f64>,
+    gpu_utilization: f64,
+    pending_cpu_tasks: u32,
+    pending_gpu_tasks: u32,
+    cpu_avg_completion_time: f64,
+    gpu_avg_completion_time: f64,
+}
+
+impl LoadBalancer {
+    fun new(num_cpus: u32) -> Self {
+        LoadBalancer {
+            cpu_utilization: vec![0.0; num_cpus as usize],
+            gpu_utilization: 0.0,
+            pending_cpu_tasks: 0,
+            pending_gpu_tasks: 0,
+            cpu_avg_completion_time: 1.0,
+            gpu_avg_completion_time: 1.0,
+        }
+    }
+
+    fun update_cpu_utilization(&mut self, core: u32, util: f64) {
+        if (core as usize) < self.cpu_utilization.len() {
+            self.cpu_utilization[core as usize] = util
+        }
+    }
+
+    fun update_gpu_utilization(&mut self, util: f64) {
+        self.gpu_utilization = util
+    }
+
+    fun get_least_busy_cpu(&self) -> u32 {
+        let mut min_idx = 0
+        let mut min_util = self.cpu_utilization[0]
+
+        for i in 1..self.cpu_utilization.len() {
+            if self.cpu_utilization[i] < min_util {
+                min_util = self.cpu_utilization[i]
+                min_idx = i
+            }
+        }
+
+        min_idx as u32
+    }
+
+    fun should_use_gpu(&self) -> bool {
+        self.gpu_utilization < 0.8  # Use GPU if less than 80% busy
+    }
+
+    fun get_optimal_target(&self, workload: u32) -> TaskTarget {
+        let cpu_util = self.cpu_utilization.iter().sum::<f64>() / self.cpu_utilization.len() as f64
+        let gpu_efficient = workload > 50  # GPU efficient for workloads > 50
+        let gpu_available = self.should_use_gpu()
+
+        if gpu_efficient && gpu_available {
+            TaskTarget::GpuOnly
+        } else if cpu_util < 0.5 {
+            TaskTarget::CpuOnly
+        } else {
+            TaskTarget::Hybrid
+        }
+    }
+}
+
+# Hybrid executor
+type HybridExecutor = struct {
+    cpu_pool: Vec<CpuWorker>,
+    gpu_context: Option<*dyn GpuContext>,
+    load_balancer: LoadBalancer,
+    task_queue: Vec<Task>,
+    completed_tasks: Vec<Task>,
+    auto_tuning: AutoTuner,
+}
+
+type CpuWorker = struct {
+    id: u32,
+    utilization: f64,
+    tasks_completed: u32,
+}
+
+type Task = struct {
+    id: u64,
+    target: TaskTarget,
+    priority: u32,
+    completion_time: f64,
+}
+
+type AutoTuner = struct {
+    sample_count: u32,
+    cpu_performance: Vec<f64>,
+    gpu_performance: Vec<f64>,
+    optimal_split: f64,  # 0.0 = pure GPU, 1.0 = pure CPU
+}
+
+impl HybridExecutor {
+    fun new(cpu_count: u32, gpu_context: Option<*dyn GpuContext>) -> Self {
+        let mut cpu_pool = Vec::new()
+        for i in 0..cpu_count {
+            cpu_pool.push(CpuWorker {
+                id: i,
+                utilization: 0.0,
+                tasks_completed: 0,
+            })
+        }
+
+        HybridExecutor {
+            cpu_pool,
+            gpu_context,
+            load_balancer: LoadBalancer::new(cpu_count),
+            task_queue: Vec::new(),
+            completed_tasks: Vec::new(),
+            auto_tuning: AutoTuner::new(),
+        }
+    }
+
+    fun submit_task<T>(&mut self, task: ExecutionTask<T>) -> Result<u64, string> {
+        let target = if task.target == TaskTarget::Automatic {
+            self.load_balancer.get_optimal_target(task.workload_estimate)
+        } else {
+            task.target
+        }
+
+        self.task_queue.push(Task {
+            id: task.id,
+            target,
+            priority: 0,
+            completion_time: 0.0,
+        })
+
+        Ok(task.id)
+    }
+
+    fun execute_cpu_task(&mut self, task_id: u64, workload: u32) -> Result<f64, string> {
+        let core = self.load_balancer.get_least_busy_cpu()
+        let worker = &mut self.cpu_pool[core as usize]
+
+        # Simulate task execution
+        let execution_time = (workload as f64) * 0.01  # 10µs per complexity point
+        worker.tasks_completed += 1
+        worker.utilization += 0.1
+
+        Ok(execution_time)
+    }
+
+    fun execute_gpu_task(&mut self, task_id: u64, workload: u32) -> Result<f64, string> {
+        if self.gpu_context.is_none() {
+            return Err("GPU not available".to_string())
+        }
+
+        # GPU execution time (typically faster for large workloads)
+        let execution_time = (workload as f64) * 0.002  // 2µs per complexity point
+        self.load_balancer.update_gpu_utilization(0.8)
+
+        Ok(execution_time)
+    }
+
+    fun execute_hybrid_task(&mut self, task_id: u64, cpu_work: u32, gpu_work: u32)
+        -> Result<(f64, f64), string> {
+
+        let cpu_time = self.execute_cpu_task(task_id, cpu_work)?
+        let gpu_time = if self.gpu_context.is_some() {
+            self.execute_gpu_task(task_id, gpu_work)?
+        } else {
+            self.execute_cpu_task(task_id, gpu_work)?
+        }
+
+        # Hybrid execution: parallel CPU+GPU work
+        let total_time = if cpu_time > gpu_time { cpu_time } else { gpu_time }
+        Ok((cpu_time, total_time))
+    }
+
+    fun execute_all(&mut self) -> Result<Vec<f64>, string> {
+        let mut results = Vec::new()
+
+        for task in self.task_queue.iter() {
+            let time = match task.target {
+                TaskTarget::CpuOnly => self.execute_cpu_task(task.id, 50)?,
+                TaskTarget::GpuOnly => self.execute_gpu_task(task.id, 75)?,
+                TaskTarget::Hybrid => {
+                    let (_, total) = self.execute_hybrid_task(task.id, 30, 45)?
+                    total
+                },
+                _ => 0.0,
+            }
+
+            results.push(time)
+            self.auto_tuning.record_performance(task.target, time)
+        }
+
+        self.completed_tasks.clear()
+        self.task_queue.clear()
+
+        Ok(results)
+    }
+
+    fun get_load_balanced_schedule(&self) -> Vec<(u64, TaskTarget)> {
+        # Return optimal task schedule
+        self.task_queue.iter()
+            .map(|t| (t.id, t.target.clone()))
+            .collect()
+    }
+
+    fun get_cpu_utilization(&self) -> f64 {
+        let total: f64 = self.cpu_pool.iter().map(|w| w.utilization).sum()
+        total / self.cpu_pool.len() as f64
+    }
+
+    fun get_gpu_utilization(&self) -> f64 {
+        self.load_balancer.gpu_utilization
+    }
+
+    fun get_overall_utilization(&self) -> f64 {
+        let cpu_util = self.get_cpu_utilization()
+        let gpu_util = self.get_gpu_utilization()
+        (cpu_util + gpu_util) / 2.0
+    }
+}
+
+# Auto-tuning for optimal CPU/GPU split
+impl AutoTuner {
+    fun new() -> Self {
+        AutoTuner {
+            sample_count: 0,
+            cpu_performance: Vec::new(),
+            gpu_performance: Vec::new(),
+            optimal_split: 0.5,
+        }
+    }
+
+    fun record_performance(&mut self, target: TaskTarget, time: f64) {
+        match target {
+            TaskTarget::CpuOnly => self.cpu_performance.push(time),
+            TaskTarget::GpuOnly => self.gpu_performance.push(time),
+            _ => {}
+        }
+
+        if self.sample_count > 0 && self.sample_count % 100 == 0 {
+            self.recalibrate()
+        }
+
+        self.sample_count += 1
+    }
+
+    fun recalibrate(&mut self) {
+        if self.cpu_performance.len() == 0 || self.gpu_performance.len() == 0 {
+            return
+        }
+
+        let cpu_avg = self.cpu_performance.iter().sum::<f64>() / self.cpu_performance.len() as f64
+        let gpu_avg = self.gpu_performance.iter().sum::<f64>() / self.gpu_performance.len() as f64
+
+        # Adjust split: favor faster target
+        self.optimal_split = if gpu_avg < cpu_avg {
+            0.7  # 70% GPU, 30% CPU
+        } else if cpu_avg < gpu_avg {
+            0.3  # 30% GPU, 70% CPU
+        } else {
+            0.5  # 50-50 split
+        }
+
+        # Clear old samples
+        self.cpu_performance.clear()
+        self.gpu_performance.clear()
+    }
+
+    fun get_optimal_split(&self) -> f64 {
+        self.optimal_split
+    }
+}
+
+# Work distribution with overflow handling
+type WorkDistributor = struct {
+    cpu_queue: Vec<u64>,
+    gpu_queue: Vec<u64>,
+    overflow_queue: Vec<u64>,
+    max_cpu_queue: u32,
+    max_gpu_queue: u32,
+}
+
+impl WorkDistributor {
+    fun new(max_cpu: u32, max_gpu: u32) -> Self {
+        WorkDistributor {
+            cpu_queue: Vec::new(),
+            gpu_queue: Vec::new(),
+            overflow_queue: Vec::new(),
+            max_cpu_queue: max_cpu,
+            max_gpu_queue: max_gpu,
+        }
+    }
+
+    fun submit_task(&mut self, task_id: u64, target: TaskTarget) -> Result<(), string> {
+        match target {
+            TaskTarget::CpuOnly => {
+                if self.cpu_queue.len() < self.max_cpu_queue as usize {
+                    self.cpu_queue.push(task_id)
+                    Ok(())
+                } else {
+                    self.overflow_queue.push(task_id)
+                    Ok(())
+                }
+            },
+            TaskTarget::GpuOnly => {
+                if self.gpu_queue.len() < self.max_gpu_queue as usize {
+                    self.gpu_queue.push(task_id)
+                    Ok(())
+                } else {
+                    self.overflow_queue.push(task_id)
+                    Ok(())
+                }
+            },
+            _ => {
+                # Distribute hybrid work
+                self.cpu_queue.push(task_id)
+                Ok(())
+            }
+        }
+    }
+
+    fun get_cpu_tasks(&mut self) -> Vec<u64> {
+        let mut tasks = std::mem::take(&mut self.cpu_queue)
+
+        # Drain overflow queue if space available
+        while !self.overflow_queue.is_empty() && tasks.len() < self.max_cpu_queue as usize {
+            if let Some(task) = self.overflow_queue.remove(0) {
+                tasks.push(task)
+            }
+        }
+
+        tasks
+    }
+
+    fun get_gpu_tasks(&mut self) -> Vec<u64> {
+        let mut tasks = std::mem::take(&mut self.gpu_queue)
+
+        # Drain overflow queue if space available
+        while !self.overflow_queue.is_empty() && tasks.len() < self.max_gpu_queue as usize {
+            if let Some(task) = self.overflow_queue.remove(0) {
+                tasks.push(task)
+            }
+        }
+
+        tasks
+    }
+
+    fun get_overflow_count(&self) -> u32 {
+        self.overflow_queue.len() as u32
+    }
+
+    fun has_overflow(&self) -> bool {
+        !self.overflow_queue.is_empty()
+    }
+}
+
+# Parallel execution wrapper
+type ParallelExecutor<T> = struct {
+    tasks: Vec<(u64, T)>,
+    results: Vec<(u64, Result<T, string>)>,
+}
+
+impl<T: Send> ParallelExecutor<T> {
+    fun new() -> Self {
+        ParallelExecutor {
+            tasks: Vec::new(),
+            results: Vec::new(),
+        }
+    }
+
+    fun add_task(&mut self, id: u64, task: T) {
+        self.tasks.push((id, task))
+    }
+
+    fun execute_all(&mut self) -> Result<Vec<(u64, Result<T, string>)>, string> {
+        # Execute tasks in parallel
+        # This would use rayon or tokio in real implementation
+        for (id, _) in self.tasks.iter() {
+            self.results.push((*id, Ok(default())))
+        }
+
+        Ok(std::mem::take(&mut self.results))
+    }
+}
+
+fn default<T: Default>() -> T {
+    Default::default()
+}

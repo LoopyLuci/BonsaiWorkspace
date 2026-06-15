@@ -1,0 +1,351 @@
+// services/sandbox/isolation.ti – Hardware-enforced isolation mechanisms
+// CHERI, IOMMU, EPT, cache coloring, and memory encryption
+
+module sandbox::isolation
+
+use core::option::Option
+use core::collections::HashMap
+
+/// Hardware isolation strategy: choose based on available CPU features
+#[derive(Clone, Debug)]
+pub enum IsolationStrategy {
+    Cheri,          // ARM Morello or CHERI-RISC-V: capability hardware
+    TDX,            // Intel Trusted Domain Extensions: encrypted memory + integrity
+    SEV,            // AMD Secure Encrypted Virtualization
+    EPT,            // Intel Extended Page Tables (nested VT-x)
+    NPT,            // AMD Nested Page Tables (nested SVM)
+    Hybrid,         // Combine multiple strategies (defense in depth)
+}
+
+/// Cache isolation using hardware cache partitioning
+#[derive(Clone, Debug)]
+pub struct CachePartition {
+    pub partition_id: u32,
+    pub ways: Vec<u32>,  // Cache ways assigned to this partition
+    pub policy: CachePolicy,
+}
+
+#[derive(Clone, Debug)]
+pub enum CachePolicy {
+    Exclusive,    // No cache sharing with other partitions
+    Monitored,    // Monitor for side-channel attacks
+    Flushed,      // Flush cache on context switch (highest isolation, lowest perf)
+}
+
+/// IOMMU configuration: isolate DMA access per sandbox
+#[derive(Clone, Debug)]
+pub struct IommuDomain {
+    pub domain_id: u32,
+    pub sandbox_id: String,
+    pub page_table_root: u64,  // Physical address of IOMMU page table
+    pub allowed_pages: Vec<(u64, u64)>,  // Physical page ranges
+}
+
+impl IommuDomain {
+    pub fn new(domain_id: u32, sandbox_id: &str, page_table_root: u64) -> Self {
+        Self {
+            domain_id,
+            sandbox_id: sandbox_id.to_string(),
+            page_table_root,
+            allowed_pages: vec![],
+        }
+    }
+
+    /// Add a physical page range that this sandbox can DMA to/from
+    pub fn add_page_range(&mut self, start_phys: u64, end_phys: u64) {
+        self.allowed_pages.push((start_phys, end_phys));
+    }
+
+    /// Check if a physical address is within this domain's allowed pages
+    pub fn is_allowed(&self, phys_addr: u64) -> bool {
+        self.allowed_pages.iter().any(|(start, end)| {
+            phys_addr >= *start && phys_addr < *end
+        })
+    }
+}
+
+/// Extended Page Table (EPT) / Nested Page Table (NPT) management
+/// These are 2-level page tables used by nested virtualization
+#[derive(Clone, Debug)]
+pub struct NestedPageTable {
+    pub table_id: u32,
+    pub sandbox_id: String,
+    pub root_phys: u64,  // Physical address of root EPTP/nCR3
+    pub guest_pages: HashMap<u64, PhysicalPage>,  // GPA -> physical page
+}
+
+#[derive(Clone, Debug)]
+pub struct PhysicalPage {
+    pub gpa: u64,  // Guest physical address
+    pub hpa: u64,  // Host physical address
+    pub size: u64,  // Page size (4K, 2M, 1G)
+    pub permissions: PagePermissions,
+}
+
+#[derive(Clone, Debug)]
+pub struct PagePermissions {
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub user_accessible: bool,
+}
+
+impl NestedPageTable {
+    pub fn new(table_id: u32, sandbox_id: &str, root_phys: u64) -> Self {
+        Self {
+            table_id,
+            sandbox_id: sandbox_id.to_string(),
+            root_phys,
+            guest_pages: HashMap::new(),
+        }
+    }
+
+    /// Map a guest physical page to a host physical page
+    pub fn map(
+        &mut self,
+        gpa: u64,
+        hpa: u64,
+        size: u64,
+        permissions: PagePermissions,
+    ) {
+        let page = PhysicalPage {
+            gpa,
+            hpa,
+            size,
+            permissions,
+        };
+        self.guest_pages.insert(gpa, page);
+    }
+
+    /// Ensure guest cannot map outside its allocated region
+    pub fn validate_map(&self, hpa: u64, sandbox_memory_regions: &[(u64, u64)]) -> bool {
+        sandbox_memory_regions.iter().any(|(start, end)| {
+            hpa >= *start && hpa < *end
+        })
+    }
+}
+
+/// CHERI capability enforcement: bounds checking at CPU level
+#[derive(Clone, Debug)]
+pub struct CheriCapability {
+    pub base: u64,
+    pub limit: u64,  // Exclusive upper bound
+    pub permissions: u64,  // Bitmask of allowed access types
+    pub tag: bool,  // Validity tag (hardware-enforced)
+}
+
+impl CheriCapability {
+    pub fn new(base: u64, size: u64, permissions: u64) -> Self {
+        Self {
+            base,
+            limit: base + size,
+            permissions,
+            tag: true,
+        }
+    }
+
+    /// Validate a memory access against this capability
+    pub fn validate_access(&self, addr: u64, size: u64, access_type: u64) -> bool {
+        if !self.tag {
+            return false;  // Invalid capability
+        }
+
+        // Check bounds
+        if addr < self.base || addr + size > self.limit {
+            return false;
+        }
+
+        // Check permissions
+        (self.permissions & access_type) != 0
+    }
+
+    /// Derive a narrower capability
+    pub fn derive(&self, new_base: u64, new_size: u64, new_perms: u64) -> Result<CheriCapability, String> {
+        // Validate narrowing
+        if new_base < self.base || new_base + new_size > self.limit {
+            return Err("Derived capability exceeds parent bounds".to_string());
+        }
+
+        if (new_perms & !self.permissions) != 0 {
+            return Err("Cannot escalate permissions".to_string());
+        }
+
+        Ok(CheriCapability {
+            base: new_base,
+            limit: new_base + new_size,
+            permissions: new_perms,
+            tag: true,
+        })
+    }
+}
+
+/// Deterministic execution: makes I/O, timing, and scheduling reproducible
+#[derive(Clone, Debug)]
+pub struct DeterministicMode {
+    pub enabled: bool,
+    pub virtual_clock: u64,  // Nanoseconds since boot
+    pub clock_rate: f64,  // 1.0 = real-time, 2.0 = 2x speed
+    pub seed: u64,  // For PRNG reproducibility
+    pub syscall_log: Vec<SyscallRecord>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyscallRecord {
+    pub sequence: u64,
+    pub syscall_id: u32,
+    pub args: Vec<u64>,
+    pub result: i64,
+    pub timestamp: u64,
+}
+
+impl DeterministicMode {
+    pub fn new(seed: u64) -> Self {
+        Self {
+            enabled: true,
+            virtual_clock: 0,
+            clock_rate: 1.0,
+            seed,
+            syscall_log: vec![],
+        }
+    }
+
+    pub fn tick(&mut self, delta_ns: u64) {
+        let scaled = (delta_ns as f64 * self.clock_rate) as u64;
+        self.virtual_clock += scaled;
+    }
+
+    pub fn record_syscall(&mut self, sc_id: u32, args: Vec<u64>, result: i64) {
+        self.syscall_log.push(SyscallRecord {
+            sequence: self.syscall_log.len() as u64,
+            syscall_id: sc_id,
+            args,
+            result,
+            timestamp: self.virtual_clock,
+        });
+    }
+
+    /// Replay a recorded syscall sequence (for forensic analysis)
+    pub fn replay(&mut self, record: &SyscallRecord) -> i64 {
+        self.virtual_clock = record.timestamp;
+        record.result
+    }
+}
+
+/// Side-channel mitigation: constant-time operations and micro-architectural protections
+pub struct SideChannelMitigation {
+    pub constant_time_crypto: bool,  // Use verified constant-time crypto libs
+    pub flush_cache_on_switch: bool,  // Flush L3 cache on context switch
+    pub disable_cycle_counter: bool,  // Prevent rdtsc/pmccntr access
+    pub disable_prefetch: bool,  // Disable speculative prefetching
+    pub spectre_mitigation: SpectreMitigation,
+}
+
+#[derive(Clone, Debug)]
+pub enum SpectreMitigation {
+    None,
+    Lfence,  // Insert lfence barriers
+    Swapgs,  // Mitigate Variant 2 (indirect branches)
+    Retpoline,  // Use retpoline for indirect calls
+    IBRS,  // Indirect Branch Restricted Speculation (Intel)
+}
+
+impl SideChannelMitigation {
+    pub fn production_grade() -> Self {
+        Self {
+            constant_time_crypto: true,
+            flush_cache_on_switch: false,  // Too slow; use CAT instead
+            disable_cycle_counter: true,
+            disable_prefetch: true,
+            spectre_mitigation: SpectreMitigation::IBRS,
+        }
+    }
+}
+
+/// Sandbox isolation manager: coordinates all isolation mechanisms
+pub struct IsolationManager {
+    pub strategy: IsolationStrategy,
+    pub sandboxes: HashMap<String, SandboxIsolation>,
+    pub cache_partitions: HashMap<u32, CachePartition>,
+    pub iommu_domains: HashMap<u32, IommuDomain>,
+    pub ept_tables: HashMap<u32, NestedPageTable>,
+}
+
+pub struct SandboxIsolation {
+    pub sandbox_id: String,
+    pub cache_partition: Option<CachePartition>,
+    pub iommu_domain: Option<IommuDomain>,
+    pub ept_table: Option<NestedPageTable>,
+    pub cheri_caps: Vec<CheriCapability>,
+    pub deterministic: Option<DeterministicMode>,
+    pub side_channel: SideChannelMitigation,
+}
+
+impl IsolationManager {
+    pub fn new(strategy: IsolationStrategy) -> Self {
+        Self {
+            strategy,
+            sandboxes: HashMap::new(),
+            cache_partitions: HashMap::new(),
+            iommu_domains: HashMap::new(),
+            ept_tables: HashMap::new(),
+        }
+    }
+
+    pub fn create_sandbox(
+        &mut self,
+        sandbox_id: &str,
+        memory_size: u64,
+        cpu_cores: u32,
+        deterministic: bool,
+    ) -> Result<(), String> {
+        let mut isolation = SandboxIsolation {
+            sandbox_id: sandbox_id.to_string(),
+            cache_partition: None,
+            iommu_domain: None,
+            ept_table: None,
+            cheri_caps: vec![],
+            deterministic: if deterministic { Some(DeterministicMode::new(42)) } else { None },
+            side_channel: SideChannelMitigation::production_grade(),
+        };
+
+        // Allocate cache partition
+        let cache_id = self.cache_partitions.len() as u32;
+        let partition = CachePartition {
+            partition_id: cache_id,
+            ways: vec![cache_id * 4, cache_id * 4 + 1, cache_id * 4 + 2, cache_id * 4 + 3],
+            policy: CachePolicy::Monitored,
+        };
+        self.cache_partitions.insert(cache_id, partition.clone());
+        isolation.cache_partition = Some(partition);
+
+        // Allocate IOMMU domain
+        let iommu_id = self.iommu_domains.len() as u32;
+        let mut iommu = IommuDomain::new(iommu_id, sandbox_id, 0x100000 + (iommu_id as u64 * 0x1000));
+        iommu.add_page_range(0x1000000 + (iommu_id as u64 * memory_size), 0x1000000 + (iommu_id as u64 * memory_size) + memory_size);
+        self.iommu_domains.insert(iommu_id, iommu.clone());
+        isolation.iommu_domain = Some(iommu);
+
+        // Allocate nested page table
+        let ept_id = self.ept_tables.len() as u32;
+        let ept = NestedPageTable::new(ept_id, sandbox_id, 0x200000 + (ept_id as u64 * 0x1000));
+        self.ept_tables.insert(ept_id, ept.clone());
+        isolation.ept_table = Some(ept);
+
+        // Allocate CHERI capabilities for memory regions
+        let mem_cap = CheriCapability::new(0x1000000, memory_size, 0x3);  // RW
+        isolation.cheri_caps.push(mem_cap);
+
+        self.sandboxes.insert(sandbox_id.to_string(), isolation);
+        Ok(())
+    }
+
+    pub fn get_isolation(&self, sandbox_id: &str) -> Option<&SandboxIsolation> {
+        self.sandboxes.get(sandbox_id)
+    }
+
+    pub fn destroy_sandbox(&mut self, sandbox_id: &str) -> Result<(), String> {
+        self.sandboxes.remove(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+        Ok(())
+    }
+}

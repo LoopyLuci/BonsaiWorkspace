@@ -1,0 +1,167 @@
+// kernel/boot_x86_64.ti — USOS bare-metal x86-64 bootloader interface
+// Models the transition from bootloader to kernel initialization.
+// In production: assembled from boot.asm; here: pure Titan simulation
+// of the boot sequence with GDT init, paging, and first process spawn.
+
+extern "titan" {fn heap_alloc_term()->i64;fn heap_set_tag(a:i64,b:i64);fn heap_get_tag(a:i64)->i64;fn heap_set_body(a:i64,b:i64);fn heap_get_body(a:i64)->i64;fn heap_set_arg(a:i64,b:i64);fn heap_get_arg(a:i64)->i64;fn heap_set_domain(a:i64,b:i64);fn heap_get_domain(a:i64)->i64;}
+
+const TAG_GDT:   i64 = 70000;
+const TAG_IDT:   i64 = 70001;
+const TAG_PAGE:  i64 = 70002;
+const TAG_INIT:  i64 = 70003;
+
+// ── GDT (Global Descriptor Table) ─────────────────────────────────────────
+// body=segment_id, arg=base, domain=limit
+let g_gdt_head: i64 = 0;
+
+pub fn gdt_segment(id:i64, base:i64, limit:i64) -> i64 {
+    let s=heap_alloc_term(); heap_set_tag(s,TAG_GDT);
+    heap_set_body(s,id); heap_set_arg(s,base); heap_set_domain(s,limit); return s;
+}
+
+pub fn gdt_init() {
+    // Add four segments: NULL, KERNEL_CODE, KERNEL_DATA, USER_CODE, USER_DATA
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_GDT);
+    heap_set_body(n,0);   // NULL segment
+    heap_set_arg(n,0); heap_set_domain(n,0);
+    g_gdt_head=n;
+
+    let c=heap_alloc_term(); heap_set_tag(c,TAG_GDT);
+    heap_set_body(c,1);   // KERNEL_CODE
+    heap_set_arg(c,0); heap_set_domain(c,0x100000000); // 4GB limit
+    heap_set_domain(n,c); n=c;
+
+    let d=heap_alloc_term(); heap_set_tag(d,TAG_GDT);
+    heap_set_body(d,2);   // KERNEL_DATA
+    heap_set_arg(d,0); heap_set_domain(d,0x100000000);
+    heap_set_domain(n,d); n=d;
+
+    let uc=heap_alloc_term(); heap_set_tag(uc,TAG_GDT);
+    heap_set_body(uc,3);  // USER_CODE
+    heap_set_arg(uc,0); heap_set_domain(uc,0x100000000);
+    heap_set_domain(n,uc); n=uc;
+
+    let ud=heap_alloc_term(); heap_set_tag(ud,TAG_GDT);
+    heap_set_body(ud,4);  // USER_DATA
+    heap_set_arg(ud,0); heap_set_domain(ud,0x100000000);
+    heap_set_domain(n,ud);
+
+    return;
+}
+
+// ── IDT (Interrupt Descriptor Table) ──────────────────────────────────────
+// body=vector, arg=handler_addr, domain=next
+let g_idt_head: i64 = 0;
+let g_idt_count: i64 = 0;
+
+pub fn idt_register(vector:i64, handler_addr:i64) {
+    let e=heap_alloc_term(); heap_set_tag(e,TAG_IDT);
+    heap_set_body(e,vector); heap_set_arg(e,handler_addr); heap_set_domain(e,g_idt_head);
+    g_idt_head=e; g_idt_count=g_idt_count+1; return;
+}
+
+pub fn idt_init() {
+    // Register key interrupt vectors
+    idt_register(0, 0x1000);   // #DE (divide error)
+    idt_register(1, 0x2000);   // #DB (debug)
+    idt_register(8, 0x8000);   // #DF (double fault)
+    idt_register(14, 0xE000);  // #PF (page fault)
+    idt_register(32, 0x20000); // IRQ0 (timer)
+    idt_register(33, 0x21000); // IRQ1 (keyboard)
+    return;
+}
+
+pub fn idt_count() -> i64 { return g_idt_count; }
+
+// ── Paging ───────────────────────────────────────────────────────────────
+// Model: page table entry body=pte_addr, arg=flags, domain=mapped_phys_addr
+let g_pte_head: i64 = 0;
+let g_pte_count: i64 = 0;
+
+pub fn paging_map(virt_addr:i64, phys_addr:i64, flags:i64) {
+    let pte=heap_alloc_term(); heap_set_tag(pte,TAG_PAGE);
+    heap_set_body(pte,virt_addr); heap_set_arg(pte,flags); heap_set_domain(pte,phys_addr);
+    let n=heap_alloc_term(); heap_set_tag(n,TAG_PAGE);
+    heap_set_body(n,pte); heap_set_arg(n,g_pte_head);
+    g_pte_head=n; g_pte_count=g_pte_count+1; return;
+}
+
+pub fn paging_lookup(virt_addr:i64) -> i64 {
+    let cur=g_pte_head;
+    while cur!=0 {
+        let pte=heap_get_body(cur);
+        if heap_get_body(pte)==virt_addr { return heap_get_domain(pte); }
+        cur=heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn paging_init() {
+    // Identity map first 1MB
+    let i=0;
+    while i<1024 { paging_map(i*4096, i*4096, 3); i=i+1; } // PTE flags: present|writable
+    return;
+}
+
+pub fn paging_entries() -> i64 { return g_pte_count; }
+
+// ── Boot sequence ─────────────────────────────────────────────────────────
+let g_boot_state: i64 = 0;  // 0=start, 1=gdt_ok, 2=idt_ok, 3=paging_ok, 4=init_spawned
+
+pub fn boot_sequence() -> i64 {
+    // Step 1: Disable interrupts
+    g_boot_state=0;
+
+    // Step 2: Initialize GDT
+    gdt_init();
+    g_boot_state=1;
+
+    // Step 3: Initialize IDT
+    idt_init();
+    g_boot_state=2;
+
+    // Step 4: Set up paging
+    paging_init();
+    g_boot_state=3;
+
+    // Step 5: Load init process (simulated: just mark as spawned)
+    g_boot_state=4;
+
+    // Step 6: Enable interrupts and start scheduler (simulated: just return)
+    return 111;
+}
+
+pub fn boot_state() -> i64 { return g_boot_state; }
+
+pub fn main() -> i64 {
+    // Test 1: GDT initialization
+    gdt_init();
+    if g_gdt_head==0 { return 1; }
+
+    // Test 2: IDT initialization
+    idt_init();
+    if idt_count() < 5 { return 2; }
+
+    // Test 3: Paging setup
+    paging_init();
+    if paging_entries() < 1024 { return 3; }
+
+    // Test 4: Paging lookups work
+    let phys = paging_lookup(0);
+    if phys < 0 { return 4; }
+
+    // Test 5: Full boot sequence
+    let r = boot_sequence();
+    if r != 111 { return 5; }
+    if boot_state() != 4 { return 6; }
+
+    // Test 6: IDT vector lookup (simulated)
+    if idt_count() != 6 { return 7; }  // 5 vectors + 1 from init_idt
+
+    // Test 7: Paging identity map (check sample addresses)
+    if paging_lookup(0) != 0     { return 8; }
+    if paging_lookup(4096) != 4096 { return 9; }
+    if paging_lookup(2097152) != 2097152 { return 10; } // 512 * 4096
+
+    return 111;
+}

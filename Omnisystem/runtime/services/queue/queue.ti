@@ -1,0 +1,120 @@
+// services/build-queue/queue.ti — Priority message queue
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_MSG:   i64 = 9900;
+const TAG_QUEUE: i64 = 9901;
+const TAG_NODE:  i64 = 9902;
+
+// Message: body=id, arg=priority, domain=payload
+pub fn msg_new(id: i64, priority: i64, payload: i64) -> i64 {
+    let m = heap_alloc_term();
+    heap_set_tag(m, TAG_MSG);
+    heap_set_body(m, id);
+    heap_set_arg(m, priority);
+    heap_set_domain(m, payload);
+    return m;
+}
+
+pub fn msg_id(m: i64) -> i64 { return heap_get_body(m); }
+pub fn msg_priority(m: i64) -> i64 { return heap_get_arg(m); }
+pub fn msg_payload(m: i64) -> i64 { return heap_get_domain(m); }
+
+// Queue: high-priority messages (priority > 5) go to head, others to tail
+// body=head_node, arg=count, domain=next_id
+pub fn queue_new() -> i64 {
+    let q = heap_alloc_term();
+    heap_set_tag(q, TAG_QUEUE);
+    heap_set_body(q, 0);
+    heap_set_arg(q, 0);
+    heap_set_domain(q, 0);
+    return q;
+}
+
+pub fn queue_len(q: i64) -> i64 { return heap_get_arg(q); }
+pub fn queue_empty(q: i64) -> i64 { if queue_len(q) == 0 { return 1; } return 0; }
+
+pub fn queue_enqueue(q: i64, payload: i64, priority: i64) -> i64 {
+    let id = heap_get_domain(q);
+    heap_set_domain(q, id + 1);
+    let m = msg_new(id, priority, payload);
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, m);
+    heap_set_arg(node, 0);
+
+    if priority > 5 {
+        // High priority: prepend to head
+        heap_set_arg(node, heap_get_body(q));
+        heap_set_body(q, node);
+    } else {
+        // Normal: find tail and append
+        if heap_get_body(q) == 0 {
+            heap_set_body(q, node);
+        } else {
+            let cur = heap_get_body(q);
+            while heap_get_arg(cur) != 0 { cur = heap_get_arg(cur); }
+            heap_set_arg(cur, node);
+        }
+    }
+    heap_set_arg(q, heap_get_arg(q) + 1);
+    return id;
+}
+
+pub fn queue_dequeue(q: i64) -> i64 {
+    if queue_empty(q) != 0 { return -1; }
+    let node = heap_get_body(q);
+    let m = heap_get_body(node);
+    heap_set_body(q, heap_get_arg(node));
+    heap_set_arg(q, heap_get_arg(q) - 1);
+    return m;
+}
+
+pub fn queue_peek(q: i64) -> i64 {
+    if queue_empty(q) != 0 { return -1; }
+    return heap_get_body(heap_get_body(q));
+}
+
+pub fn main() -> i64 {
+    // Test 1: queue creation
+    let q = queue_new();
+    if queue_empty(q) != 1 { return 1; }
+
+    // Test 2: enqueue/dequeue
+    queue_enqueue(q, 100, 1);
+    let m = queue_dequeue(q);
+    if m < 0 { return 2; }
+    if msg_id(m) != 0 { return 3; }
+
+    // Test 3: priority ordering
+    let q2 = queue_new();
+    queue_enqueue(q2, 10, 1);    // low priority: id=0
+    queue_enqueue(q2, 20, 9);    // high priority: id=1, goes to head
+    let first = queue_dequeue(q2);
+    if msg_priority(first) != 9 { return 4; }
+
+    // Test 4: queue length
+    let q3 = queue_new();
+    queue_enqueue(q3, 1, 1);
+    queue_enqueue(q3, 2, 1);
+    if queue_len(q3) != 2 { return 5; }
+
+    // Test 5: peek
+    let q4 = queue_new();
+    queue_enqueue(q4, 42, 3);
+    let peeked = queue_peek(q4);
+    if peeked < 0 { return 6; }
+    if queue_len(q4) != 1 { return 7; }  // peek doesn't remove
+
+    return 0;
+}

@@ -1,0 +1,173 @@
+---
+# Flagger Canary resource for gradual deployments
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: bonsai-core
+  namespace: bonsai
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bonsai-core
+  progressDeadlineSeconds: 600
+  service:
+    port: 80
+    targetPort: api
+
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 50
+    stepWeight: 5
+
+    metrics:
+    - name: request-success-rate
+      thresholdRange:
+        min: 99
+      interval: 1m
+    - name: request-duration
+      thresholdRange:
+        max: 500
+      interval: 1m
+
+    webhooks:
+    - name: acceptance-test
+      url: http://flagger-loadtester/
+      timeout: 5s
+      metadata:
+        type: smoke
+        cmd: "curl -sd 'test' http://bonsai-core:80/api/health"
+    - name: load-test
+      url: http://flagger-loadtester/
+      timeout: 5s
+      metadata:
+        cmd: "hey -z 1m -q 10 -c 2 http://bonsai-core:80/"
+        logCmdOutput: "true"
+
+  # Rollback on failure
+  skipAnalysis: false
+
+---
+# AlertManager integration for canary failures
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bonsai-canary-alerts
+  namespace: bonsai
+data:
+  alerts.yaml: |
+    groups:
+    - name: bonsai.rules
+      interval: 30s
+      rules:
+      - alert: CanaryFailure
+        expr: flagger_canary_status{name="bonsai-core", namespace="bonsai"} != 1
+        for: 2m
+        labels:
+          severity: critical
+          component: deployment
+        annotations:
+          summary: "Bonsai canary deployment failed"
+          description: "Canary deployment for bonsai-core has failed metrics validation"
+
+      - alert: HighErrorRate
+        expr: |
+          (sum(rate(http_requests_total{app="bonsai",status=~"5.."}[5m]))
+           /
+           sum(rate(http_requests_total{app="bonsai"}[5m])))
+          > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate > 1% for bonsai"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{app="bonsai"}[5m]))
+            by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "p95 latency > 500ms for bonsai"
+
+---
+# Service Monitor for Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bonsai-core
+  namespace: bonsai
+spec:
+  selector:
+    matchLabels:
+      app: bonsai
+      component: core
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+# Virtual Service for traffic management (Istio)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bonsai-core
+  namespace: bonsai
+spec:
+  hosts:
+  - bonsai-core
+  http:
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: bonsai-core
+        port:
+          number: 80
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+  - route:
+    - destination:
+        host: bonsai-core
+        port:
+          number: 80
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+
+---
+# Destination Rule for Istio circuit breaking
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: bonsai-core
+  namespace: bonsai
+spec:
+  host: bonsai-core
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minRequestVolume: 5
+      splitExternalLocalOriginErrors: true

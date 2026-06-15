@@ -1,0 +1,363 @@
+// services/sandbox/forensics.ti – Forensic analysis and IOC extraction from sandboxes
+// Automatically detects indicators of compromise (IOCs) and maps to MITRE ATT&CK framework
+
+module sandbox::forensics
+
+use core::collections::HashMap
+use core::option::Option
+use core::vec::Vec
+
+/// Indicator of Compromise (IOC): a specific artifact of malware activity
+#[derive(Clone, Debug)]
+pub enum IOC {
+    FileCreated(String),
+    FileModified(String),
+    FileDeleted(String),
+    DirectoryCreated(String),
+    RegistryKeyAdded(String),
+    RegistryValueModified(String),
+    ProcessCreated(String, Vec<String>),  // name, args
+    NetworkConnection(String, u16),  // ip, port
+    DnsQuery(String),
+    PortListened(u16),
+    ServiceInstalled(String),
+    EnvironmentVariableSet(String, String),
+    SharedLibraryLoaded(String),
+    MutexCreated(String),
+    EventCreated(String),
+}
+
+impl IOC {
+    pub fn category(&self) -> &'static str {
+        match self {
+            IOC::FileCreated(_) | IOC::FileModified(_) | IOC::FileDeleted(_) | IOC::DirectoryCreated(_) =>
+                "File System",
+            IOC::RegistryKeyAdded(_) | IOC::RegistryValueModified(_) =>
+                "Registry",
+            IOC::ProcessCreated(_, _) =>
+                "Process Execution",
+            IOC::NetworkConnection(_, _) | IOC::DnsQuery(_) | IOC::PortListened(_) =>
+                "Network",
+            IOC::ServiceInstalled(_) =>
+                "Persistence",
+            IOC::EnvironmentVariableSet(_, _) =>
+                "Environment",
+            IOC::SharedLibraryLoaded(_) =>
+                "Code Loading",
+            IOC::MutexCreated(_) | IOC::EventCreated(_) =>
+                "Synchronization",
+        }
+    }
+
+    pub fn severity(&self) -> Severity {
+        match self {
+            IOC::ProcessCreated(_, _) | IOC::NetworkConnection(_, _) | IOC::ServiceInstalled(_) =>
+                Severity::High,
+            IOC::FileModified(_) | IOC::RegistryValueModified(_) | IOC::DnsQuery(_) =>
+                Severity::Medium,
+            IOC::FileCreated(_) | IOC::DirectoryCreated(_) | IOC::SharedLibraryLoaded(_) =>
+                Severity::Low,
+            _ => Severity::Info,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Severity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// MITRE ATT&CK technique mapping
+#[derive(Clone, Debug)]
+pub struct MitreAttackTechnique {
+    pub id: String,  // "T1234"
+    pub name: String,
+    pub tactic: String,  // "Execution", "Persistence", etc.
+    pub description: String,
+    pub confidence: f32,  // 0.0 to 1.0
+}
+
+/// Forensic engine: analyzes sandbox activity and extracts IOCs
+pub struct ForensicsEngine {
+    pub sandbox_id: String,
+    pub iocs: Vec<IOC>,
+    pub mitre_techniques: Vec<MitreAttackTechnique>,
+    pub syscall_log: Vec<SyscallEntry>,
+    pub file_accesses: HashMap<String, FileAccess>,
+    pub network_flows: Vec<NetworkFlow>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyscallEntry {
+    pub timestamp: u64,
+    pub syscall_id: u32,
+    pub args: Vec<u64>,
+    pub result: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileAccess {
+    pub path: String,
+    pub mode: String,  // "read", "write", "execute", "delete"
+    pub first_access: u64,
+    pub last_access: u64,
+    pub access_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct NetworkFlow {
+    pub src_ip: String,
+    pub src_port: u16,
+    pub dst_ip: String,
+    pub dst_port: u16,
+    pub protocol: String,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+impl ForensicsEngine {
+    pub fn new(sandbox_id: &str) -> Self {
+        Self {
+            sandbox_id: sandbox_id.to_string(),
+            iocs: vec![],
+            mitre_techniques: vec![],
+            syscall_log: vec![],
+            file_accesses: HashMap::new(),
+            network_flows: vec![],
+        }
+    }
+
+    /// Analyze syscall log and extract IOCs
+    pub fn analyze_syscalls(&mut self, syscall_log: Vec<SyscallEntry>) {
+        self.syscall_log = syscall_log;
+
+        for entry in &self.syscall_log {
+            match entry.syscall_id {
+                // open syscall (2 on Linux)
+                2 => {
+                    let path = format!("/path-from-args-{}", entry.args[0]);
+                    let flags = entry.args[1];
+
+                    if flags & 0x100 != 0 {  // O_CREAT
+                        self.iocs.push(IOC::FileCreated(path.clone()));
+                        self.register_mitre_technique("T1065", "Uncommonly Used Port", "Command and Control");
+                    }
+
+                    self.file_accesses.entry(path).or_insert(FileAccess {
+                        path: format!("/path-{}", entry.args[0]),
+                        mode: "read".to_string(),
+                        first_access: entry.timestamp,
+                        last_access: entry.timestamp,
+                        access_count: 1,
+                    });
+                }
+
+                // connect syscall (42 on Linux)
+                42 => {
+                    let ip = format!("ip-from-args-{}", entry.args[1]);
+                    let port = (entry.args[2] >> 16) as u16;
+
+                    self.iocs.push(IOC::NetworkConnection(ip.clone(), port));
+                    self.register_mitre_technique("T1071", "Application Layer Protocol", "Command and Control");
+
+                    self.network_flows.push(NetworkFlow {
+                        src_ip: "127.0.0.1".to_string(),
+                        src_port: 12345,
+                        dst_ip: ip,
+                        dst_port: port,
+                        protocol: "tcp".to_string(),
+                        bytes_sent: 0,
+                        bytes_received: 0,
+                    });
+                }
+
+                // execve syscall (59 on Linux)
+                59 => {
+                    let cmd = format!("cmd-from-args-{}", entry.args[0]);
+                    self.iocs.push(IOC::ProcessCreated(cmd, vec![]));
+                    self.register_mitre_technique("T1059", "Command-Line Interface", "Execution");
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    /// Register a MITRE ATT&CK technique
+    fn register_mitre_technique(&mut self, id: &str, name: &str, tactic: &str) {
+        // Check if already registered
+        if self.mitre_techniques.iter().any(|t| t.id == id) {
+            return;
+        }
+
+        self.mitre_techniques.push(MitreAttackTechnique {
+            id: id.to_string(),
+            name: name.to_string(),
+            tactic: tactic.to_string(),
+            description: format!("Detected in sandbox {}", self.sandbox_id),
+            confidence: 0.85,
+        });
+    }
+
+    /// Generate IOC report in CSV format
+    pub fn export_iocs_csv(&self) -> String {
+        let mut csv = String::from("type,value,severity,timestamp\n");
+
+        for ioc in &self.iocs {
+            let line = match ioc {
+                IOC::FileCreated(path) => {
+                    format!("file_created,{},{:?},{}", path, ioc.severity(), 0)
+                }
+                IOC::FileModified(path) => {
+                    format!("file_modified,{},{:?},{}", path, ioc.severity(), 0)
+                }
+                IOC::ProcessCreated(cmd, _) => {
+                    format!("process_created,{},{:?},{}", cmd, ioc.severity(), 0)
+                }
+                IOC::NetworkConnection(ip, port) => {
+                    format!("network_connection,{}:{},{:?},{}", ip, port, ioc.severity(), 0)
+                }
+                _ => continue,
+            };
+            csv.push_str(&line);
+            csv.push('\n');
+        }
+
+        csv
+    }
+
+    /// Generate IOC report in JSON format
+    pub fn export_iocs_json(&self) -> String {
+        let mut json = String::from("{\n  \"sandbox_id\": \"");
+        json.push_str(&self.sandbox_id);
+        json.push_str("\",\n  \"iocs\": [\n");
+
+        for (i, ioc) in self.iocs.iter().enumerate() {
+            json.push_str("    {\n");
+            json.push_str(&format!("      \"type\": \"{}\",\n", ioc.category()));
+            json.push_str(&format!("      \"severity\": \"{:?}\",\n", ioc.severity()));
+
+            match ioc {
+                IOC::FileCreated(path) => {
+                    json.push_str(&format!("      \"value\": \"{}\"\n", path));
+                }
+                IOC::NetworkConnection(ip, port) => {
+                    json.push_str(&format!("      \"value\": \"{}:{}\"\n", ip, port));
+                }
+                IOC::ProcessCreated(cmd, _) => {
+                    json.push_str(&format!("      \"value\": \"{}\"\n", cmd));
+                }
+                _ => {
+                    json.push_str("      \"value\": \"unknown\"\n");
+                }
+            }
+
+            json.push_str("    }");
+            if i < self.iocs.len() - 1 {
+                json.push(',');
+            }
+            json.push('\n');
+        }
+
+        json.push_str("  ],\n");
+        json.push_str("  \"mitre_techniques\": [\n");
+
+        for (i, technique) in self.mitre_techniques.iter().enumerate() {
+            json.push_str("    {\n");
+            json.push_str(&format!("      \"id\": \"{}\",\n", technique.id));
+            json.push_str(&format!("      \"name\": \"{}\",\n", technique.name));
+            json.push_str(&format!("      \"tactic\": \"{}\",\n", technique.tactic));
+            json.push_str(&format!("      \"confidence\": {}\n", technique.confidence));
+            json.push_str("    }");
+            if i < self.mitre_techniques.len() - 1 {
+                json.push(',');
+            }
+            json.push('\n');
+        }
+
+        json.push_str("  ]\n}\n");
+        json
+    }
+
+    /// Generate STIX report (for threat intelligence sharing)
+    pub fn export_stix(&self) -> String {
+        let mut stix = String::from("{\n  \"type\": \"bundle\",\n  \"id\": \"bundle--");
+        stix.push_str("12345-sandbox-");
+        stix.push_str(&self.sandbox_id);
+        stix.push_str("\",\n  \"objects\": [\n");
+
+        for ioc in &self.iocs {
+            match ioc {
+                IOC::FileCreated(path) => {
+                    stix.push_str("    {\n");
+                    stix.push_str("      \"type\": \"file\",\n");
+                    stix.push_str(&format!("      \"name\": \"{}\"\n", path));
+                    stix.push_str("    },\n");
+                }
+                IOC::NetworkConnection(ip, port) => {
+                    stix.push_str("    {\n");
+                    stix.push_str("      \"type\": \"ipv4-addr\",\n");
+                    stix.push_str(&format!("      \"value\": \"{}:{}\"\n", ip, port));
+                    stix.push_str("    },\n");
+                }
+                _ => {}
+            }
+        }
+
+        stix.push_str("  ]\n}\n");
+        stix
+    }
+
+    /// Generate YARA rules from detected IOCs (for hunting similar malware)
+    pub fn export_yara_rules(&self) -> String {
+        let mut yara = String::from("rule malware_iocs_");
+        yara.push_str(&self.sandbox_id.replace("-", "_"));
+        yara.push_str(" {\n");
+        yara.push_str("  meta:\n");
+        yara.push_str("    description = \"IOCs from sandbox analysis\"\n");
+        yara.push_str("    sandbox_id = \"");
+        yara.push_str(&self.sandbox_id);
+        yara.push_str("\"\n");
+        yara.push_str("  strings:\n");
+
+        for ioc in &self.iocs {
+            match ioc {
+                IOC::FileCreated(path) => {
+                    yara.push_str("    $file = \"");
+                    yara.push_str(path);
+                    yara.push_str("\" nocase\n");
+                }
+                _ => {}
+            }
+        }
+
+        yara.push_str("  condition:\n");
+        yara.push_str("    any of them\n");
+        yara.push_str("}\n");
+        yara
+    }
+
+    /// List all IOCs by category
+    pub fn iocs_by_category(&self) -> HashMap<String, Vec<IOC>> {
+        let mut result: HashMap<String, Vec<IOC>> = HashMap::new();
+
+        for ioc in &self.iocs {
+            let cat = ioc.category().to_string();
+            result.entry(cat).or_insert_with(vec![]).push(ioc.clone());
+        }
+
+        result
+    }
+
+    /// Get high-severity IOCs
+    pub fn high_severity_iocs(&self) -> Vec<IOC> {
+        self.iocs.iter()
+            .filter(|ioc| ioc.severity() == Severity::High || ioc.severity() == Severity::Critical)
+            .cloned()
+            .collect()
+    }
+}

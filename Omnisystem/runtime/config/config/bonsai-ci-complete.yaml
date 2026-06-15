@@ -1,0 +1,518 @@
+# Complete Bonsai Ecosystem CI/CD Configuration
+# Replaces all GitHub Actions with native Bonsai orchestration
+# Supports: PR validation, nightly soak, Android regression, production deployment
+
+version: "2.0"
+name: "Bonsai Complete CI/CD"
+description: "Unified CI/CD orchestration for entire Bonsai Ecosystem"
+
+# Global settings
+global:
+  parallel_jobs: 8
+  max_retries: 3
+  timeout_secs: 3600
+  artifact_retention_days: 30
+  log_level: "info"
+  enable_event_bus: true
+  enable_observability: true
+  enable_notifications: true
+
+# Trigger definitions
+triggers:
+  on_pull_request:
+    enabled: true
+    branches: ["main", "master"]
+    path_filters:
+      - "bonsai-workspace/**"
+      - "vscode-extension/**"
+      - "src-daemon/**"
+      - "crates/**"
+      - "config/**"
+      - ".github/**"
+    exclude_paths:
+      - "*.md"
+      - "docs/**"
+      - ".gitignore"
+
+  on_push:
+    enabled: true
+    branches: ["main", "master"]
+    path_filters:
+      - "bonsai-workspace/**"
+      - "vscode-extension/**"
+      - "src-daemon/**"
+      - "crates/**"
+
+  on_schedule:
+    enabled: true
+    nightly_soak:
+      cron: "0 5 * * *"  # 5 AM UTC daily
+      timeout_minutes: 120
+      platforms: ["windows", "ubuntu"]
+
+  on_manual:
+    android_regression:
+      enabled: true
+      parameters:
+        android_serial:
+          type: string
+          description: "Android device serial (optional; auto-select if empty)"
+        android_wifi_host:
+          type: string
+          description: "Device WiFi host/IP (optional)"
+        bonsai_api_port:
+          type: number
+          default: 11369
+        android_package:
+          type: string
+          default: "com.bonsai.workspace"
+        require_app:
+          type: boolean
+          default: false
+        enable_bootstrap:
+          type: boolean
+          default: false
+
+# Workflow definitions
+workflows:
+  # PR Validation Workflow - Fast feedback
+  pr_validation:
+    name: "PR Validation"
+    timeout_minutes: 45
+    platforms: ["ubuntu-latest", "windows-latest"]
+    stages:
+      - name: "Stage 1: Frontend Quality"
+        parallel: true
+        jobs:
+          - name: "Frontend Quality Check"
+            platform: "ubuntu-latest"
+            timeout_minutes: 20
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Install dependencies"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Svelte type check"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npx svelte-check
+              - name: "Build frontend"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm run build
+              - name: "Check bundle size"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm run check:bundle
+
+          - name: "VSCode Extension Quality"
+            platform: "ubuntu-latest"
+            timeout_minutes: 15
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Install dependencies"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm ci
+              - name: "Compile extension"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm run compile
+              - name: "Type check tests"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm run test:typecheck
+              - name: "Run extension tests"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm run test
+
+      - name: "Stage 2: Rust Quality (Multi-Platform)"
+        parallel: true
+        jobs:
+          - name: "Rust Quality - Ubuntu"
+            platform: "ubuntu-latest"
+            timeout_minutes: 30
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Install dependencies"
+                type: "run"
+                command: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                    libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+                    libayatana-appindicator3-dev librsvg2-dev \
+                    libasound2-dev libsqlite3-dev
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Cargo check"
+                type: "run"
+                command: |
+                  cargo check --locked --manifest-path "bonsai-workspace/src-tauri/Cargo.toml"
+              - name: "Cargo clippy"
+                type: "run"
+                command: |
+                  cargo clippy --manifest-path "bonsai-workspace/src-tauri/Cargo.toml" --all-targets -- -D warnings
+              - name: "Cargo audit"
+                type: "run"
+                command: |
+                  cargo install cargo-audit --locked || true
+                  cargo audit --manifest-path "bonsai-workspace/src-tauri/Cargo.toml"
+              - name: "Cargo test"
+                type: "run"
+                command: |
+                  cargo test --manifest-path "bonsai-workspace/src-tauri/Cargo.toml" --lib -- --test-threads=1
+
+          - name: "Rust Quality - Windows"
+            platform: "windows-latest"
+            timeout_minutes: 30
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Cargo check"
+                type: "run"
+                command: |
+                  cargo check --locked --manifest-path "bonsai-workspace/src-tauri/Cargo.toml"
+              - name: "Cargo clippy"
+                type: "run"
+                command: |
+                  cargo clippy --manifest-path "bonsai-workspace/src-tauri/Cargo.toml" --all-targets -- -D warnings
+              - name: "Cargo test"
+                type: "run"
+                command: |
+                  cargo test --manifest-path "bonsai-workspace/src-tauri/Cargo.toml" --lib -- --test-threads=1
+
+      - name: "Stage 3: Integration Tests"
+        parallel: true
+        jobs:
+          - name: "Deterministic Routing - Windows"
+            platform: "windows-latest"
+            timeout_minutes: 35
+            environment:
+              BONSAI_UI_STEP_TIMEOUT_MS: "60000"
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Install frontend deps"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Run routing tests (3 retries)"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  $maxAttempts = 3
+                  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                    Write-Host "Routing test attempt $attempt/$maxAttempts"
+                    npm run test:agent-routing-ci
+                    if ($LASTEXITCODE -eq 0) { exit 0 }
+                  }
+                  exit 1
+
+          - name: "API Smoke Tests - Windows"
+            platform: "windows-latest"
+            timeout_minutes: 45
+            environment:
+              BONSAI_SKIP_UI: "1"
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Install frontend deps"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Run API smoke tests (2 retries)"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  $maxAttempts = 2
+                  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                    Write-Host "API smoke attempt $attempt/$maxAttempts"
+                    npm run test:agent-orchestrated
+                    if ($LASTEXITCODE -eq 0) { exit 0 }
+                  }
+                  exit 1
+
+      - name: "Stage 4: Android Target Verification"
+        parallel: false
+        jobs:
+          - name: "Android Target Check"
+            platform: "ubuntu-latest"
+            timeout_minutes: 25
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Rust with Android"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+                  targets: ["aarch64-linux-android"]
+              - name: "Cargo check Android"
+                type: "run"
+                command: |
+                  cargo check --locked \
+                    --manifest-path "bonsai-workspace/src-tauri/Cargo.toml" \
+                    --target aarch64-linux-android
+
+  # Nightly Soak Workflow - Extended testing
+  nightly_soak:
+    name: "Nightly Soak Testing"
+    schedule: "0 5 * * *"
+    timeout_minutes: 120
+    platforms: ["windows-latest", "ubuntu-latest"]
+    stages:
+      - name: "Soak Stage 1: Routing Tests"
+        parallel: true
+        jobs:
+          - name: "Nightly Soak - Windows Routing"
+            platform: "windows-latest"
+            timeout_minutes: 120
+            environment:
+              BONSAI_UI_STEP_TIMEOUT_MS: "60000"
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Install deps"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Run soak iterations"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  $iterations = 10
+                  $passCount = 0
+                  for ($i = 1; $i -le $iterations; $i++) {
+                    Write-Host "Soak iteration $i/$iterations"
+                    npm run test:agent-routing-ci
+                    if ($LASTEXITCODE -eq 0) { $passCount++ }
+                  }
+                  $flakeRate = ((($iterations - $passCount) / $iterations) * 100)
+                  Write-Host "Soak complete: $passCount/$iterations passes ($flakeRate% flake rate)"
+                  exit $(if ($passCount -eq $iterations) { 0 } else { 1 })
+
+          - name: "Nightly Soak - Ubuntu Routing"
+            platform: "ubuntu-latest"
+            timeout_minutes: 120
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Install Linux deps"
+                type: "run"
+                command: |
+                  sudo apt-get update
+                  sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+                    libayatana-appindicator3-dev librsvg2-dev libasound2-dev libsqlite3-dev
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Setup Rust"
+                type: "setup-rust"
+                config:
+                  version: "stable"
+              - name: "Install deps"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Run soak iterations"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  iterations=10
+                  pass_count=0
+                  for i in $(seq 1 $iterations); do
+                    echo "Soak iteration $i/$iterations"
+                    npm run test:agent-routing-ci && ((pass_count++)) || true
+                  done
+                  flake_rate=$(echo "scale=2; (($iterations - $pass_count) / $iterations) * 100" | bc)
+                  echo "Soak complete: $pass_count/$iterations passes ($flake_rate% flake rate)"
+                  [ $pass_count -eq $iterations ]
+
+      - name: "Soak Stage 2: Extension Quality"
+        parallel: false
+        jobs:
+          - name: "Nightly Extension Quality"
+            platform: "ubuntu-latest"
+            timeout_minutes: 30
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Install deps"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm ci
+              - name: "Extension quality checks"
+                type: "run"
+                command: |
+                  cd vscode-extension
+                  npm run compile
+                  npm run test:typecheck
+                  npm run test
+
+  # Android USB Regression - Manual trigger
+  android_regression:
+    name: "Android USB Regression"
+    manual: true
+    platform: "windows-latest"  # Self-hosted with Android devices
+    timeout_minutes: 25
+    stages:
+      - name: "Android Regression Stage"
+        parallel: false
+        jobs:
+          - name: "USB Regression Test"
+            platform: "windows-latest"
+            timeout_minutes: 25
+            environment_vars: true
+            steps:
+              - name: "Checkout"
+                type: "checkout"
+              - name: "Setup Node 20"
+                type: "setup-node"
+                config:
+                  version: "20"
+              - name: "Install deps"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm ci
+              - name: "Run Android USB regression"
+                type: "run"
+                command: |
+                  cd bonsai-workspace/src
+                  npm run test:android-usb-regression
+              - name: "Summarize results"
+                type: "run"
+                command: |
+                  $artifactPath = "tool_test/android-usb-regression/latest.json"
+                  if (-not (Test-Path $artifactPath)) {
+                    Write-Error "Missing artifact: $artifactPath"
+                    exit 1
+                  }
+                  $json = Get-Content $artifactPath -Raw | ConvertFrom-Json
+                  Write-Host "Regression result: $($json.ok)"
+                  Write-Host "Device: $($json.serial)"
+                  Write-Host "Steps: $($json.steps.Count)"
+                  exit $(if ($json.ok) { 0 } else { 1 })
+
+# Success criteria
+success_criteria:
+  pr_validation:
+    all_stages_passed: true
+    all_platforms_passed: true
+    no_clippy_warnings: true
+    no_security_violations: true
+    code_formatted: true
+    bundle_budgets_met: true
+
+  nightly_soak:
+    routing_flake_rate_max_percent: 5.0
+    extension_quality_passed: true
+
+  android_regression:
+    regression_ok: true
+    all_steps_passed: true
+
+# Notifications
+notifications:
+  enabled: true
+  on_failure:
+    - type: "github_pr_comment"
+      message: "CI/CD check failed. Review logs for details."
+    - type: "slack"
+      channel: "#bonsai-ci"
+      message: "Bonsai CI/CD failed on {{ branch }}: {{ job_name }}"
+    - type: "email"
+      recipients: ["team@bonsai.sh"]
+  on_success:
+    - type: "slack"
+      channel: "#bonsai-ci"
+      message: "Bonsai CI/CD passed all checks ✅"
+
+# Reporting
+reporting:
+  artifact_retention_days: 30
+  enabled: true
+  formats:
+    - "json"
+    - "markdown"
+    - "html"
+  include:
+    - logs
+    - metrics
+    - coverage
+    - performance_profiles
+    - flaky_test_analysis
+
+# Integration with GitHub (for status reporting)
+github_integration:
+  enabled: true
+  status_checks: true
+  pr_comments: true
+  required_checks:
+    - "frontend-quality"
+    - "vscode-extension-quality"
+    - "rust-quality"
+    - "routing-deterministic"
+    - "api-smoke-orchestrated"
+    - "android-target-check"
+

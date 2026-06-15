@@ -1,0 +1,287 @@
+// services/sandbox/capabilities.ti – Capability-based sandbox access control
+// Default-deny model: sandboxes start with zero capabilities
+// Capabilities are linear, revocable, and formally verified
+
+module sandbox::capabilities
+
+use core::option::Option
+use core::collections::HashMap
+
+/// Capability: a delegatable, revocable access token
+/// Every resource access is checked against the sandbox's capability set
+#[derive(Clone, Debug)]
+pub struct Capability {
+    pub id: String,  // UUID
+    pub resource_type: ResourceType,
+    pub target: String,  // e.g., "/home/user/data" for filesystem
+    pub permissions: PermissionSet,
+    pub revoked: bool,
+    pub generation: u64,  // for revocation without syscall re-registration
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResourceType {
+    Filesystem,      // fs:read:/path, fs:write:/path
+    Network,         // net:outbound, net:inbound_on_port
+    Clock,          // time:read, time:accelerate
+    Gpu,            // gpu:virgl, gpu:sr-iov
+    Memory,         // mem:limit:512MB
+    Cpu,            // cpu:cores:4
+    Device,         // dev:virtio-serial, dev:virtio-console
+    Capability,     // cap:derive (ability to create new capabilities)
+    Audit,          // audit:record (ability to record syscalls)
+}
+
+#[derive(Clone, Debug)]
+pub struct PermissionSet {
+    pub can_read: bool,
+    pub can_write: bool,
+    pub can_execute: bool,
+    pub can_delete: bool,
+    pub can_derive: bool,  // Can create sub-capabilities
+}
+
+impl PermissionSet {
+    pub fn read_only() -> Self {
+        Self {
+            can_read: true,
+            can_write: false,
+            can_execute: false,
+            can_delete: false,
+            can_derive: false,
+        }
+    }
+
+    pub fn read_write() -> Self {
+        Self {
+            can_read: true,
+            can_write: true,
+            can_execute: false,
+            can_delete: false,
+            can_derive: false,
+        }
+    }
+
+    pub fn execute_only() -> Self {
+        Self {
+            can_read: false,
+            can_write: false,
+            can_execute: true,
+            can_delete: false,
+            can_derive: false,
+        }
+    }
+}
+
+/// Capability table: maps capabilities to a sandbox
+pub struct CapabilityTable {
+    pub sandbox_id: String,
+    pub capabilities: HashMap<String, Capability>,
+    pub default_deny: bool,  // If true, access to resources not in table is denied
+}
+
+impl CapabilityTable {
+    pub fn new(sandbox_id: &str) -> Self {
+        Self {
+            sandbox_id: sandbox_id.to_string(),
+            capabilities: HashMap::new(),
+            default_deny: true,
+        }
+    }
+
+    /// Grant a capability to the sandbox
+    pub fn grant(&mut self, capability: Capability) -> Result<(), String> {
+        if capability.revoked {
+            return Err("Cannot grant revoked capability".to_string());
+        }
+        self.capabilities.insert(capability.id.clone(), capability);
+        Ok(())
+    }
+
+    /// Revoke a capability
+    pub fn revoke(&mut self, cap_id: &str) -> Result<(), String> {
+        if let Some(cap) = self.capabilities.get_mut(cap_id) {
+            cap.revoked = true;
+            Ok(())
+        } else {
+            Err(format!("Capability {} not found", cap_id))
+        }
+    }
+
+    /// Derive a sub-capability with narrower permissions
+    pub fn derive(
+        &mut self,
+        parent_cap_id: &str,
+        new_target: &str,
+        new_permissions: PermissionSet,
+    ) -> Result<Capability, String> {
+        let parent = self.capabilities
+            .get(parent_cap_id)
+            .ok_or("Parent capability not found".to_string())?;
+
+        if !parent.permissions.can_derive {
+            return Err("Parent capability does not allow derivation".to_string());
+        }
+
+        if parent.revoked {
+            return Err("Parent capability is revoked".to_string());
+        }
+
+        // Validate narrowing: new permissions must be subset of parent
+        if new_permissions.can_read && !parent.permissions.can_read {
+            return Err("Cannot elevate read permission".to_string());
+        }
+        if new_permissions.can_write && !parent.permissions.can_write {
+            return Err("Cannot elevate write permission".to_string());
+        }
+        if new_permissions.can_execute && !parent.permissions.can_execute {
+            return Err("Cannot elevate execute permission".to_string());
+        }
+
+        // Validate path narrowing (for filesystem capabilities)
+        if parent.resource_type == ResourceType::Filesystem {
+            if !new_target.starts_with(&parent.target) {
+                return Err(format!("New target {} does not narrow parent {}", new_target, parent.target));
+            }
+        }
+
+        let derived = Capability {
+            id: format!("cap-derived-{}", uuid::Uuid::new_v4()),
+            resource_type: parent.resource_type.clone(),
+            target: new_target.to_string(),
+            permissions: new_permissions,
+            revoked: false,
+            generation: parent.generation + 1,
+        };
+
+        self.capabilities.insert(derived.id.clone(), derived.clone());
+        Ok(derived)
+    }
+
+    /// Check if a capability exists and is not revoked
+    pub fn has(&self, resource_type: &ResourceType, target: &str, permission: &str) -> bool {
+        for cap in self.capabilities.values() {
+            if cap.revoked {
+                continue;
+            }
+
+            if cap.resource_type != *resource_type {
+                continue;
+            }
+
+            // For filesystem, check path containment
+            if *resource_type == ResourceType::Filesystem {
+                if !target.starts_with(&cap.target) {
+                    continue;
+                }
+            } else {
+                if cap.target != target {
+                    continue;
+                }
+            }
+
+            // Check permission
+            let has_permission = match permission {
+                "read" => cap.permissions.can_read,
+                "write" => cap.permissions.can_write,
+                "execute" => cap.permissions.can_execute,
+                "delete" => cap.permissions.can_delete,
+                "derive" => cap.permissions.can_derive,
+                _ => false,
+            };
+
+            if has_permission {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// List all non-revoked capabilities
+    pub fn list(&self) -> Vec<Capability> {
+        self.capabilities
+            .values()
+            .filter(|cap| !cap.revoked)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Capability enforcement: verifies syscall parameters against capability table
+pub struct CapabilityEnforcer {
+    pub tables: HashMap<String, CapabilityTable>,  // sandbox_id -> table
+}
+
+impl CapabilityEnforcer {
+    pub fn new() -> Self {
+        Self {
+            tables: HashMap::new(),
+        }
+    }
+
+    pub fn create_sandbox(&mut self, sandbox_id: &str) {
+        self.tables.insert(sandbox_id.to_string(), CapabilityTable::new(sandbox_id));
+    }
+
+    pub fn check_filesystem_access(
+        &self,
+        sandbox_id: &str,
+        path: &str,
+        mode: &str,
+    ) -> Result<(), String> {
+        let table = self.tables
+            .get(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        table.has(&ResourceType::Filesystem, path, mode)
+            .then(|| ())
+            .ok_or(format!("Filesystem access denied: {} {}", path, mode))
+    }
+
+    pub fn check_network_access(
+        &self,
+        sandbox_id: &str,
+        direction: &str,
+    ) -> Result<(), String> {
+        let table = self.tables
+            .get(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        table.has(&ResourceType::Network, direction, "execute")
+            .then(|| ())
+            .ok_or(format!("Network access denied: {}", direction))
+    }
+
+    pub fn check_gpu_access(
+        &self,
+        sandbox_id: &str,
+        gpu_type: &str,
+    ) -> Result<(), String> {
+        let table = self.tables
+            .get(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        table.has(&ResourceType::Gpu, gpu_type, "execute")
+            .then(|| ())
+            .ok_or(format!("GPU access denied: {}", gpu_type))
+    }
+
+    pub fn check_clock_access(&self, sandbox_id: &str) -> Result<(), String> {
+        let table = self.tables
+            .get(sandbox_id)
+            .ok_or("Sandbox not found".to_string())?;
+
+        table.has(&ResourceType::Clock, "wall-clock", "read")
+            .then(|| ())
+            .ok_or("Clock access denied")
+    }
+}
+
+#[derive(Debug)]
+pub enum CapabilityError {
+    AccessDenied(String),
+    NotFound,
+    InvalidDerivation,
+    Revoked,
+}

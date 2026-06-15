@@ -1,0 +1,194 @@
+// services/vault/mod.ti – Vault manager service for nested Bonsai instances
+// Enables recursive nesting with capability-based isolation and resource quotas
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_VAULT: i64 = 9800;
+const TAG_QUOTA: i64 = 9801;
+const TAG_CAPABILITY: i64 = 9802;
+const TAG_VAULT_REQ: i64 = 9803;
+const TAG_VAULT_REPLY: i64 = 9804;
+
+// Vault: represents a sandboxed Bonsai instance
+pub fn vault_new(cap_id: i64, mem_size: i64, cpu_quota: i64) -> i64 {
+    let v = heap_alloc_term();
+    heap_set_tag(v, TAG_VAULT);
+    heap_set_body(v, cap_id);    // capability ID
+    heap_set_arg(v, mem_size);   // memory size in bytes
+    heap_set_domain(v, cpu_quota); // CPU quota in cycles
+    return v;
+}
+
+pub fn vault_cap_id(v: i64) -> i64 { return heap_get_body(v); }
+pub fn vault_memory(v: i64) -> i64 { return heap_get_arg(v); }
+pub fn vault_cpu_quota(v: i64) -> i64 { return heap_get_domain(v); }
+
+// QuotaTracker: tracks total and used resources
+pub fn quota_new(total_mem: i64, total_cpus: i64) -> i64 {
+    let q = heap_alloc_term();
+    heap_set_tag(q, TAG_QUOTA);
+    heap_set_body(q, total_mem);   // total memory
+    heap_set_arg(q, 0);            // used memory (starts at 0)
+    heap_set_domain(q, total_cpus); // total cpus
+    // Extra slot for used cpus (need another term)
+    return q;
+}
+
+pub fn quota_total_mem(q: i64) -> i64 { return heap_get_body(q); }
+pub fn quota_used_mem(q: i64) -> i64 { return heap_get_arg(q); }
+pub fn quota_total_cpus(q: i64) -> i64 { return heap_get_domain(q); }
+
+pub fn quota_reserve(q: i64, mem: i64, cpus: i64) -> i64 {
+    let total_mem = quota_total_mem(q);
+    let used_mem = quota_used_mem(q);
+    if used_mem + mem > total_mem {
+        return 0; // failed: memory exhausted
+    }
+    heap_set_arg(q, used_mem + mem);
+    return 1; // success
+}
+
+pub fn quota_release(q: i64, mem: i64, cpus: i64) {
+    let used = quota_used_mem(q);
+    heap_set_arg(q, used - mem);
+}
+
+// VaultManager: manages all active vaults
+pub fn vault_manager_new(quota: i64) -> i64 {
+    let mgr = heap_alloc_term();
+    heap_set_tag(mgr, TAG_VAULT);
+    heap_set_body(mgr, quota);  // reference to quota tracker
+    heap_set_arg(mgr, 0);       // vault list (head)
+    heap_set_domain(mgr, 0);    // next_cap_id
+    return mgr;
+}
+
+// Create a new vault within the manager
+pub fn vault_manager_create(mgr: i64, mem_mb: i64, cpu_quota: i64, parent_cap: i64) -> i64 {
+    let quota = heap_get_body(mgr);
+    let mem_bytes = mem_mb * 1024 * 1024;
+
+    // Reserve resources
+    if quota_reserve(quota, mem_bytes, cpu_quota) == 0 {
+        return -1; // failed
+    }
+
+    // Allocate new capability ID
+    let cap_id = heap_get_domain(mgr);
+    heap_set_domain(mgr, cap_id + 1);
+
+    // Create vault
+    let vault = vault_new(cap_id, mem_bytes, cpu_quota);
+
+    // Add to vault list (simplistic linked list in arg)
+    let list = heap_get_arg(mgr);
+    if list == 0 {
+        heap_set_arg(mgr, vault);
+    } else {
+        // For simplicity, replace head (real impl would append)
+        let old_head = heap_get_arg(mgr);
+        heap_set_domain(vault, old_head); // link to previous head
+        heap_set_arg(mgr, vault);
+    }
+
+    return cap_id;
+}
+
+// Destroy a vault
+pub fn vault_manager_destroy(mgr: i64, cap_id: i64) -> i64 {
+    let list = heap_get_arg(mgr);
+    let quota = heap_get_body(mgr);
+
+    // Search for vault (simplified: assume found)
+    // In real impl would search linked list and remove
+    let mem = 1024 * 1024; // assume 1MB (placeholder)
+    let cpus = 1;
+    quota_release(quota, mem, cpus);
+
+    return 1; // success
+}
+
+// List all vault IDs
+pub fn vault_manager_list(mgr: i64) -> i64 {
+    return heap_get_arg(mgr); // return vault list head
+}
+
+// Request/Reply structures for virtio-vault device
+pub fn vault_request_create(mem_mb: i64, cpu_quota: i64, parent_cap: i64) -> i64 {
+    let req = heap_alloc_term();
+    heap_set_tag(req, TAG_VAULT_REQ);
+    heap_set_body(req, 1); // op = Create
+    heap_set_arg(req, mem_mb);
+    heap_set_domain(req, cpu_quota);
+    // parent_cap stored separately (would need another slot in real impl)
+    return req;
+}
+
+pub fn vault_reply_success(cap_id: i64) -> i64 {
+    let reply = heap_alloc_term();
+    heap_set_tag(reply, TAG_VAULT_REPLY);
+    heap_set_body(reply, 1); // success = true
+    heap_set_arg(reply, cap_id);
+    return reply;
+}
+
+pub fn vault_reply_error(error_code: i64) -> i64 {
+    let reply = heap_alloc_term();
+    heap_set_tag(reply, TAG_VAULT_REPLY);
+    heap_set_body(reply, 0); // success = false
+    heap_set_arg(reply, error_code);
+    return reply;
+}
+
+// Main vault service loop (runs as a service)
+pub fn vault_service_main(mgr: i64) {
+    // Receive requests from virtio-vault device queue
+    // This would normally block on I/O
+    loop {
+        // Poll for requests (simplified)
+        let req = receive_vault_request();
+        if req == 0 { break; }
+
+        let op = heap_get_body(req);
+        if op == 1 { // Create
+            let mem = heap_get_arg(req);
+            let cpus = heap_get_domain(req);
+            let cap_id = vault_manager_create(mgr, mem, cpus, 0);
+            if cap_id >= 0 {
+                let reply = vault_reply_success(cap_id);
+                send_vault_reply(reply);
+            } else {
+                let reply = vault_reply_error(-1);
+                send_vault_reply(reply);
+            }
+        } else if op == 2 { // Destroy
+            let cap_id = heap_get_arg(req);
+            let result = vault_manager_destroy(mgr, cap_id);
+            let reply = if result > 0 {
+                vault_reply_success(0)
+            } else {
+                vault_reply_error(-1)
+            };
+            send_vault_reply(reply);
+        }
+    }
+}
+
+// Placeholder I/O functions (would be implemented with actual virtio)
+fn receive_vault_request() -> i64 {
+    return 0; // would poll virtio queue
+}
+
+fn send_vault_reply(reply: i64) {
+    // would write to virtio queue
+}

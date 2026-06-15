@@ -1,0 +1,442 @@
+// services/ai_shim_enhanced.ti – Enhanced Universal AI Agent Shim with advanced features
+module omnisystem::ai::shim_enhanced
+
+use omnisystem::ai::provider::{AiProvider, Message, ChatConfig, ChatResponse, Usage}
+use omnisystem::ai::resilience::{CircuitBreaker, RetryPolicy, FallbackChain, RequestDeduplicator}
+use omnisystem::ai::semantic_cache::SemanticCache
+use omnisystem::ai::provider_router::ProviderRouter
+use omnisystem::security::PolyglotSecurityManager
+use omnisystem::secrets::SecretsVault
+use omnisystem::ahf::AhfGateway
+use omnisystem::hde::HdeOrchestrator
+use omnisystem::state::PolyglotStateStore
+use omnisystem::monitoring::MonitoringService
+use core::collections::HashMap
+use async::async_trait
+
+/// Enhanced AI Shim with circuit breakers, ensemble routing, and cost tracking
+pub struct EnhancedAiShim {
+    providers: HashMap<String, Box<dyn AiProvider>>,
+    circuit_breakers: HashMap<String, CircuitBreaker>,
+    retry_policy: RetryPolicy,
+    fallback_chains: HashMap<String, FallbackChain>,
+    deduplicator: RequestDeduplicator,
+    semantic_cache: SemanticCache,
+    router: ProviderRouter,
+    cost_tracker: CostTracker,
+    request_prioritizer: RequestPrioritizer,
+    ensemble_config: EnsembleConfig,
+
+    // Integrations
+    security: PolyglotSecurityManager,
+    secrets: SecretsVault,
+    ahf: AhfGateway,
+    hde: HdeOrchestrator,
+    state: PolyglotStateStore,
+    monitoring: MonitoringService,
+}
+
+/// Configuration for ensemble routing (query multiple providers, aggregate)
+pub struct EnsembleConfig {
+    enabled: bool,
+    min_providers: usize,
+    consensus_threshold: f32,  // 0.0-1.0: minimum agreement for consensus
+    voting_strategy: VotingStrategy,
+}
+
+pub enum VotingStrategy {
+    Majority,          // Simple majority wins
+    WeightedByConfidence,  // Confidence-weighted vote
+    Semantic,          // Embedding-based consensus
+}
+
+/// Per-caller cost attribution and budgeting
+pub struct CostTracker {
+    budgets: HashMap<String, CostBudget>,  // caller_id → budget
+    usage_log: Vec<CostLog>,
+}
+
+pub struct CostBudget {
+    caller_id: String,
+    budget_microcredits: u64,
+    used_microcredits: u64,
+    period_start: u64,
+    period_end: u64,
+}
+
+pub struct CostLog {
+    caller_id: String,
+    provider: String,
+    model: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_microcredits: u64,
+    timestamp: u64,
+}
+
+impl CostTracker {
+    pub fn new() -> Self {
+        Self {
+            budgets: HashMap::new(),
+            usage_log: Vec::new(),
+        }
+    }
+
+    /// Set a cost budget for a caller
+    pub fn set_budget(&mut self, caller_id: String, limit: u64, period_secs: u64) {
+        let now = now();
+        self.budgets.insert(caller_id.clone(), CostBudget {
+            caller_id,
+            budget_microcredits: limit,
+            used_microcredits: 0,
+            period_start: now,
+            period_end: now + period_secs * 1000,
+        });
+    }
+
+    /// Check if caller is within budget
+    pub fn check_budget(&self, caller_id: &str) -> Result<(), String> {
+        if let Some(budget) = self.budgets.get(caller_id) {
+            if now() > budget.period_end {
+                // Period expired, they'd be reset (in practice, manage this separately)
+                return Ok(());
+            }
+            if budget.used_microcredits >= budget.budget_microcredits {
+                return Err(format!("Cost budget exceeded: {} / {} microcredits",
+                    budget.used_microcredits, budget.budget_microcredits));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a usage and update cost
+    pub fn record_usage(
+        &mut self,
+        caller_id: String,
+        provider: String,
+        model: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost: f64,
+    ) {
+        let cost_microcredits = (cost * 1_000_000.0) as u64;
+        self.usage_log.push(CostLog {
+            caller_id: caller_id.clone(),
+            provider,
+            model,
+            input_tokens,
+            output_tokens,
+            cost_microcredits,
+            timestamp: now(),
+        });
+
+        if let Some(budget) = self.budgets.get_mut(&caller_id) {
+            budget.used_microcredits += cost_microcredits;
+        }
+    }
+
+    /// Get total cost for a caller
+    pub fn get_usage(&self, caller_id: &str) -> UsageSummary {
+        let logs: Vec<_> = self.usage_log.iter()
+            .filter(|log| log.caller_id == caller_id)
+            .collect();
+
+        let total_input = logs.iter().map(|l| l.input_tokens).sum();
+        let total_output = logs.iter().map(|l| l.output_tokens).sum();
+        let total_cost = logs.iter().map(|l| l.cost_microcredits).sum::<u64>() as f64 / 1_000_000.0;
+
+        UsageSummary {
+            total_requests: logs.len() as u64,
+            total_input_tokens: total_input,
+            total_output_tokens: total_output,
+            total_cost_dollars: total_cost,
+        }
+    }
+}
+
+pub struct UsageSummary {
+    pub total_requests: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cost_dollars: f64,
+}
+
+/// Priority queue for requests (handle high-priority queries first)
+pub struct RequestPrioritizer {
+    queue: Vec<(String, u32)>,  // (request_id, priority)
+}
+
+impl RequestPrioritizer {
+    pub fn new() -> Self {
+        Self { queue: Vec::new() }
+    }
+
+    pub fn enqueue(&mut self, request_id: String, priority: u32) {
+        self.queue.push((request_id, priority));
+        self.queue.sort_by(|a, b| b.1.cmp(&a.1));
+    }
+
+    pub fn next(&mut self) -> Option<String> {
+        self.queue.pop().map(|(id, _)| id)
+    }
+}
+
+impl EnhancedAiShim {
+    pub fn new(
+        security: PolyglotSecurityManager,
+        secrets: SecretsVault,
+        ahf: AhfGateway,
+        hde: HdeOrchestrator,
+        state: PolyglotStateStore,
+        monitoring: MonitoringService,
+    ) -> Self {
+        Self {
+            providers: HashMap::new(),
+            circuit_breakers: HashMap::new(),
+            retry_policy: RetryPolicy::default(),
+            fallback_chains: HashMap::new(),
+            deduplicator: RequestDeduplicator::new(60000),  // 60 second dedup window
+            semantic_cache: SemanticCache::new(Default::default(), hde.clone(), state.clone()),
+            router: ProviderRouter::new(Default::default(), state.clone(), Some(hde.clone())),
+            cost_tracker: CostTracker::new(),
+            request_prioritizer: RequestPrioritizer::new(),
+            ensemble_config: EnsembleConfig {
+                enabled: false,
+                min_providers: 2,
+                consensus_threshold: 0.8,
+                voting_strategy: VotingStrategy::WeightedByConfidence,
+            },
+            security,
+            secrets,
+            ahf,
+            hde,
+            state,
+            monitoring,
+        }
+    }
+
+    /// Chat with advanced resilience, deduplication, and cost tracking
+    pub async fn chat_with_resilience(
+        &mut self,
+        provider_name: String,
+        model: String,
+        messages: Vec<Message>,
+        options: ChatOptions,
+        caller_id: String,
+    ) -> Result<ChatResponse, String> {
+        // 1. Check permissions and budget
+        let caller = get_caller_identity();
+        if !self.security.check_permission(caller.clone(), "ai.chat", &provider_name) {
+            return Err("Permission denied".to_string());
+        }
+        self.cost_tracker.check_budget(&caller_id)?;
+
+        // 2. Try request deduplication
+        let request_hash = blake3::hash(
+            format!("{:?}:{}", messages, options.model).as_bytes()
+        ).to_hex();
+        if let Some(cached) = self.deduplicator.check(&request_hash) {
+            self.monitoring.record_metric("ai.dedup_hit", 1.0);
+            return Ok(cached);
+        }
+
+        // 3. Try semantic cache
+        if let Some(cached) = self.semantic_cache.retrieve(&messages, &ChatConfig::from(&options)).await {
+            self.monitoring.record_metric("ai.semantic_cache_hit", 1.0);
+            self.deduplicator.store(request_hash, cached.clone());
+            return Ok(cached);
+        }
+
+        // 4. Execute with circuit breaker and retry logic
+        let mut attempt = 0;
+        loop {
+            // Check circuit breaker
+            if let Some(cb) = self.circuit_breakers.get_mut(&provider_name) {
+                if cb.is_open() {
+                    if !cb.check_timeout() {
+                        return Err("Provider circuit breaker is open".to_string());
+                    }
+                }
+            }
+
+            // Get provider
+            let adapter = self.providers.get(&provider_name)
+                .ok_or("Unknown provider")?;
+
+            // Execute chat
+            let config = ChatConfig::from(&options);
+            match adapter.chat(&messages, &config).await {
+                Ok(mut response) => {
+                    // Record success
+                    if let Some(cb) = self.circuit_breakers.get_mut(&provider_name) {
+                        cb.record_success();
+                    }
+
+                    // Run AHF verification
+                    let verified = self.ahf.process_output(
+                        response.content.clone(),
+                        "text",
+                        response.confidence,
+                        None
+                    ).await?;
+
+                    if !verified.accepted {
+                        // AHF rejected; use HDE fallback
+                        let fallback = self.hde.generate(
+                            &messages,
+                            &options
+                        ).await?;
+                        response.content = fallback;
+                        response.provider = "hde_fallback".to_string();
+                    }
+
+                    // Record cost
+                    let (input_cost, output_cost) = self.router.get_cost(&provider_name, &model)
+                        .unwrap_or((0.0, 0.0));
+                    let total_cost = (response.usage.input_tokens as f64 * input_cost
+                        + response.usage.output_tokens as f64 * output_cost) / 1_000_000.0;
+
+                    self.cost_tracker.record_usage(
+                        caller_id.clone(),
+                        provider_name.clone(),
+                        model.clone(),
+                        response.usage.input_tokens,
+                        response.usage.output_tokens,
+                        total_cost,
+                    );
+
+                    // Cache and deduplicate
+                    self.semantic_cache.store(&messages, &config, &response).await.ok();
+                    self.deduplicator.store(request_hash, response.clone());
+
+                    // Record metrics
+                    self.monitoring.record_metric("ai.requests", 1.0);
+                    self.monitoring.record_metric(
+                        &format!("ai.cost.{}.{}", provider_name, model),
+                        total_cost
+                    );
+
+                    return Ok(response);
+                }
+                Err(e) => {
+                    if let Some(cb) = self.circuit_breakers.get_mut(&provider_name) {
+                        cb.record_failure();
+                    }
+
+                    // Retry or fallback
+                    if attempt < self.retry_policy.max_attempts {
+                        let delay = self.retry_policy.get_delay_ms(attempt);
+                        sleep_ms(delay);
+                        attempt += 1;
+                        continue;
+                    }
+
+                    return Err(format!("Provider failed after {} retries: {}", attempt, e));
+                }
+            }
+        }
+    }
+
+    /// Ensemble query: get responses from multiple providers and aggregate
+    pub async fn query_ensemble(
+        &mut self,
+        messages: Vec<Message>,
+        options: ChatOptions,
+        caller_id: String,
+    ) -> Result<EnsembleResult, String> {
+        if !self.ensemble_config.enabled {
+            return Err("Ensemble mode not enabled".to_string());
+        }
+
+        let mut responses = Vec::new();
+        let provider_list: Vec<_> = self.providers.keys().cloned().collect();
+
+        for provider in provider_list.iter().take(self.ensemble_config.min_providers) {
+            match self.chat_with_resilience(
+                provider.clone(),
+                options.model.clone(),
+                messages.clone(),
+                options.clone(),
+                caller_id.clone(),
+            ).await {
+                Ok(resp) => responses.push(resp),
+                Err(_) => continue,  // Skip failed providers
+            }
+        }
+
+        // Aggregate responses based on voting strategy
+        let (consensus_text, confidence) = match self.ensemble_config.voting_strategy {
+            VotingStrategy::Majority => {
+                // Return most common response
+                let texts: Vec<_> = responses.iter().map(|r| r.content.clone()).collect();
+                let consensus = texts.iter()
+                    .max_by_key(|text| texts.iter().filter(|t| *t == text).count())
+                    .cloned()
+                    .unwrap_or_default();
+                let conf = responses.iter().map(|r| r.confidence).sum::<f32>() / responses.len() as f32;
+                (consensus, conf)
+            }
+            VotingStrategy::WeightedByConfidence => {
+                // Weighted average by confidence
+                let total_conf: f32 = responses.iter().map(|r| r.confidence).sum();
+                let combined = responses.iter()
+                    .map(|r| (r.content.clone(), r.confidence))
+                    .fold(String::new(), |acc, (text, conf)| {
+                        acc + &text + " " // Simple concatenation for demo
+                    });
+                (combined, total_conf / responses.len() as f32)
+            }
+            VotingStrategy::Semantic => {
+                // Use HDE to find most representative response
+                let _best = self.hde.select_best_response(&responses).await;
+                (responses[0].content.clone(), responses[0].confidence)
+            }
+        };
+
+        Ok(EnsembleResult {
+            consensus_response: consensus_text,
+            confidence,
+            provider_responses: responses,
+            num_providers: provider_list.len(),
+        })
+    }
+
+    /// Register a provider with circuit breaker
+    pub fn register_provider_with_cb(&mut self, adapter: Box<dyn AiProvider>, failure_threshold: u64) {
+        let name = adapter.name().to_string();
+        self.providers.insert(name.clone(), adapter);
+        self.circuit_breakers.insert(name, CircuitBreaker::new(failure_threshold, 5, 30000));
+    }
+
+    /// Get cost attribution report for a caller
+    pub fn get_cost_report(&self, caller_id: &str) -> UsageSummary {
+        self.cost_tracker.get_usage(caller_id)
+    }
+}
+
+pub struct EnsembleResult {
+    pub consensus_response: String,
+    pub confidence: f32,
+    pub provider_responses: Vec<ChatResponse>,
+    pub num_providers: usize,
+}
+
+pub struct ChatOptions {
+    pub model: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+    pub cache_ttl_secs: u32,
+}
+
+impl From<&ChatOptions> for ChatConfig {
+    fn from(opts: &ChatOptions) -> Self {
+        ChatConfig {
+            model: opts.model.clone(),
+            max_tokens: opts.max_tokens,
+            temperature: opts.temperature,
+            top_p: 1.0,
+            stop: vec![],
+            stream: false,
+        }
+    }
+}

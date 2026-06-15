@@ -1,0 +1,340 @@
+// services/performance/adaptive-tuner.ti – Adaptive runtime tuning and optimization
+// Uses hardware profile, profiling data, and load conditions to optimize execution
+
+module performance::adaptive_tuner
+
+use performance::hardware_detector::{HardwareProfile, MicroarchitectureClass}
+use performance::profiler::ProfilingData
+use core::collections::HashMap
+
+/// Runtime tuning parameters that can be adjusted
+#[derive(Clone, Debug)]
+pub struct TuningParameters {
+    pub cpu_governor: CpuGovernor,
+    pub scheduler_algorithm: SchedulerAlgorithm,
+    pub memory_allocator: MemoryAllocator,
+    pub io_strategy: IoStrategy,
+    pub gpu_clock_mode: GpuClockMode,
+}
+
+#[derive(Clone, Debug)]
+pub enum CpuGovernor {
+    Performance,   // Max frequency, high power
+    Powersave,     // Min frequency, low power
+    Ondemand,      // Scale based on load
+    Conservative,  // Gradual frequency scaling
+}
+
+#[derive(Clone, Debug)]
+pub enum SchedulerAlgorithm {
+    Edf,           // Earliest deadline first (real-time)
+    Cfs,           // Completely fair scheduler (balanced)
+    Rt,            // Real-time scheduler
+    Idle,          // No active scheduling (single-threaded)
+}
+
+#[derive(Clone, Debug)]
+pub enum MemoryAllocator {
+    PerCoreTcmalloc,  // Per-core allocation, low contention
+    JemallocLarge,    // Large objects in dedicated pools
+    Simple,           // Simple bump allocator (for embedded)
+}
+
+#[derive(Clone, Debug)]
+pub enum IoStrategy {
+    AsyncIouring,  // High-throughput async I/O
+    SyncBlocking,  // Simple blocking I/O
+    KernelBypass,  // Kernel bypass (af_xdp)
+}
+
+#[derive(Clone, Debug)]
+pub enum GpuClockMode {
+    MaxPerformance,
+    Balanced,
+    PowerSave,
+    Disabled,
+}
+
+/// Load conditions: describe the current system state
+#[derive(Clone, Debug)]
+pub struct LoadConditions {
+    pub cpu_utilization_percent: f32,
+    pub memory_pressure_percent: f32,  // 0-100, how full is memory
+    pub temperature_celsius: f32,
+    pub battery_remaining_percent: Option<f32>,
+    pub network_congestion: NetworkCongestion,
+}
+
+#[derive(Clone, Debug)]
+pub enum NetworkCongestion {
+    Low,
+    Moderate,
+    High,
+}
+
+/// Tuning decision: recommended parameters for current conditions
+pub struct TuningDecision {
+    pub parameters: TuningParameters,
+    pub rationale: String,
+    pub estimated_performance_impact: f32,  // percentage improvement
+}
+
+/// Adaptive tuner: makes runtime optimization decisions
+pub struct AdaptiveTuner {
+    pub hardware: HardwareProfile,
+    pub current_params: TuningParameters,
+    pub load_conditions: LoadConditions,
+}
+
+impl AdaptiveTuner {
+    pub fn new(hardware: HardwareProfile) -> Self {
+        Self {
+            hardware,
+            current_params: Self::default_parameters(),
+            load_conditions: LoadConditions {
+                cpu_utilization_percent: 0.0,
+                memory_pressure_percent: 0.0,
+                temperature_celsius: 45.0,
+                battery_remaining_percent: None,
+                network_congestion: NetworkCongestion::Low,
+            },
+        }
+    }
+
+    fn default_parameters() -> TuningParameters {
+        TuningParameters {
+            cpu_governor: CpuGovernor::Ondemand,
+            scheduler_algorithm: SchedulerAlgorithm::Cfs,
+            memory_allocator: MemoryAllocator::PerCoreTcmalloc,
+            io_strategy: IoStrategy::AsyncIouring,
+            gpu_clock_mode: GpuClockMode::Balanced,
+        }
+    }
+
+    /// Update load conditions (called periodically)
+    pub fn update_load(&mut self, conditions: LoadConditions) {
+        self.load_conditions = conditions;
+    }
+
+    /// Make tuning decision based on current conditions
+    pub fn decide(&self) -> TuningDecision {
+        let mut params = self.current_params.clone();
+        let mut rationale = String::new();
+        let mut impact = 0.0;
+
+        // CPU governor decision
+        if let Some(remaining) = self.load_conditions.battery_remaining_percent {
+            if remaining < 20.0 {
+                params.cpu_governor = CpuGovernor::Powersave;
+                rationale.push_str("Battery low, using powersave governor. ");
+                impact -= 10.0;  // Slight performance hit
+            }
+        }
+
+        // Temperature-based throttling
+        if self.load_conditions.temperature_celsius > 85.0 {
+            params.cpu_governor = CpuGovernor::Conservative;
+            rationale.push_str("High temperature, thermal throttling. ");
+            impact -= 15.0;
+        }
+
+        // Scheduler decision based on workload
+        if self.load_conditions.cpu_utilization_percent > 80.0 {
+            params.scheduler_algorithm = SchedulerAlgorithm::Cfs;  // Fairness under high load
+            rationale.push_str("High CPU load, using fair scheduler. ");
+        } else if self.load_conditions.cpu_utilization_percent < 10.0 {
+            params.scheduler_algorithm = SchedulerAlgorithm::Idle;  // No contention
+            rationale.push_str("Low utilization, using idle scheduler. ");
+            impact += 5.0;
+        }
+
+        // Memory allocator decision
+        if self.load_conditions.memory_pressure_percent > 80.0 {
+            params.memory_allocator = MemoryAllocator::Simple;  // Reduce fragmentation
+            rationale.push_str("High memory pressure, using simple allocator. ");
+            impact -= 5.0;
+        }
+
+        // I/O strategy decision
+        match self.load_conditions.network_congestion {
+            NetworkCongestion::High => {
+                params.io_strategy = IoStrategy::AsyncIouring;
+                rationale.push_str("Network congestion, using async I/O. ");
+                impact += 8.0;
+            }
+            NetworkCongestion::Low => {
+                params.io_strategy = IoStrategy::SyncBlocking;
+                rationale.push_str("Low network contention, using simple I/O. ");
+            }
+            _ => {}
+        }
+
+        // GPU decision
+        if self.hardware.has_accelerator("gpu") {
+            if self.load_conditions.temperature_celsius > 75.0 {
+                params.gpu_clock_mode = GpuClockMode::PowerSave;
+                rationale.push_str("GPU thermal limit, power saving mode. ");
+            } else if self.load_conditions.cpu_utilization_percent < 50.0 {
+                params.gpu_clock_mode = GpuClockMode::MaxPerformance;
+                rationale.push_str("CPU not saturated, GPU max performance. ");
+                impact += 12.0;
+            }
+        }
+
+        TuningDecision {
+            parameters: params,
+            rationale: if rationale.is_empty() {
+                "System balanced, no tuning needed.".to_string()
+            } else {
+                rationale
+            },
+            estimated_performance_impact: impact,
+        }
+    }
+
+    /// Make compilation decisions based on hardware and time of day
+    pub fn compilation_strategy(&self) -> CompilationStrategy {
+        match self.hardware.microarchitecture_class() {
+            MicroarchitectureClass::IntelSkylake => CompilationStrategy {
+                optimization_level: 3,
+                lto_enabled: true,
+                pgo_enabled: true,
+                simd_target: "avx2".to_string(),
+            },
+            MicroarchitectureClass::IntelIceLake => CompilationStrategy {
+                optimization_level: 3,
+                lto_enabled: true,
+                pgo_enabled: true,
+                simd_target: "avx512f".to_string(),
+            },
+            MicroarchitectureClass::ArmCortexA78 => CompilationStrategy {
+                optimization_level: 3,
+                lto_enabled: true,
+                pgo_enabled: true,
+                simd_target: "neon".to_string(),
+            },
+            _ => CompilationStrategy {
+                optimization_level: 2,
+                lto_enabled: false,
+                pgo_enabled: false,
+                simd_target: "generic".to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompilationStrategy {
+    pub optimization_level: u32,
+    pub lto_enabled: bool,
+    pub pgo_enabled: bool,
+    pub simd_target: String,
+}
+
+/// Congestion control algorithm for network (CUBIC, BBR, DCCP, etc.)
+pub struct CongestionController {
+    pub algorithm: CongestionControlAlgorithm,
+    pub window_size: u32,
+    pub rtt_ms: f32,
+}
+
+#[derive(Clone, Debug)]
+pub enum CongestionControlAlgorithm {
+    Cubic,   // Deterministic, proven
+    Bbr,     // AI-optional, aggressive
+    Dccp,    // Datagram congestion control
+}
+
+impl CongestionController {
+    pub fn new(algorithm: CongestionControlAlgorithm) -> Self {
+        Self {
+            algorithm,
+            window_size: 64,
+            rtt_ms: 50.0,
+        }
+    }
+
+    /// Adapt congestion control based on observed packet loss
+    pub fn adapt(&mut self, packet_loss_percent: f32) {
+        if packet_loss_percent > 5.0 {
+            // High loss: use conservative algorithm
+            self.algorithm = CongestionControlAlgorithm::Cubic;
+            self.window_size = self.window_size / 2;
+        } else if packet_loss_percent < 0.1 {
+            // Very low loss: can be aggressive
+            self.algorithm = CongestionControlAlgorithm::Bbr;
+            self.window_size = (self.window_size as f32 * 1.1) as u32;
+        }
+    }
+}
+
+/// Energy-aware scheduler: reduces power while maintaining QoS
+pub struct EnergyAwareScheduler {
+    pub battery_saver_enabled: bool,
+    pub core_parking_enabled: bool,
+    pub parked_cores: u32,
+}
+
+impl EnergyAwareScheduler {
+    pub fn new() -> Self {
+        Self {
+            battery_saver_enabled: false,
+            core_parking_enabled: false,
+            parked_cores: 0,
+        }
+    }
+
+    /// Enable battery saver mode: reduce active cores based on load
+    pub fn enable_battery_saver(&mut self, active_cores: u32) {
+        self.battery_saver_enabled = true;
+        // Park cores beyond what's needed
+        // In real implementation: disable CPU cores, save power
+    }
+
+    /// Predict idle periods and park cores in advance
+    pub fn predict_and_park(&mut self, workload_pattern: &WorkloadPattern) {
+        if workload_pattern.expected_idle_duration_ms > 1000 {
+            self.core_parking_enabled = true;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkloadPattern {
+    pub expected_idle_duration_ms: u64,
+    pub burst_duration_ms: u64,
+}
+
+/// Performance state machine: tracks whether system is healthy
+#[derive(Clone, Debug, PartialEq)]
+pub enum PerformanceState {
+    Optimal,       // All systems green
+    Degraded,      // Some performance loss due to throttling
+    Critical,      // System struggling (thermal, memory pressure, etc.)
+}
+
+pub struct PerformanceMonitor {
+    pub state: PerformanceState,
+    pub state_history: Vec<(u64, PerformanceState)>,
+}
+
+impl PerformanceMonitor {
+    pub fn new() -> Self {
+        Self {
+            state: PerformanceState::Optimal,
+            state_history: vec![],
+        }
+    }
+
+    pub fn update_state(&mut self, new_state: PerformanceState) {
+        if new_state != self.state {
+            self.state_history.push((0, self.state.clone()));  // Should use real timestamp
+            self.state = new_state;
+        }
+    }
+
+    pub fn time_in_state(&self, state: &PerformanceState) -> u64 {
+        // Sum duration in given state
+        0  // Simplified
+    }
+}

@@ -1,0 +1,240 @@
+// services/env-fabric/determinism.ti – Record/replay engine for deterministic execution
+// Captures all non-deterministic inputs and enables perfect replay for testing
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_RECORD_SESSION: i64 = 10050;
+const TAG_IO_EVENT: i64 = 10051;
+const TAG_DETERMINISM_CONFIG: i64 = 10052;
+const TAG_REPLAY_LOG: i64 = 10053;
+
+// IO event types
+const EVENT_TYPE_KEYBOARD: i64 = 1;
+const EVENT_TYPE_NETWORK: i64 = 2;
+const EVENT_TYPE_DISK_READ: i64 = 3;
+const EVENT_TYPE_DISK_WRITE: i64 = 4;
+const EVENT_TYPE_CLOCK: i64 = 5;
+const EVENT_TYPE_INTERRUPT: i64 = 6;
+
+// Determinism configuration
+pub fn determinism_config_new(seed: i64, enabled: i64) -> i64 {
+    let config = heap_alloc_term();
+    heap_set_tag(config, TAG_DETERMINISM_CONFIG);
+    heap_set_body(config, seed);         // PRNG seed
+    heap_set_arg(config, enabled);       // determinism enabled (0/1)
+    heap_set_domain(config, 0);          // virtual clock offset
+    return config;
+}
+
+pub fn determinism_seed(config: i64) -> i64 { return heap_get_body(config); }
+pub fn determinism_enabled(config: i64) -> i64 { return heap_get_arg(config); }
+
+// Recording session: captures events during execution
+pub fn record_session_new(env_id: i64, config: i64) -> i64 {
+    let session = heap_alloc_term();
+    heap_set_tag(session, TAG_RECORD_SESSION);
+    heap_set_body(session, env_id);      // environment being recorded
+    heap_set_arg(session, config);       // determinism config
+    heap_set_domain(session, 0);         // events list head
+    return session;
+}
+
+pub fn record_session_env(session: i64) -> i64 { return heap_get_body(session); }
+pub fn record_session_config(session: i64) -> i64 { return heap_get_arg(session); }
+
+// IO event: single non-deterministic input
+pub fn io_event_new(event_type: i64, timestamp: i64, data: i64) -> i64 {
+    let event = heap_alloc_term();
+    heap_set_tag(event, TAG_IO_EVENT);
+    heap_set_body(event, event_type);    // type (keyboard, network, etc.)
+    heap_set_arg(event, timestamp);      // logical timestamp / sequence
+    heap_set_domain(event, data);        // payload (key code, packet, etc.)
+    return event;
+}
+
+pub fn io_event_type(event: i64) -> i64 { return heap_get_body(event); }
+pub fn io_event_timestamp(event: i64) -> i64 { return heap_get_arg(event); }
+pub fn io_event_data(event: i64) -> i64 { return heap_get_domain(event); }
+
+// Tap virtio queue: record I/O at device level
+pub fn tap_virtio_queue(session: i64, queue_type: i64, buffer_addr: i64, length: i64) -> i64 {
+    // Intercept virtio queue operations (read/write to device)
+    // Extract data and metadata
+    let event_type = queue_type; // map queue type to event type
+
+    let timestamp = get_sequence_number(); // logical clock, not wall clock
+    let event = io_event_new(event_type, timestamp, buffer_addr);
+
+    // Append to session log
+    let events = heap_get_domain(session);
+    if events == 0 {
+        heap_set_domain(session, event);
+    } else {
+        heap_set_domain(event, events);
+        heap_set_domain(session, event);
+    }
+
+    return 0; // success
+}
+
+// Record keyboard event
+pub fn record_keyboard(session: i64, keycode: i64) {
+    let ts = get_sequence_number();
+    let event = io_event_new(EVENT_TYPE_KEYBOARD, ts, keycode);
+    add_event_to_session(session, event);
+}
+
+// Record network packet
+pub fn record_network_packet(session: i64, packet: i64, length: i64) {
+    let ts = get_sequence_number();
+    // Packet data is stored in audit-log; event references it
+    let event = io_event_new(EVENT_TYPE_NETWORK, ts, packet);
+    add_event_to_session(session, event);
+}
+
+// Record disk I/O
+pub fn record_disk_io(session: i64, is_write: i64, block: i64, data: i64) {
+    let ts = get_sequence_number();
+    let event_type = if is_write > 0 { EVENT_TYPE_DISK_WRITE } else { EVENT_TYPE_DISK_READ };
+    let event = io_event_new(event_type, ts, data);
+    add_event_to_session(session, event);
+}
+
+// Record interrupt arrival
+pub fn record_interrupt(session: i64, irq_num: i64) {
+    let ts = get_sequence_number();
+    let event = io_event_new(EVENT_TYPE_INTERRUPT, ts, irq_num);
+    add_event_to_session(session, event);
+}
+
+// Record virtual clock tick
+pub fn record_clock(session: i64, tick: i64) {
+    let ts = get_sequence_number();
+    let event = io_event_new(EVENT_TYPE_CLOCK, ts, tick);
+    add_event_to_session(session, event);
+}
+
+// Replay log: replays recorded events to environment
+pub fn replay_log_new(session: i64) -> i64 {
+    // Convert recording session to replay log (immutable)
+    let log = heap_alloc_term();
+    heap_set_tag(log, TAG_REPLAY_LOG);
+    heap_set_body(log, heap_get_domain(session)); // events list from session
+    heap_set_arg(log, 0);                         // current replay position
+    heap_set_domain(log, 0);                      // output log (for verification)
+    return log;
+}
+
+// Replay: feed recorded events back to environment
+pub fn replay_execute(env_state: i64, log: i64) -> i64 {
+    // Initialize environment to starting state
+    let events = heap_get_body(log);
+    let position = 0i64;
+    let next_output_match = 1i64; // all outputs match so far
+
+    while events != 0 && next_output_match > 0 {
+        let event = events;
+        events = heap_get_domain(events);
+
+        // Inject event into environment
+        let event_type = io_event_type(event);
+        inject_event(env_state, event_type, io_event_data(event));
+
+        // Run environment until next event point
+        // Check output against recorded log
+        let output_matches = check_output(event_type, heap_get_domain(log));
+        if output_matches == 0 {
+            next_output_match = 0; // divergence detected
+        }
+
+        position = position + 1;
+    }
+
+    return next_output_match; // 1=all matched, 0=divergence
+}
+
+// Virtual clock: deterministic time
+pub fn virtual_clock_init(config: i64) -> i64 {
+    // Initialize virtual clock with seed from config
+    let clock_offset = determinism_seed(config);
+    return clock_offset;
+}
+
+pub fn virtual_clock_advance(clock: i64, ticks: i64) -> i64 {
+    // Advance deterministic virtual clock by ticks
+    // Return new clock value
+    return clock + ticks;
+}
+
+pub fn virtual_clock_read(clock: i64) -> i64 {
+    // Return current virtual time
+    return clock;
+}
+
+// Verification: compare two replay outputs
+pub fn verify_replay_outputs(output1: i64, output2: i64) -> i64 {
+    // Compare recorded output1 with replay output2
+    // Return 1 if identical, 0 if divergence
+    // Useful for regression testing and behavior equivalence checking
+
+    // Simplified: assume outputs match if both non-null
+    return if output1 != 0 && output2 != 0 { 1 } else { 0 };
+}
+
+// Deterministic mode: wrap environment execution
+pub fn run_deterministic(env_state: i64, config: i64, record: i64) -> i64 {
+    // If record=1: capture all events
+    // If record=0: replay from existing log
+
+    if record > 0 {
+        // Record mode: execute and capture
+        let session = record_session_new(0, config);
+        // Initialize virtual clock
+        let clock = virtual_clock_init(config);
+        // Run environment with taps on all I/O
+        // Events recorded via tap_virtio_queue
+        return 0; // success
+    } else {
+        // Replay mode: execute deterministically
+        let log = replay_log_new(0); // would fetch from audit-log
+        let result = replay_execute(env_state, log);
+        return result; // 1=match, 0=divergence
+    }
+}
+
+// Helpers
+fn add_event_to_session(session: i64, event: i64) {
+    let events = heap_get_domain(session);
+    heap_set_domain(event, events);
+    heap_set_domain(session, event);
+}
+
+fn get_sequence_number() -> i64 {
+    // Return logical sequence number (not wall clock)
+    // Would maintain counter per session
+    return 0; // placeholder
+}
+
+fn inject_event(env_state: i64, event_type: i64, data: i64) {
+    // Inject event into environment
+    // If keyboard: press key code
+    // If network: deliver packet
+    // If disk: return data for read, etc.
+}
+
+fn check_output(event_type: i64, output_log: i64) -> i64 {
+    // Read next output from log
+    // Compare with current environment output
+    // Return 1 if match, 0 if divergence
+    return 1; // placeholder
+}

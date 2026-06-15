@@ -1,0 +1,233 @@
+// kernel/memory.ti — Physical memory allocator + virtual address space
+// 4KB pages; physical frames tracked as a linked free list.
+// Virtual address space: simple bump-allocator over mapped pages.
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(id: i64, tag: i64);
+    fn heap_get_tag(id: i64) -> i64;
+    fn heap_set_body(id: i64, body: i64);
+    fn heap_get_body(id: i64) -> i64;
+    fn heap_set_arg(id: i64, arg: i64);
+    fn heap_get_arg(id: i64) -> i64;
+    fn heap_set_domain(id: i64, dom: i64);
+    fn heap_get_domain(id: i64) -> i64;
+}
+
+const TAG_PHYS_MGR: i64 = 9100;
+const TAG_FRAME:    i64 = 9101;
+const TAG_VAS:      i64 = 9102;
+const TAG_PAGE:     i64 = 9103;
+const TAG_MMGR:     i64 = 9104;
+
+const PAGE_SIZE: i64 = 4096;
+
+// Frame layout: tag=TAG_FRAME, body=frame_number, arg=next_free(or 0), domain=allocated(0/1)
+pub fn frame_new(number: i64) -> i64 {
+    let f = heap_alloc_term();
+    heap_set_tag(f, TAG_FRAME);
+    heap_set_body(f, number);
+    heap_set_arg(f, 0);
+    heap_set_domain(f, 0);
+    return f;
+}
+
+pub fn frame_number(f: i64) -> i64 { return heap_get_body(f); }
+pub fn frame_allocated(f: i64) -> i64 { return heap_get_domain(f); }
+pub fn frame_address(f: i64) -> i64 { return heap_get_body(f) * PAGE_SIZE; }
+
+// PhysicalMemoryManager layout:
+//   tag=TAG_PHYS_MGR, body=free_list_head, arg=total_frames, domain=free_count
+pub fn phys_mgr_new(total_frames: i64) -> i64 {
+    let mgr = heap_alloc_term();
+    heap_set_tag(mgr, TAG_PHYS_MGR);
+    heap_set_body(mgr, 0);
+    heap_set_arg(mgr, total_frames);
+    heap_set_domain(mgr, total_frames);
+
+    // Build free list in order (prepend so head = frame 0)
+    let i = total_frames - 1;
+    while i >= 0 {
+        let f = frame_new(i);
+        heap_set_arg(f, heap_get_body(mgr));
+        heap_set_body(mgr, f);
+        i = i - 1;
+    }
+    return mgr;
+}
+
+pub fn phys_mgr_total(mgr: i64) -> i64 { return heap_get_arg(mgr); }
+pub fn phys_mgr_free(mgr: i64) -> i64 { return heap_get_domain(mgr); }
+pub fn phys_mgr_used(mgr: i64) -> i64 { return phys_mgr_total(mgr) - phys_mgr_free(mgr); }
+
+// Returns frame node (or 0 if OOM)
+pub fn phys_allocate(mgr: i64) -> i64 {
+    let head = heap_get_body(mgr);
+    if head == 0 { return 0; }
+    heap_set_body(mgr, heap_get_arg(head));
+    heap_set_domain(head, 1);
+    heap_set_arg(head, 0);
+    heap_set_domain(mgr, heap_get_domain(mgr) - 1);
+    return head;
+}
+
+pub fn phys_deallocate(mgr: i64, frame: i64) -> i64 {
+    if frame_allocated(frame) == 0 { return -1; }
+    heap_set_domain(frame, 0);
+    heap_set_arg(frame, heap_get_body(mgr));
+    heap_set_body(mgr, frame);
+    heap_set_domain(mgr, heap_get_domain(mgr) + 1);
+    return 0;
+}
+
+// VirtualAddressSpace layout:
+//   tag=TAG_VAS, body=page_list_head, arg=asid, domain=next_vaddr
+pub fn vas_new(asid: i64) -> i64 {
+    let vas = heap_alloc_term();
+    heap_set_tag(vas, TAG_VAS);
+    heap_set_body(vas, 0);
+    heap_set_arg(vas, asid);
+    heap_set_domain(vas, PAGE_SIZE);  // start at 4KB (skip zero page)
+    return vas;
+}
+
+// Page entry: tag=TAG_PAGE, body=vaddr, arg=frame_ref, domain=flags(writable=1)
+pub fn vas_map_page(vas: i64, frame: i64, writable: i64) -> i64 {
+    let vaddr = heap_get_domain(vas);
+    let pg = heap_alloc_term();
+    heap_set_tag(pg, TAG_PAGE);
+    heap_set_body(pg, vaddr);
+    heap_set_arg(pg, frame);
+    heap_set_domain(pg, writable);
+
+    // Prepend to page list (body of VAS points to latest page; pages chain via arg->next)
+    // Use a secondary node to hold both the page entry and next pointer
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_PAGE + 1);
+    heap_set_body(node, pg);
+    heap_set_arg(node, heap_get_body(vas));
+    heap_set_body(vas, node);
+    heap_set_domain(vas, vaddr + PAGE_SIZE);
+    return vaddr;
+}
+
+pub fn vas_translate(vas: i64, vaddr: i64) -> i64 {
+    let cur = heap_get_body(vas);
+    while cur != 0 {
+        let pg = heap_get_body(cur);
+        if heap_get_body(pg) == vaddr {
+            let frame = heap_get_arg(pg);
+            return frame_address(frame) + (vaddr - heap_get_body(pg));
+        }
+        cur = heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn vas_page_count(vas: i64) -> i64 {
+    let count = 0;
+    let cur = heap_get_body(vas);
+    while cur != 0 { count = count + 1; cur = heap_get_arg(cur); }
+    return count;
+}
+
+// MemoryManager: owns PhysicalMemoryManager + set of VAS
+// Layout: tag=TAG_MMGR, body=phys_mgr, arg=vas_list, domain=next_asid
+pub fn mmgr_new(total_frames: i64) -> i64 {
+    let m = heap_alloc_term();
+    heap_set_tag(m, TAG_MMGR);
+    heap_set_body(m, phys_mgr_new(total_frames));
+    heap_set_arg(m, 0);
+    heap_set_domain(m, 1);
+    return m;
+}
+
+pub fn mmgr_create_vas(m: i64) -> i64 {
+    let asid = heap_get_domain(m);
+    heap_set_domain(m, asid + 1);
+    let vas = vas_new(asid);
+    // Prepend to VAS list: node = (vas, next)
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_MMGR + 1);
+    heap_set_body(node, vas);
+    heap_set_arg(node, heap_get_arg(m));
+    heap_set_arg(m, node);
+    return asid;
+}
+
+pub fn mmgr_find_vas(m: i64, asid: i64) -> i64 {
+    let cur = heap_get_arg(m);
+    while cur != 0 {
+        let vas = heap_get_body(cur);
+        if heap_get_arg(vas) == asid { return vas; }
+        cur = heap_get_arg(cur);
+    }
+    return -1;
+}
+
+pub fn mmgr_allocate_page(m: i64, asid: i64, writable: i64) -> i64 {
+    let phys = heap_get_body(m);
+    let frame = phys_allocate(phys);
+    if frame == 0 { return -1; }
+    let vas = mmgr_find_vas(m, asid);
+    if vas < 0 { return -1; }
+    return vas_map_page(vas, frame, writable);
+}
+
+pub fn mmgr_translate(m: i64, asid: i64, vaddr: i64) -> i64 {
+    let vas = mmgr_find_vas(m, asid);
+    if vas < 0 { return -1; }
+    return vas_translate(vas, vaddr);
+}
+
+pub fn mmgr_phys_free(m: i64) -> i64 {
+    return phys_mgr_free(heap_get_body(m));
+}
+
+pub fn mmgr_phys_used(m: i64) -> i64 {
+    return phys_mgr_used(heap_get_body(m));
+}
+
+pub fn main() -> i64 {
+    // Test 1: physical allocator
+    let phys = phys_mgr_new(100);
+    if phys_mgr_total(phys) != 100 { return 1; }
+    if phys_mgr_free(phys) != 100 { return 2; }
+
+    let f1 = phys_allocate(phys);
+    if f1 == 0 { return 3; }
+    if phys_mgr_free(phys) != 99 { return 4; }
+    if phys_mgr_used(phys) != 1 { return 5; }
+
+    let rv = phys_deallocate(phys, f1);
+    if rv != 0 { return 6; }
+    if phys_mgr_free(phys) != 100 { return 7; }
+
+    // Test 2: virtual address space
+    let vas = vas_new(1);
+    let f2 = phys_allocate(phys);
+    let vaddr = vas_map_page(vas, f2, 1);
+    if vaddr != PAGE_SIZE { return 8; }
+    let paddr = vas_translate(vas, vaddr);
+    if paddr < 0 { return 9; }
+
+    // Test 3: memory manager
+    let mgr = mmgr_new(1000);
+    if mmgr_phys_free(mgr) != 1000 { return 10; }
+    let asid = mmgr_create_vas(mgr);
+    if asid != 1 { return 11; }
+    let vaddr2 = mmgr_allocate_page(mgr, asid, 1);
+    if vaddr2 < 0 { return 12; }
+    let paddr2 = mmgr_translate(mgr, asid, vaddr2);
+    if paddr2 < 0 { return 13; }
+
+    // Test 4: stats
+    let mgr2 = mmgr_new(500);
+    let asid2 = mmgr_create_vas(mgr2);
+    mmgr_allocate_page(mgr2, asid2, 1);
+    mmgr_allocate_page(mgr2, asid2, 0);
+    if mmgr_phys_used(mgr2) != 2 { return 14; }
+    if mmgr_phys_free(mgr2) != 498 { return 15; }
+
+    return 0;
+}
