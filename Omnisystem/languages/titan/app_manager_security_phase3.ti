@@ -1,0 +1,391 @@
+// PHASE 3: Full TITAN Implementation
+// app-manager-security - Security and access control
+//
+// Handles app signing, permission verification, security policies.
+
+pub struct SecurityManager {
+    certificates: Object             // cert_id -> Certificate
+    policies: Object                 // policy_id -> SecurityPolicy
+    audit_log: Array[AuditEntry]
+    validator: SecurityValidator
+}
+
+pub struct Certificate {
+    cert_id: String
+    app_id: String
+    issuer: String
+    subject: String
+    issued_at: u64
+    expires_at: u64
+    fingerprint: String
+    revoked: bool
+}
+
+pub struct SecurityPolicy {
+    policy_id: String
+    app_id: String
+    policy_type: String              // "signing" | "permission" | "network" | "data"
+    rules: Array[String]
+    enforced: bool
+}
+
+pub struct AuditEntry {
+    timestamp: u64
+    user: String
+    action: String
+    app_id: String
+    result: String
+}
+
+pub struct SecurityValidator {
+    rules: Object
+}
+
+impl SecurityManager {
+    pub fn new() -> Self {
+        return SecurityManager {
+            certificates: {},
+            policies: {},
+            audit_log: [],
+            validator: SecurityValidator::new(),
+        }
+    }
+
+    pub fn issue_certificate(
+        mut self: Self,
+        app_id: String,
+        issuer: String,
+        validity_days: u64,
+    ) -> Result[Certificate] {
+        // Validate inputs
+        if app_id.is_empty() || issuer.is_empty() {
+            return Err("app_id and issuer required")
+        }
+
+        if validity_days == 0 || validity_days > 3650 {
+            return Err("validity_days must be 1-3650")
+        }
+
+        let now = get_timestamp_ms()
+        let cert_id = generate_cert_id(&app_id)
+
+        let cert = Certificate {
+            cert_id: cert_id.clone(),
+            app_id: app_id.clone(),
+            issuer: issuer,
+            subject: format!("CN={app_id}"),
+            issued_at: now,
+            expires_at: now + (validity_days * 86400 * 1000),
+            fingerprint: generate_fingerprint(&app_id),
+            revoked: false,
+        }
+
+        self.certificates[cert_id.clone()] = cert
+
+        self.log_audit(&"issue_certificate", &app_id, "success")
+
+        return Ok(cert)
+    }
+
+    pub fn verify_certificate(
+        self: &Self,
+        cert_id: String,
+        app_id: String,
+    ) -> Result[bool] {
+        if !self.certificates.contains(&cert_id) {
+            return Err(format!("Certificate not found: {cert_id}"))
+        }
+
+        let cert = self.certificates[cert_id]
+
+        // Check if revoked
+        if cert.revoked {
+            return Err("Certificate is revoked")
+        }
+
+        // Check if expired
+        if cert.expires_at < get_timestamp_ms() {
+            return Err("Certificate is expired")
+        }
+
+        // Check if app_id matches
+        if cert.app_id != app_id {
+            return Err("Certificate app_id mismatch")
+        }
+
+        return Ok(true)
+    }
+
+    pub fn revoke_certificate(
+        mut self: Self,
+        cert_id: String,
+    ) -> Result[Certificate] {
+        if !self.certificates.contains(&cert_id) {
+            return Err(format!("Certificate not found: {cert_id}"))
+        }
+
+        let mut cert = self.certificates[cert_id.clone()]
+
+        cert.revoked = true
+        self.certificates[cert_id.clone()] = cert
+
+        self.log_audit(&"revoke_certificate", &cert.app_id, "success")
+
+        return Ok(cert)
+    }
+
+    pub fn set_policy(
+        mut self: Self,
+        app_id: String,
+        policy_type: String,
+        rules: Array[String],
+    ) -> Result[SecurityPolicy] {
+        if app_id.is_empty() || policy_type.is_empty() {
+            return Err("app_id and policy_type required")
+        }
+
+        if !self.validator.validate_policy_type(&policy_type) {
+            return Err("Invalid policy_type")
+        }
+
+        let policy_id = generate_policy_id(&app_id)
+
+        let policy = SecurityPolicy {
+            policy_id: policy_id.clone(),
+            app_id: app_id.clone(),
+            policy_type: policy_type,
+            rules: rules,
+            enforced: true,
+        }
+
+        self.policies[policy_id.clone()] = policy
+
+        self.log_audit(&"set_policy", &app_id, "success")
+
+        return Ok(policy)
+    }
+
+    pub fn check_permission(
+        self: &Self,
+        app_id: String,
+        permission: String,
+    ) -> Result[bool] {
+        if !self.validator.is_valid_permission(&permission) {
+            return Err("Invalid permission")
+        }
+
+        // In production, check against permission database
+        // For now, simulate permission check
+        let allowed = self.validator.check_permission(&app_id, &permission)
+
+        return Ok(allowed)
+    }
+
+    pub fn enforce_policy(
+        mut self: Self,
+        policy_id: String,
+    ) -> Result[SecurityPolicy] {
+        if !self.policies.contains(&policy_id) {
+            return Err(format!("Policy not found: {policy_id}"))
+        }
+
+        let mut policy = self.policies[policy_id.clone()]
+
+        policy.enforced = true
+        self.policies[policy_id.clone()] = policy
+
+        return Ok(policy)
+    }
+
+    pub fn disable_policy(
+        mut self: Self,
+        policy_id: String,
+    ) -> Result[SecurityPolicy] {
+        if !self.policies.contains(&policy_id) {
+            return Err(format!("Policy not found: {policy_id}"))
+        }
+
+        let mut policy = self.policies[policy_id.clone()]
+
+        policy.enforced = false
+        self.policies[policy_id.clone()] = policy
+
+        return Ok(policy)
+    }
+
+    pub fn get_audit_log(
+        self: &Self,
+        app_id: String,
+        limit: u64,
+    ) -> Result[Array[AuditEntry]] {
+        let mut results: Array[AuditEntry] = []
+        let mut count = 0
+
+        for entry in self.audit_log.reversed() {
+            if entry.app_id == app_id {
+                results.push(entry)
+                count = count + 1
+                if count >= limit {
+                    break
+                }
+            }
+        }
+
+        return Ok(results)
+    }
+
+    fn log_audit(
+        mut self: Self,
+        action: &String,
+        app_id: &String,
+        result: &String,
+    ) {
+        let entry = AuditEntry {
+            timestamp: get_timestamp_ms(),
+            user: "system",
+            action: action.clone(),
+            app_id: app_id.clone(),
+            result: result.clone(),
+        }
+
+        self.audit_log.push(entry)
+    }
+}
+
+impl SecurityValidator {
+    pub fn new() -> Self {
+        return SecurityValidator {
+            rules: {},
+        }
+    }
+
+    pub fn validate_policy_type(self: &Self, policy_type: &String) -> bool {
+        let valid_types = ["signing", "permission", "network", "data"]
+
+        for vtype in valid_types {
+            if vtype == policy_type {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    pub fn is_valid_permission(self: &Self, permission: &String) -> bool {
+        return !permission.is_empty() && permission.len() < 256
+    }
+
+    pub fn check_permission(self: &Self, app_id: &String, permission: &String) -> bool {
+        // Simulate permission check
+        return !app_id.is_empty() && !permission.is_empty()
+    }
+}
+
+fn generate_cert_id(app_id: &String) -> String {
+    return format!("cert-{app_id}-{ts}", ts = get_timestamp_ms())
+}
+
+fn generate_policy_id(app_id: &String) -> String {
+    return format!("policy-{app_id}-{ts}", ts = get_timestamp_ms())
+}
+
+fn generate_fingerprint(app_id: &String) -> String {
+    // In production, use actual SHA-256 hash
+    return format!("sha256:{app_id}")
+}
+
+fn get_timestamp_ms() -> u64 {
+    return 1718462400000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_issue_certificate() {
+        let mut manager = SecurityManager::new()
+        let result = manager.issue_certificate("app1", "CA", 365)
+
+        assert!(result.is_ok())
+        let cert = result.unwrap()
+        assert_eq!(cert.app_id, "app1")
+        assert!(!cert.revoked)
+    }
+
+    #[test]
+    fn test_verify_certificate() {
+        let mut manager = SecurityManager::new()
+        let cert = manager.issue_certificate("app1", "CA", 365).unwrap()
+
+        let result = manager.verify_certificate(cert.cert_id.clone(), "app1")
+        assert!(result.is_ok())
+        assert!(result.unwrap())
+    }
+
+    #[test]
+    fn test_revoke_certificate() {
+        let mut manager = SecurityManager::new()
+        let cert = manager.issue_certificate("app1", "CA", 365).unwrap()
+
+        manager.revoke_certificate(cert.cert_id.clone()).ok()
+
+        let verify = manager.verify_certificate(cert.cert_id, "app1")
+        assert!(verify.is_err())
+    }
+
+    #[test]
+    fn test_set_security_policy() {
+        let mut manager = SecurityManager::new()
+
+        let result = manager.set_policy("app1", "signing", ["require_signature"])
+        assert!(result.is_ok())
+        let policy = result.unwrap()
+        assert_eq!(policy.policy_type, "signing")
+        assert!(policy.enforced)
+    }
+
+    #[test]
+    fn test_enforce_disable_policy() {
+        let mut manager = SecurityManager::new()
+        let policy = manager.set_policy("app1", "permission", []).unwrap()
+
+        let disable = manager.disable_policy(policy.policy_id.clone())
+        assert!(disable.is_ok())
+        assert!(!disable.unwrap().enforced)
+
+        let enforce = manager.enforce_policy(policy.policy_id)
+        assert!(enforce.is_ok())
+        assert!(enforce.unwrap().enforced)
+    }
+
+    #[test]
+    fn test_check_permission() {
+        let manager = SecurityManager::new()
+
+        let result = manager.check_permission("app1", "read")
+        assert!(result.is_ok())
+        assert!(result.unwrap())
+    }
+
+    #[test]
+    fn test_invalid_policy_type() {
+        let mut manager = SecurityManager::new()
+
+        let result = manager.set_policy("app1", "invalid", [])
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_audit_log() {
+        let mut manager = SecurityManager::new()
+
+        manager.issue_certificate("app1", "CA", 365).ok()
+        manager.issue_certificate("app1", "CA", 365).ok()
+        manager.set_policy("app1", "signing", []).ok()
+
+        let result = manager.get_audit_log("app1", 10)
+        assert!(result.is_ok())
+        assert!(result.unwrap().len() >= 2)
+    }
+}

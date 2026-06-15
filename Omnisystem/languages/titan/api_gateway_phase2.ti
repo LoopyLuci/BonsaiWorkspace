@@ -1,0 +1,298 @@
+// PHASE 2: TITAN Wrapper Module
+// api-gateway - Base API gateway functionality
+//
+// Bridges Rust implementation with TITAN wrapper, adding caching and validation.
+// Calls Rust functions via ULL bridge for actual implementation.
+
+import ull::bridge
+import ull::types
+
+pub struct APIGatewayManager {
+    config: Object
+    cache: CacheManager
+    validator: Validator
+    state: String
+}
+
+pub struct RouteConfig {
+    path: String
+    method: String
+    handler: String
+    auth_required: bool
+    rate_limit: u64
+}
+
+pub struct CacheManager {
+    cache: Object
+    ttl_ms: u64
+}
+
+pub struct Validator {
+    rules: Object
+}
+
+impl APIGatewayManager {
+    pub fn new() -> Self {
+        return APIGatewayManager {
+            config: {},
+            cache: CacheManager::new(60000),
+            validator: Validator::new(),
+            state: "initialized",
+        }
+    }
+
+    pub fn register_route(
+        mut self: Self,
+        path: String,
+        method: String,
+        handler: String,
+    ) -> Result[RouteConfig] {
+        // Validate inputs
+        if path.is_empty() || method.is_empty() {
+            return Err("path and method required")
+        }
+
+        if !self.validator.validate_path(&path) {
+            return Err("Invalid path format")
+        }
+
+        let valid_methods = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        let mut found = false
+        for m in valid_methods {
+            if m == method {
+                found = true
+                break
+            }
+        }
+
+        if !found {
+            return Err("Invalid HTTP method")
+        }
+
+        // Call Rust bridge to register route
+        let result = bridge::call_rust("api-gateway", "register_route", {
+            "path": path.clone(),
+            "method": method.clone(),
+            "handler": handler.clone(),
+        })?
+
+        // Create route config
+        let route = RouteConfig {
+            path: path,
+            method: method,
+            handler: handler,
+            auth_required: true,
+            rate_limit: 1000,
+        }
+
+        // Cache route config
+        self.cache.set(&format!("{method}-{path}"), route.clone())
+
+        return Ok(route)
+    }
+
+    pub fn get_route(
+        self: &Self,
+        path: String,
+        method: String,
+    ) -> Result[RouteConfig] {
+        let cache_key = format!("{method}-{path}")
+
+        // Check cache first
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached as RouteConfig)
+        }
+
+        // Call Rust bridge to get route
+        let result = bridge::call_rust("api-gateway", "get_route", {
+            "path": path.clone(),
+            "method": method.clone(),
+        })?
+
+        // Return result (would be cached in next call)
+        return Ok(result as RouteConfig)
+    }
+
+    pub fn set_rate_limit(
+        mut self: Self,
+        path: String,
+        method: String,
+        limit: u64,
+    ) -> Result[RouteConfig] {
+        if limit == 0 {
+            return Err("Rate limit must be > 0")
+        }
+
+        let result = bridge::call_rust("api-gateway", "set_rate_limit", {
+            "path": path.clone(),
+            "method": method.clone(),
+            "limit": limit,
+        })?
+
+        // Invalidate cache for this route
+        self.cache.invalidate(&format!("{method}-{path}"))
+
+        return Ok(result as RouteConfig)
+    }
+
+    pub fn enable_auth(
+        mut self: Self,
+        path: String,
+        method: String,
+    ) -> Result[RouteConfig] {
+        let result = bridge::call_rust("api-gateway", "enable_auth", {
+            "path": path.clone(),
+            "method": method.clone(),
+        })?
+
+        self.cache.invalidate(&format!("{method}-{path}"))
+
+        return Ok(result as RouteConfig)
+    }
+
+    pub fn disable_auth(
+        mut self: Self,
+        path: String,
+        method: String,
+    ) -> Result[RouteConfig] {
+        let result = bridge::call_rust("api-gateway", "disable_auth", {
+            "path": path.clone(),
+            "method": method.clone(),
+        })?
+
+        self.cache.invalidate(&format!("{method}-{path}"))
+
+        return Ok(result as RouteConfig)
+    }
+
+    pub fn list_routes(self: &Self) -> Result[Array[RouteConfig]] {
+        let result = bridge::call_rust("api-gateway", "list_routes", {})?
+
+        return Ok(result as Array[RouteConfig])
+    }
+
+    pub fn get_health(self: &Self) -> Result[Object] {
+        let result = bridge::call_rust("api-gateway", "health_check", {})?
+
+        return Ok(result as Object)
+    }
+}
+
+impl CacheManager {
+    pub fn new(ttl_ms: u64) -> Self {
+        return CacheManager {
+            cache: {},
+            ttl_ms: ttl_ms,
+        }
+    }
+
+    pub fn get(self: &Self, key: &String) -> Option[Object] {
+        return self.cache[key]
+    }
+
+    pub fn set(mut self: Self, key: &String, value: Object) {
+        self.cache[key] = value
+    }
+
+    pub fn invalidate(mut self: Self, key: &String) {
+        self.cache.remove(key)
+    }
+}
+
+impl Validator {
+    pub fn new() -> Self {
+        return Validator {
+            rules: {},
+        }
+    }
+
+    pub fn validate_path(self: &Self, path: &String) -> bool {
+        // Path must start with / and contain valid characters
+        if path.is_empty() || !path.starts_with("/") {
+            return false
+        }
+
+        // In production, use regex validation
+        return true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_manager_creation() {
+        let manager = APIGatewayManager::new()
+        assert_eq!(manager.state, "initialized")
+    }
+
+    #[test]
+    fn test_register_route() {
+        let mut manager = APIGatewayManager::new()
+        let result = manager.register_route("/users", "GET", "list_users")
+
+        assert!(result.is_ok())
+        let route = result.unwrap()
+        assert_eq!(route.path, "/users")
+        assert_eq!(route.method, "GET")
+    }
+
+    #[test]
+    fn test_invalid_path() {
+        let mut manager = APIGatewayManager::new()
+        let result = manager.register_route("users", "GET", "handler")
+
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_invalid_method() {
+        let mut manager = APIGatewayManager::new()
+        let result = manager.register_route("/users", "INVALID", "handler")
+
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_set_rate_limit() {
+        let mut manager = APIGatewayManager::new()
+        manager.register_route("/users", "GET", "list_users").ok()
+
+        let result = manager.set_rate_limit("/users", "GET", 500)
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_enable_disable_auth() {
+        let mut manager = APIGatewayManager::new()
+        manager.register_route("/public", "GET", "handler").ok()
+
+        let disable = manager.disable_auth("/public", "GET")
+        assert!(disable.is_ok())
+
+        let enable = manager.enable_auth("/public", "GET")
+        assert!(enable.is_ok())
+    }
+
+    #[test]
+    fn test_cache_manager() {
+        let mut cache = CacheManager::new(60000)
+
+        cache.set(&"key1", {})
+        let result = cache.get(&"key1")
+        assert!(result.is_some())
+
+        cache.invalidate(&"key1")
+        let result = cache.get(&"key1")
+        assert!(result.is_none())
+    }
+
+    #[test]
+    fn test_validator_path() {
+        let validator = Validator::new()
+        assert!(validator.validate_path(&"/users"))
+        assert!(validator.validate_path(&"/api/v1/users"))
+        assert!(!validator.validate_path(&"users"))
+    }
+}

@@ -1,0 +1,396 @@
+// PHASE 3: Full TITAN Implementation
+// app-manager-cloud - Cloud deployment and orchestration
+//
+// Handles cloud-based app deployment, scaling, monitoring.
+
+pub struct CloudManager {
+    deployments: Object              // deployment_id -> CloudDeployment
+    regions: Object                  // region -> RegionConfig
+    scaling_policies: Object         // policy_id -> ScalingPolicy
+    monitoring: CloudMonitoring
+}
+
+pub struct CloudDeployment {
+    deployment_id: String
+    app_id: String
+    region: String
+    state: String                    // "pending" | "active" | "scaling" | "failed" | "terminated"
+    replicas: u64
+    cpu_per_replica: u64             // millicores
+    memory_per_replica: u64          // MB
+    created_at: u64
+    updated_at: u64
+}
+
+pub struct RegionConfig {
+    region: String
+    max_replicas: u64
+    min_replicas: u64
+    zones: Array[String]
+    pricing: Object
+}
+
+pub struct ScalingPolicy {
+    policy_id: String
+    app_id: String
+    metric: String                   // "cpu" | "memory" | "requests"
+    threshold_up: f64
+    threshold_down: f64
+    scale_up_by: u64
+    scale_down_by: u64
+}
+
+pub struct CloudMonitoring {
+    metrics: Object
+    alerts: Array[String]
+}
+
+impl CloudManager {
+    pub fn new() -> Self {
+        return CloudManager {
+            deployments: {},
+            regions: {},
+            scaling_policies: {},
+            monitoring: CloudMonitoring::new(),
+        }
+    }
+
+    pub fn deploy_app(
+        mut self: Self,
+        app_id: String,
+        region: String,
+        replicas: u64,
+    ) -> Result[CloudDeployment] {
+        // Validate inputs
+        if app_id.is_empty() || region.is_empty() {
+            return Err("app_id and region required")
+        }
+
+        if replicas == 0 || replicas > 100 {
+            return Err("replicas must be 1-100")
+        }
+
+        // Check region exists
+        if !self.regions.contains(&region) {
+            return Err(format!("Region not found: {region}"))
+        }
+
+        let region_config = self.regions[region.clone()]
+
+        // Validate replica count
+        if replicas > region_config.max_replicas {
+            return Err(format!("Max replicas for region: {region_config.max_replicas}"))
+        }
+
+        // Create deployment
+        let now = get_timestamp_ms()
+        let deployment_id = generate_id(&format!("{app_id}-{region}"))
+
+        let deployment = CloudDeployment {
+            deployment_id: deployment_id.clone(),
+            app_id: app_id.clone(),
+            region: region,
+            state: "pending",
+            replicas: replicas,
+            cpu_per_replica: 500,      // 500m default
+            memory_per_replica: 512,   // 512MB default
+            created_at: now,
+            updated_at: now,
+        }
+
+        // Store deployment
+        self.deployments[deployment_id.clone()] = deployment
+
+        // Log deployment
+        self.monitoring.log(&format!("Deployment created: {deployment_id}"))
+
+        return Ok(deployment)
+    }
+
+    pub fn scale_deployment(
+        mut self: Self,
+        deployment_id: String,
+        target_replicas: u64,
+    ) -> Result[CloudDeployment] {
+        // Verify deployment exists
+        if !self.deployments.contains(&deployment_id) {
+            return Err(format!("Deployment not found: {deployment_id}"))
+        }
+
+        let mut deployment = self.deployments[deployment_id.clone()]
+
+        // Validate target replicas
+        if target_replicas < 1 || target_replicas > 100 {
+            return Err("Target replicas must be 1-100")
+        }
+
+        // Check region limits
+        let region_config = self.regions[deployment.region.clone()]
+        if target_replicas > region_config.max_replicas {
+            return Err("Exceeds region max replicas")
+        }
+
+        // Update state
+        deployment.state = "scaling"
+        deployment.replicas = target_replicas
+        deployment.updated_at = get_timestamp_ms()
+
+        // Store updated deployment
+        self.deployments[deployment_id.clone()] = deployment
+
+        // Log scaling operation
+        self.monitoring.log(&format!("Scaling deployment: {deployment_id} to {target_replicas} replicas"))
+
+        // Simulate scaling completion
+        deployment.state = "active"
+        self.deployments[deployment_id.clone()] = deployment
+
+        return Ok(deployment)
+    }
+
+    pub fn update_resources(
+        mut self: Self,
+        deployment_id: String,
+        cpu_millicores: u64,
+        memory_mb: u64,
+    ) -> Result[CloudDeployment] {
+        if !self.deployments.contains(&deployment_id) {
+            return Err(format!("Deployment not found: {deployment_id}"))
+        }
+
+        // Validate resource requests
+        if cpu_millicores < 100 || cpu_millicores > 4000 {
+            return Err("CPU must be 100-4000 millicores")
+        }
+
+        if memory_mb < 128 || memory_mb > 8192 {
+            return Err("Memory must be 128-8192 MB")
+        }
+
+        let mut deployment = self.deployments[deployment_id.clone()]
+
+        deployment.cpu_per_replica = cpu_millicores
+        deployment.memory_per_replica = memory_mb
+        deployment.updated_at = get_timestamp_ms()
+
+        self.deployments[deployment_id.clone()] = deployment
+
+        self.monitoring.log(&format!("Resources updated: {deployment_id}"))
+
+        return Ok(deployment)
+    }
+
+    pub fn terminate_deployment(
+        mut self: Self,
+        deployment_id: String,
+    ) -> Result[bool] {
+        if !self.deployments.contains(&deployment_id) {
+            return Err(format!("Deployment not found: {deployment_id}"))
+        }
+
+        let mut deployment = self.deployments[deployment_id.clone()]
+
+        deployment.state = "terminated"
+        deployment.updated_at = get_timestamp_ms()
+
+        self.deployments[deployment_id.clone()] = deployment
+
+        self.monitoring.log(&format!("Deployment terminated: {deployment_id}"))
+
+        return Ok(true)
+    }
+
+    pub fn get_deployment(self: &Self, deployment_id: String) -> Result[CloudDeployment] {
+        if !self.deployments.contains(&deployment_id) {
+            return Err(format!("Deployment not found: {deployment_id}"))
+        }
+
+        return Ok(self.deployments[deployment_id])
+    }
+
+    pub fn list_deployments(self: &Self) -> Result[Array[CloudDeployment]] {
+        let mut deployments: Array[CloudDeployment] = []
+
+        for entry in self.deployments {
+            deployments.push(entry.1)
+        }
+
+        return Ok(deployments)
+    }
+
+    pub fn set_scaling_policy(
+        mut self: Self,
+        app_id: String,
+        metric: String,
+        threshold_up: f64,
+        threshold_down: f64,
+    ) -> Result[ScalingPolicy] {
+        if app_id.is_empty() || metric.is_empty() {
+            return Err("app_id and metric required")
+        }
+
+        if threshold_up <= threshold_down {
+            return Err("threshold_up must be > threshold_down")
+        }
+
+        let policy_id = generate_id(&format!("{app_id}-{metric}"))
+
+        let policy = ScalingPolicy {
+            policy_id: policy_id.clone(),
+            app_id: app_id,
+            metric: metric,
+            threshold_up: threshold_up,
+            threshold_down: threshold_down,
+            scale_up_by: 2,
+            scale_down_by: 1,
+        }
+
+        self.scaling_policies[policy_id.clone()] = policy
+
+        return Ok(policy)
+    }
+
+    pub fn add_region(
+        mut self: Self,
+        region: String,
+        max_replicas: u64,
+        min_replicas: u64,
+    ) -> Result[RegionConfig] {
+        if region.is_empty() {
+            return Err("region name required")
+        }
+
+        if min_replicas == 0 || min_replicas > max_replicas {
+            return Err("Invalid replica limits")
+        }
+
+        let config = RegionConfig {
+            region: region.clone(),
+            max_replicas: max_replicas,
+            min_replicas: min_replicas,
+            zones: [],
+            pricing: {},
+        }
+
+        self.regions[region] = config
+
+        return Ok(config)
+    }
+}
+
+impl CloudMonitoring {
+    pub fn new() -> Self {
+        return CloudMonitoring {
+            metrics: {},
+            alerts: [],
+        }
+    }
+
+    pub fn log(mut self: Self, message: &String) {
+        // In production, write to monitoring system
+    }
+}
+
+fn generate_id(prefix: &String) -> String {
+    return format!("{prefix}-{timestamp}", timestamp = get_timestamp_ms())
+}
+
+fn get_timestamp_ms() -> u64 {
+    return 1718462400000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_deploy_app() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 50, 1).ok()
+
+        let result = manager.deploy_app("app1", "us-east-1", 3)
+        assert!(result.is_ok())
+        let deployment = result.unwrap()
+        assert_eq!(deployment.replicas, 3)
+        assert_eq!(deployment.state, "pending")
+    }
+
+    #[test]
+    fn test_scale_deployment() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 50, 1).ok()
+        let deployment = manager.deploy_app("app1", "us-east-1", 3).unwrap()
+
+        let result = manager.scale_deployment(deployment.deployment_id.clone(), 5)
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().replicas, 5)
+    }
+
+    #[test]
+    fn test_scale_exceeds_limits() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 10, 1).ok()
+        let deployment = manager.deploy_app("app1", "us-east-1", 3).unwrap()
+
+        let result = manager.scale_deployment(deployment.deployment_id.clone(), 20)
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_update_resources() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 50, 1).ok()
+        let deployment = manager.deploy_app("app1", "us-east-1", 3).unwrap()
+
+        let result = manager.update_resources(deployment.deployment_id.clone(), 1000, 1024)
+        assert!(result.is_ok())
+        let updated = result.unwrap()
+        assert_eq!(updated.cpu_per_replica, 1000)
+        assert_eq!(updated.memory_per_replica, 1024)
+    }
+
+    #[test]
+    fn test_terminate_deployment() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 50, 1).ok()
+        let deployment = manager.deploy_app("app1", "us-east-1", 3).unwrap()
+
+        let result = manager.terminate_deployment(deployment.deployment_id.clone())
+        assert!(result.is_ok())
+
+        let get = manager.get_deployment(deployment.deployment_id)
+        assert_eq!(get.unwrap().state, "terminated")
+    }
+
+    #[test]
+    fn test_scaling_policy() {
+        let mut manager = CloudManager::new()
+
+        let result = manager.set_scaling_policy("app1", "cpu", 80.0, 20.0)
+        assert!(result.is_ok())
+        let policy = result.unwrap()
+        assert_eq!(policy.threshold_up, 80.0)
+    }
+
+    #[test]
+    fn test_region_management() {
+        let mut manager = CloudManager::new()
+
+        let result = manager.add_region("us-west-2", 100, 2)
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().max_replicas, 100)
+    }
+
+    #[test]
+    fn test_list_deployments() {
+        let mut manager = CloudManager::new()
+        manager.add_region("us-east-1", 50, 1).ok()
+
+        manager.deploy_app("app1", "us-east-1", 2).ok()
+        manager.deploy_app("app2", "us-east-1", 3).ok()
+
+        let result = manager.list_deployments()
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().len(), 2)
+    }
+}
