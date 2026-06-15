@@ -1,16 +1,30 @@
 // OMNISYSTEM - Complete implementation
-// Core runtime and framework modules
+// All language runtimes, frameworks, and specifications
 // Version: 2.0
 
+// Core language runtimes
 pub mod titan_runtime;
 pub mod sylva_runtime;
+pub mod aether_runtime;
+pub mod axiom_runtime;
+
+// Universal data format and querying
 pub mod omni_format;
 pub mod omni_query_language;
 
+// Application frameworks
+pub mod web_framework;
+pub mod systems_framework;
+
+// Re-export public APIs
 pub use titan_runtime::{TitanRuntime, TitanValue, TitanType, RuntimeError};
 pub use sylva_runtime::{Tensor, TensorError, Dense, Layer, activations, loss_functions};
+pub use aether_runtime::{Cluster, Node, NodeId, NetworkAddress, ConsensusAlgorithm, RaftNode};
+pub use axiom_runtime::{Formula, Proof, TheoremProver, Type, Specification};
 pub use omni_format::{OmniDocument, OmniValue, OmniHeader, OmniError};
 pub use omni_query_language::{OqlParser, QueryExecutor, QueryResult};
+pub use web_framework::{HttpRequest, HttpResponse, HttpMethod, HttpStatus, Router, WebServer};
+pub use systems_framework::{ProcessManager, FileSystem, MemoryManager, ThreadPool};
 
 /// Omnisystem version info
 pub const VERSION: &str = "2.0.0";
