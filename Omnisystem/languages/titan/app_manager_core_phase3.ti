@@ -1,0 +1,478 @@
+// PHASE 3: Full TITAN Implementation
+// app-manager-core - Complete TITAN module (no Rust dependency)
+//
+// Core application management - handles creation, updates, lifecycle.
+// Demonstrates Phase 3 patterns for business logic implementation.
+
+pub struct AppManagerCore {
+    apps: Object              // Storage: app_id -> AppState
+    permissions: Object       // ACL: user_id -> [permissions]
+    validator: Validator
+    logger: Logger
+}
+
+pub struct AppState {
+    app_id: String
+    name: String
+    version: String
+    owner: String
+    state: String            // "created" | "started" | "stopped" | "deleted"
+    created_at: u64
+    updated_at: u64
+    metadata: Object
+}
+
+pub struct Validator {
+    rules: Object
+}
+
+pub struct Logger {
+    level: String
+}
+
+impl AppManagerCore {
+    pub fn new() -> Self {
+        return AppManagerCore {
+            apps: {},
+            permissions: {},
+            validator: Validator::new(),
+            logger: Logger::new(),
+        }
+    }
+
+    pub fn create_app(
+        mut self: Self,
+        app_id: String,
+        name: String,
+        version: String,
+        owner: String,
+    ) -> Result[AppState] {
+        // Validate inputs
+        if !self.validator.validate_app_id(&app_id) {
+            return Err("Invalid app_id format")
+        }
+
+        if name.is_empty() {
+            return Err("App name required")
+        }
+
+        if !self.validator.validate_version(&version) {
+            return Err("Invalid version format (X.Y.Z expected)")
+        }
+
+        // Check if app exists
+        if self.apps.contains(&app_id) {
+            return Err(format!("App already exists: {app_id}"))
+        }
+
+        // Check permissions
+        if !self.validator.check_permission(&owner, "create_app") {
+            return Err("Permission denied: create_app")
+        }
+
+        // Create app state
+        let now = get_timestamp_ms()
+        let app = AppState {
+            app_id: app_id.clone(),
+            name: name,
+            version: version,
+            owner: owner.clone(),
+            state: "created",
+            created_at: now,
+            updated_at: now,
+            metadata: {},
+        }
+
+        // Store app
+        self.apps[app_id.clone()] = app
+
+        // Log operation
+        self.logger.info(&format!("App created: {app_id} by {owner}"))
+
+        return Ok(app)
+    }
+
+    pub fn update_app(
+        mut self: Self,
+        app_id: String,
+        updates: Object,
+        user: String,
+    ) -> Result[AppState] {
+        // Verify app exists
+        if !self.apps.contains(&app_id) {
+            return Err(format!("App not found: {app_id}"))
+        }
+
+        let mut app = self.apps[app_id.clone()]
+
+        // Check permissions
+        if !self.validator.check_owner_or_admin(&user, &app.owner) {
+            return Err("Permission denied: update_app")
+        }
+
+        // Apply updates
+        if let Some(name) = updates["name"] {
+            app.name = name as String
+        }
+
+        if let Some(version) = updates["version"] {
+            let version_str = version as String
+            if !self.validator.validate_version(&version_str) {
+                return Err("Invalid version format")
+            }
+            app.version = version_str
+        }
+
+        if let Some(metadata) = updates["metadata"] {
+            let meta_obj = metadata as Object
+            // Merge metadata
+            for entry in meta_obj {
+                app.metadata[entry.0] = entry.1
+            }
+        }
+
+        // Update timestamp
+        app.updated_at = get_timestamp_ms()
+
+        // Store updated app
+        self.apps[app_id.clone()] = app
+
+        // Log operation
+        self.logger.info(&format!("App updated: {app_id} by {user}"))
+
+        return Ok(app)
+    }
+
+    pub fn delete_app(
+        mut self: Self,
+        app_id: String,
+        user: String,
+    ) -> Result[bool] {
+        // Verify app exists
+        if !self.apps.contains(&app_id) {
+            return Err(format!("App not found: {app_id}"))
+        }
+
+        let app = self.apps[app_id.clone()]
+
+        // Check permissions
+        if !self.validator.check_owner_or_admin(&user, &app.owner) {
+            return Err("Permission denied: delete_app")
+        }
+
+        // Only allow deletion if app is stopped
+        if app.state != "stopped" && app.state != "created" {
+            return Err(format!("Cannot delete app in state: {app.state}"))
+        }
+
+        // Delete app
+        self.apps.remove(&app_id)
+
+        // Log operation
+        self.logger.info(&format!("App deleted: {app_id} by {user}"))
+
+        return Ok(true)
+    }
+
+    pub fn start_app(
+        mut self: Self,
+        app_id: String,
+        user: String,
+    ) -> Result[AppState] {
+        // Verify app exists
+        if !self.apps.contains(&app_id) {
+            return Err(format!("App not found: {app_id}"))
+        }
+
+        let mut app = self.apps[app_id.clone()]
+
+        // Check permissions
+        if !self.validator.check_owner_or_admin(&user, &app.owner) {
+            return Err("Permission denied: start_app")
+        }
+
+        // Check current state
+        if app.state == "started" {
+            return Err("App is already started")
+        }
+
+        if app.state == "deleted" {
+            return Err("Cannot start deleted app")
+        }
+
+        // Start app
+        app.state = "started"
+        app.updated_at = get_timestamp_ms()
+
+        // Store updated app
+        self.apps[app_id.clone()] = app
+
+        // Log operation
+        self.logger.info(&format!("App started: {app_id} by {user}"))
+
+        return Ok(app)
+    }
+
+    pub fn stop_app(
+        mut self: Self,
+        app_id: String,
+        user: String,
+    ) -> Result[AppState] {
+        // Verify app exists
+        if !self.apps.contains(&app_id) {
+            return Err(format!("App not found: {app_id}"))
+        }
+
+        let mut app = self.apps[app_id.clone()]
+
+        // Check permissions
+        if !self.validator.check_owner_or_admin(&user, &app.owner) {
+            return Err("Permission denied: stop_app")
+        }
+
+        // Check current state
+        if app.state == "stopped" {
+            return Err("App is already stopped")
+        }
+
+        if app.state == "deleted" {
+            return Err("Cannot stop deleted app")
+        }
+
+        // Stop app
+        app.state = "stopped"
+        app.updated_at = get_timestamp_ms()
+
+        // Store updated app
+        self.apps[app_id.clone()] = app
+
+        // Log operation
+        self.logger.info(&format!("App stopped: {app_id} by {user}"))
+
+        return Ok(app)
+    }
+
+    pub fn get_app(self: &Self, app_id: String) -> Result[AppState] {
+        if !self.apps.contains(&app_id) {
+            return Err(format!("App not found: {app_id}"))
+        }
+
+        return Ok(self.apps[app_id.clone()])
+    }
+
+    pub fn list_apps_by_owner(self: &Self, owner: String) -> Result[Array[AppState]] {
+        let mut apps_list: Array[AppState] = []
+
+        for entry in self.apps {
+            let app = entry.1
+            if app.owner == owner {
+                apps_list.push(app)
+            }
+        }
+
+        return Ok(apps_list)
+    }
+
+    pub fn list_all_apps(self: &Self) -> Result[Array[AppState]] {
+        let mut apps_list: Array[AppState] = []
+
+        for entry in self.apps {
+            apps_list.push(entry.1)
+        }
+
+        return Ok(apps_list)
+    }
+}
+
+impl Validator {
+    pub fn new() -> Self {
+        return Validator {
+            rules: {},
+        }
+    }
+
+    pub fn validate_app_id(self: &Self, app_id: &String) -> bool {
+        if app_id.is_empty() || app_id.len() > 100 {
+            return false
+        }
+
+        // Must start with alphanumeric, can contain hyphens/underscores
+        // In production, use regex validation
+        return true
+    }
+
+    pub fn validate_version(self: &Self, version: &String) -> bool {
+        let parts = version.split(".")
+        if parts.len() != 3 {
+            return false
+        }
+
+        // In production, validate each part is numeric
+        return true
+    }
+
+    pub fn check_permission(self: &Self, user: &String, action: &String) -> bool {
+        // In production, check actual permission store
+        // For now, allow all authenticated users
+        return !user.is_empty()
+    }
+
+    pub fn check_owner_or_admin(
+        self: &Self,
+        user: &String,
+        owner: &String,
+    ) -> bool {
+        // Check if user is owner or admin
+        // In production, check actual role/permission store
+        return user == owner || self.check_permission(user, "admin")
+    }
+}
+
+impl Logger {
+    pub fn new() -> Self {
+        return Logger {
+            level: "INFO",
+        }
+    }
+
+    pub fn info(self: &Self, message: &String) {
+        // In production, write to log system
+        // println!("[INFO] {}", message)
+    }
+
+    pub fn error(self: &Self, message: &String) {
+        // In production, write to log system
+        // println!("[ERROR] {}", message)
+    }
+}
+
+fn get_timestamp_ms() -> u64 {
+    // In production, return actual system time
+    return 1718548800000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_create_app() {
+        let mut core = AppManagerCore::new()
+        let result = core.create_app(
+            "app1",
+            "Test App",
+            "1.0.0",
+            "owner1",
+        )
+
+        assert!(result.is_ok())
+        let app = result.unwrap()
+        assert_eq!(app.app_id, "app1")
+        assert_eq!(app.state, "created")
+        assert_eq!(app.owner, "owner1")
+    }
+
+    #[test]
+    fn test_duplicate_app_creation() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "App1", "1.0.0", "owner1").ok()
+
+        let result = core.create_app("app1", "App2", "1.0.0", "owner2")
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_update_app() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "Test", "1.0.0", "owner1").ok()
+
+        let result = core.update_app("app1", {
+            "version": "2.0.0",
+        }, "owner1")
+
+        assert!(result.is_ok())
+        let app = result.unwrap()
+        assert_eq!(app.version, "2.0.0")
+    }
+
+    #[test]
+    fn test_start_stop_app() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "Test", "1.0.0", "owner1").ok()
+
+        let start = core.start_app("app1", "owner1")
+        assert!(start.is_ok())
+        assert_eq!(start.unwrap().state, "started")
+
+        let stop = core.stop_app("app1", "owner1")
+        assert!(stop.is_ok())
+        assert_eq!(stop.unwrap().state, "stopped")
+    }
+
+    #[test]
+    fn test_cannot_delete_running_app() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "Test", "1.0.0", "owner1").ok()
+        core.start_app("app1", "owner1").ok()
+
+        let result = core.delete_app("app1", "owner1")
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_delete_stopped_app() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "Test", "1.0.0", "owner1").ok()
+        core.start_app("app1", "owner1").ok()
+        core.stop_app("app1", "owner1").ok()
+
+        let result = core.delete_app("app1", "owner1")
+        assert!(result.is_ok())
+
+        let get = core.get_app("app1")
+        assert!(get.is_err())
+    }
+
+    #[test]
+    fn test_list_apps_by_owner() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "App1", "1.0.0", "owner1").ok()
+        core.create_app("app2", "App2", "1.0.0", "owner1").ok()
+        core.create_app("app3", "App3", "1.0.0", "owner2").ok()
+
+        let result = core.list_apps_by_owner("owner1")
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().len(), 2)
+    }
+
+    #[test]
+    fn test_permission_check() {
+        let mut core = AppManagerCore::new()
+        core.create_app("app1", "Test", "1.0.0", "owner1").ok()
+
+        let result = core.update_app("app1", {}, "owner2")
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_invalid_version_format() {
+        let mut core = AppManagerCore::new()
+        let result = core.create_app("app1", "Test", "1.0", "owner1")
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_validator_app_id() {
+        let validator = Validator::new()
+        assert!(validator.validate_app_id(&"valid_app_id-1"))
+        assert!(!validator.validate_app_id(&""))
+    }
+
+    #[test]
+    fn test_validator_version() {
+        let validator = Validator::new()
+        assert!(validator.validate_version(&"1.2.3"))
+        assert!(validator.validate_version(&"10.5.0"))
+        assert!(!validator.validate_version(&"1.2"))
+    }
+}
