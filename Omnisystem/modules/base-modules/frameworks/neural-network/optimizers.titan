@@ -1,0 +1,197 @@
+// Neural Network Framework - Optimizers Module (TITAN)
+// Stochastic Gradient Descent, Adam, RMSprop, etc.
+
+pub struct OptimizerConfig {
+    learning_rate: Float
+    weight_decay: Float
+    gradient_clip: Option[Float]
+    warmup_steps: Int
+}
+
+pub struct SGDOptimizer {
+    config: OptimizerConfig
+    momentum: Float
+    velocity: Object  // Parameter ID → momentum
+}
+
+pub struct AdamOptimizer {
+    config: OptimizerConfig
+    beta1: Float      // Exponential decay for first moment
+    beta2: Float      // Exponential decay for second moment
+    epsilon: Float
+    m: Object        // First moment (mean of gradients)
+    v: Object        // Second moment (variance of gradients)
+    t: Int           // Time step
+}
+
+pub struct RMSpropOptimizer {
+    config: OptimizerConfig
+    alpha: Float     // Decay rate
+    v: Object        // Moving average of squared gradients
+}
+
+impl SGDOptimizer {
+    pub fn new(lr: Float) -> Self {
+        SGDOptimizer {
+            config: OptimizerConfig {
+                learning_rate: lr,
+                weight_decay: 0.0,
+                gradient_clip: null,
+                warmup_steps: 0
+            },
+            momentum: 0.0,
+            velocity: {}
+        }
+    }
+
+    pub fn with_momentum(mut self: Self, momentum: Float) -> Self {
+        self.momentum = momentum
+        self
+    }
+
+    pub fn step(mut self: Self, parameters: Object, gradients: Object) -> Result[Object] {
+        let mut updated = {}
+
+        for (param_id, param) in parameters {
+            let grad = gradients[param_id]
+
+            // Gradient clipping
+            if self.config.gradient_clip.is_some() {
+                let grad_norm = bridge::call_rust("ull::ops", "norm", [grad])
+                let max_norm = self.config.gradient_clip.unwrap()
+                if grad_norm > max_norm {
+                    let scale = max_norm / (grad_norm + 1e-8)
+                    grad = bridge::call_rust("ull::ops", "scalar_mul", [grad, scale])
+                }
+            }
+
+            // Weight decay
+            if self.config.weight_decay > 0.0 {
+                grad = bridge::call_rust("ull::ops", "add", [
+                    grad,
+                    bridge::call_rust("ull::ops", "scalar_mul", [param, self.config.weight_decay])
+                ])
+            }
+
+            // Momentum update
+            if self.momentum > 0.0 {
+                if !self.velocity.contains(param_id) {
+                    self.velocity[param_id] = grad.clone()
+                } else {
+                    self.velocity[param_id] = bridge::call_rust("ull::ops", "add", [
+                        bridge::call_rust("ull::ops", "scalar_mul", [self.velocity[param_id], self.momentum]),
+                        bridge::call_rust("ull::ops", "scalar_mul", [grad, 1.0 - self.momentum])
+                    ])
+                }
+                grad = self.velocity[param_id]
+            }
+
+            // Parameter update: θ = θ - α·g
+            updated[param_id] = bridge::call_rust("ull::ops", "sub", [
+                param,
+                bridge::call_rust("ull::ops", "scalar_mul", [grad, self.config.learning_rate])
+            ])
+        }
+
+        Ok(updated)
+    }
+}
+
+impl AdamOptimizer {
+    pub fn new(lr: Float) -> Self {
+        AdamOptimizer {
+            config: OptimizerConfig {
+                learning_rate: lr,
+                weight_decay: 0.0,
+                gradient_clip: null,
+                warmup_steps: 0
+            },
+            beta1: 0.9,
+            beta2: 0.999,
+            epsilon: 1e-8,
+            m: {},
+            v: {},
+            t: 0
+        }
+    }
+
+    pub fn with_betas(mut self: Self, beta1: Float, beta2: Float) -> Self {
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self
+    }
+
+    pub fn step(mut self: Self, parameters: Object, gradients: Object) -> Result[Object] {
+        self.t = self.t + 1
+        let mut updated = {}
+
+        for (param_id, param) in parameters {
+            let grad = gradients[param_id]
+
+            // Initialize first and second moments
+            if !self.m.contains(param_id) {
+                self.m[param_id] = bridge::call_rust("ull::ops", "zeros", param.shape())
+                self.v[param_id] = bridge::call_rust("ull::ops", "zeros", param.shape())
+            }
+
+            // Update biased first moment estimate
+            self.m[param_id] = bridge::call_rust("ull::ops", "add", [
+                bridge::call_rust("ull::ops", "scalar_mul", [self.m[param_id], self.beta1]),
+                bridge::call_rust("ull::ops", "scalar_mul", [grad, 1.0 - self.beta1])
+            ])
+
+            // Update biased second raw moment estimate
+            let grad_sq = bridge::call_rust("ull::ops", "mul", [grad, grad])
+            self.v[param_id] = bridge::call_rust("ull::ops", "add", [
+                bridge::call_rust("ull::ops", "scalar_mul", [self.v[param_id], self.beta2]),
+                bridge::call_rust("ull::ops", "scalar_mul", [grad_sq, 1.0 - self.beta2])
+            ])
+
+            // Bias correction
+            let bias_correction1 = 1.0 - self.beta1.pow(self.t as Float)
+            let bias_correction2 = 1.0 - self.beta2.pow(self.t as Float)
+
+            let m_hat = bridge::call_rust("ull::ops", "scalar_mul", [self.m[param_id], 1.0 / bias_correction1])
+            let v_hat = bridge::call_rust("ull::ops", "scalar_mul", [self.v[param_id], 1.0 / bias_correction2])
+
+            // Parameter update: θ = θ - α·m_hat / (√v_hat + ε)
+            let denominator = bridge::call_rust("ull::ops", "add", [
+                bridge::call_rust("ull::ops", "sqrt", [v_hat]),
+                self.epsilon
+            ])
+
+            let update = bridge::call_rust("ull::ops", "div", [m_hat, denominator])
+            updated[param_id] = bridge::call_rust("ull::ops", "sub", [
+                param,
+                bridge::call_rust("ull::ops", "scalar_mul", [update, self.config.learning_rate])
+            ])
+        }
+
+        Ok(updated)
+    }
+}
+
+pub fn create_sgd(lr: Float) -> SGDOptimizer {
+    SGDOptimizer::new(lr)
+}
+
+pub fn create_adam(lr: Float) -> AdamOptimizer {
+    AdamOptimizer::new(lr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_sgd_creation() {
+        let sgd = SGDOptimizer::new(0.01)
+        assert_eq!(sgd.config.learning_rate, 0.01)
+    }
+
+    #[test]
+    fn test_adam_creation() {
+        let adam = AdamOptimizer::new(0.001)
+        assert_eq!(adam.config.learning_rate, 0.001)
+    }
+}

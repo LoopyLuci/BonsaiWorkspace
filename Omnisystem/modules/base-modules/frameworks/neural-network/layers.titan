@@ -1,0 +1,292 @@
+// Neural Network Framework - Layers Module (TITAN)
+// Pre-built layer implementations
+
+pub struct LayerConfig {
+    name: String
+    layer_type: String
+    input_shape: Option[Array[Int]]
+    output_shape: Option[Array[Int]]
+    attributes: Object
+    parameters: Object  // weights, biases, etc.
+}
+
+pub struct Dense {
+    config: LayerConfig
+    weight: Object
+    bias: Option[Object]
+    activation: Option[String]
+}
+
+pub struct Conv2D {
+    config: LayerConfig
+    kernel: Object
+    bias: Option[Object]
+    stride: Array[Int]
+    padding: String  // "same", "valid"
+    activation: Option[String]
+}
+
+pub struct LayerNorm {
+    config: LayerConfig
+    weight: Object
+    bias: Object
+    epsilon: Float
+}
+
+pub struct Dropout {
+    config: LayerConfig
+    rate: Float
+}
+
+pub struct MultiHeadAttention {
+    config: LayerConfig
+    query_proj: Object
+    key_proj: Object
+    value_proj: Object
+    output_proj: Object
+    num_heads: Int
+    dim: Int
+}
+
+impl Dense {
+    pub fn new(in_features: Int, out_features: Int, use_bias: Bool) -> Self {
+        let weight = bridge::call_rust("ull::init", "xavier_uniform", [in_features, out_features])
+        let bias = if use_bias {
+            Some(bridge::call_rust("ull::ops", "zeros", [out_features]))
+        } else {
+            None
+        }
+
+        Dense {
+            config: LayerConfig {
+                name: "dense",
+                layer_type: "dense",
+                input_shape: Some([in_features]),
+                output_shape: Some([out_features]),
+                attributes: { in_features: in_features, out_features: out_features },
+                parameters: { weight: weight }
+            },
+            weight: weight,
+            bias: bias,
+            activation: None
+        }
+    }
+
+    pub fn with_activation(mut self: Self, activation: String) -> Self {
+        self.activation = Some(activation)
+        self
+    }
+
+    pub fn forward(self: &Self, input: Object) -> Result[Object] {
+        let mut output = bridge::call_rust("ull::ops", "matmul", [input, self.weight])
+
+        if self.bias.is_some() {
+            output = bridge::call_rust("ull::ops", "add", [output, self.bias.unwrap()])
+        }
+
+        if self.activation.is_some() {
+            let act = self.activation.unwrap()
+            output = match act {
+                "relu" => bridge::call_rust("ull::ops", "relu", [output]),
+                "sigmoid" => bridge::call_rust("ull::ops", "sigmoid", [output]),
+                "tanh" => bridge::call_rust("ull::ops", "tanh", [output]),
+                "gelu" => bridge::call_rust("ull::ops", "gelu", [output]),
+                _ => output
+            }
+        }
+
+        Ok(output)
+    }
+
+    pub fn get_parameters(self: &Self) -> Object {
+        let mut params = { weight: self.weight }
+        if self.bias.is_some() {
+            params["bias"] = self.bias.unwrap()
+        }
+        params
+    }
+}
+
+impl Conv2D {
+    pub fn new(
+        in_channels: Int,
+        out_channels: Int,
+        kernel_size: Int,
+        stride: Int,
+        padding: String
+    ) -> Self {
+        let kernel = bridge::call_rust("ull::init", "kaiming_uniform", [
+            out_channels,
+            in_channels,
+            kernel_size,
+            kernel_size
+        ])
+
+        Conv2D {
+            config: LayerConfig {
+                name: "conv2d",
+                layer_type: "conv2d",
+                input_shape: None,
+                output_shape: None,
+                attributes: {
+                    in_channels: in_channels,
+                    out_channels: out_channels,
+                    kernel_size: kernel_size,
+                    stride: stride,
+                    padding: padding
+                },
+                parameters: { kernel: kernel }
+            },
+            kernel: kernel,
+            bias: None,
+            stride: [stride, stride],
+            padding: padding,
+            activation: None
+        }
+    }
+
+    pub fn forward(self: &Self, input: Object) -> Result[Object] {
+        let output = bridge::call_rust("ull::ops", "conv2d", {
+            input: input,
+            kernel: self.kernel,
+            stride: self.stride,
+            padding: self.padding
+        })
+
+        Ok(output)
+    }
+}
+
+impl LayerNorm {
+    pub fn new(normalized_shape: Array[Int]) -> Self {
+        let numel: Int = normalized_shape.iter().product()
+        let weight = bridge::call_rust("ull::ops", "ones", normalized_shape)
+        let bias = bridge::call_rust("ull::ops", "zeros", normalized_shape)
+
+        LayerNorm {
+            config: LayerConfig {
+                name: "layer_norm",
+                layer_type: "layer_norm",
+                input_shape: Some(normalized_shape),
+                output_shape: Some(normalized_shape),
+                attributes: { normalized_shape: normalized_shape },
+                parameters: { weight: weight, bias: bias }
+            },
+            weight: weight,
+            bias: bias,
+            epsilon: 1e-6
+        }
+    }
+
+    pub fn forward(self: &Self, input: Object) -> Result[Object] {
+        let output = bridge::call_rust("ull::ops", "layer_norm", {
+            input: input,
+            weight: self.weight,
+            bias: self.bias,
+            epsilon: self.epsilon
+        })
+
+        Ok(output)
+    }
+}
+
+impl Dropout {
+    pub fn new(rate: Float) -> Self {
+        Dropout {
+            config: LayerConfig {
+                name: "dropout",
+                layer_type: "dropout",
+                input_shape: None,
+                output_shape: None,
+                attributes: { rate: rate },
+                parameters: {}
+            },
+            rate: rate
+        }
+    }
+
+    pub fn forward(self: &Self, input: Object, training: Bool) -> Result[Object] {
+        if !training {
+            return Ok(input)  // No dropout at inference
+        }
+
+        let output = bridge::call_rust("ull::ops", "dropout", {
+            input: input,
+            rate: self.rate
+        })
+
+        Ok(output)
+    }
+}
+
+impl MultiHeadAttention {
+    pub fn new(dim: Int, num_heads: Int) -> Self {
+        let head_dim = dim / num_heads
+
+        MultiHeadAttention {
+            config: LayerConfig {
+                name: "multi_head_attention",
+                layer_type: "multi_head_attention",
+                input_shape: Some([dim]),
+                output_shape: Some([dim]),
+                attributes: { dim: dim, num_heads: num_heads },
+                parameters: {}
+            },
+            query_proj: bridge::call_rust("ull::init", "xavier_uniform", [dim, dim]),
+            key_proj: bridge::call_rust("ull::init", "xavier_uniform", [dim, dim]),
+            value_proj: bridge::call_rust("ull::init", "xavier_uniform", [dim, dim]),
+            output_proj: bridge::call_rust("ull::init", "xavier_uniform", [dim, dim]),
+            num_heads: num_heads,
+            dim: dim
+        }
+    }
+
+    pub fn forward(
+        self: &Self,
+        query: Object,
+        key: Object,
+        value: Object,
+        mask: Option[Object]
+    ) -> Result[Object] {
+        let q = bridge::call_rust("ull::ops", "matmul", [query, self.query_proj])
+        let k = bridge::call_rust("ull::ops", "matmul", [key, self.key_proj])
+        let v = bridge::call_rust("ull::ops", "matmul", [value, self.value_proj])
+
+        let output = bridge::call_rust("ull::ops", "multi_head_attention", {
+            query: q,
+            key: k,
+            value: v,
+            num_heads: self.num_heads,
+            mask: mask
+        })
+
+        let final_output = bridge::call_rust("ull::ops", "matmul", [output, self.output_proj])
+
+        Ok(final_output)
+    }
+}
+
+pub fn create_dense(in_features: Int, out_features: Int) -> Dense {
+    Dense::new(in_features, out_features, true)
+}
+
+pub fn create_conv2d(in_channels: Int, out_channels: Int, kernel_size: Int) -> Conv2D {
+    Conv2D::new(in_channels, out_channels, kernel_size, 1, "same")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_dense_creation() {
+        let layer = Dense::new(10, 5, true)
+        assert_eq!(layer.config.attributes["in_features"], 10)
+    }
+
+    #[test]
+    fn test_conv2d_creation() {
+        let layer = Conv2D::new(3, 16, 3, 1, "same")
+        assert_eq!(layer.config.attributes["out_channels"], 16)
+    }
+}

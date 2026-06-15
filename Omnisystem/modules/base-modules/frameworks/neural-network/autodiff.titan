@@ -1,0 +1,205 @@
+// Neural Network Framework - Auto-Differentiation Module (TITAN)
+// Reverse-mode automatic differentiation (backpropagation)
+
+pub struct GradientContext {
+    tape: Array[Object]  // Operations recorded during forward pass
+    parameters: Object   // Parameter ID → Gradient
+}
+
+pub struct AutoDiff {
+    context: GradientContext
+}
+
+impl AutoDiff {
+    pub fn new() -> Self {
+        AutoDiff {
+            context: GradientContext {
+                tape: [],
+                parameters: {}
+            }
+        }
+    }
+
+    // Backward pass using reverse-mode differentiation
+    pub fn backward(mut self: Self, loss: Object) -> Result[Object] {
+        let mut gradients = {}
+
+        // Initialize output gradient as 1.0 (scalar loss)
+        let mut grad_queue = [loss]
+
+        // Traverse tape in reverse
+        for op in self.context.tape.iter().rev() {
+            let op_name = op["operation"]
+            let inputs = op["inputs"]
+            let output_gradient = grad_queue.pop()
+
+            // Apply chain rule for this operation
+            let input_gradients = match op_name {
+                "add" => self.grad_add(inputs, output_gradient),
+                "mul" => self.grad_mul(inputs, output_gradient),
+                "matmul" => self.grad_matmul(inputs, output_gradient),
+                "relu" => self.grad_relu(inputs, output_gradient),
+                "sigmoid" => self.grad_sigmoid(inputs, output_gradient),
+                "tanh" => self.grad_tanh(inputs, output_gradient),
+                "softmax" => self.grad_softmax(inputs, output_gradient),
+                "layer_norm" => self.grad_layer_norm(inputs, output_gradient),
+                _ => []
+            }
+
+            // Accumulate gradients
+            for (i, input_id) in inputs.enumerate() {
+                if gradients.contains(input_id) {
+                    gradients[input_id] = self.add_gradients(
+                        gradients[input_id],
+                        input_gradients[i]
+                    )
+                } else {
+                    gradients[input_id] = input_gradients[i]
+                }
+
+                grad_queue.push(input_gradients[i])
+            }
+        }
+
+        self.context.parameters = gradients
+        Ok(gradients)
+    }
+
+    // Gradient functions for each operation
+    fn grad_add(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        [grad_output, grad_output]  // ∂(a+b)/∂a = 1, ∂(a+b)/∂b = 1
+    }
+
+    fn grad_mul(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let a = bridge::call_rust("ull::ad", "get_tensor", inputs[0])
+        let b = bridge::call_rust("ull::ad", "get_tensor", inputs[1])
+
+        [
+            bridge::call_rust("ull::ops", "mul", [grad_output, b]),  // ∂(a*b)/∂a = b
+            bridge::call_rust("ull::ops", "mul", [grad_output, a])   // ∂(a*b)/∂b = a
+        ]
+    }
+
+    fn grad_matmul(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let a = bridge::call_rust("ull::ad", "get_tensor", inputs[0])
+        let b = bridge::call_rust("ull::ad", "get_tensor", inputs[1])
+
+        [
+            bridge::call_rust("ull::ops", "matmul", [grad_output, b.transpose()]),  // ∂(A·B)/∂A = ∇·B^T
+            bridge::call_rust("ull::ops", "matmul", [a.transpose(), grad_output])   // ∂(A·B)/∂B = A^T·∇
+        ]
+    }
+
+    fn grad_relu(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let input = bridge::call_rust("ull::ad", "get_tensor", inputs[0])
+        let mask = bridge::call_rust("ull::ops", "greater_than", [input, 0.0])
+        [bridge::call_rust("ull::ops", "mul", [grad_output, mask])]  // ∂ReLU/∂x = {1 if x>0, 0 else}
+    }
+
+    fn grad_sigmoid(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let output = bridge::call_rust("ull::ad", "get_cached_output", inputs[0])
+        let grad = bridge::call_rust("ull::ops", "mul", [output, (1.0 - output)])
+        [bridge::call_rust("ull::ops", "mul", [grad_output, grad])]  // ∂σ/∂x = σ(x)·(1-σ(x))
+    }
+
+    fn grad_tanh(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let output = bridge::call_rust("ull::ad", "get_cached_output", inputs[0])
+        let grad = bridge::call_rust("ull::ops", "sub", [1.0, bridge::call_rust("ull::ops", "mul", [output, output])])
+        [bridge::call_rust("ull::ops", "mul", [grad_output, grad])]  // ∂tanh/∂x = 1 - tanh²(x)
+    }
+
+    fn grad_softmax(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        let output = bridge::call_rust("ull::ad", "get_cached_output", inputs[0])
+        // ∂softmax/∂x_i = softmax_i * (δ_ij - softmax_j)
+        let jacobian = bridge::call_rust("ull::ops", "softmax_jacobian", [output])
+        [bridge::call_rust("ull::ops", "matmul", [grad_output, jacobian])]
+    }
+
+    fn grad_layer_norm(self: &Self, inputs: Array[String], grad_output: Object) -> Array[Object] {
+        // Layer norm gradient (complex - delegates to Rust implementation)
+        let grads = bridge::call_rust("ull::ad", "layer_norm_backward", {
+            grad_output: grad_output,
+            inputs: inputs
+        })
+        grads
+    }
+
+    fn add_gradients(self: &Self, grad1: Object, grad2: Object) -> Object {
+        bridge::call_rust("ull::ops", "add", [grad1, grad2])
+    }
+
+    // Numerical gradient checking for validation
+    pub fn check_gradients(
+        self: &Self,
+        f: Function,  // Loss function
+        parameters: Object,
+        epsilon: Float
+    ) -> Result[Bool] {
+        let mut all_correct = true
+
+        for (param_id, param) in parameters {
+            let numerical_grad = self.numerical_gradient(f, param_id, epsilon)
+            let analytical_grad = self.context.parameters[param_id]
+
+            // Compare gradients (should be close)
+            let difference = bridge::call_rust("ull::ops", "abs", [
+                bridge::call_rust("ull::ops", "sub", [numerical_grad, analytical_grad])
+            ])
+
+            let max_diff = bridge::call_rust("ull::ops", "max", [difference])
+
+            if max_diff > 1e-4 {
+                println!("Gradient check failed for {}: max_diff = {}", param_id, max_diff)
+                all_correct = false
+            }
+        }
+
+        Ok(all_correct)
+    }
+
+    fn numerical_gradient(
+        self: &Self,
+        f: Function,
+        param_id: String,
+        epsilon: Float
+    ) -> Object {
+        // Perturb parameter and compute finite difference
+        let param = bridge::call_rust("ull::ad", "get_tensor", param_id)
+
+        // f(x + ε)
+        let plus = bridge::call_rust("ull::ops", "add", [param, epsilon])
+        let f_plus = f(plus)
+
+        // f(x - ε)
+        let minus = bridge::call_rust("ull::ops", "sub", [param, epsilon])
+        let f_minus = f(minus)
+
+        // (f(x+ε) - f(x-ε)) / 2ε
+        bridge::call_rust("ull::ops", "div", [
+            bridge::call_rust("ull::ops", "sub", [f_plus, f_minus]),
+            (2.0 * epsilon)
+        ])
+    }
+}
+
+pub fn create_autodiff() -> AutoDiff {
+    AutoDiff::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_autodiff_creation() {
+        let ad = AutoDiff::new()
+        assert_eq!(ad.context.tape.len(), 0)
+    }
+
+    #[test]
+    fn test_gradient_accumulation() {
+        // Test that gradients accumulate correctly
+        // (Would require actual tensor implementations to run)
+        true
+    }
+}

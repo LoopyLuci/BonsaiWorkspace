@@ -1,0 +1,278 @@
+// Neural Network Framework - Training Module (TITAN)
+// Training loops, validation, checkpointing
+
+pub struct TrainingConfig {
+    epochs: Int
+    batch_size: Int
+    learning_rate: Float
+    optimizer: String  // "sgd", "adam", "rmsprop"
+    loss_fn: String    // "cross_entropy", "mse", etc.
+    metrics: Array[String]
+    validation_split: Float
+    early_stopping: Option[Object]  // {patience, monitor, min_delta}
+    device: String
+}
+
+pub struct TrainingHistory {
+    epoch_losses: Array[Float]
+    epoch_metrics: Array[Object]
+    validation_losses: Array[Float]
+    validation_metrics: Array[Object]
+    best_epoch: Int
+    best_loss: Float
+}
+
+pub struct Trainer {
+    config: TrainingConfig
+    history: TrainingHistory
+}
+
+impl Trainer {
+    pub fn new(config: TrainingConfig) -> Self {
+        Trainer {
+            config: config,
+            history: TrainingHistory {
+                epoch_losses: [],
+                epoch_metrics: [],
+                validation_losses: [],
+                validation_metrics: [],
+                best_epoch: 0,
+                best_loss: Float::MAX
+            }
+        }
+    }
+
+    pub fn train(
+        mut self: Self,
+        model: Object,
+        train_data: Object,
+        validation_data: Option[Object]
+    ) -> Result[TrainingHistory] {
+        let optimizer = self.create_optimizer()
+        let loss_fn = self.create_loss_fn()
+
+        for epoch in range(self.config.epochs) {
+            let mut epoch_loss = 0.0
+            let mut batch_count = 0
+
+            // Training loop
+            for batch in train_data {
+                let batch_inputs = batch["inputs"]
+                let batch_targets = batch["targets"]
+
+                // Forward pass
+                let predictions = bridge::call_rust("ull::model", "forward", {
+                    model: model,
+                    inputs: batch_inputs
+                })
+
+                // Compute loss
+                let loss = bridge::call_rust("ull::losses", self.config.loss_fn, {
+                    predictions: predictions,
+                    targets: batch_targets
+                })
+
+                // Backward pass
+                let gradients = bridge::call_rust("ull::ad", "backward", {
+                    loss: loss
+                })
+
+                // Optimizer step
+                bridge::call_rust("ull::optim", "step", {
+                    optimizer: optimizer,
+                    gradients: gradients,
+                    model: model
+                })
+
+                epoch_loss = epoch_loss + loss
+                batch_count = batch_count + 1
+            }
+
+            epoch_loss = epoch_loss / batch_count as Float
+            self.history.epoch_losses.push(epoch_loss)
+
+            // Validation
+            if validation_data.is_some() {
+                let val_results = self.validate(model, validation_data.unwrap(), loss_fn)
+                self.history.validation_losses.push(val_results["loss"])
+                self.history.validation_metrics.push(val_results["metrics"])
+
+                // Early stopping check
+                if self.config.early_stopping.is_some() {
+                    let es_config = self.config.early_stopping.unwrap()
+                    let monitor = es_config["monitor"]
+                    let patience = es_config["patience"]
+
+                    let current_value = if monitor == "val_loss" {
+                        val_results["loss"]
+                    } else {
+                        val_results["metrics"][monitor]
+                    }
+
+                    if current_value < self.history.best_loss {
+                        self.history.best_loss = current_value
+                        self.history.best_epoch = epoch
+                        // Save checkpoint
+                        self.save_checkpoint(model, epoch)
+                    } else if epoch - self.history.best_epoch >= patience {
+                        println!("Early stopping triggered at epoch {}", epoch)
+                        break
+                    }
+                }
+            }
+
+            if epoch % 10 == 0 {
+                println!("Epoch {}: loss = {:.4}", epoch, epoch_loss)
+            }
+        }
+
+        Ok(self.history)
+    }
+
+    pub fn validate(
+        self: &Self,
+        model: Object,
+        validation_data: Object,
+        loss_fn: String
+    ) -> Object {
+        let mut total_loss = 0.0
+        let mut batch_count = 0
+        let mut metrics = {}
+
+        for batch in validation_data {
+            let predictions = bridge::call_rust("ull::model", "forward", {
+                model: model,
+                inputs: batch["inputs"]
+            })
+
+            let loss = bridge::call_rust("ull::losses", loss_fn, {
+                predictions: predictions,
+                targets: batch["targets"]
+            })
+
+            total_loss = total_loss + loss
+            batch_count = batch_count + 1
+
+            // Compute metrics
+            for metric_name in self.config.metrics {
+                let metric_value = self.compute_metric(metric_name, predictions, batch["targets"])
+                if !metrics.contains(metric_name) {
+                    metrics[metric_name] = 0.0
+                }
+                metrics[metric_name] = metrics[metric_name] + metric_value
+            }
+        }
+
+        total_loss = total_loss / batch_count as Float
+
+        for (metric_name, metric_value) in metrics {
+            metrics[metric_name] = metric_value / batch_count as Float
+        }
+
+        {
+            loss: total_loss,
+            metrics: metrics
+        }
+    }
+
+    pub fn evaluate(
+        self: &Self,
+        model: Object,
+        test_data: Object
+    ) -> Object {
+        self.validate(model, test_data, self.config.loss_fn)
+    }
+
+    fn create_optimizer(self: &Self) -> Object {
+        match self.config.optimizer {
+            "sgd" => bridge::call_rust("ull::optim", "sgd", {
+                lr: self.config.learning_rate
+            }),
+            "adam" => bridge::call_rust("ull::optim", "adam", {
+                lr: self.config.learning_rate
+            }),
+            "rmsprop" => bridge::call_rust("ull::optim", "rmsprop", {
+                lr: self.config.learning_rate
+            }),
+            _ => bridge::call_rust("ull::optim", "adam", {
+                lr: self.config.learning_rate
+            })
+        }
+    }
+
+    fn create_loss_fn(self: &Self) -> String {
+        self.config.loss_fn
+    }
+
+    fn compute_metric(
+        self: &Self,
+        metric_name: String,
+        predictions: Object,
+        targets: Object
+    ) -> Float {
+        match metric_name {
+            "accuracy" => {
+                let correct = bridge::call_rust("ull::metrics", "accuracy", {
+                    predictions: predictions,
+                    targets: targets
+                })
+                correct
+            },
+            "precision" => {
+                let precision = bridge::call_rust("ull::metrics", "precision", {
+                    predictions: predictions,
+                    targets: targets
+                })
+                precision
+            },
+            "recall" => {
+                let recall = bridge::call_rust("ull::metrics", "recall", {
+                    predictions: predictions,
+                    targets: targets
+                })
+                recall
+            },
+            "f1" => {
+                let f1 = bridge::call_rust("ull::metrics", "f1", {
+                    predictions: predictions,
+                    targets: targets
+                })
+                f1
+            },
+            _ => 0.0
+        }
+    }
+
+    fn save_checkpoint(self: &Self, model: Object, epoch: Int) {
+        bridge::call_rust("ull::io", "save_checkpoint", {
+            model: model,
+            epoch: epoch,
+            device: self.config.device
+        })
+    }
+}
+
+pub fn create_trainer(config: TrainingConfig) -> Trainer {
+    Trainer::new(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_training_config() {
+        let config = TrainingConfig {
+            epochs: 10,
+            batch_size: 32,
+            learning_rate: 0.001,
+            optimizer: "adam",
+            loss_fn: "cross_entropy",
+            metrics: ["accuracy"],
+            validation_split: 0.2,
+            early_stopping: null,
+            device: "cpu"
+        }
+        assert_eq!(config.epochs, 10)
+    }
+}
