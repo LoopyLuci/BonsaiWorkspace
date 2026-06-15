@@ -1,0 +1,351 @@
+// Phase 2: GPU Support - Multi-Device Orchestration (TITAN)
+// CUDA, ROCm, Metal, TPU, CPU device management
+
+pub struct Device {
+    device_type: String  // "cuda", "rocm", "metal", "tpu", "cpu"
+    device_id: Int
+    name: String
+    compute_capability: String
+    memory_total: Int
+    memory_available: Int
+}
+
+pub struct DeviceManager {
+    devices: Array[Device]
+    current_device: String
+    memory_managers: Object  // device_id → MemoryManager
+}
+
+pub struct Stream {
+    device_id: Int
+    stream_id: Int
+    priority: Int
+}
+
+pub struct MultiGPUExecutor {
+    devices: Array[Device]
+    device_placement: Object  // node_id → device_id
+    streams: Object          // device_id → Array[Stream]
+}
+
+impl DeviceManager {
+    pub fn new() -> Self {
+        let devices = Self::discover_devices()
+        println!("🔍 Discovered {} devices", devices.len())
+
+        let mut managers = {}
+        for device in devices {
+            managers[device.device_id] = MemoryManager::new(device.memory_total)
+        }
+
+        DeviceManager {
+            devices: devices,
+            current_device: "cpu",
+            memory_managers: managers
+        }
+    }
+
+    fn discover_devices() -> Array[Device] {
+        let mut devices = []
+
+        // CPU (always available)
+        devices.push(Device {
+            device_type: "cpu",
+            device_id: 0,
+            name: "CPU",
+            compute_capability: "generic",
+            memory_total: 16 * 1024 * 1024 * 1024,  // 16GB placeholder
+            memory_available: 16 * 1024 * 1024 * 1024
+        })
+
+        // Discover CUDA devices
+        let cuda_count = bridge::call_rust("ull::device", "cuda_device_count", {})
+        for i in range(cuda_count) {
+            let props = bridge::call_rust("ull::device", "cuda_device_properties", { device_id: i })
+            devices.push(Device {
+                device_type: "cuda",
+                device_id: i,
+                name: props["name"],
+                compute_capability: props["compute_capability"],
+                memory_total: props["total_memory"],
+                memory_available: props["available_memory"]
+            })
+        }
+
+        // Discover ROCm devices
+        let rocm_count = bridge::call_rust("ull::device", "rocm_device_count", {})
+        for i in range(rocm_count) {
+            let props = bridge::call_rust("ull::device", "rocm_device_properties", { device_id: i })
+            devices.push(Device {
+                device_type: "rocm",
+                device_id: i,
+                name: props["name"],
+                compute_capability: props["compute_capability"],
+                memory_total: props["total_memory"],
+                memory_available: props["available_memory"]
+            })
+        }
+
+        // Discover TPU devices
+        let tpu_count = bridge::call_rust("ull::device", "tpu_device_count", {})
+        for i in range(tpu_count) {
+            let props = bridge::call_rust("ull::device", "tpu_device_properties", { device_id: i })
+            devices.push(Device {
+                device_type: "tpu",
+                device_id: i,
+                name: props["name"],
+                compute_capability: "tpu-v4",
+                memory_total: props["total_memory"],
+                memory_available: props["available_memory"]
+            })
+        }
+
+        devices
+    }
+
+    pub fn get_devices(self: &Self) -> Array[Device] {
+        self.devices.clone()
+    }
+
+    pub fn set_device(mut self: Self, device_id: String) -> Result[()]{
+        self.current_device = device_id
+        Ok(())
+    }
+
+    pub fn allocate(mut self: Self, device_id: String, nbytes: Int) -> Result[Object] {
+        if !self.memory_managers.contains(device_id) {
+            return Err(format!("Device {} not found", device_id))
+        }
+
+        let manager = self.memory_managers[device_id]
+        let handle = bridge::call_rust("ull::memory", "allocate", {
+            device_id: device_id,
+            nbytes: nbytes
+        })
+
+        Ok(handle)
+    }
+
+    pub fn deallocate(mut self: Self, device_id: String, handle: Object) -> Result[()]{
+        bridge::call_rust("ull::memory", "deallocate", {
+            device_id: device_id,
+            handle: handle
+        })
+
+        Ok(())
+    }
+}
+
+impl MultiGPUExecutor {
+    pub fn new(devices: Array[Device]) -> Self {
+        let mut streams = {}
+        for device in devices {
+            streams[device.device_id] = []
+        }
+
+        MultiGPUExecutor {
+            devices: devices,
+            device_placement: {},
+            streams: streams
+        }
+    }
+
+    pub fn execute_distributed(
+        self: &Self,
+        graph: Object,
+        inputs: Object,
+        strategy: String  // "data_parallel", "model_parallel"
+    ) -> Result[Object] {
+        match strategy {
+            "data_parallel" => self.data_parallel_execution(graph, inputs),
+            "model_parallel" => self.model_parallel_execution(graph, inputs),
+            "pipeline_parallel" => self.pipeline_parallel_execution(graph, inputs),
+            _ => Err("Unknown execution strategy")
+        }
+    }
+
+    fn data_parallel_execution(self: &Self, graph: Object, inputs: Object) -> Result[Object] {
+        // Replicate model on all devices
+        // Distribute batch across devices
+        // All-reduce gradients
+        let num_devices = self.devices.len()
+        let batch_size = inputs["batch_size"]
+        let local_batch_size = batch_size / num_devices
+
+        let mut local_results = []
+
+        // Execute on each device in parallel
+        for (device_idx, device) in self.devices.enumerate() {
+            let start = device_idx * local_batch_size
+            let end = (device_idx + 1) * local_batch_size
+            let local_batch = inputs.slice(start, end)
+
+            let result = bridge::call_rust("ull::exec", "execute_on_device", {
+                graph: graph,
+                inputs: local_batch,
+                device_id: device.device_id
+            })
+
+            local_results.push(result)
+        }
+
+        // Aggregate results
+        let output = bridge::call_rust("ull::ops", "concat", {
+            tensors: local_results,
+            axis: 0
+        })
+
+        Ok(output)
+    }
+
+    fn model_parallel_execution(self: &Self, graph: Object, inputs: Object) -> Result[Object] {
+        // Split model across devices
+        // Execute layer-by-layer
+        // Transfer intermediate activations
+        let partitions = self.partition_model(graph)
+
+        let mut activations = inputs
+        for (part_idx, partition) in partitions.enumerate() {
+            let device_id = self.devices[part_idx % self.devices.len()].device_id
+
+            activations = bridge::call_rust("ull::exec", "execute_partition", {
+                partition: partition,
+                inputs: activations,
+                device_id: device_id
+            })
+        }
+
+        Ok(activations)
+    }
+
+    fn pipeline_parallel_execution(self: &Self, graph: Object, inputs: Object) -> Result[Object] {
+        // Split batch into micro-batches
+        // Pipeline forward and backward passes
+        // Synchronize gradients
+        let num_micro_batches = 4
+        let batch_size = inputs["batch_size"]
+        let micro_batch_size = batch_size / num_micro_batches
+
+        let mut results = []
+
+        for i in range(num_micro_batches) {
+            let start = i * micro_batch_size
+            let end = (i + 1) * micro_batch_size
+            let micro_batch = inputs.slice(start, end)
+
+            let result = bridge::call_rust("ull::exec", "execute_pipelined", {
+                graph: graph,
+                inputs: micro_batch,
+                stage: i
+            })
+
+            results.push(result)
+        }
+
+        let output = bridge::call_rust("ull::ops", "concat", {
+            tensors: results,
+            axis: 0
+        })
+
+        Ok(output)
+    }
+
+    fn partition_model(self: &Self, graph: Object) -> Array[Object] {
+        // Automatically partition model across available devices
+        let num_devices = self.devices.len()
+        let nodes = graph["nodes"]
+        let total_nodes = nodes.len()
+        let nodes_per_device = total_nodes / num_devices
+
+        let mut partitions = []
+        for i in range(num_devices) {
+            let start = i * nodes_per_device
+            let end = if i == num_devices - 1 { total_nodes } else { (i + 1) * nodes_per_device }
+            let partition_nodes = nodes.slice(start, end)
+
+            partitions.push({
+                nodes: partition_nodes,
+                device_id: self.devices[i].device_id
+            })
+        }
+
+        partitions
+    }
+}
+
+pub struct MemoryManager {
+    device_id: String
+    total_memory: Int
+    allocated: Int
+    allocations: Object
+}
+
+impl MemoryManager {
+    pub fn new(total_memory: Int) -> Self {
+        MemoryManager {
+            device_id: "cpu",
+            total_memory: total_memory,
+            allocated: 0,
+            allocations: {}
+        }
+    }
+
+    pub fn allocate(mut self: Self, nbytes: Int) -> Result[Object] {
+        if self.allocated + nbytes > self.total_memory {
+            return Err("Out of memory")
+        }
+
+        let handle = bridge::call_rust("ull::memory", "allocate_gpu", {
+            nbytes: nbytes
+        })
+
+        self.allocated = self.allocated + nbytes
+        self.allocations[handle["id"]] = nbytes
+
+        Ok(handle)
+    }
+
+    pub fn deallocate(mut self: Self, handle: Object) -> Result[()]{
+        if !self.allocations.contains(handle["id"]) {
+            return Err("Invalid handle")
+        }
+
+        let nbytes = self.allocations[handle["id"]]
+        self.allocated = self.allocated - nbytes
+        self.allocations.remove(handle["id"])
+
+        bridge::call_rust("ull::memory", "deallocate_gpu", { handle: handle })
+
+        Ok(())
+    }
+
+    pub fn get_available_memory(self: &Self) -> Int {
+        self.total_memory - self.allocated
+    }
+}
+
+pub fn create_device_manager() -> DeviceManager {
+    DeviceManager::new()
+}
+
+pub fn create_multi_gpu_executor(devices: Array[Device]) -> MultiGPUExecutor {
+    MultiGPUExecutor::new(devices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_device_manager() {
+        let mgr = DeviceManager::new()
+        assert!(mgr.devices.len() > 0)
+    }
+
+    #[test]
+    fn test_multi_gpu_executor() {
+        let mgr = DeviceManager::new()
+        let executor = MultiGPUExecutor::new(mgr.devices)
+        assert_eq!(executor.devices.len(), mgr.devices.len())
+    }
+}

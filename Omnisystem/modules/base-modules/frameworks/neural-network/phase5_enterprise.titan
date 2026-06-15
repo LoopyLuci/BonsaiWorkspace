@@ -1,0 +1,250 @@
+// Phase 5: Enterprise Features (TITAN)
+// Production serving, monitoring, compliance
+
+pub struct ModelServer {
+    model: Object
+    device: String
+    batch_size: Int
+    max_latency_ms: Int
+}
+
+pub struct MetricsCollector {
+    metrics: Object
+    timestamps: Object
+}
+
+pub struct AuditLogger {
+    logs: Array[Object]
+}
+
+pub struct ModelMonitor {
+    baseline_metrics: Object
+    current_metrics: Object
+    alerts: Array[Object]
+}
+
+impl ModelServer {
+    pub fn new(model: Object, device: String) -> Self {
+        ModelServer {
+            model: model,
+            device: device,
+            batch_size: 32,
+            max_latency_ms: 100
+        }
+    }
+
+    pub fn predict(self: &Self, inputs: Object) -> Result[Object] {
+        let start_time = bridge::call_rust("ull::time", "current_millis", {})
+
+        let output = bridge::call_rust("ull::exec", "execute", {
+            model: self.model,
+            inputs: inputs,
+            device: self.device
+        })
+
+        let elapsed = bridge::call_rust("ull::time", "current_millis", {}) - start_time
+
+        if elapsed > self.max_latency_ms {
+            println!("⚠️  High latency: {} ms", elapsed)
+        }
+
+        Ok(output)
+    }
+
+    pub fn batch_predict(self: &Self, batch: Array[Object]) -> Result[Array[Object]] {
+        let mut results = []
+
+        for chunk in batch.chunks(self.batch_size) {
+            let stacked = bridge::call_rust("ull::ops", "stack", { tensors: chunk })
+            let output = self.predict(stacked)
+
+            results.extend(output)
+        }
+
+        Ok(results)
+    }
+
+    pub fn with_batch_size(mut self: Self, size: Int) -> Self {
+        self.batch_size = size
+        self
+    }
+
+    pub fn with_max_latency(mut self: Self, ms: Int) -> Self {
+        self.max_latency_ms = ms
+        self
+    }
+}
+
+impl MetricsCollector {
+    pub fn new() -> Self {
+        MetricsCollector {
+            metrics: {},
+            timestamps: {}
+        }
+    }
+
+    pub fn record(mut self: Self, name: String, value: Float) {
+        if !self.metrics.contains(name) {
+            self.metrics[name] = []
+            self.timestamps[name] = []
+        }
+
+        self.metrics[name].push(value)
+        self.timestamps[name].push(bridge::call_rust("ull::time", "current_millis", {}))
+    }
+
+    pub fn get_metric(self: &Self, name: String) -> Option[Array[Float]] {
+        if self.metrics.contains(name) {
+            Some(self.metrics[name])
+        } else {
+            None
+        }
+    }
+
+    pub fn get_latest(self: &Self, name: String) -> Option[Float] {
+        if let Some(values) = self.get_metric(name) {
+            Some(values[values.len() - 1])
+        } else {
+            None
+        }
+    }
+
+    pub fn export_prometheus(self: &Self) -> String {
+        let mut output = ""
+
+        for (name, values) in self.metrics {
+            let latest = values[values.len() - 1]
+            output = output + format!("{} {}\n", name, latest)
+        }
+
+        output
+    }
+
+    pub fn export_json(self: &Self) -> String {
+        bridge::call_rust("ull::json", "serialize", {
+            metrics: self.metrics,
+            timestamps: self.timestamps
+        })
+    }
+}
+
+impl AuditLogger {
+    pub fn new() -> Self {
+        AuditLogger {
+            logs: []
+        }
+    }
+
+    pub fn log(mut self: Self, event: String, details: Object) {
+        self.logs.push({
+            timestamp: bridge::call_rust("ull::time", "current_timestamp", {}),
+            event: event,
+            details: details,
+            user: details["user"],
+            action: details["action"]
+        })
+    }
+
+    pub fn log_prediction(mut self: Self, input_id: String, output_id: String, latency_ms: Int) {
+        self.log("prediction", {
+            input_id: input_id,
+            output_id: output_id,
+            latency_ms: latency_ms
+        })
+    }
+
+    pub fn log_deployment(mut self: Self, model_id: String, version: String) {
+        self.log("deployment", {
+            model_id: model_id,
+            version: version
+        })
+    }
+
+    pub fn get_logs(self: &Self) -> Array[Object] {
+        self.logs.clone()
+    }
+
+    pub fn export_json(self: &Self) -> String {
+        bridge::call_rust("ull::json", "serialize", { logs: self.logs })
+    }
+}
+
+impl ModelMonitor {
+    pub fn new(baseline_metrics: Object) -> Self {
+        ModelMonitor {
+            baseline_metrics: baseline_metrics,
+            current_metrics: baseline_metrics.clone(),
+            alerts: []
+        }
+    }
+
+    pub fn update_metrics(mut self: Self, metrics: Object) {
+        self.current_metrics = metrics
+
+        // Check for degradation
+        if let Some(current_latency) = metrics["latency"] {
+            if let Some(baseline_latency) = self.baseline_metrics["latency"] {
+                if current_latency > baseline_latency * 1.5 {
+                    self.alerts.push({
+                        type: "latency_degradation",
+                        current: current_latency,
+                        baseline: baseline_latency,
+                        ratio: current_latency / baseline_latency
+                    })
+                }
+            }
+        }
+
+        if let Some(current_accuracy) = metrics["accuracy"] {
+            if let Some(baseline_accuracy) = self.baseline_metrics["accuracy"] {
+                if current_accuracy < baseline_accuracy * 0.95 {
+                    self.alerts.push({
+                        type: "accuracy_degradation",
+                        current: current_accuracy,
+                        baseline: baseline_accuracy,
+                        drop: baseline_accuracy - current_accuracy
+                    })
+                }
+            }
+        }
+    }
+
+    pub fn get_alerts(self: &Self) -> Array[Object] {
+        self.alerts.clone()
+    }
+
+    pub fn has_critical_issues(self: &Self) -> Bool {
+        self.alerts.len() > 0
+    }
+}
+
+pub fn create_model_server(model: Object, device: String) -> ModelServer {
+    ModelServer::new(model, device)
+}
+
+pub fn create_metrics_collector() -> MetricsCollector {
+    MetricsCollector::new()
+}
+
+pub fn create_audit_logger() -> AuditLogger {
+    AuditLogger::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_metrics_collector() {
+        let mut collector = MetricsCollector::new()
+        collector.record("latency", 50.0)
+        assert!(collector.get_latest("latency").is_some())
+    }
+
+    #[test]
+    fn test_audit_logger() {
+        let mut logger = AuditLogger::new()
+        logger.log_prediction("inp1", "out1", 45)
+        assert_eq!(logger.get_logs().len(), 1)
+    }
+}
