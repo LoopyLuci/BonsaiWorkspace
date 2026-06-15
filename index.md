@@ -12,6 +12,11 @@
 - **[UOSC Microkernel](Omnisystem/UOSC/README.md)** - Layer 1: Microkernel foundation
 - **[Omnisystem Core](Omnisystem/README.md)** - Layer 2: OS Services
 - **[BonsaiEcosystem](Omnisystem/modules/BonsaiEcosystem/README.md)** - Layer 3: Applications
+- **[Documentation Hub](Omnisystem/docs/00-MASTER_README.md)** - Complete guide to 140+ organized documentation files
+
+### 📋 Community & Contribution
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines and development setup
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** - Community standards and behavior
 
 ---
 
@@ -21,6 +26,13 @@
 Z:\Projects\Omnisystem/
 ├── index.md                                    (This file - Complete repository guide)
 ├── README.md                                   (Main project overview)
+├── CONTRIBUTING.md                             (Contribution guidelines)
+├── CODE_OF_CONDUCT.md                         (Community standards)
+├── .github/                                    (GitHub configuration)
+│   └── workflows/                             (CI/CD workflows)
+│       ├── ci.yml
+│       ├── deploy.yml
+│       └── omnisystem-build.yml
 │
 ├── Omnisystem/                                 (Main Omnisystem directory)
 │   ├── README.md                              (Three-layer architecture overview)
@@ -52,19 +64,20 @@ Z:\Projects\Omnisystem/
 │   │       ├── ipc_protocol.md
 │   │       └── formal_verification.md
 │   │
-│   ├── docs/                                 (Omnisystem Documentation)
-│   │   ├── README.md                        (Documentation index)
-│   │   ├── 01-QUICK_START.md               (Quick start guide)
-│   │   ├── OMNI_FILE_FORMAT_SPECIFICATION.md (3,000+ lines)
-│   │   ├── OMNI_IMPLEMENTATION_MODULES.md   (2,000+ lines)
-│   │   ├── OMNI_UNIVERSAL_COMPATIBILITY.md  (2,000+ lines)
-│   │   ├── OMNI_MEDIA_FORMAT_SUPPORT.md     (2,500+ lines)
-│   │   ├── OMNI_FORMAT_COMPLETE_SUMMARY.md  (1,000+ lines)
-│   │   ├── CONDUCTOR_AND_CRATES_MODULES.md  (4,000+ lines)
-│   │   ├── OMNISYSTEM_COMPLETE_SUMMARY.md   (3,000+ lines)
-│   │   ├── OMNISYSTEM_MODULE_REGISTRY.md    (Module registry)
-│   │   ├── 03-LANGUAGES-TITAN_COMPLETE.md  (2,000+ lines)
-│   │   └── 07-MODULE_SYSTEM_CONVERSION.md   (3,000+ lines)
+│   ├── docs/                                 (Organized Documentation - 140+ files)
+│   │   ├── 00-MASTER_README.md              (Documentation navigation hub)
+│   │   ├── 01-GETTING_STARTED/              (Installation, quick start, references)
+│   │   ├── 02-LANGUAGES/                    (TITAN, SYLVA, AETHER, AXIOM guides)
+│   │   ├── 03-FRAMEWORKS/                   (Graphics, Audio, Physics, Game, Web, etc.)
+│   │   ├── 04-PLATFORMS/                    (Game Design, Graphic Design, Music, CAD)
+│   │   ├── 05-API_REFERENCE/                (Web, Systems, ML, Distributed APIs)
+│   │   ├── 06-TUTORIALS/                    (Web apps, ML/AI, Distributed, Verification)
+│   │   ├── 07-ADVANCED_TOPICS/              (Architecture, Type system, Security, etc.)
+│   │   ├── 08-OPERATIONS/                   (Deployment, Operations, Troubleshooting)
+│   │   ├── 09-REFERENCE/                    (Glossary, FAQ, Comparisons, Migration)
+│   │   ├── 10-SPECIFICATIONS/               (Language specs, OMNI protocol, stdlib)
+│   │   ├── 11-BUILD_TOOLS/                  (Build system guide)
+│   │   └── 12-ARCHIVE/                      (Legacy documentation, 91 files)
 │   │
 │   ├── modules/                             (Module System)
 │   │   ├── base-modules/
@@ -328,10 +341,24 @@ cd Omnisystem
 ```
 
 ### Explore Documentation
-- Start with [Omnisystem Overview](Omnisystem/README.md)
-- Deep dive into [UOSC Microkernel](Omnisystem/UOSC/README.md)
-- Learn about [OMNI Format](Omnisystem/docs/OMNI_FILE_FORMAT_SPECIFICATION.md)
-- Review [Module Registry](Omnisystem/docs/OMNISYSTEM_MODULE_REGISTRY.md)
+- Start with [Documentation Hub](Omnisystem/docs/00-MASTER_README.md) - 12 organized sections, 140+ files
+  - **01-GETTING_STARTED** — Installation, quick start, quick reference
+  - **02-LANGUAGES** — TITAN, SYLVA, AETHER, AXIOM language guides
+  - **03-FRAMEWORKS** — Framework documentation (Graphics, Audio, Physics, Game, Web, etc.)
+  - **04-PLATFORMS** — Creative platforms (Game, Graphic, Music, CAD/3D)
+  - **05-API_REFERENCE** — Complete API documentation
+  - **06-TUTORIALS** — Hands-on tutorials for key features
+  - **07-ADVANCED_TOPICS** — Deep dives into architecture and advanced concepts
+  - **08-OPERATIONS** — Deployment, operations, troubleshooting
+  - **09-REFERENCE** — Glossary, FAQ, comparisons, migration guides
+  - **10-SPECIFICATIONS** — Language specs, OMNI protocol, standard library
+  - **11-BUILD_TOOLS** — Build system and tooling
+  - **12-ARCHIVE** — Legacy documentation
+
+Or explore specific topics:
+- [Omnisystem Overview](Omnisystem/README.md) - Three-layer architecture
+- [UOSC Microkernel](Omnisystem/UOSC/README.md) - Foundation layer
+- [OMNI Format](Omnisystem/docs/OMNI_FILE_FORMAT_SPECIFICATION.md) - Universal data format
 
 ### Check Implementation Status
 - [Omnisystem Final Status](Omnisystem/OMNISYSTEM_FINAL_STATUS.md)
@@ -340,33 +367,42 @@ cd Omnisystem
 
 ---
 
-## 📖 Key Documentation Files
+## 📖 Documentation Organization
 
-### Architecture & Design
+All documentation is organized in `Omnisystem/docs/` across 12 numbered folders:
+
+### Quick Access by Topic
+
+**Getting Started**
+- `Omnisystem/docs/01-GETTING_STARTED/` - Installation, quick start, references
+
+**Learning Paths**
+- `Omnisystem/docs/02-LANGUAGES/` - Language guides (TITAN, SYLVA, AETHER, AXIOM)
+- `Omnisystem/docs/03-FRAMEWORKS/` - Framework documentation
+- `Omnisystem/docs/04-PLATFORMS/` - Creative platforms (Game, Graphic, Music, CAD/3D)
+- `Omnisystem/docs/06-TUTORIALS/` - Hands-on tutorials
+
+**Reference & Deep Dives**
+- `Omnisystem/docs/05-API_REFERENCE/` - Complete API documentation
+- `Omnisystem/docs/07-ADVANCED_TOPICS/` - Architecture, type system, security, performance
+- `Omnisystem/docs/08-OPERATIONS/` - Deployment, operations, troubleshooting
+- `Omnisystem/docs/09-REFERENCE/` - Glossary, FAQ, migration guides
+- `Omnisystem/docs/10-SPECIFICATIONS/` - Language specs, OMNI protocol, stdlib
+- `Omnisystem/docs/11-BUILD_TOOLS/` - Build system guide
+- `Omnisystem/docs/12-ARCHIVE/` - Legacy documentation (91 files)
+
+**Navigation**
+- `Omnisystem/docs/00-MASTER_README.md` - Complete index and navigation hub
+
+**Community**
+- `CONTRIBUTING.md` - Contribution guidelines
+- `CODE_OF_CONDUCT.md` - Community standards
+
+### Featured Architecture Docs
 - `Omnisystem/README.md` - Three-layer architecture overview
 - `Omnisystem/UOSC/README.md` - Microkernel layer
 - `Omnisystem/OMNISYSTEM_COMPLETE_SUMMARY.md` - System overview (3,000+ lines)
-
-### OMNI Format
-- `Omnisystem/docs/OMNI_FILE_FORMAT_SPECIFICATION.md` - Complete spec (3,000+ lines)
-- `Omnisystem/docs/OMNI_IMPLEMENTATION_MODULES.md` - Implementation (2,000+ lines)
-- `Omnisystem/docs/OMNI_UNIVERSAL_COMPATIBILITY.md` - Compatibility (2,000+ lines)
-- `Omnisystem/docs/OMNI_MEDIA_FORMAT_SUPPORT.md` - Media support (2,500+ lines)
-- `Omnisystem/OMNI_IMPLEMENTATION_PROGRESS.md` - Implementation status
-
-### Languages & Frameworks
-- `Omnisystem/docs/03-LANGUAGES-TITAN_COMPLETE.md` - TITAN guide (2,000+ lines)
-- `Omnisystem/docs/07-MODULE_SYSTEM_CONVERSION.md` - Module conversion (3,000+ lines)
-
-### Modules & Integration
-- `Omnisystem/docs/OMNISYSTEM_MODULE_REGISTRY.md` - Module registry
-- `Omnisystem/docs/CONDUCTOR_AND_CRATES_MODULES.md` - Conductor integration (4,000+ lines)
-- `Omnisystem/modules/MODULE_ORGANIZATION.md` - Module organization guide
-
-### Status Reports
 - `Omnisystem/OMNISYSTEM_FINAL_STATUS.md` - Completion status
-- `Omnisystem/DOCUMENTATION_COMPLETE.md` - Documentation report
-- `Omnisystem/MODULE_ORGANIZATION_COMPLETE.md` - Module organization status
 
 ---
 
@@ -432,13 +468,20 @@ cd Omnisystem
 
 ---
 
-## 📞 Support
+## 📞 Support & Resources
 
-For detailed information:
-1. Start with [Omnisystem README](Omnisystem/README.md)
-2. Review [UOSC Documentation](Omnisystem/UOSC/README.md)
-3. Check [Status Reports](Omnisystem/OMNISYSTEM_FINAL_STATUS.md)
-4. Explore [Module Registry](Omnisystem/docs/OMNISYSTEM_MODULE_REGISTRY.md)
+For detailed information, navigate using:
+1. **Documentation Hub**: [Omnisystem/docs/00-MASTER_README.md](Omnisystem/docs/00-MASTER_README.md) - Complete index with learning paths
+2. **Architecture Overview**: [Omnisystem/README.md](Omnisystem/README.md) - Three-layer system design
+3. **Getting Started**: [Omnisystem/docs/01-GETTING_STARTED/](Omnisystem/docs/01-GETTING_STARTED/) - Installation and quick start
+4. **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines and setup
+
+**For Specific Topics**:
+- Languages → `Omnisystem/docs/02-LANGUAGES/`
+- Frameworks → `Omnisystem/docs/03-FRAMEWORKS/`
+- Tutorials → `Omnisystem/docs/06-TUTORIALS/`
+- API Reference → `Omnisystem/docs/05-API_REFERENCE/`
+- Advanced Topics → `Omnisystem/docs/07-ADVANCED_TOPICS/`
 
 ---
 
@@ -469,9 +512,10 @@ For detailed information:
 Part of the Omnisystem project.  
 Universal Computing Platform for the Future.
 
-**Last Updated**: 2026-06-15  
-**Version**: 2.0.0  
+**Last Updated**: 2026-06-15 (Documentation organization complete)  
+**Version**: 2.1.0  
 **Status**: Production Ready
+**Documentation**: 140+ files organized into 12 folders with master navigation hub
 
 ---
 
