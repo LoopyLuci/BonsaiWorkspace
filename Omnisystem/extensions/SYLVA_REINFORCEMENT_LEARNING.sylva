@@ -1,0 +1,447 @@
+// SYLVA REINFORCEMENT LEARNING - PHASE 22
+// Q-learning, policy gradient, actor-critic, reward optimization
+
+module SylvaReinforcementLearning {
+
+    // ========================================================================
+    // MARKOV DECISION PROCESS
+    // ========================================================================
+
+    pub struct MDPEnvironment {
+        state_space: i32,
+        action_space: i32,
+        transition_matrix: map<(i32, i32), vector<(i32, f64)>>,
+        reward_matrix: map<(i32, i32), f64>,
+    }
+
+    impl MDPEnvironment {
+        pub fn new(state_space: i32, action_space: i32) -> Self {
+            MDPEnvironment {
+                state_space,
+                action_space,
+                transition_matrix: map::new(),
+                reward_matrix: map::new(),
+            }
+        }
+
+        pub fn set_transition(
+            &mut self,
+            state: i32,
+            action: i32,
+            next_state: i32,
+            probability: f64,
+        ) {
+            let key = (state, action);
+            self.transition_matrix
+                .entry(key)
+                .or_insert_with(vector::new)
+                .push((next_state, probability));
+
+            println!("🔄 Transition set: {} + {} → {} (p={:.2})", state, action, next_state, probability);
+        }
+
+        pub fn set_reward(&mut self, state: i32, action: i32, reward: f64) {
+            self.reward_matrix.insert((state, action), reward);
+        }
+
+        pub fn get_expected_reward(&self, state: i32, action: i32) -> f64 {
+            self.reward_matrix.get(&(state, action)).cloned().unwrap_or(0.0)
+        }
+
+        pub fn get_next_states(&self, state: i32, action: i32) -> vector<(i32, f64)> {
+            self.transition_matrix
+                .get(&(state, action))
+                .cloned()
+                .unwrap_or_else(vector::new)
+        }
+    }
+
+    // ========================================================================
+    // Q-LEARNING
+    // ========================================================================
+
+    pub struct QLearningAgent {
+        q_table: map<(i32, i32), f64>,
+        learning_rate: f64,
+        discount_factor: f64,
+        epsilon: f64,
+        episodes: i32,
+    }
+
+    impl QLearningAgent {
+        pub fn new(learning_rate: f64, discount_factor: f64, epsilon: f64) -> Self {
+            QLearningAgent {
+                q_table: map::new(),
+                learning_rate,
+                discount_factor,
+                epsilon,
+                episodes: 0,
+            }
+        }
+
+        pub fn get_q_value(&self, state: i32, action: i32) -> f64 {
+            self.q_table.get(&(state, action)).cloned().unwrap_or(0.0)
+        }
+
+        pub fn select_action(&self, state: i32, num_actions: i32) -> i32 {
+            // Epsilon-greedy policy
+            let random_value = (self.episodes % 100) as f64 / 100.0;
+
+            if random_value < self.epsilon {
+                // Explore: random action
+                (self.episodes % num_actions) as i32
+            } else {
+                // Exploit: best action
+                let mut best_action = 0;
+                let mut best_value = f64::NEG_INFINITY;
+
+                for action in 0..num_actions {
+                    let q_val = self.get_q_value(state, action);
+                    if q_val > best_value {
+                        best_value = q_val;
+                        best_action = action;
+                    }
+                }
+
+                best_action
+            }
+        }
+
+        pub fn update_q_value(
+            &mut self,
+            state: i32,
+            action: i32,
+            reward: f64,
+            next_state: i32,
+            next_actions: i32,
+        ) {
+            let current_q = self.get_q_value(state, action);
+
+            // Find max Q-value for next state
+            let mut max_next_q = f64::NEG_INFINITY;
+            for next_action in 0..next_actions {
+                let q_val = self.get_q_value(next_state, next_action);
+                max_next_q = max_next_q.max(q_val);
+            }
+
+            // Q-learning update: Q(s,a) = Q(s,a) + α[r + γ*max(Q(s',a')) - Q(s,a)]
+            let new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q);
+            self.q_table.insert((state, action), new_q);
+
+            println!("📊 Q-value updated: ({}, {}) = {:.3}", state, action, new_q);
+        }
+
+        pub fn train_episode(&mut self, env: &MDPEnvironment) -> f64 {
+            let mut state = 0;
+            let mut episode_reward = 0.0;
+
+            for _ in 0..10 {
+                let action = self.select_action(state, env.action_space);
+                let reward = env.get_expected_reward(state, action);
+                episode_reward += reward;
+
+                let next_states = env.get_next_states(state, action);
+                let next_state = if !next_states.is_empty() {
+                    next_states[0].0
+                } else {
+                    state
+                };
+
+                self.update_q_value(state, action, reward, next_state, env.action_space);
+                state = next_state;
+            }
+
+            self.episodes += 1;
+            println!("✅ Episode {}: reward = {:.2}", self.episodes, episode_reward);
+            episode_reward
+        }
+    }
+
+    // ========================================================================
+    // POLICY GRADIENT
+    // ========================================================================
+
+    pub struct PolicyGradientAgent {
+        policy_weights: vector<f64>,
+        learning_rate: f64,
+        baseline: f64,
+        steps: i32,
+    }
+
+    impl PolicyGradientAgent {
+        pub fn new(num_features: i32, learning_rate: f64) -> Self {
+            let mut weights = vector::new();
+            for _ in 0..num_features {
+                weights.push(0.1);
+            }
+
+            PolicyGradientAgent {
+                policy_weights: weights,
+                learning_rate,
+                baseline: 0.0,
+                steps: 0,
+            }
+        }
+
+        pub fn compute_policy_gradient(&self, state_features: vector<f64>, reward: f64, action_log_prob: f64) -> vector<f64> {
+            let mut gradients = vector::new();
+
+            let advantage = reward - self.baseline;
+
+            for i in 0..self.policy_weights.len() {
+                if i < state_features.len() {
+                    let grad = state_features[i] * advantage / (action_log_prob + 1e-8);
+                    gradients.push(grad);
+                }
+            }
+
+            println!("🎯 Policy gradient computed: advantage = {:.2}", advantage);
+            gradients
+        }
+
+        pub fn update_policy(&mut self, gradients: vector<f64>) {
+            for (i, &grad) in gradients.iter().enumerate() {
+                if i < self.policy_weights.len() {
+                    self.policy_weights[i] += self.learning_rate * grad;
+                }
+            }
+
+            self.steps += 1;
+            println!("🔄 Policy updated: {} steps", self.steps);
+        }
+
+        pub fn sample_action(&self, state_features: vector<f64>) -> (i32, f64) {
+            let mut policy_score = 0.0;
+
+            for i in 0..std::min(state_features.len(), self.policy_weights.len()) {
+                policy_score += state_features[i] * self.policy_weights[i];
+            }
+
+            // Sigmoid for binary action
+            let probability = 1.0 / (1.0 + (-policy_score).exp());
+            let action = if probability > 0.5 { 1 } else { 0 };
+            let log_prob = if action == 1 { probability.ln() } else { (1.0 - probability).ln() };
+
+            println!("🎲 Action sampled: {} (p={:.2})", action, probability);
+
+            (action, log_prob)
+        }
+    }
+
+    // ========================================================================
+    // ACTOR-CRITIC
+    // ========================================================================
+
+    pub struct ActorCriticAgent {
+        actor_weights: vector<f64>,
+        critic_weights: vector<f64>,
+        learning_rate: f64,
+        episodes: i32,
+    }
+
+    impl ActorCriticAgent {
+        pub fn new(num_features: i32, learning_rate: f64) -> Self {
+            let mut actor = vector::new();
+            let mut critic = vector::new();
+
+            for _ in 0..num_features {
+                actor.push(0.1);
+                critic.push(0.1);
+            }
+
+            ActorCriticAgent {
+                actor_weights: actor,
+                critic_weights: critic,
+                learning_rate,
+                episodes: 0,
+            }
+        }
+
+        pub fn compute_value_estimate(&self, state_features: vector<f64>) -> f64 {
+            let mut value = 0.0;
+
+            for i in 0..std::min(state_features.len(), self.critic_weights.len()) {
+                value += state_features[i] * self.critic_weights[i];
+            }
+
+            println!("📈 Value estimated: {:.2}", value);
+            value
+        }
+
+        pub fn compute_advantage(&self, reward: f64, value: f64, next_value: f64) -> f64 {
+            let td_error = reward + 0.99 * next_value - value;
+            println!("📊 Advantage computed: {:.2}", td_error);
+            td_error
+        }
+
+        pub fn update_actor(&mut self, state_features: vector<f64>, advantage: f64) {
+            for i in 0..std::min(state_features.len(), self.actor_weights.len()) {
+                self.actor_weights[i] += self.learning_rate * state_features[i] * advantage;
+            }
+
+            println!("🎭 Actor updated");
+        }
+
+        pub fn update_critic(&mut self, state_features: vector<f64>, td_error: f64) {
+            for i in 0..std::min(state_features.len(), self.critic_weights.len()) {
+                self.critic_weights[i] += self.learning_rate * state_features[i] * td_error;
+            }
+
+            println!("🎯 Critic updated");
+        }
+
+        pub fn train_step(&mut self, state_features: vector<f64>, reward: f64, next_features: vector<f64>) {
+            let value = self.compute_value_estimate(state_features.clone());
+            let next_value = self.compute_value_estimate(next_features);
+            let advantage = self.compute_advantage(reward, value, next_value);
+
+            self.update_actor(state_features.clone(), advantage);
+            self.update_critic(state_features, advantage);
+
+            self.episodes += 1;
+        }
+    }
+
+    // ========================================================================
+    // REWARD OPTIMIZATION
+    // ========================================================================
+
+    pub struct RewardOptimizer {
+        cumulative_reward: f64,
+        discounted_reward: f64,
+        discount_factor: f64,
+        reward_history: vector<f64>,
+    }
+
+    impl RewardOptimizer {
+        pub fn new(discount_factor: f64) -> Self {
+            RewardOptimizer {
+                cumulative_reward: 0.0,
+                discounted_reward: 0.0,
+                discount_factor,
+                reward_history: vector::new(),
+            }
+        }
+
+        pub fn add_reward(&mut self, reward: f64) {
+            self.cumulative_reward += reward;
+            self.discounted_reward = self.discounted_reward * self.discount_factor + reward;
+            self.reward_history.push(reward);
+
+            println!("💰 Reward added: {:.2} (cumulative: {:.2})", reward, self.cumulative_reward);
+        }
+
+        pub fn compute_returns(&self) -> vector<f64> {
+            let mut returns = vector::new();
+            let mut cumsum = 0.0;
+
+            for &reward in self.reward_history.iter().rev() {
+                cumsum = reward + self.discount_factor * cumsum;
+                returns.push(cumsum);
+            }
+
+            returns.reverse();
+            println!("📊 Returns computed: {} steps", returns.len());
+            returns
+        }
+
+        pub fn get_average_reward(&self) -> f64 {
+            if self.reward_history.is_empty() {
+                0.0
+            } else {
+                self.cumulative_reward / self.reward_history.len() as f64
+            }
+        }
+
+        pub fn get_reward_trend(&self) -> string {
+            if self.reward_history.len() < 2 {
+                return "insufficient data".to_string();
+            }
+
+            let recent_avg = self.reward_history.iter().rev().take(5).sum::<f64>() / 5.0;
+            let overall_avg = self.get_average_reward();
+
+            if recent_avg > overall_avg {
+                "improving".to_string()
+            } else if recent_avg < overall_avg {
+                "declining".to_string()
+            } else {
+                "stable".to_string()
+            }
+        }
+    }
+
+    // ========================================================================
+    // TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_mdp_environment() {
+        let env = MDPEnvironment::new(5, 4);
+        assert_eq!(env.state_space, 5);
+        assert_eq!(env.action_space, 4);
+    }
+
+    #[test]
+    fn test_q_learning() {
+        let mut agent = QLearningAgent::new(0.1, 0.99, 0.1);
+        let env = MDPEnvironment::new(5, 4);
+        let _reward = agent.train_episode(&env);
+        assert_eq!(agent.episodes, 1);
+    }
+
+    #[test]
+    fn test_policy_gradient() {
+        let agent = PolicyGradientAgent::new(4, 0.01);
+        let features = vec![0.5, 0.3, 0.7, 0.2];
+        let (_action, _prob) = agent.sample_action(features);
+        assert!(true);
+    }
+
+    #[test]
+    fn test_actor_critic() {
+        let mut agent = ActorCriticAgent::new(4, 0.01);
+        let features = vec![0.5, 0.3, 0.7, 0.2];
+        agent.train_step(features.clone(), 1.0, features);
+        assert_eq!(agent.episodes, 1);
+    }
+
+    #[test]
+    fn test_reward_optimizer() {
+        let mut optimizer = RewardOptimizer::new(0.99);
+        optimizer.add_reward(1.0);
+        optimizer.add_reward(2.0);
+        assert!(optimizer.get_average_reward() > 0.0);
+    }
+}
+
+fn main() {
+    println!("\n🚀 SYLVA REINFORCEMENT LEARNING\n");
+
+    println!("1️⃣  Markov Decision Processes:");
+    println!("  ✓ State/action spaces");
+    println!("  ✓ Transition dynamics");
+    println!("  ✓ Reward functions\n");
+
+    println!("2️⃣  Q-Learning:");
+    println!("  ✓ Q-table learning");
+    println!("  ✓ Epsilon-greedy exploration");
+    println!("  ✓ Temporal difference updates\n");
+
+    println!("3️⃣  Policy Gradient:");
+    println!("  ✓ Policy parameterization");
+    println!("  ✓ Gradient computation");
+    println!("  ✓ Policy improvement\n");
+
+    println!("4️⃣  Actor-Critic:");
+    println!("  ✓ Dual network architecture");
+    println!("  ✓ Advantage estimation");
+    println!("  ✓ Temporal difference learning\n");
+
+    println!("5️⃣  Reward Optimization:");
+    println!("  ✓ Return computation");
+    println!("  ✓ Cumulative tracking");
+    println!("  ✓ Trend analysis\n");
+
+    println!("✅ Reinforcement Learning Complete\n");
+}

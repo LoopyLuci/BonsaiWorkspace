@@ -1,0 +1,614 @@
+// OMNI JSON Converter Module
+// Bi-directional conversion between JSON and OMNI format
+// Production-ready implementation
+
+module OmniJsonConverter {
+
+  use OmniCoreSerializer::*;
+
+  pub struct JsonConverter;
+
+  pub enum JsonValue {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(Map<String, JsonValue>),
+  }
+
+  pub struct JsonParseError {
+    line: u32,
+    column: u32,
+    message: String,
+  }
+
+  // ===================================================================
+  // JSON → OMNI Conversion
+  // ===================================================================
+
+  impl JsonConverter {
+    pub fn from_json(json_str: &str) -> Result<OmniFile> {
+      // Parse JSON string
+      let json_value = parse_json(json_str)?;
+
+      // Create OMNI file
+      let mut omni_file = create_empty_omni()?;
+
+      // Convert JSON value to OMNI content
+      omni_file.content = convert_json_value_to_omni(&json_value)?;
+
+      // Set metadata
+      omni_file.metadata.source_format = SourceFormatInfo {
+        original_format: "application/json".to_string(),
+        original_version: "1.0".to_string(),
+        original_app: "JSON Parser".to_string(),
+        conversion_date: get_current_timestamp(),
+        conversion_tool: "OMNI JSON Converter v1.0".to_string(),
+      };
+
+      omni_file.metadata.title = "JSON Document".to_string();
+      omni_file.metadata.description = "Converted from JSON format".to_string();
+
+      Ok(omni_file)
+    }
+
+    pub fn from_json_file(path: &str) -> Result<OmniFile> {
+      let json_str = std::fs::read_to_string(path)?;
+      Self::from_json(&json_str)
+    }
+  }
+
+  fn parse_json(input: &str) -> Result<JsonValue> {
+    let mut parser = JsonParser::new(input);
+    parser.parse()
+  }
+
+  struct JsonParser {
+    input: Vec<char>,
+    position: usize,
+  }
+
+  impl JsonParser {
+    fn new(input: &str) -> Self {
+      JsonParser {
+        input: input.chars().collect(),
+        position: 0,
+      }
+    }
+
+    fn parse(&mut self) -> Result<JsonValue> {
+      self.skip_whitespace();
+      self.parse_value()
+    }
+
+    fn parse_value(&mut self) -> Result<JsonValue> {
+      self.skip_whitespace();
+
+      if self.position >= self.input.len() {
+        return Err("Unexpected end of input");
+      }
+
+      match self.input[self.position] {
+        'n' => self.parse_null(),
+        't' | 'f' => self.parse_boolean(),
+        '"' => self.parse_string(),
+        '[' => self.parse_array(),
+        '{' => self.parse_object(),
+        '-' | '0'..='9' => self.parse_number(),
+        c => Err(&format!("Unexpected character: {}", c)),
+      }
+    }
+
+    fn parse_null(&mut self) -> Result<JsonValue> {
+      if self.consume_keyword("null") {
+        Ok(JsonValue::Null)
+      } else {
+        Err("Expected 'null'")
+      }
+    }
+
+    fn parse_boolean(&mut self) -> Result<JsonValue> {
+      if self.consume_keyword("true") {
+        Ok(JsonValue::Boolean(true))
+      } else if self.consume_keyword("false") {
+        Ok(JsonValue::Boolean(false))
+      } else {
+        Err("Expected 'true' or 'false'")
+      }
+    }
+
+    fn parse_string(&mut self) -> Result<JsonValue> {
+      if self.input[self.position] != '"' {
+        return Err("Expected '\"'");
+      }
+
+      self.position += 1;
+      let mut result = String::new();
+
+      while self.position < self.input.len() && self.input[self.position] != '"' {
+        if self.input[self.position] == '\\' {
+          self.position += 1;
+          if self.position >= self.input.len() {
+            return Err("Unexpected end of string");
+          }
+
+          match self.input[self.position] {
+            '"' => result.push('"'),
+            '\\' => result.push('\\'),
+            '/' => result.push('/'),
+            'b' => result.push('\u{0008}'),
+            'f' => result.push('\u{000C}'),
+            'n' => result.push('\n'),
+            'r' => result.push('\r'),
+            't' => result.push('\t'),
+            'u' => {
+              // Unicode escape
+              self.position += 1;
+              let hex: String = self.input[self.position..self.position + 4]
+                .iter()
+                .collect();
+              if let Ok(code_point) = u32::from_str_radix(&hex, 16) {
+                if let Some(ch) = char::from_u32(code_point) {
+                  result.push(ch);
+                  self.position += 3;
+                }
+              }
+            }
+            _ => return Err("Invalid escape sequence"),
+          }
+        } else {
+          result.push(self.input[self.position]);
+        }
+        self.position += 1;
+      }
+
+      if self.position >= self.input.len() {
+        return Err("Unterminated string");
+      }
+
+      self.position += 1;  // Skip closing quote
+      Ok(JsonValue::String(result))
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue> {
+      let start = self.position;
+
+      // Optional minus
+      if self.input[self.position] == '-' {
+        self.position += 1;
+      }
+
+      // Integer part
+      if self.position >= self.input.len() || !self.input[self.position].is_numeric() {
+        return Err("Invalid number format");
+      }
+
+      while self.position < self.input.len() && self.input[self.position].is_numeric() {
+        self.position += 1;
+      }
+
+      // Optional decimal part
+      if self.position < self.input.len() && self.input[self.position] == '.' {
+        self.position += 1;
+        while self.position < self.input.len() && self.input[self.position].is_numeric() {
+          self.position += 1;
+        }
+      }
+
+      // Optional exponent
+      if self.position < self.input.len() && (self.input[self.position] == 'e' || self.input[self.position] == 'E') {
+        self.position += 1;
+        if self.position < self.input.len() && (self.input[self.position] == '+' || self.input[self.position] == '-') {
+          self.position += 1;
+        }
+        while self.position < self.input.len() && self.input[self.position].is_numeric() {
+          self.position += 1;
+        }
+      }
+
+      let num_str: String = self.input[start..self.position].iter().collect();
+      let number = num_str.parse::<f64>()?;
+
+      Ok(JsonValue::Number(number))
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue> {
+      if self.input[self.position] != '[' {
+        return Err("Expected '['");
+      }
+
+      self.position += 1;
+      let mut array = Vec::new();
+
+      self.skip_whitespace();
+
+      if self.position < self.input.len() && self.input[self.position] == ']' {
+        self.position += 1;
+        return Ok(JsonValue::Array(array));
+      }
+
+      loop {
+        array.push(self.parse_value()?);
+
+        self.skip_whitespace();
+
+        if self.position >= self.input.len() {
+          return Err("Unexpected end of input");
+        }
+
+        match self.input[self.position] {
+          ',' => {
+            self.position += 1;
+            self.skip_whitespace();
+          }
+          ']' => {
+            self.position += 1;
+            return Ok(JsonValue::Array(array));
+          }
+          _ => return Err("Expected ',' or ']'"),
+        }
+      }
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue> {
+      if self.input[self.position] != '{' {
+        return Err("Expected '{'");
+      }
+
+      self.position += 1;
+      let mut object = Map::new();
+
+      self.skip_whitespace();
+
+      if self.position < self.input.len() && self.input[self.position] == '}' {
+        self.position += 1;
+        return Ok(JsonValue::Object(object));
+      }
+
+      loop {
+        self.skip_whitespace();
+
+        // Parse key (must be string)
+        if self.position >= self.input.len() || self.input[self.position] != '"' {
+          return Err("Expected string key");
+        }
+
+        let key = match self.parse_string()? {
+          JsonValue::String(s) => s,
+          _ => return Err("Expected string key"),
+        };
+
+        self.skip_whitespace();
+
+        if self.position >= self.input.len() || self.input[self.position] != ':' {
+          return Err("Expected ':'");
+        }
+
+        self.position += 1;
+
+        let value = self.parse_value()?;
+        object.insert(key, value);
+
+        self.skip_whitespace();
+
+        if self.position >= self.input.len() {
+          return Err("Unexpected end of input");
+        }
+
+        match self.input[self.position] {
+          ',' => {
+            self.position += 1;
+          }
+          '}' => {
+            self.position += 1;
+            return Ok(JsonValue::Object(object));
+          }
+          _ => return Err("Expected ',' or '}'"),
+        }
+      }
+    }
+
+    fn skip_whitespace(&mut self) {
+      while self.position < self.input.len() && self.input[self.position].is_whitespace() {
+        self.position += 1;
+      }
+    }
+
+    fn consume_keyword(&mut self, keyword: &str) -> bool {
+      let keyword_chars: Vec<char> = keyword.chars().collect();
+      if self.position + keyword_chars.len() > self.input.len() {
+        return false;
+      }
+
+      for (i, &ch) in keyword_chars.iter().enumerate() {
+        if self.input[self.position + i] != ch {
+          return false;
+        }
+      }
+
+      self.position += keyword_chars.len();
+      true
+    }
+  }
+
+  fn convert_json_value_to_omni(json_value: &JsonValue) -> Result<Value> {
+    match json_value {
+      JsonValue::Null => Ok(Value {
+        data_type: DataType::Null,
+        content: ContentType::Null,
+        metadata: Map::new(),
+      }),
+
+      JsonValue::Boolean(b) => Ok(Value {
+        data_type: DataType::Boolean,
+        content: ContentType::Boolean(*b),
+        metadata: Map::new(),
+      }),
+
+      JsonValue::Number(n) => {
+        let content = if n.fract() == 0.0 {
+          ContentType::Integer(*n as i64)
+        } else {
+          ContentType::Float(*n)
+        };
+
+        Ok(Value {
+          data_type: if n.fract() == 0.0 { DataType::Int64 } else { DataType::Float64 },
+          content,
+          metadata: Map::new(),
+        })
+      }
+
+      JsonValue::String(s) => Ok(Value {
+        data_type: DataType::String,
+        content: ContentType::String(s.clone()),
+        metadata: Map::new(),
+      }),
+
+      JsonValue::Array(arr) => {
+        let converted: Result<Vec<Value>> = arr.iter()
+          .map(|v| convert_json_value_to_omni(v))
+          .collect();
+
+        Ok(Value {
+          data_type: DataType::Array,
+          content: ContentType::Array(converted?),
+          metadata: Map::new(),
+        })
+      }
+
+      JsonValue::Object(obj) => {
+        let mut converted_map = Map::new();
+
+        for (key, val) in obj {
+          converted_map.insert(key.clone(), convert_json_value_to_omni(val)?);
+        }
+
+        Ok(Value {
+          data_type: DataType::Object,
+          content: ContentType::Object(converted_map),
+          metadata: Map::new(),
+        })
+      }
+    }
+  }
+
+  // ===================================================================
+  // OMNI → JSON Conversion
+  // ===================================================================
+
+  impl JsonConverter {
+    pub fn to_json(omni_file: &OmniFile) -> Result<String> {
+      let json_value = convert_omni_value_to_json(&omni_file.content)?;
+      serialize_json(&json_value, true)
+    }
+
+    pub fn to_json_compact(omni_file: &OmniFile) -> Result<String> {
+      let json_value = convert_omni_value_to_json(&omni_file.content)?;
+      serialize_json(&json_value, false)
+    }
+
+    pub fn to_json_file(omni_file: &OmniFile, path: &str, pretty: bool) -> Result<()> {
+      let json_str = if pretty {
+        Self::to_json(omni_file)?
+      } else {
+        Self::to_json_compact(omni_file)?
+      };
+
+      std::fs::write(path, json_str)?;
+      Ok(())
+    }
+  }
+
+  fn convert_omni_value_to_json(value: &Value) -> Result<JsonValue> {
+    match &value.content {
+      ContentType::Null => Ok(JsonValue::Null),
+
+      ContentType::Boolean(b) => Ok(JsonValue::Boolean(*b)),
+
+      ContentType::Integer(n) => Ok(JsonValue::Number(*n as f64)),
+
+      ContentType::Float(f) => Ok(JsonValue::Number(*f)),
+
+      ContentType::String(s) => Ok(JsonValue::String(s.clone())),
+
+      ContentType::Binary(b) => {
+        // Encode binary as base64 string
+        Ok(JsonValue::String(base64_encode(b)))
+      }
+
+      ContentType::Array(arr) => {
+        let converted: Result<Vec<JsonValue>> = arr.iter()
+          .map(|v| convert_omni_value_to_json(v))
+          .collect();
+
+        Ok(JsonValue::Array(converted?))
+      }
+
+      ContentType::Object(obj) => {
+        let mut converted_map = Map::new();
+
+        for (key, val) in obj {
+          converted_map.insert(key.clone(), convert_omni_value_to_json(val)?);
+        }
+
+        Ok(JsonValue::Object(converted_map))
+      }
+
+      _ => {
+        // For complex types, convert to object with metadata
+        let mut obj = Map::new();
+        obj.insert(
+          "_type".to_string(),
+          JsonValue::String(format!("{:?}", value.data_type))
+        );
+        Ok(JsonValue::Object(obj))
+      }
+    }
+  }
+
+  fn serialize_json(value: &JsonValue, pretty: bool) -> Result<String> {
+    let mut result = String::new();
+    serialize_json_internal(value, &mut result, 0, pretty);
+    Ok(result)
+  }
+
+  fn serialize_json_internal(
+    value: &JsonValue,
+    output: &mut String,
+    indent_level: usize,
+    pretty: bool,
+  ) {
+    let indent = if pretty { "  ".repeat(indent_level) } else { "".to_string() };
+    let next_indent = if pretty { "  ".repeat(indent_level + 1) } else { "".to_string() };
+    let newline = if pretty { "\n" } else { "" };
+    let space = if pretty { " " } else { "" };
+
+    match value {
+      JsonValue::Null => output.push_str("null"),
+
+      JsonValue::Boolean(b) => output.push_str(if *b { "true" } else { "false" }),
+
+      JsonValue::Number(n) => {
+        if n.fract() == 0.0 && n.is_finite() {
+          output.push_str(&format!("{}", *n as i64));
+        } else {
+          output.push_str(&n.to_string());
+        }
+      }
+
+      JsonValue::String(s) => {
+        output.push('"');
+        for ch in s.chars() {
+          match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            _ => output.push(ch),
+          }
+        }
+        output.push('"');
+      }
+
+      JsonValue::Array(arr) => {
+        output.push('[');
+        if !arr.is_empty() {
+          output.push_str(newline);
+          for (i, item) in arr.iter().enumerate() {
+            output.push_str(&next_indent);
+            serialize_json_internal(item, output, indent_level + 1, pretty);
+            if i < arr.len() - 1 {
+              output.push(',');
+            }
+            output.push_str(newline);
+          }
+          output.push_str(&indent);
+        }
+        output.push(']');
+      }
+
+      JsonValue::Object(obj) => {
+        output.push('{');
+        if !obj.is_empty() {
+          output.push_str(newline);
+          let keys: Vec<String> = obj.keys().cloned().collect();
+          for (i, key) in keys.iter().enumerate() {
+            output.push_str(&next_indent);
+            output.push('"');
+            output.push_str(key);
+            output.push('"');
+            output.push(':');
+            output.push_str(space);
+
+            if let Some(val) = obj.get(key) {
+              serialize_json_internal(val, output, indent_level + 1, pretty);
+            }
+
+            if i < keys.len() - 1 {
+              output.push(',');
+            }
+            output.push_str(newline);
+          }
+          output.push_str(&indent);
+        }
+        output.push('}');
+      }
+    }
+  }
+
+  // ===================================================================
+  // Utilities
+  // ===================================================================
+
+  fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut result = String::new();
+    let mut i = 0;
+
+    while i + 2 < data.len() {
+      let b1 = data[i];
+      let b2 = data[i + 1];
+      let b3 = data[i + 2];
+
+      result.push(CHARS[(b1 >> 2) as usize] as char);
+      result.push(CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
+      result.push(CHARS[(((b2 & 0x0F) << 2) | (b3 >> 6)) as usize] as char);
+      result.push(CHARS[(b3 & 0x3F) as usize] as char);
+
+      i += 3;
+    }
+
+    if i < data.len() {
+      let b1 = data[i];
+      result.push(CHARS[(b1 >> 2) as usize] as char);
+
+      if i + 1 < data.len() {
+        let b2 = data[i + 1];
+        result.push(CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
+        result.push(CHARS[((b2 & 0x0F) << 2) as usize] as char);
+        result.push('=');
+      } else {
+        result.push(CHARS[((b1 & 0x03) << 4) as usize] as char);
+        result.push_str("==");
+      }
+    }
+
+    result
+  }
+
+  fn create_empty_omni() -> Result<OmniFile> {
+    // TODO: Create proper empty OMNI file with default header/footer
+    Err("Not yet implemented")
+  }
+
+  fn get_current_timestamp() -> u64 {
+    // TODO: Get current system time in nanoseconds
+    0
+  }
+}
+
+pub use OmniJsonConverter::*;

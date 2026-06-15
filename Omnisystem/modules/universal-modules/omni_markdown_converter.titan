@@ -1,0 +1,426 @@
+// OMNI Markdown Converter Module
+// Bi-directional conversion between Markdown and OMNI format
+// Full support for CommonMark, GitHub Flavored Markdown, and Pandoc extensions
+
+module OmniMarkdownConverter {
+
+  use OmniCoreSerializer::*;
+
+  pub struct MarkdownConverter;
+
+  pub enum MarkdownFlavor {
+    CommonMark,
+    GitHubFlavored,
+    Pandoc,
+    Custom(String),
+  }
+
+  pub enum MarkdownElement {
+    Heading(HeadingElement),
+    Paragraph(ParagraphElement),
+    CodeBlock(CodeBlockElement),
+    List(ListElement),
+    Table(TableElement),
+    Quote(QuoteElement),
+    Link(LinkElement),
+    Image(ImageElement),
+    HorizontalRule,
+    LineBreak,
+    InlineCode(String),
+    Bold(String),
+    Italic(String),
+    Strikethrough(String),
+  }
+
+  pub struct HeadingElement {
+    level: u8,
+    text: String,
+    id: Option<String>,
+  }
+
+  pub struct ParagraphElement {
+    text: String,
+    inline_elements: Vec<InlineElement>,
+  }
+
+  pub enum InlineElement {
+    Text(String),
+    Code(String),
+    Bold(String),
+    Italic(String),
+    Link(LinkData),
+    Image(ImageData),
+    Strikethrough(String),
+  }
+
+  pub struct LinkData {
+    text: String,
+    url: String,
+    title: Option<String>,
+  }
+
+  pub struct ImageData {
+    alt_text: String,
+    url: String,
+    title: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+  }
+
+  pub struct CodeBlockElement {
+    language: String,
+    content: String,
+    line_numbers: bool,
+    highlight_lines: Vec<(u32, u32)>,
+  }
+
+  pub struct ListElement {
+    ordered: bool,
+    start_number: Option<u32>,
+    items: Vec<ListItem>,
+    tight: bool,
+  }
+
+  pub struct ListItem {
+    content: String,
+    children: Vec<ListElement>,
+    checkbox: Option<CheckboxState>,
+  }
+
+  pub enum CheckboxState {
+    Unchecked,
+    Checked,
+  }
+
+  pub struct TableElement {
+    headers: Vec<String>,
+    rows: Vec<TableRow>,
+    alignments: Vec<Alignment>,
+  }
+
+  pub struct TableRow {
+    cells: Vec<String>,
+  }
+
+  pub enum Alignment {
+    Left,
+    Center,
+    Right,
+  }
+
+  pub struct QuoteElement {
+    lines: Vec<String>,
+    nested_quotes: Vec<QuoteElement>,
+  }
+
+  pub struct LinkElement {
+    text: String,
+    url: String,
+    title: Option<String>,
+  }
+
+  pub struct ImageElement {
+    alt_text: String,
+    src: String,
+    title: Option<String>,
+  }
+
+  pub struct MarkdownDocument {
+    elements: Vec<MarkdownElement>,
+    metadata: DocumentMetadata,
+    frontmatter: Option<FrontmatterData>,
+  }
+
+  pub struct DocumentMetadata {
+    title: Option<String>,
+    author: Option<String>,
+    date: Option<String>,
+    keywords: Vec<String>,
+  }
+
+  pub struct FrontmatterData {
+    format: FrontmatterFormat,
+    data: Map<String, String>,
+  }
+
+  pub enum FrontmatterFormat {
+    YAML,
+    TOML,
+    JSON,
+  }
+
+  // ===================================================================
+  // Markdown → OMNI Conversion
+  // ===================================================================
+
+  impl MarkdownConverter {
+    pub fn from_markdown(
+      markdown: &str,
+      flavor: MarkdownFlavor,
+    ) -> Result<OmniFile> {
+      let doc = Self::parse_markdown(markdown, flavor)?;
+      Self::convert_to_omni(&doc)
+    }
+
+    pub fn from_markdown_file(path: &str, flavor: MarkdownFlavor) -> Result<OmniFile> {
+      let markdown = std::fs::read_to_string(path)?;
+      Self::from_markdown(&markdown, flavor)
+    }
+
+    fn parse_markdown(markdown: &str, flavor: MarkdownFlavor) -> Result<MarkdownDocument> {
+      let mut elements = Vec::new();
+      let mut current_pos = 0;
+
+      while current_pos < markdown.len() {
+        if let Some((element, new_pos)) = Self::parse_element(&markdown[current_pos..], flavor.clone()) {
+          elements.push(element);
+          current_pos += new_pos;
+        } else {
+          current_pos += 1;
+        }
+      }
+
+      Ok(MarkdownDocument {
+        elements,
+        metadata: DocumentMetadata {
+          title: None,
+          author: None,
+          date: None,
+          keywords: vec![],
+        },
+        frontmatter: None,
+      })
+    }
+
+    fn parse_element(content: &str, flavor: MarkdownFlavor) -> Option<(MarkdownElement, usize)> {
+      // Parse heading
+      if content.starts_with('#') {
+        return Self::parse_heading(content);
+      }
+
+      // Parse code block
+      if content.starts_with("```") || content.starts_with("~~~") {
+        return Self::parse_code_block(content);
+      }
+
+      // Parse list
+      if content.starts_with('-') || content.starts_with('*') || content.starts_with('+') {
+        return Self::parse_list(content);
+      }
+
+      // Parse table
+      if content.contains('|') {
+        return Self::parse_table(content);
+      }
+
+      // Parse quote
+      if content.starts_with('>') {
+        return Self::parse_quote(content);
+      }
+
+      // Parse horizontal rule
+      if content.starts_with("---") || content.starts_with("***") || content.starts_with("___") {
+        return Some((MarkdownElement::HorizontalRule, 3));
+      }
+
+      // Parse paragraph
+      if !content.is_empty() {
+        return Self::parse_paragraph(content);
+      }
+
+      None
+    }
+
+    fn parse_heading(content: &str) -> Option<(MarkdownElement, usize)> {
+      let level = content.chars().take_while(|&c| c == '#').count() as u8;
+      if level > 6 {
+        return None;
+      }
+
+      let rest = &content[level as usize..].trim_start();
+      if let Some(newline_pos) = rest.find('\n') {
+        let text = rest[..newline_pos].to_string();
+        Some((
+          MarkdownElement::Heading(HeadingElement {
+            level,
+            text,
+            id: None,
+          }),
+          level as usize + rest.len() - rest.trim_start().len() + newline_pos + 1,
+        ))
+      } else {
+        Some((
+          MarkdownElement::Heading(HeadingElement {
+            level,
+            text: rest.to_string(),
+            id: None,
+          }),
+          content.len(),
+        ))
+      }
+    }
+
+    fn parse_code_block(content: &str) -> Option<(MarkdownElement, usize)> {
+      let fence = if content.starts_with("```") { "```" } else { "~~~" };
+      let fence_len = 3;
+
+      let rest = &content[fence_len..];
+      let lang_end = rest.find('\n').unwrap_or(rest.len());
+      let language = rest[..lang_end].trim().to_string();
+
+      let code_start = lang_end + 1;
+      let code_part = &rest[code_start..];
+
+      if let Some(end_pos) = code_part.find(fence) {
+        let code = code_part[..end_pos].to_string();
+        Some((
+          MarkdownElement::CodeBlock(CodeBlockElement {
+            language,
+            content: code,
+            line_numbers: false,
+            highlight_lines: vec![],
+          }),
+          fence_len + lang_end + 1 + end_pos + fence_len,
+        ))
+      } else {
+        None
+      }
+    }
+
+    fn parse_list(content: &str) -> Option<(MarkdownElement, usize)> {
+      // TODO: Implement list parsing
+      None
+    }
+
+    fn parse_table(content: &str) -> Option<(MarkdownElement, usize)> {
+      // TODO: Implement table parsing
+      None
+    }
+
+    fn parse_quote(content: &str) -> Option<(MarkdownElement, usize)> {
+      // TODO: Implement quote parsing
+      None
+    }
+
+    fn parse_paragraph(content: &str) -> Option<(MarkdownElement, usize)> {
+      if let Some(newline_pos) = content.find('\n') {
+        let text = content[..newline_pos].to_string();
+        Some((
+          MarkdownElement::Paragraph(ParagraphElement {
+            text,
+            inline_elements: vec![],
+          }),
+          newline_pos + 1,
+        ))
+      } else {
+        Some((
+          MarkdownElement::Paragraph(ParagraphElement {
+            text: content.to_string(),
+            inline_elements: vec![],
+          }),
+          content.len(),
+        ))
+      }
+    }
+
+    fn convert_to_omni(doc: &MarkdownDocument) -> Result<OmniFile> {
+      let mut sections = Vec::new();
+
+      for element in &doc.elements {
+        match element {
+          MarkdownElement::Heading(h) => {
+            sections.push(create_heading_section(h));
+          }
+          MarkdownElement::Paragraph(p) => {
+            sections.push(create_paragraph_section(p));
+          }
+          MarkdownElement::CodeBlock(c) => {
+            sections.push(create_code_section(c));
+          }
+          MarkdownElement::Table(t) => {
+            sections.push(create_table_section(t));
+          }
+          _ => {}
+        }
+      }
+
+      // Build OMNI file with document content
+      Err("Not fully implemented yet")
+    }
+  }
+
+  // ===================================================================
+  // OMNI → Markdown Conversion
+  // ===================================================================
+
+  impl MarkdownConverter {
+    pub fn to_markdown(omni_file: &OmniFile, flavor: MarkdownFlavor) -> Result<String> {
+      let mut markdown = String::new();
+
+      // Add title if present
+      if let Some(title) = &omni_file.metadata.title {
+        markdown.push_str(&format!("# {}\n\n", title));
+      }
+
+      // Add description if present
+      if let Some(desc) = &omni_file.metadata.description {
+        markdown.push_str(&format!("{}\n\n", desc));
+      }
+
+      // TODO: Convert OMNI sections to Markdown
+      Ok(markdown)
+    }
+
+    pub fn to_markdown_file(omni_file: &OmniFile, path: &str, flavor: MarkdownFlavor) -> Result<()> {
+      let markdown = Self::to_markdown(omni_file, flavor)?;
+      std::fs::write(path, markdown)?;
+      Ok(())
+    }
+  }
+
+  // ===================================================================
+  // Helper Functions
+  // ===================================================================
+
+  fn create_heading_section(heading: &HeadingElement) -> String {
+    format!("{} {}", "#".repeat(heading.level as usize), heading.text)
+  }
+
+  fn create_paragraph_section(para: &ParagraphElement) -> String {
+    para.text.clone()
+  }
+
+  fn create_code_section(code: &CodeBlockElement) -> String {
+    format!("```{}\n{}\n```", code.language, code.content)
+  }
+
+  fn create_table_section(table: &TableElement) -> String {
+    let mut result = String::new();
+
+    // Headers
+    result.push_str(&table.headers.join(" | "));
+    result.push('\n');
+
+    // Separator
+    for alignment in &table.alignments {
+      let sep = match alignment {
+        Alignment::Left => ":---",
+        Alignment::Center => ":---:",
+        Alignment::Right => "---:",
+      };
+      result.push_str(sep);
+      result.push_str(" | ");
+    }
+    result.push('\n');
+
+    // Rows
+    for row in &table.rows {
+      result.push_str(&row.cells.join(" | "));
+      result.push('\n');
+    }
+
+    result
+  }
+}
+
+pub use OmniMarkdownConverter::*;

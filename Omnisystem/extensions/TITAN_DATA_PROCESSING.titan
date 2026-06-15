@@ -1,0 +1,429 @@
+// TITAN DATA PROCESSING - PHASE 22
+// Stream processing, windowing, aggregations, data pipelines
+
+module TitanDataProcessing {
+
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    // ========================================================================
+    // STREAM PROCESSOR
+    // ========================================================================
+
+    pub struct DataStream<T: Clone> {
+        data: Arc<Mutex<VecDeque<T>>>,
+        batch_size: usize,
+        transformations: Vec<Box<dyn Fn(T) -> T + Send + 'static>>,
+    }
+
+    impl<T: Clone + Send + 'static> DataStream<T> {
+        pub fn new(batch_size: usize) -> Self {
+            DataStream {
+                data: Arc::new(Mutex::new(VecDeque::new())),
+                batch_size,
+                transformations: Vec::new(),
+            }
+        }
+
+        pub fn push(&self, item: T) {
+            if let Ok(mut data) = self.data.lock() {
+                data.push_back(item);
+                println!("📥 Item pushed to stream");
+            }
+        }
+
+        pub fn add_transformation<F>(&mut self, transform: F)
+        where
+            F: Fn(T) -> T + Send + 'static,
+        {
+            self.transformations.push(Box::new(transform));
+        }
+
+        pub fn process_batch(&self) -> Vec<T> {
+            let mut results = Vec::new();
+
+            if let Ok(mut data) = self.data.lock() {
+                for _ in 0..self.batch_size {
+                    if let Some(item) = data.pop_front() {
+                        results.push(item);
+                    }
+                }
+            }
+
+            println!("⚙️  Processed batch: {} items", results.len());
+            results
+        }
+
+        pub fn get_stream_size(&self) -> usize {
+            self.data.lock().map(|d| d.len()).unwrap_or(0)
+        }
+    }
+
+    // ========================================================================
+    // WINDOWING
+    // ========================================================================
+
+    pub struct TumblingWindow {
+        window_size: usize,
+        current_window: Vec<i64>,
+    }
+
+    impl TumblingWindow {
+        pub fn new(window_size: usize) -> Self {
+            TumblingWindow {
+                window_size,
+                current_window: Vec::new(),
+            }
+        }
+
+        pub fn add_element(&mut self, element: i64) -> Option<Vec<i64>> {
+            self.current_window.push(element);
+
+            if self.current_window.len() >= self.window_size {
+                let result = self.current_window.clone();
+                self.current_window.clear();
+                println!("🪟 Tumbling window completed: {} elements", result.len());
+                Some(result)
+            } else {
+                None
+            }
+        }
+
+        pub fn get_window_progress(&self) -> f32 {
+            (self.current_window.len() as f32 / self.window_size as f32) * 100.0
+        }
+    }
+
+    pub struct SlidingWindow {
+        window_size: usize,
+        stride: usize,
+        buffer: VecDeque<i64>,
+    }
+
+    impl SlidingWindow {
+        pub fn new(window_size: usize, stride: usize) -> Self {
+            SlidingWindow {
+                window_size,
+                stride,
+                buffer: VecDeque::with_capacity(window_size),
+            }
+        }
+
+        pub fn add_element(&mut self, element: i64) -> Vec<Option<Vec<i64>>> {
+            let mut windows = Vec::new();
+
+            self.buffer.push_back(element);
+
+            if self.buffer.len() > self.window_size {
+                self.buffer.pop_front();
+            }
+
+            if self.buffer.len() == self.window_size {
+                windows.push(Some(self.buffer.iter().cloned().collect()));
+                println!("🪟 Sliding window generated: {} elements", self.window_size);
+            } else {
+                windows.push(None);
+            }
+
+            windows
+        }
+    }
+
+    pub struct SessionWindow {
+        session_timeout_ms: u64,
+        current_session: Vec<(u64, i64)>,
+        last_event_time: u64,
+    }
+
+    impl SessionWindow {
+        pub fn new(session_timeout_ms: u64) -> Self {
+            SessionWindow {
+                session_timeout_ms,
+                current_session: Vec::new(),
+                last_event_time: 0,
+            }
+        }
+
+        pub fn add_event(&mut self, timestamp: u64, value: i64) -> Option<Vec<i64>> {
+            let time_gap = timestamp.saturating_sub(self.last_event_time);
+
+            if time_gap > self.session_timeout_ms && !self.current_session.is_empty() {
+                let result: Vec<i64> = self.current_session.iter().map(|(_, v)| *v).collect();
+                self.current_session.clear();
+                println!("📊 Session window closed: {} events", result.len());
+                Some(result)
+            } else {
+                self.current_session.push((timestamp, value));
+                self.last_event_time = timestamp;
+                None
+            }
+        }
+    }
+
+    // ========================================================================
+    // AGGREGATIONS
+    // ========================================================================
+
+    pub struct Aggregator {
+        sum: f64,
+        count: u32,
+        min: f64,
+        max: f64,
+    }
+
+    impl Aggregator {
+        pub fn new() -> Self {
+            Aggregator {
+                sum: 0.0,
+                count: 0,
+                min: f64::INFINITY,
+                max: f64::NEG_INFINITY,
+            }
+        }
+
+        pub fn aggregate(&mut self, value: f64) {
+            self.sum += value;
+            self.count += 1;
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+
+        pub fn get_sum(&self) -> f64 {
+            self.sum
+        }
+
+        pub fn get_average(&self) -> f64 {
+            if self.count == 0 {
+                0.0
+            } else {
+                self.sum / self.count as f64
+            }
+        }
+
+        pub fn get_count(&self) -> u32 {
+            self.count
+        }
+
+        pub fn get_min(&self) -> f64 {
+            self.min
+        }
+
+        pub fn get_max(&self) -> f64 {
+            self.max
+        }
+
+        pub fn get_variance(&self, values: &[f64]) -> f64 {
+            if values.is_empty() {
+                return 0.0;
+            }
+
+            let mean = self.get_average();
+            let variance: f64 = values
+                .iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f64>() / values.len() as f64;
+
+            variance
+        }
+
+        pub fn get_stddev(&self, values: &[f64]) -> f64 {
+            self.get_variance(values).sqrt()
+        }
+    }
+
+    // ========================================================================
+    // DATA PIPELINE
+    // ========================================================================
+
+    pub struct DataPipeline {
+        stages: Vec<String>,
+        stage_times: Vec<u64>,
+        records_processed: u64,
+    }
+
+    impl DataPipeline {
+        pub fn new() -> Self {
+            DataPipeline {
+                stages: Vec::new(),
+                stage_times: Vec::new(),
+                records_processed: 0,
+            }
+        }
+
+        pub fn add_stage(&mut self, stage_name: &str) {
+            self.stages.push(stage_name.to_string());
+            println!("📊 Pipeline stage added: {}", stage_name);
+        }
+
+        pub fn execute_stage(&mut self, stage_index: usize, records: u32) -> Result<(), String> {
+            if stage_index >= self.stages.len() {
+                return Err("Stage index out of bounds".to_string());
+            }
+
+            self.records_processed += records as u64;
+            self.stage_times.push(current_time_ms());
+
+            println!(
+                "▶️  Executing stage '{}': {} records",
+                self.stages[stage_index], records
+            );
+
+            Ok(())
+        }
+
+        pub fn get_pipeline_throughput(&self) -> f64 {
+            if self.stage_times.len() < 2 {
+                return 0.0;
+            }
+
+            let total_time = self.stage_times[self.stage_times.len() - 1] - self.stage_times[0];
+            if total_time == 0 {
+                0.0
+            } else {
+                self.records_processed as f64 / (total_time as f64 / 1000.0)
+            }
+        }
+
+        pub fn get_stage_latencies(&self) -> Vec<u64> {
+            let mut latencies = Vec::new();
+
+            for i in 1..self.stage_times.len() {
+                latencies.push(self.stage_times[i] - self.stage_times[i - 1]);
+            }
+
+            latencies
+        }
+    }
+
+    // ========================================================================
+    // FILTER & MAP
+    // ========================================================================
+
+    pub struct DataFilter {
+        predicate: Box<dyn Fn(i32) -> bool + Send + 'static>,
+    }
+
+    impl DataFilter {
+        pub fn new<F>(predicate: F) -> Self
+        where
+            F: Fn(i32) -> bool + Send + 'static,
+        {
+            DataFilter {
+                predicate: Box::new(predicate),
+            }
+        }
+
+        pub fn apply(&self, data: Vec<i32>) -> Vec<i32> {
+            let result: Vec<i32> = data.into_iter().filter(|x| (self.predicate)(*x)).collect();
+            println!("🔍 Filter applied: {} → {} items", data.len(), result.len());
+            result
+        }
+    }
+
+    pub struct DataMapper {
+        mapper: Box<dyn Fn(i32) -> i32 + Send + 'static>,
+    }
+
+    impl DataMapper {
+        pub fn new<F>(mapper: F) -> Self
+        where
+            F: Fn(i32) -> i32 + Send + 'static,
+        {
+            DataMapper {
+                mapper: Box::new(mapper),
+            }
+        }
+
+        pub fn apply(&self, data: Vec<i32>) -> Vec<i32> {
+            let result: Vec<i32> = data.iter().map(|x| (self.mapper)(*x)).collect();
+            println!("🔄 Mapper applied: {} items transformed", result.len());
+            result
+        }
+    }
+
+    // ========================================================================
+    // TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_data_stream() {
+        let stream: DataStream<i32> = DataStream::new(10);
+        stream.push(42);
+        assert_eq!(stream.get_stream_size(), 1);
+    }
+
+    #[test]
+    fn test_tumbling_window() {
+        let mut window = TumblingWindow::new(3);
+        assert_eq!(window.add_element(1), None);
+        assert_eq!(window.add_element(2), None);
+        let result = window.add_element(3);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_sliding_window() {
+        let mut window = SlidingWindow::new(2, 1);
+        window.add_element(1);
+        let windows = window.add_element(2);
+        assert!(windows[0].is_some());
+    }
+
+    #[test]
+    fn test_aggregator() {
+        let mut agg = Aggregator::new();
+        agg.aggregate(10.0);
+        agg.aggregate(20.0);
+        agg.aggregate(30.0);
+        assert_eq!(agg.get_count(), 3);
+        assert_eq!(agg.get_average(), 20.0);
+    }
+
+    #[test]
+    fn test_pipeline() {
+        let mut pipeline = DataPipeline::new();
+        pipeline.add_stage("extract");
+        pipeline.add_stage("transform");
+        pipeline.add_stage("load");
+        assert!(pipeline.execute_stage(0, 100).is_ok());
+    }
+}
+
+fn current_time_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn main() {
+    println!("\n🚀 TITAN DATA PROCESSING\n");
+
+    println!("1️⃣  Stream Processing:");
+    println!("  ✓ Continuous data streams");
+    println!("  ✓ Batch processing");
+    println!("  ✓ Transformations\n");
+
+    println!("2️⃣  Windowing:");
+    println!("  ✓ Tumbling windows");
+    println!("  ✓ Sliding windows");
+    println!("  ✓ Session windows\n");
+
+    println!("3️⃣  Aggregations:");
+    println!("  ✓ Sum, count, average");
+    println!("  ✓ Min/max tracking");
+    println!("  ✓ Variance and stddev\n");
+
+    println!("4️⃣  Data Pipelines:");
+    println!("  ✓ Multi-stage processing");
+    println!("  ✓ Throughput tracking");
+    println!("  ✓ Latency monitoring\n");
+
+    println!("5️⃣  Functional Operations:");
+    println!("  ✓ Filtering");
+    println!("  ✓ Mapping");
+    println!("  ✓ Data transformation\n");
+
+    println!("✅ Data Processing Complete\n");
+}

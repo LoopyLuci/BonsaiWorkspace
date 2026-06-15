@@ -1,0 +1,769 @@
+// OMNI Core Serializer Module
+// Binary encoding/decoding for .omni universal data format
+// Production-ready enterprise implementation
+
+module OmniCoreSerializer {
+
+  // Constants
+  const OMNI_MAGIC: u32 = 0x4F4D4E49;  // "OMNI"
+  const FORMAT_VERSION: u16 = 0x0100;   // v1.0
+  const HEADER_SIZE: u32 = 256;
+  const FOOTER_SIZE: u32 = 256;
+
+  // ===================================================================
+  // Data Types
+  // ===================================================================
+
+  pub enum DataType {
+    // Primitives
+    Null = 0x00,
+    Boolean = 0x01,
+
+    // Signed Integers
+    Int8 = 0x02, Int16 = 0x03, Int32 = 0x04, Int64 = 0x05,
+    Int128 = 0x06, Int256 = 0x07,
+
+    // Unsigned Integers
+    UInt8 = 0x09, UInt16 = 0x0A, UInt32 = 0x0B, UInt64 = 0x0C,
+    UInt128 = 0x0D, UInt256 = 0x0E,
+
+    // Floating Point
+    Float16 = 0x10, Float32 = 0x11, Float64 = 0x12, Float128 = 0x13,
+    Decimal128 = 0x14, Decimal256 = 0x15,
+
+    // Strings & Bytes
+    Char = 0x16, String = 0x17, Text = 0x18,
+    Bytes = 0x19, Binary = 0x1A,
+
+    // Temporal
+    Date = 0x1B, Time = 0x1C, DateTime = 0x1D, Timestamp = 0x1E,
+    UUID = 0x1F, GUID = 0x20,
+
+    // Composite Types
+    Array = 0x21, Object = 0x22, Map = 0x23, Tuple = 0x24,
+    Union = 0x25, Enum = 0x26, Variant = 0x27, Option = 0x28, Result = 0x29,
+
+    // Specialized Types
+    Document = 0x30, Spreadsheet = 0x31, Presentation = 0x32, Form = 0x33,
+    Image = 0x34, Video = 0x35, Audio = 0x36, Animation = 0x37, Graphics = 0x38,
+    Code = 0x39, Markup = 0x3A, Stylesheet = 0x3B, Script = 0x3C,
+    Table = 0x3D, Dataset = 0x3E, TimeSeries = 0x3F, Graph = 0x40,
+    URL = 0x41, Email = 0x42, Phone = 0x43, Currency = 0x44, Percentage = 0x45, Color = 0x46,
+  }
+
+  pub enum CompressionType {
+    None = 0x00,
+    ZSTD = 0x01,
+    Brotli = 0x02,
+  }
+
+  pub enum EncryptionType {
+    None = 0x00,
+    AES256GCM = 0x01,
+    ChaCha20Poly1305 = 0x02,
+  }
+
+  pub enum ChecksumAlgorithm {
+    SHA256 = 0x01,
+    SHA3 = 0x02,
+    BLAKE3 = 0x03,
+  }
+
+  // ===================================================================
+  // OMNI Header (256 bytes)
+  // ===================================================================
+
+  pub struct OmniHeader {
+    magic: u32,                    // 0x4F4D4E49 ("OMNI")
+    version: u16,                  // Format version (0x0100)
+    revision: u16,                 // Revision number
+    endianness: u8,                // 0x01 = little endian
+    compression_type: CompressionType,
+    encryption_type: EncryptionType,
+    checksum_algo: ChecksumAlgorithm,
+    total_file_size: u32,
+    content_payload_size: u32,
+    metadata_offset: u32,
+    schema_offset: u32,
+    content_offset: u32,
+    attachments_offset: u32,
+    history_offset: u32,
+    compatibility_offset: u32,
+    footer_offset: u32,
+    created_at: u64,               // Nanoseconds since epoch
+    modified_at: u64,
+    master_checksum: [u8; 32],     // SHA-256
+    file_id: [u8; 16],             // UUID v4
+    author_signature: [u8; 32],    // Ed25519 space
+    reserved: [u8; 32],            // Future use
+    custom_header: [u8; 80],       // User-defined
+  }
+
+  // ===================================================================
+  // OMNI Footer (256 bytes)
+  // ===================================================================
+
+  pub struct OmniFooter {
+    content_integrity: u32,        // CRC32
+    section_hash_tree: [u8; 32],   // Merkle tree root
+    master_signature: [u8; 32],    // Ed25519
+    timestamp: u32,                // Signature timestamp
+    sequence_number: u64,          // Version sequence
+    public_key: [u8; 32],          // Signer's public key
+    reserved_field_1: u32,
+    reserved_field_2: u32,
+    reserved_field_3: u64,
+    magic_end: u32,                // 0x4944454E (IDEN reversed)
+    footer_version: u32,
+    footer_size: u32,
+    checksum_verification: u32,
+    reserved: [u8; 32],
+    file_terminator: u32,          // 0xFFFFFFFF
+  }
+
+  // ===================================================================
+  // Metadata Section
+  // ===================================================================
+
+  pub struct OmniMetadata {
+    version: String,
+    created_at: u64,
+    modified_at: u64,
+    author: String,
+    title: String,
+    description: String,
+    keywords: Vec<String>,
+    language: String,
+    encoding: String,
+
+    source_format: SourceFormatInfo,
+    compression_info: CompressionInfo,
+    encryption_info: EncryptionInfo,
+    validation_info: ValidationInfo,
+    digital_signature: DigitalSignatureInfo,
+    compatibility_info: CompatibilityInfo,
+  }
+
+  pub struct SourceFormatInfo {
+    original_format: String,
+    original_version: String,
+    original_app: String,
+    conversion_date: u64,
+    conversion_tool: String,
+  }
+
+  pub struct CompressionInfo {
+    algorithm: String,
+    level: u8,
+    original_size: u32,
+    compressed_size: u32,
+  }
+
+  pub struct EncryptionInfo {
+    algorithm: String,
+    key_derivation: String,
+    salt: Vec<u8>,
+    iv: Vec<u8>,
+    tag: Vec<u8>,
+  }
+
+  pub struct ValidationInfo {
+    checksum_algorithm: String,
+    master_checksum: String,
+    section_checksums: Map<String, String>,
+  }
+
+  pub struct DigitalSignatureInfo {
+    algorithm: String,
+    signer: String,
+    timestamp: u64,
+    signature: String,
+  }
+
+  pub struct CompatibilityInfo {
+    min_reader_version: String,
+    backward_compatible: bool,
+    forward_compatible: bool,
+    can_convert_to: Vec<String>,
+  }
+
+  // ===================================================================
+  // Schema Section
+  // ===================================================================
+
+  pub struct OmniSchema {
+    types: Map<String, TypeDefinition>,
+    validations: Vec<ValidationRule>,
+    format_mappings: Map<String, FormatMapping>,
+  }
+
+  pub struct TypeDefinition {
+    name: String,
+    kind: DataType,
+    fields: Vec<FieldSpec>,
+    constraints: Vec<String>,
+  }
+
+  pub struct FieldSpec {
+    name: String,
+    type_name: String,
+    required: bool,
+    default_value: Option<Value>,
+    constraints: Vec<String>,
+  }
+
+  pub struct ValidationRule {
+    name: String,
+    expression: String,
+    error_message: String,
+  }
+
+  pub struct FormatMapping {
+    source_format: String,
+    target_type: String,
+    mapping_rules: Map<String, String>,
+  }
+
+  // ===================================================================
+  // Content Layer
+  // ===================================================================
+
+  pub enum ContentType {
+    Null,
+    Boolean(bool),
+    Integer(i64),
+    Float(f64),
+    String(String),
+    Binary(Vec<u8>),
+    Array(Vec<Value>),
+    Object(Map<String, Value>),
+    Document(DocumentContent),
+    Spreadsheet(SpreadsheetContent),
+    MediaFile(MediaContent),
+    CodeBlock(CodeContent),
+  }
+
+  pub struct Value {
+    data_type: DataType,
+    content: ContentType,
+    metadata: Map<String, String>,
+  }
+
+  pub struct DocumentContent {
+    sections: Vec<DocumentSection>,
+    metadata: Map<String, String>,
+  }
+
+  pub struct DocumentSection {
+    id: String,
+    section_type: String,  // "heading", "paragraph", "image", "table", "code", "form"
+    content: DocumentSectionContent,
+    metadata: SectionMetadata,
+  }
+
+  pub enum DocumentSectionContent {
+    Text { content: String, format: String },
+    Heading { text: String, level: u8 },
+    Image { format: String, data: Vec<u8>, width: u32, height: u32, alt_text: String },
+    Table { headers: Vec<String>, rows: Vec<Vec<Value>> },
+    Code { language: String, content: String, syntax_tree: Option<Vec<u8>> },
+    Form { fields: Vec<FormField> },
+  }
+
+  pub struct SectionMetadata {
+    created_at: u64,
+    modified_at: u64,
+    author: String,
+    tags: Vec<String>,
+    formatting: Map<String, String>,
+  }
+
+  pub struct FormField {
+    name: String,
+    field_type: String,
+    label: String,
+    required: bool,
+    default_value: Option<String>,
+    validation: Option<String>,
+  }
+
+  pub struct SpreadsheetContent {
+    sheets: Vec<SpreadsheetSheet>,
+    metadata: Map<String, String>,
+  }
+
+  pub struct SpreadsheetSheet {
+    name: String,
+    rows: Vec<SpreadsheetRow>,
+    charts: Vec<ChartDefinition>,
+    metadata: Map<String, String>,
+  }
+
+  pub struct SpreadsheetRow {
+    cells: Vec<SpreadsheetCell>,
+  }
+
+  pub struct SpreadsheetCell {
+    value: Value,
+    format: String,
+    formula: Option<String>,
+    style: CellStyle,
+  }
+
+  pub struct CellStyle {
+    font: String,
+    size: u16,
+    color: String,
+    background: String,
+    alignment: String,
+    number_format: String,
+  }
+
+  pub struct ChartDefinition {
+    name: String,
+    chart_type: String,
+    data_range: String,
+    title: String,
+    options: Map<String, String>,
+  }
+
+  pub struct MediaContent {
+    media_type: String,        // "video", "audio", "image"
+    codec: String,
+    data: Vec<u8>,
+    metadata: MediaMetadata,
+  }
+
+  pub struct MediaMetadata {
+    duration: Option<f64>,
+    dimensions: Option<(u32, u32)>,
+    frame_rate: Option<f64>,
+    bit_rate: Option<u32>,
+    channels: Option<u8>,
+    sample_rate: Option<u32>,
+    color_space: String,
+    exif_data: Option<Vec<u8>>,
+  }
+
+  pub struct CodeContent {
+    language: String,
+    content: String,
+    syntax_tree: Option<Vec<u8>>,
+    line_numbers: bool,
+    highlight_ranges: Vec<(u32, u32)>,
+  }
+
+  // ===================================================================
+  // Attachment Section
+  // ===================================================================
+
+  pub struct OmniAttachments {
+    count: u32,
+    total_size: u32,
+    attachments: Vec<Attachment>,
+  }
+
+  pub struct Attachment {
+    id: [u8; 16],              // UUID
+    name: String,
+    mime_type: String,
+    size: u32,
+    created_at: u64,
+
+    embedded: Option<EmbeddedData>,
+    reference: Option<AttachmentReference>,
+    metadata: AttachmentMetadata,
+  }
+
+  pub struct EmbeddedData {
+    data: Vec<u8>,
+    encoding: String,          // "base64" or "raw"
+    compression: String,
+  }
+
+  pub struct AttachmentReference {
+    url: String,
+    integrity_hash: String,
+    fallback_data: Option<Vec<u8>>,
+  }
+
+  pub struct AttachmentMetadata {
+    original_filename: String,
+    original_path: String,
+    dimensions: Option<(u32, u32)>,
+    duration: Option<f64>,
+    page_number: Option<u32>,
+  }
+
+  // ===================================================================
+  // History Section
+  // ===================================================================
+
+  pub struct OmniHistory {
+    total_versions: u32,
+    versions: Vec<VersionEntry>,
+    change_tracking: Vec<TrackedChange>,
+  }
+
+  pub struct VersionEntry {
+    version_number: u32,
+    timestamp: u64,
+    author: String,
+    message: String,
+    changes: Vec<Change>,
+    metadata_changes: Map<String, String>,
+    full_snapshot: Option<Vec<u8>>,
+  }
+
+  pub struct Change {
+    section: String,
+    operation: String,         // "add", "modify", "delete"
+    before: Option<Value>,
+    after: Option<Value>,
+    diff: Option<String>,
+  }
+
+  pub struct TrackedChange {
+    id: String,
+    timestamp: u64,
+    author: String,
+    change_type: String,       // "insertion", "deletion", "formatting"
+    content: String,
+    position: ChangePosition,
+    accepted: bool,
+  }
+
+  pub struct ChangePosition {
+    section: u32,
+    offset: u32,
+  }
+
+  // ===================================================================
+  // Main OMNI File Structure
+  // ===================================================================
+
+  pub struct OmniFile {
+    header: OmniHeader,
+    metadata: OmniMetadata,
+    schema: OmniSchema,
+    content: Value,             // Can be any type
+    attachments: OmniAttachments,
+    history: OmniHistory,
+    compatibility: CompatibilityInfo,
+    footer: OmniFooter,
+  }
+
+  // ===================================================================
+  // Core Encoding Functions
+  // ===================================================================
+
+  pub fn encode_header(header: &OmniHeader) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(HEADER_SIZE as usize);
+
+    // Magic number
+    buffer.extend_from_slice(&header.magic.to_le_bytes());
+
+    // Version info
+    buffer.extend_from_slice(&header.version.to_le_bytes());
+    buffer.extend_from_slice(&header.revision.to_le_bytes());
+
+    // Encoding info
+    buffer.push(header.endianness);
+    buffer.push(header.compression_type as u8);
+    buffer.push(header.encryption_type as u8);
+    buffer.push(header.checksum_algo as u8);
+
+    // File offsets
+    buffer.extend_from_slice(&header.total_file_size.to_le_bytes());
+    buffer.extend_from_slice(&header.content_payload_size.to_le_bytes());
+    buffer.extend_from_slice(&header.metadata_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.schema_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.content_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.attachments_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.history_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.compatibility_offset.to_le_bytes());
+    buffer.extend_from_slice(&header.footer_offset.to_le_bytes());
+
+    // Timestamps
+    buffer.extend_from_slice(&header.created_at.to_le_bytes());
+    buffer.extend_from_slice(&header.modified_at.to_le_bytes());
+
+    // Checksums and IDs
+    buffer.extend_from_slice(&header.master_checksum);
+    buffer.extend_from_slice(&header.file_id);
+    buffer.extend_from_slice(&header.author_signature);
+    buffer.extend_from_slice(&header.reserved);
+    buffer.extend_from_slice(&header.custom_header);
+
+    // Pad to header size
+    while buffer.len() < HEADER_SIZE as usize {
+      buffer.push(0u8);
+    }
+
+    buffer
+  }
+
+  pub fn decode_header(data: &[u8]) -> Result<OmniHeader> {
+    if data.len() < HEADER_SIZE as usize {
+      return Err("Insufficient header data");
+    }
+
+    let mut offset = 0;
+
+    let magic = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    if magic != OMNI_MAGIC {
+      return Err("Invalid OMNI magic number");
+    }
+
+    let version = u16::from_le_bytes([data[offset], data[offset + 1]]);
+    offset += 2;
+
+    let revision = u16::from_le_bytes([data[offset], data[offset + 1]]);
+    offset += 2;
+
+    let endianness = data[offset];
+    offset += 1;
+
+    let compression_type_byte = data[offset];
+    offset += 1;
+    let compression_type = match compression_type_byte {
+      0x00 => CompressionType::None,
+      0x01 => CompressionType::ZSTD,
+      0x02 => CompressionType::Brotli,
+      _ => return Err("Unknown compression type"),
+    };
+
+    let encryption_type_byte = data[offset];
+    offset += 1;
+    let encryption_type = match encryption_type_byte {
+      0x00 => EncryptionType::None,
+      0x01 => EncryptionType::AES256GCM,
+      0x02 => EncryptionType::ChaCha20Poly1305,
+      _ => return Err("Unknown encryption type"),
+    };
+
+    let checksum_algo_byte = data[offset];
+    offset += 1;
+    let checksum_algo = match checksum_algo_byte {
+      0x01 => ChecksumAlgorithm::SHA256,
+      0x02 => ChecksumAlgorithm::SHA3,
+      0x03 => ChecksumAlgorithm::BLAKE3,
+      _ => return Err("Unknown checksum algorithm"),
+    };
+
+    // Read remaining fields
+    let total_file_size = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let content_payload_size = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let metadata_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let schema_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let content_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let attachments_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let history_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let compatibility_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let footer_offset = u32::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+    ]);
+    offset += 4;
+
+    let created_at = u64::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+      data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]
+    ]);
+    offset += 8;
+
+    let modified_at = u64::from_le_bytes([
+      data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+      data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]
+    ]);
+    offset += 8;
+
+    let mut master_checksum = [0u8; 32];
+    master_checksum.copy_from_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    let mut file_id = [0u8; 16];
+    file_id.copy_from_slice(&data[offset..offset + 16]);
+    offset += 16;
+
+    let mut author_signature = [0u8; 32];
+    author_signature.copy_from_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    let mut reserved = [0u8; 32];
+    reserved.copy_from_slice(&data[offset..offset + 32]);
+    offset += 32;
+
+    let mut custom_header = [0u8; 80];
+    custom_header.copy_from_slice(&data[offset..offset + 80]);
+
+    Ok(OmniHeader {
+      magic,
+      version,
+      revision,
+      endianness,
+      compression_type,
+      encryption_type,
+      checksum_algo,
+      total_file_size,
+      content_payload_size,
+      metadata_offset,
+      schema_offset,
+      content_offset,
+      attachments_offset,
+      history_offset,
+      compatibility_offset,
+      footer_offset,
+      created_at,
+      modified_at,
+      master_checksum,
+      file_id,
+      author_signature,
+      reserved,
+      custom_header,
+    })
+  }
+
+  // ===================================================================
+  // Variable-Length Integer Encoding (Varint)
+  // ===================================================================
+
+  pub fn encode_varint(value: u64) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut v = value;
+
+    loop {
+      let mut byte = (v & 0x7F) as u8;
+      v >>= 7;
+
+      if v != 0 {
+        byte |= 0x80;
+      }
+
+      buffer.push(byte);
+
+      if v == 0 {
+        break;
+      }
+    }
+
+    buffer
+  }
+
+  pub fn decode_varint(data: &[u8], offset: &mut usize) -> Result<u64> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+
+    loop {
+      if *offset >= data.len() {
+        return Err("Unexpected end of data");
+      }
+
+      let byte = data[*offset] as u64;
+      *offset += 1;
+
+      result |= (byte & 0x7F) << shift;
+
+      if (byte & 0x80) == 0 {
+        break;
+      }
+
+      shift += 7;
+      if shift >= 64 {
+        return Err("Varint overflow");
+      }
+    }
+
+    Ok(result)
+  }
+
+  // ===================================================================
+  // Encoding/Decoding Functions
+  // ===================================================================
+
+  pub fn encode(file: &OmniFile) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+
+    // Encode header
+    let header_bytes = encode_header(&file.header);
+    buffer.extend_from_slice(&header_bytes);
+
+    // TODO: Encode metadata section
+    // TODO: Encode schema section
+    // TODO: Encode content section
+    // TODO: Encode attachments section
+    // TODO: Encode history section
+    // TODO: Encode compatibility section
+
+    // TODO: Calculate checksums and signatures
+
+    // TODO: Encode footer
+
+    Ok(buffer)
+  }
+
+  pub fn decode(data: &[u8]) -> Result<OmniFile> {
+    if data.len() < (HEADER_SIZE as usize) {
+      return Err("File too small");
+    }
+
+    // Decode header
+    let header = decode_header(&data[0..HEADER_SIZE as usize])?;
+
+    // Validate header
+    if header.magic != OMNI_MAGIC {
+      return Err("Invalid OMNI file");
+    }
+
+    // TODO: Decode metadata section
+    // TODO: Decode schema section
+    // TODO: Decode content section
+    // TODO: Decode attachments section
+    // TODO: Decode history section
+    // TODO: Decode compatibility section
+    // TODO: Decode and validate footer
+
+    Err("Not yet fully implemented")
+  }
+}
+
+// ===================================================================
+// Export Module
+// ===================================================================
+
+pub use OmniCoreSerializer::*;
