@@ -1,0 +1,325 @@
+// TransferDaemon Test Metrics Collector (Aether)
+// Collects and aggregates metrics from transfer test
+
+module transfer_test::metrics_collector
+
+use core::string::{String, format}
+use core::vec::Vec
+use core::map::Map
+use transfer_test::types::*
+
+// ============================================================================
+// Metrics Collector Actor
+// ============================================================================
+
+actor MetricsCollector {
+    var test_id: String
+    var transfer_metrics: Vec<TransferMetrics> = Vec::new()
+    var lane_metrics: Vec<LaneStats> = Vec::new()
+    var system_metrics: Vec<SystemMetricsSnapshot> = Vec::new()
+
+    on create(test_id: String) {
+        this.test_id = test_id
+    }
+
+    // ========================================================================
+    // Record Metrics
+    // ========================================================================
+
+    on record_transfer_metrics(metrics: TransferMetrics) {
+        log_debug("Recording transfer metrics: {} bytes in {} ms",
+                 metrics.bytes_transferred, metrics.duration_ms)
+        self.transfer_metrics.push(metrics)
+    }
+
+    on record_lane_metrics(metrics: LaneStats) {
+        log_debug("Recording lane metrics: {} - {} Mbps",
+                 metrics.lane_id, metrics.bandwidth_mbps)
+        self.lane_metrics.push(metrics)
+    }
+
+    on record_system_metrics(snapshot: SystemMetricsSnapshot) {
+        log_debug("Recording system metrics: {} ms snapshot", snapshot.timestamp)
+        self.system_metrics.push(snapshot)
+    }
+
+    // ========================================================================
+    // Generate Summary Statistics
+    // ========================================================================
+
+    on finalize() -> SummaryStats {
+        log_info("Finalizing metrics collection...")
+
+        let mut summary = SummaryStats {
+            total_bytes_transferred: 0,
+            total_duration_ms: 0,
+            avg_throughput_mbps: 0.0,
+            peak_throughput_mbps: 0.0,
+            min_throughput_mbps: f64::MAX,
+            success_rate: 0.0,
+            lanes_used: Vec::new(),
+            avg_latency_ms: 0,
+            packet_loss_percent: 0.0,
+        }
+
+        // Calculate from transfer metrics
+        if !self.transfer_metrics.is_empty() {
+            let total_transfers = self.transfer_metrics.len() as f64
+            let successful = self.transfer_metrics.iter()
+                .filter(|m| m.success)
+                .count() as f64
+
+            summary.success_rate = (successful / total_transfers) * 100.0
+            summary.total_bytes_transferred = self.transfer_metrics.iter()
+                .map(|m| m.bytes_transferred)
+                .sum()
+            summary.total_duration_ms = self.transfer_metrics.iter()
+                .map(|m| m.duration_ms)
+                .max()
+                .unwrap_or(0)
+
+            // Calculate throughput statistics
+            let mut throughputs = Vec::new()
+            for metric in &self.transfer_metrics {
+                throughputs.push(metric.throughput_mbps)
+                summary.peak_throughput_mbps = summary.peak_throughput_mbps.max(metric.throughput_mbps)
+                summary.min_throughput_mbps = summary.min_throughput_mbps.min(metric.throughput_mbps)
+            }
+
+            if !throughputs.is_empty() {
+                summary.avg_throughput_mbps = throughputs.iter().sum::<f64>() / throughputs.len() as f64
+            }
+        }
+
+        // Calculate from lane metrics
+        if !self.lane_metrics.is_empty() {
+            let mut lanes_seen = Map::new()
+            let mut total_latency = 0u64
+            let mut total_packets_lost = 0u64
+            let mut total_packets = 0u64
+
+            for lane in &self.lane_metrics {
+                lanes_seen.insert(lane.lane_id.clone(), true)
+                total_latency += lane.latency_avg_ms
+                total_packets_lost += lane.packets_lost
+                total_packets += lane.packets_sent + lane.packets_lost
+            }
+
+            summary.lanes_used = lanes_seen.keys()
+            summary.avg_latency_ms = if !self.lane_metrics.is_empty() {
+                total_latency / self.lane_metrics.len() as u64
+            } else {
+                0
+            }
+            summary.packet_loss_percent = if total_packets > 0 {
+                (total_packets_lost as f64 / total_packets as f64) * 100.0
+            } else {
+                0.0
+            }
+        }
+
+        log_info("Metrics finalized:")
+        log_info("  Total bytes: {}", summary.total_bytes_transferred)
+        log_info("  Duration: {} ms", summary.total_duration_ms)
+        log_info("  Avg throughput: {:.2} Mbps", summary.avg_throughput_mbps)
+        log_info("  Peak throughput: {:.2} Mbps", summary.peak_throughput_mbps)
+        log_info("  Success rate: {:.1}%", summary.success_rate)
+        log_info("  Lanes used: {}", summary.lanes_used.join(", "))
+        log_info("  Avg latency: {} ms", summary.avg_latency_ms)
+        log_info("  Packet loss: {:.2}%", summary.packet_loss_percent)
+
+        summary
+    }
+
+    // ========================================================================
+    // Report Generation
+    // ========================================================================
+
+    on generate_report() -> TestReport {
+        log_info("Generating test report...")
+
+        let summary = self.finalize()
+
+        let mut report = TestReport {
+            test_id: self.test_id.clone(),
+            generated_at: Timestamp::now(),
+            summary: summary.clone(),
+            transfers: self.transfer_metrics.clone(),
+            lanes: self.lane_metrics.clone(),
+            system_snapshots: self.system_metrics.clone(),
+        }
+
+        // Generate HTML report
+        let html = self.generate_html_report(&report)
+        report.html_content = Some(html)
+
+        // Generate JSON report
+        let json = self.generate_json_report(&report)
+        report.json_content = Some(json)
+
+        log_info("✅ Report generated")
+        report
+    }
+
+    fn generate_html_report(report: &TestReport) -> String {
+        let html = format!(r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TransferDaemon Test Report - {}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        h1 {{ color: #333; }}
+        .success {{ color: #0a0; font-weight: bold; }}
+        .failed {{ color: #a00; font-weight: bold; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #4CAF50; color: white; }}
+        .metric {{ font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <h1>TransferDaemon Real Internet Transfer Test Report</h1>
+    <p><strong>Test ID:</strong> {}</p>
+    <p><strong>Generated:</strong> {}</p>
+
+    <h2>Summary Statistics</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Success Rate</td><td class="metric">{:.1}%</td></tr>
+        <tr><td>Total Bytes Transferred</td><td class="metric">{}</td></tr>
+        <tr><td>Total Duration</td><td class="metric">{} ms</td></tr>
+        <tr><td>Average Throughput</td><td class="metric">{:.2} Mbps</td></tr>
+        <tr><td>Peak Throughput</td><td class="metric">{:.2} Mbps</td></tr>
+        <tr><td>Minimum Throughput</td><td class="metric">{:.2} Mbps</td></tr>
+        <tr><td>Average Latency</td><td class="metric">{} ms</td></tr>
+        <tr><td>Packet Loss</td><td class="metric">{:.2}%</td></tr>
+        <tr><td>Lanes Used</td><td class="metric">{}</td></tr>
+    </table>
+
+    <h2>Transfer Details</h2>
+    <table>
+        <tr>
+            <th>Transfer ID</th>
+            <th>Source</th>
+            <th>Destination</th>
+            <th>Size</th>
+            <th>Duration</th>
+            <th>Throughput</th>
+            <th>Status</th>
+        </tr>
+"#,
+            report.test_id,
+            report.test_id,
+            report.generated_at,
+            report.summary.success_rate,
+            format_bytes(report.summary.total_bytes_transferred),
+            report.summary.total_duration_ms,
+            report.summary.avg_throughput_mbps,
+            report.summary.peak_throughput_mbps,
+            report.summary.min_throughput_mbps,
+            report.summary.avg_latency_ms,
+            report.summary.packet_loss_percent,
+            report.summary.lanes_used.join(", ")
+        )
+
+        // Add transfer details
+        for transfer in &report.transfers {
+            let html_row = format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{} ms</td><td>{:.2} Mbps</td><td><span class='{}'>{}</span></td></tr>",
+                transfer.transfer_id,
+                transfer.source_node,
+                transfer.dest_node,
+                format_bytes(transfer.file_size_bytes),
+                transfer.duration_ms,
+                transfer.throughput_mbps,
+                if transfer.success { "success" } else { "failed" },
+                if transfer.success { "✅ PASS" } else { "❌ FAIL" }
+            )
+            html.push_str(&html_row)
+        }
+
+        html.push_str("</table></body></html>")
+        html
+    }
+
+    fn generate_json_report(report: &TestReport) -> String {
+        // Generate JSON representation of report
+        format!(r#"{{
+  "test_id": "{}",
+  "generated_at": "{}",
+  "summary": {{
+    "success_rate": {:.1},
+    "total_bytes": {},
+    "total_duration_ms": {},
+    "avg_throughput_mbps": {:.2},
+    "peak_throughput_mbps": {:.2},
+    "avg_latency_ms": {},
+    "packet_loss_percent": {:.2}
+  }},
+  "transfer_count": {}
+}}"#,
+            report.test_id,
+            report.generated_at,
+            report.summary.success_rate,
+            report.summary.total_bytes_transferred,
+            report.summary.total_duration_ms,
+            report.summary.avg_throughput_mbps,
+            report.summary.peak_throughput_mbps,
+            report.summary.avg_latency_ms,
+            report.summary.packet_loss_percent,
+            report.transfers.len()
+        )
+    }
+}
+
+// ============================================================================
+// Supporting Types
+// ============================================================================
+
+pub struct SystemMetricsSnapshot {
+    pub timestamp: u64,
+    pub cpu_percent: f32,
+    pub memory_used_mb: u32,
+    pub memory_available_mb: u32,
+    pub disk_used_gb: u64,
+    pub network_throughput_mbps: f64,
+}
+
+pub struct TestReport {
+    pub test_id: String,
+    pub generated_at: Timestamp,
+    pub summary: SummaryStats,
+    pub transfers: Vec<TransferMetrics>,
+    pub lanes: Vec<LaneStats>,
+    pub system_snapshots: Vec<SystemMetricsSnapshot>,
+    pub html_content: Option<String>,
+    pub json_content: Option<String>,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+fn log_info(msg: &str, args: ...) {
+    println!("[MetricsCollector] {}", format!(msg, args))
+}
+
+fn log_debug(msg: &str, args: ...) {
+    // Only log in debug mode
+    if cfg!(debug_assertions) {
+        println!("[MetricsCollector DEBUG] {}", format!(msg, args))
+    }
+}

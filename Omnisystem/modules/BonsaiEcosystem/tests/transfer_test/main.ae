@@ -1,0 +1,191 @@
+// TransferDaemon P2P Real Internet Test – Main Entry Point (Aether)
+// Real network test with two Sanctum vault nodes
+
+module transfer_test::main
+
+use core::string::{String, format}
+use core::vec::Vec
+use core::time::Timestamp
+use sanctum::vault::SanctumVault
+use sanctum::capability::Capability
+use transfer_test::types::*
+use transfer_test::orchestrator::TransferTestOrchestrator
+use transfer_test::config::TestConfiguration
+
+// ============================================================================
+// Main Test Runner
+// ============================================================================
+
+async fn main() {
+    println!("╔════════════════════════════════════════════════════════════════════════════╗")
+    println!("║        TransferDaemon P2P Real Internet Transfer Test                     ║")
+    println!("║     Testing multi-path bonding, NAT traversal, and file integrity         ║")
+    println!("╚════════════════════════════════════════════════════════════════════════════╝")
+    println!()
+
+    // Load configuration from environment and files
+    let config = match TestConfiguration::load_from_env() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e)
+            return
+        }
+    }
+
+    println!("Configuration loaded:")
+    println!("  Node A: {} ({}:{})", config.node_a.name, config.node_a.address, config.node_a.port)
+    println!("  Node B: {} ({}:{})", config.node_b.name, config.node_b.address, config.node_b.port)
+    println!("  File size: {} MB", config.file_size_mb)
+    println!("  Multi-path: {}", config.multi_path_enabled)
+    println!("  Encryption: {}", config.encryption_enabled)
+    println!()
+
+    // Create test config
+    let mut test_config = TestConfig::new("Real-Internet-P2P-Transfer".to_string())
+    test_config.source_node_id = config.node_a.id.clone()
+    test_config.dest_node_id = config.node_b.id.clone()
+    test_config.source_address = config.node_a.address.clone()
+    test_config.source_api_port = config.node_a.port
+    test_config.dest_address = config.node_b.address.clone()
+    test_config.dest_api_port = config.node_b.port
+    test_config.file_size_mb = config.file_size_mb
+    test_config.multi_path_enabled = config.multi_path_enabled
+    test_config.encryption_enabled = config.encryption_enabled
+    test_config.verify_integrity = true
+
+    // Load capability token from environment
+    let capability = match std::env::var("FTDAEMON_CAPABILITY_TOKEN") {
+        Ok(token) => Capability::from_token(&token),
+        Err(_) => {
+            println!("⚠️  No capability token found, using default system capability")
+            Capability::system()
+        }
+    }
+
+    // Create and run test orchestrator
+    let orchestrator = TransferTestOrchestrator::create(test_config, capability)
+    println!("Running test orchestrator...")
+    println!()
+
+    let results = orchestrator.run().await
+
+    // Print results
+    println!()
+    println!("╔════════════════════════════════════════════════════════════════════════════╗")
+    println!("║                         TEST RESULTS                                       ║")
+    println!("╚════════════════════════════════════════════════════════════════════════════╝")
+    println!()
+
+    if results.passed {
+        println!("✅ TEST PASSED")
+    } else {
+        println!("❌ TEST FAILED")
+        if let Some(reason) = &results.failed_reason {
+            println!("Reason: {}", reason)
+        }
+    }
+
+    println!()
+    println!("Test Duration: {} ms", results.total_duration_ms)
+    println!("Total Bytes Transferred: {}", format_bytes(results.summary_stats.total_bytes_transferred))
+    println!("Average Throughput: {:.2} Mbps", results.summary_stats.avg_throughput_mbps)
+    println!("Peak Throughput: {:.2} Mbps", results.summary_stats.peak_throughput_mbps)
+    println!("Average Latency: {} ms", results.summary_stats.avg_latency_ms)
+    println!("Packet Loss: {:.2}%", results.summary_stats.packet_loss_percent)
+    println!("Lanes Used: {}", results.summary_stats.lanes_used.join(", "))
+    println!()
+
+    if !results.transfer_metrics.is_empty() {
+        println!("Transfer Details:")
+        for (i, metrics) in results.transfer_metrics.iter().enumerate() {
+            println!("  Transfer {}: {} {} → {}",
+                i + 1,
+                if metrics.success { "✅" } else { "❌" },
+                metrics.source_node,
+                metrics.dest_node)
+            println!("    File: {} ({} MB)", metrics.file_path, metrics.file_size_bytes / (1024 * 1024))
+            println!("    Duration: {} ms, Throughput: {:.2} Mbps", metrics.duration_ms, metrics.throughput_mbps)
+            println!("    Source hash: {}", &metrics.source_hash[0..16])
+            println!("    Dest hash: {}", &metrics.dest_hash[0..16])
+            println!("    Hash verified: {}", metrics.hash_verified)
+        }
+    }
+
+    println!()
+    println!("Test completed at: {}", Timestamp::now())
+    println!()
+
+    // Exit with appropriate code
+    if results.passed {
+        std::process::exit(0)
+    } else {
+        std::process::exit(1)
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+// ============================================================================
+// Integration with UVM (Universal Validation Mesh)
+// ============================================================================
+
+// Register this test with UVM for continuous testing
+pub async fn register_with_uvm(uvm_endpoint: &str, capability: Capability) -> Result<(), String> {
+    println!("Registering test with UVM: {}", uvm_endpoint)
+
+    let test_spec = UVMTestSpec {
+        test_name: "TransferDaemon-Real-Internet-P2P".to_string(),
+        test_id: format!("td-p2p-{}", Timestamp::now()),
+        description: "Real internet file transfer test between two Sanctum vault nodes".to_string(),
+        module: "transfer_test::main".to_string(),
+        frequency: "nightly".to_string(),
+        timeout_seconds: 600,
+        required_resources: vec![
+            "node_a_vm".to_string(),
+            "node_b_vm".to_string(),
+            "public_internet".to_string(),
+        ],
+    }
+
+    // Send registration to UVM
+    match register_test(&test_spec, uvm_endpoint, capability).await {
+        Ok(_) => {
+            println!("✅ Test registered with UVM")
+            Ok(())
+        }
+        Err(e) => {
+            println!("⚠️  Failed to register with UVM: {}", e)
+            Err(e)
+        }
+    }
+}
+
+pub struct UVMTestSpec {
+    pub test_name: String,
+    pub test_id: String,
+    pub description: String,
+    pub module: String,
+    pub frequency: String,
+    pub timeout_seconds: u64,
+    pub required_resources: Vec<String>,
+}
+
+async fn register_test(spec: &UVMTestSpec, endpoint: &str, cap: Capability) -> Result<(), String> {
+    // This would call UVM API to register the test
+    // For now, it's a placeholder
+    Ok(())
+}

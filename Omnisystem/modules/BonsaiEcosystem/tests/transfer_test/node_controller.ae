@@ -1,0 +1,442 @@
+// TransferDaemon Node Controller (Aether)
+// Manages individual test node operations (file generation, hash computation, transfers)
+
+module transfer_test::node_controller
+
+use core::string::{String, format}
+use core::vec::Vec
+use core::option::Option
+use core::time::{sleep_ms, now}
+use sanctum::capability::{Capability, RemoteCall}
+use transfer_test::types::*
+
+// ============================================================================
+// Node Controller Actor
+// ============================================================================
+
+actor NodeController {
+    var node_id: String
+    var address: String
+    var api_port: u16
+    var peer_id: Option<String> = None
+    var discovered_peers: Vec<PeerInfo> = Vec::new()
+    var active_transfers: Vec<TransferStatus> = Vec::new()
+
+    on create(node_id: String, address: String, api_port: u16) {
+        this.node_id = node_id
+        this.address = address
+        this.api_port = api_port
+    }
+
+    // ========================================================================
+    // Connection Management
+    // ========================================================================
+
+    async on connect(
+        node_id: String,
+        address: String,
+        api_port: u16,
+        cap: Capability
+    ) -> Result<NodeController, String> {
+        log_info("Connecting to node: {} at {}:{}", node_id, address, api_port)
+
+        // Verify connectivity by calling health check
+        let health_call = RemoteCall::new(&cap)
+            .target(&address, api_port)
+            .method("health_check")
+            .call()
+            .await
+
+        match health_call {
+            Ok(_) => {
+                log_info("✅ Connected to node {}", node_id)
+                Ok(NodeController::new(node_id, address, api_port))
+            }
+            Err(e) => {
+                log_error("Failed to connect to node: {}", e)
+                Err(format!("Connection failed: {}", e))
+            }
+        }
+    }
+
+    // ========================================================================
+    // Peer ID Management
+    // ========================================================================
+
+    async on get_peer_id(&mut self) -> Result<String, String> {
+        if let Some(id) = self.peer_id.as_ref() {
+            return Ok(id.clone())
+        }
+
+        log_info("Fetching peer ID from node {}...", self.node_id)
+
+        // Call TransferDaemon API to get peer ID
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.get_peer_id")
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let peer_id = response.as_string()
+                self.peer_id = Some(peer_id.clone())
+                log_info("Node {} peer ID: {}", self.node_id, peer_id)
+                Ok(peer_id)
+            }
+            Err(e) => {
+                log_error("Failed to get peer ID: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    // ========================================================================
+    // Peer Discovery
+    // ========================================================================
+
+    async on list_peers(&self) -> Result<Vec<PeerInfo>, String> {
+        log_info("Listing discovered peers for node {}...", self.node_id)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.list_peers")
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let peers = response.as_peer_list()
+                log_info("Found {} peers", peers.len())
+                Ok(peers)
+            }
+            Err(e) => {
+                log_error("Failed to list peers: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on wait_for_peer(&mut self, target_peer_id: &str, timeout_secs: u64) -> Result<bool, String> {
+        log_info("Waiting for peer {} (timeout: {}s)...", target_peer_id, timeout_secs)
+
+        let start = now()
+        let timeout_ms = timeout_secs * 1000
+
+        loop {
+            let elapsed = now() - start
+            if elapsed > timeout_ms {
+                log_error("Peer discovery timeout for {}", target_peer_id)
+                return Ok(false)
+            }
+
+            match self.list_peers().await {
+                Ok(peers) => {
+                    if peers.iter().any(|p| p.peer_id == target_peer_id) {
+                        log_info("✅ Discovered peer: {}", target_peer_id)
+                        self.discovered_peers = peers
+                        return Ok(true)
+                    }
+                }
+                Err(e) => {
+                    log_error("Error listing peers: {}", e)
+                }
+            }
+
+            sleep_ms(1000)
+        }
+    }
+
+    // ========================================================================
+    // File Operations
+    // ========================================================================
+
+    async on generate_test_file(&self, size_mb: u64) -> Result<String, String> {
+        log_info("Generating {} MB test file on node {}...", size_mb, self.node_id)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("ftdaemon.generate_test_file")
+            .param("size_mb", size_mb)
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let path = response.as_string()
+                log_info("✅ Test file generated: {} ({} MB)", path, size_mb)
+                Ok(path)
+            }
+            Err(e) => {
+                log_error("Failed to generate test file: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on compute_hash(&self, file_path: &str) -> Result<String, String> {
+        log_info("Computing BLAKE3 hash for: {}", file_path)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("ftdaemon.compute_hash")
+            .param("path", file_path)
+            .param("algorithm", "blake3")
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let hash = response.as_string()
+                log_info("Hash computed: {}", hash)
+                Ok(hash)
+            }
+            Err(e) => {
+                log_error("Failed to compute hash: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on delete_file(&self, file_path: &str) -> Result<(), String> {
+        log_info("Deleting file: {}", file_path)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("ftdaemon.delete_file")
+            .param("path", file_path)
+            .call()
+            .await
+
+        match call {
+            Ok(_) => {
+                log_info("File deleted: {}", file_path)
+                Ok(())
+            }
+            Err(e) => {
+                log_error("Failed to delete file: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    // ========================================================================
+    // Transfer Operations
+    // ========================================================================
+
+    async on start_transfer(
+        &mut self,
+        local_path: String,
+        remote_peer_id: String,
+        remote_path: String,
+        multi_path_enabled: bool,
+        encryption_enabled: bool
+    ) -> Result<String, String> {
+        log_info("Starting transfer from node {}...", self.node_id)
+        log_info("  Source: {}", local_path)
+        log_info("  Destination peer: {}", remote_peer_id)
+        log_info("  Destination path: {}", remote_path)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.start_p2p_transfer")
+            .param("local_path", &local_path)
+            .param("remote_peer_id", &remote_peer_id)
+            .param("remote_path", &remote_path)
+            .param("multi_path", multi_path_enabled)
+            .param("encryption", encryption_enabled)
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let transfer_id = response.as_string()
+                log_info("✅ Transfer initiated: {}", transfer_id)
+                Ok(transfer_id)
+            }
+            Err(e) => {
+                log_error("Failed to start transfer: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on get_transfer_status(&self, transfer_id: &str) -> Result<TransferStatus, String> {
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.get_status")
+            .param("transfer_id", transfer_id)
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let status = response.as_transfer_status()
+                Ok(status)
+            }
+            Err(e) => {
+                log_error("Failed to get transfer status: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    // ========================================================================
+    // Network Diagnostics
+    // ========================================================================
+
+    async on get_network_metrics(&self) -> Result<NetworkMetrics, String> {
+        log_info("Fetching network metrics for node {}...", self.node_id)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.get_network_metrics")
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let metrics = response.as_network_metrics()
+                Ok(metrics)
+            }
+            Err(e) => {
+                log_error("Failed to get network metrics: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on get_lane_status(&self, lane_id: &str) -> Result<LaneStats, String> {
+        log_info("Getting lane status: {}", lane_id)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("transfer.get_lane_status")
+            .param("lane_id", lane_id)
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let stats = response.as_lane_stats()
+                Ok(stats)
+            }
+            Err(e) => {
+                log_error("Failed to get lane status: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    // ========================================================================
+    // Node Status
+    // ========================================================================
+
+    async on get_node_status(&self) -> Result<NodeStatus, String> {
+        log_info("Getting status for node {}...", self.node_id)
+
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("node.status")
+            .call()
+            .await
+
+        match call {
+            Ok(response) => {
+                let status = response.as_node_status()
+                Ok(status)
+            }
+            Err(e) => {
+                log_error("Failed to get node status: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    async on health_check(&self) -> Result<bool, String> {
+        let call = RemoteCall::new(&default_capability())
+            .target(&self.address, self.api_port)
+            .method("health")
+            .call()
+            .await
+
+        match call {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                log_error("Health check failed: {}", e)
+                Err(e)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Supporting Types
+// ============================================================================
+
+pub struct NetworkMetrics {
+    pub interface: String,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub packets_in: u64,
+    pub packets_out: u64,
+    pub latency_ms: u64,
+    pub bandwidth_mbps: f64,
+}
+
+pub struct NodeStatus {
+    pub node_id: String,
+    pub uptime_seconds: u64,
+    pub memory_used_mb: u32,
+    pub cpu_percent: f32,
+    pub disk_free_gb: u64,
+    pub active_transfers: u32,
+    pub discovered_peers: u32,
+    pub version: String,
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn default_capability() -> Capability {
+    Capability::system()
+}
+
+fn log_info(msg: &str, args: ...) {
+    println!("[NodeController] {}", format!(msg, args))
+}
+
+fn log_error(msg: &str, args: ...) {
+    eprintln!("[NodeController] {}", format!(msg, args))
+}
+
+// Response parsing helpers (would be implemented by RemoteCall response)
+impl RemoteCallResponse {
+    fn as_string(&self) -> String {
+        // Parse response as string
+        self.body.parse()
+    }
+
+    fn as_peer_list(&self) -> Vec<PeerInfo> {
+        // Parse response as peer list (JSON or binary)
+        self.body.parse_json()
+    }
+
+    fn as_transfer_status(&self) -> TransferStatus {
+        // Parse response as transfer status
+        self.body.parse_json()
+    }
+
+    fn as_network_metrics(&self) -> NetworkMetrics {
+        self.body.parse_json()
+    }
+
+    fn as_lane_stats(&self) -> LaneStats {
+        self.body.parse_json()
+    }
+
+    fn as_node_status(&self) -> NodeStatus {
+        self.body.parse_json()
+    }
+}

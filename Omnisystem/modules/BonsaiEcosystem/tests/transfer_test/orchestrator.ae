@@ -1,0 +1,501 @@
+// TransferDaemon P2P Test Orchestrator (Aether)
+// Coordinates real internet file transfer between two Sanctum vault nodes
+
+module transfer_test::orchestrator
+
+use core::time::{sleep_ms, now, Timestamp}
+use core::string::{String, format}
+use core::vec::Vec
+use core::option::Option
+use sanctum::capability::{Capability, DerivedCapability}
+use transfer_test::types::*
+use transfer_test::node_controller::NodeController
+use transfer_test::metrics_collector::MetricsCollector
+
+// ============================================================================
+// Main Test Orchestrator Actor
+// ============================================================================
+
+actor TransferTestOrchestrator {
+    var test_id: String
+    var test_config: TestConfig
+    var node_a: Option<NodeController>
+    var node_b: Option<NodeController>
+    var metrics_collector: Option<MetricsCollector>
+    var test_results: TestResults
+    var is_running: bool = false
+
+    on create(config: TestConfig, cap: Capability) {
+        this.test_config = config
+        this.test_id = format!("test-{}-{}", config.test_name, now())
+        this.test_results = TestResults {
+            test_id: this.test_id.clone(),
+            test_config: config.clone(),
+            start_time: Timestamp::now(),
+            end_time: Timestamp::now(),
+            total_duration_ms: 0,
+            transfer_metrics: Vec::new(),
+            passed: false,
+            failed_reason: None,
+            summary_stats: SummaryStats::default(),
+        }
+    }
+
+    // ========================================================================
+    // Initialize Nodes
+    // ========================================================================
+
+    async on initialize_nodes(cap: Capability) -> bool {
+        log_info("Initializing test nodes...")
+
+        // Derive capabilities for each node
+        let cap_a = cap.derive(&format!("node-{}", self.test_config.source_node_id))
+        let cap_b = cap.derive(&format!("node-{}", self.test_config.dest_node_id))
+
+        // Create node controllers
+        let node_a_result = NodeController::connect(
+            self.test_config.source_node_id.clone(),
+            self.test_config.source_address.clone(),
+            self.test_config.source_api_port,
+            cap_a
+        ).await
+
+        let node_b_result = NodeController::connect(
+            self.test_config.dest_node_id.clone(),
+            self.test_config.dest_address.clone(),
+            self.test_config.dest_api_port,
+            cap_b
+        ).await
+
+        match (node_a_result, node_b_result) {
+            (Ok(a), Ok(b)) => {
+                self.node_a = Some(a)
+                self.node_b = Some(b)
+                self.metrics_collector = Some(MetricsCollector::new(self.test_id.clone()))
+                log_info("✅ Both nodes connected successfully")
+                true
+            }
+            (Err(e), _) => {
+                log_error("Failed to connect to node A: {}", e)
+                self.test_results.failed_reason = Some(format!("Node A connection failed: {}", e))
+                false
+            }
+            (_, Err(e)) => {
+                log_error("Failed to connect to node B: {}", e)
+                self.test_results.failed_reason = Some(format!("Node B connection failed: {}", e))
+                false
+            }
+        }
+    }
+
+    // ========================================================================
+    // Peer Discovery
+    // ========================================================================
+
+    async on discover_peers() -> bool {
+        log_info("Discovering peers...")
+
+        let node_a = match self.node_a.as_ref() {
+            Some(n) => n,
+            None => {
+                log_error("Node A not initialized")
+                return false
+            }
+        }
+
+        let node_b = match self.node_b.as_ref() {
+            Some(n) => n,
+            None => {
+                log_error("Node B not initialized")
+                return false
+            }
+        }
+
+        // Get peer IDs
+        let peer_id_a = match node_a.get_peer_id().await {
+            Ok(id) => id,
+            Err(e) => {
+                log_error("Failed to get peer ID for node A: {}", e)
+                return false
+            }
+        }
+
+        let peer_id_b = match node_b.get_peer_id().await {
+            Ok(id) => id,
+            Err(e) => {
+                log_error("Failed to get peer ID for node B: {}", e)
+                return false
+            }
+        }
+
+        log_info("Node A peer ID: {}", peer_id_a)
+        log_info("Node B peer ID: {}", peer_id_b)
+
+        // Wait for mutual discovery
+        let discover_timeout = 60u64
+        let discovery_a = node_a.wait_for_peer(&peer_id_b, discover_timeout).await
+        let discovery_b = node_b.wait_for_peer(&peer_id_a, discover_timeout).await
+
+        if !discovery_a {
+            log_error("Node A failed to discover node B within {} seconds", discover_timeout)
+            self.test_results.failed_reason = Some("Peer discovery timeout".to_string())
+            return false
+        }
+
+        if !discovery_b {
+            log_error("Node B failed to discover node A within {} seconds", discover_timeout)
+            self.test_results.failed_reason = Some("Peer discovery timeout".to_string())
+            return false
+        }
+
+        log_info("✅ Peers discovered successfully")
+        true
+    }
+
+    // ========================================================================
+    // Generate Test Files
+    // ========================================================================
+
+    async on generate_test_files() -> Result<String, String> {
+        log_info("Generating test files...")
+
+        let node_a = match self.node_a.as_ref() {
+            Some(n) => n,
+            None => return Err("Node A not initialized".to_string())
+        }
+
+        let file_path = match node_a.generate_test_file(self.test_config.file_size_mb).await {
+            Ok(p) => p,
+            Err(e) => {
+                log_error("Failed to generate test file: {}", e)
+                return Err(e)
+            }
+        }
+
+        log_info("✅ Test file generated: {} ({} MB)", file_path, self.test_config.file_size_mb)
+        Ok(file_path)
+    }
+
+    // ========================================================================
+    // Compute File Hash
+    // ========================================================================
+
+    async on compute_file_hash(path: &str) -> Result<String, String> {
+        let node_a = match self.node_a.as_ref() {
+            Some(n) => n,
+            None => return Err("Node A not initialized".to_string())
+        }
+
+        match node_a.compute_hash(path).await {
+            Ok(hash) => {
+                log_info("Computed hash for {}: {}", path, hash)
+                Ok(hash)
+            }
+            Err(e) => {
+                log_error("Failed to compute hash: {}", e)
+                Err(e)
+            }
+        }
+    }
+
+    // ========================================================================
+    // Execute Transfer with Multi-Path
+    // ========================================================================
+
+    async on execute_transfer(src_file: &str, dest_peer_id: &str, dest_path: &str) -> Result<TransferStatus, String> {
+        log_info("Initiating multi-path transfer...")
+        log_info("  Source: {}", src_file)
+        log_info("  Destination peer: {}", dest_peer_id)
+        log_info("  Destination path: {}", dest_path)
+        log_info("  Multi-path enabled: {}", self.test_config.multi_path_enabled)
+        log_info("  Encryption enabled: {}", self.test_config.encryption_enabled)
+
+        let node_a = match self.node_a.as_ref() {
+            Some(n) => n,
+            None => return Err("Node A not initialized".to_string())
+        }
+
+        // Start transfer with multi-path
+        let transfer_id = match node_a.start_transfer(
+            src_file.to_string(),
+            dest_peer_id.to_string(),
+            dest_path.to_string(),
+            self.test_config.multi_path_enabled,
+            self.test_config.encryption_enabled
+        ).await {
+            Ok(id) => id,
+            Err(e) => {
+                log_error("Failed to initiate transfer: {}", e)
+                return Err(e)
+            }
+        }
+
+        log_info("Transfer initiated with ID: {}", transfer_id)
+
+        // Monitor transfer progress
+        let transfer_status = self.monitor_transfer(&transfer_id, node_a).await?
+
+        Ok(transfer_status)
+    }
+
+    // ========================================================================
+    // Monitor Transfer Progress
+    // ========================================================================
+
+    async on monitor_transfer(transfer_id: &str, node: &NodeController) -> Result<TransferStatus, String> {
+        log_info("Monitoring transfer: {}", transfer_id)
+
+        let timeout = self.test_config.timeout_seconds
+        let start = now()
+        let mut last_progress: f64 = 0.0
+
+        loop {
+            let elapsed = (now() - start) / 1000
+            if elapsed > timeout {
+                log_error("Transfer timeout after {} seconds", timeout)
+                return Err(format!("Transfer timeout after {} seconds", timeout))
+            }
+
+            let status = match node.get_transfer_status(transfer_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    log_error("Failed to get transfer status: {}", e)
+                    return Err(e)
+                }
+            }
+
+            // Log progress updates
+            if status.progress_percent > last_progress {
+                log_info("Transfer progress: {:.1}% ({}/{} bytes)",
+                    status.progress_percent,
+                    status.bytes_transferred,
+                    status.total_bytes)
+                log_info("  Active lanes: {}", status.active_lanes.join(", "))
+                last_progress = status.progress_percent
+            }
+
+            match status.state {
+                TransferState::Completed => {
+                    log_info("✅ Transfer completed!")
+                    return Ok(status)
+                }
+                TransferState::Failed => {
+                    let error = status.error.unwrap_or("Unknown error".to_string())
+                    log_error("❌ Transfer failed: {}", error)
+                    return Err(format!("Transfer failed: {}", error))
+                }
+                TransferState::Cancelled => {
+                    log_error("❌ Transfer cancelled")
+                    return Err("Transfer cancelled".to_string())
+                }
+                _ => {
+                    sleep_ms(1000)
+                    continue
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Verify Integrity
+    // ========================================================================
+
+    async on verify_integrity(src_hash: &str, dst_path: &str) -> Result<bool, String> {
+        if !self.test_config.verify_integrity {
+            log_info("Integrity verification disabled")
+            return Ok(true)
+        }
+
+        log_info("Verifying file integrity...")
+
+        let node_b = match self.node_b.as_ref() {
+            Some(n) => n,
+            None => return Err("Node B not initialized".to_string())
+        }
+
+        let dst_hash = match node_b.compute_hash(dst_path).await {
+            Ok(h) => h,
+            Err(e) => {
+                log_error("Failed to compute destination hash: {}", e)
+                return Err(e)
+            }
+        }
+
+        if src_hash == &dst_hash {
+            log_info("✅ Hash verification passed! {}", src_hash)
+            Ok(true)
+        } else {
+            log_error("❌ Hash mismatch!")
+            log_error("  Source hash:      {}", src_hash)
+            log_error("  Destination hash: {}", dst_hash)
+            Err("Hash mismatch".to_string())
+        }
+    }
+
+    // ========================================================================
+    // Collect Metrics
+    // ========================================================================
+
+    async on collect_final_metrics() -> SummaryStats {
+        match self.metrics_collector.as_ref() {
+            Some(collector) => collector.finalize(),
+            None => SummaryStats::default()
+        }
+    }
+
+    // ========================================================================
+    // Run Complete Test
+    // ========================================================================
+
+    async on run() -> TestResults {
+        log_info("=" * 80)
+        log_info("Starting TransferDaemon P2P Real Internet Test")
+        log_info("Test ID: {}", self.test_id)
+        log_info("=" * 80)
+
+        self.is_running = true
+        self.test_results.start_time = Timestamp::now()
+
+        // Step 1: Initialize nodes
+        if !self.initialize_nodes(default_capability()).await {
+            self.test_results.passed = false
+            self.test_results.end_time = Timestamp::now()
+            return self.test_results.clone()
+        }
+
+        sleep_ms(1000)
+
+        // Step 2: Discover peers
+        if !self.discover_peers().await {
+            self.test_results.passed = false
+            self.test_results.end_time = Timestamp::now()
+            return self.test_results.clone()
+        }
+
+        sleep_ms(1000)
+
+        // Step 3: Generate test file
+        let src_file = match self.generate_test_files().await {
+            Ok(f) => f,
+            Err(e) => {
+                self.test_results.failed_reason = Some(e)
+                self.test_results.passed = false
+                self.test_results.end_time = Timestamp::now()
+                return self.test_results.clone()
+            }
+        }
+
+        // Step 4: Compute source hash
+        let src_hash = match self.compute_file_hash(&src_file).await {
+            Ok(h) => h,
+            Err(e) => {
+                self.test_results.failed_reason = Some(e)
+                self.test_results.passed = false
+                self.test_results.end_time = Timestamp::now()
+                return self.test_results.clone()
+            }
+        }
+
+        // Step 5: Execute transfer
+        let dest_peer_id = match self.node_b.as_ref() {
+            Some(n) => match n.get_peer_id().await {
+                Ok(id) => id,
+                Err(e) => {
+                    self.test_results.failed_reason = Some(format!("Failed to get peer ID: {}", e))
+                    self.test_results.passed = false
+                    self.test_results.end_time = Timestamp::now()
+                    return self.test_results.clone()
+                }
+            }
+            None => {
+                self.test_results.failed_reason = Some("Node B not initialized".to_string())
+                self.test_results.passed = false
+                self.test_results.end_time = Timestamp::now()
+                return self.test_results.clone()
+            }
+        }
+
+        let dst_path = "/tmp/ftdaemon_test_received.bin"
+        let transfer_result = self.execute_transfer(&src_file, &dest_peer_id, dst_path).await
+
+        match transfer_result {
+            Ok(status) => {
+                // Step 6: Verify integrity
+                match self.verify_integrity(&src_hash, dst_path).await {
+                    Ok(verified) => {
+                        if verified {
+                            log_info("✅ Test PASSED - File transferred and verified")
+                            self.test_results.passed = true
+                        } else {
+                            log_error("❌ Test FAILED - Hash verification failed")
+                            self.test_results.passed = false
+                            self.test_results.failed_reason = Some("Hash mismatch".to_string())
+                        }
+                    }
+                    Err(e) => {
+                        log_error("❌ Test FAILED - {}", e)
+                        self.test_results.passed = false
+                        self.test_results.failed_reason = Some(e)
+                    }
+                }
+
+                // Record metrics
+                let mut metrics = TransferMetrics::new(
+                    self.test_id.clone(),
+                    self.test_config.source_node_id.clone(),
+                    self.test_config.dest_node_id.clone(),
+                    self.test_config.file_size_mb * 1024 * 1024
+                )
+                metrics.file_path = src_file
+                metrics.source_hash = src_hash
+                metrics.dest_hash = "computed".to_string()
+                metrics.transfer_id = status.transfer_id
+                metrics.bytes_transferred = status.bytes_transferred
+                metrics.success = self.test_results.passed
+                self.test_results.transfer_metrics.push(metrics)
+            }
+            Err(e) => {
+                log_error("❌ Test FAILED - {}", e)
+                self.test_results.passed = false
+                self.test_results.failed_reason = Some(e)
+            }
+        }
+
+        // Step 7: Cleanup
+        log_info("Cleaning up test files...")
+        if let Some(node_a) = self.node_a.as_ref() {
+            let _ = node_a.delete_file(&src_file).await
+        }
+        if let Some(node_b) = self.node_b.as_ref() {
+            let _ = node_b.delete_file(dst_path).await
+        }
+
+        self.test_results.end_time = Timestamp::now()
+        self.test_results.total_duration_ms = (self.test_results.end_time - self.test_results.start_time) as u64
+
+        log_info("=" * 80)
+        log_info("Test completed: {}", if self.test_results.passed { "✅ PASSED" } else { "❌ FAILED" })
+        log_info("Duration: {} ms", self.test_results.total_duration_ms)
+        log_info("=" * 80)
+
+        self.is_running = false
+        self.test_results.clone()
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn default_capability() -> Capability {
+    // In production, this would be loaded from environment or config
+    Capability::system()
+}
+
+fn log_info(msg: &str, args: ...) {
+    println!("[INFO] {}", format!(msg, args))
+}
+
+fn log_error(msg: &str, args: ...) {
+    eprintln!("[ERROR] {}", format!(msg, args))
+}
