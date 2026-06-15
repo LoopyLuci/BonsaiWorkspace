@@ -1,0 +1,229 @@
+// PHASE 2: TITAN Wrapper Module
+// api-gateway-authentication - Authentication mechanisms and token management
+
+import ull::bridge
+import ull::types
+
+pub struct AuthenticationManager {
+    config: Object
+    cache: TokenCache
+    validator: AuthValidator
+    state: String
+}
+
+pub struct TokenCache {
+    tokens: Object
+    ttl_ms: u64
+}
+
+pub struct AuthValidator {
+    rules: Object
+}
+
+impl AuthenticationManager {
+    pub fn new() -> Self {
+        return AuthenticationManager {
+            config: {},
+            cache: TokenCache::new(300000),
+            validator: AuthValidator::new(),
+            state: "initialized",
+        }
+    }
+
+    pub fn authenticate(
+        mut self: Self,
+        username: String,
+        password: String,
+    ) -> Result[Object] {
+        if username.is_empty() || password.is_empty() {
+            return Err("username and password required")
+        }
+
+        let result = bridge::call_rust("api-gateway-authentication", "authenticate", {
+            "username": username.clone(),
+            "password": password,
+        })?
+
+        // Cache token
+        if let Some(token) = result["token"] {
+            self.cache.set(&username, token)
+        }
+
+        return Ok(result as Object)
+    }
+
+    pub fn validate_token(self: &Self, token: String) -> Result[bool] {
+        if token.is_empty() {
+            return Err("Token required")
+        }
+
+        // Check cache first
+        if let Some(cached_result) = self.cache.get(&token) {
+            return Ok(cached_result as bool)
+        }
+
+        // Call Rust bridge
+        let result = bridge::call_rust("api-gateway-authentication", "validate_token", {
+            "token": token,
+        })?
+
+        return Ok(result as bool)
+    }
+
+    pub fn refresh_token(
+        mut self: Self,
+        token: String,
+    ) -> Result[Object] {
+        if token.is_empty() {
+            return Err("Token required")
+        }
+
+        let result = bridge::call_rust("api-gateway-authentication", "refresh_token", {
+            "token": token.clone(),
+        })?
+
+        // Invalidate old token cache
+        self.cache.invalidate(&token)
+
+        return Ok(result as Object)
+    }
+
+    pub fn revoke_token(
+        mut self: Self,
+        token: String,
+    ) -> Result[bool] {
+        if token.is_empty() {
+            return Err("Token required")
+        }
+
+        let result = bridge::call_rust("api-gateway-authentication", "revoke_token", {
+            "token": token.clone(),
+        })?
+
+        // Remove from cache
+        self.cache.invalidate(&token)
+
+        return Ok(result as bool)
+    }
+
+    pub fn set_mfa(
+        mut self: Self,
+        user_id: String,
+        method: String,
+    ) -> Result[Object] {
+        if user_id.is_empty() || method.is_empty() {
+            return Err("user_id and method required")
+        }
+
+        let result = bridge::call_rust("api-gateway-authentication", "set_mfa", {
+            "user_id": user_id,
+            "method": method,
+        })?
+
+        return Ok(result as Object)
+    }
+
+    pub fn verify_mfa(
+        self: &Self,
+        user_id: String,
+        code: String,
+    ) -> Result[bool] {
+        if user_id.is_empty() || code.is_empty() {
+            return Err("user_id and code required")
+        }
+
+        let result = bridge::call_rust("api-gateway-authentication", "verify_mfa", {
+            "user_id": user_id,
+            "code": code,
+        })?
+
+        return Ok(result as bool)
+    }
+}
+
+impl TokenCache {
+    pub fn new(ttl_ms: u64) -> Self {
+        return TokenCache {
+            tokens: {},
+            ttl_ms: ttl_ms,
+        }
+    }
+
+    pub fn get(self: &Self, key: &String) -> Option[Object] {
+        return self.tokens[key]
+    }
+
+    pub fn set(mut self: Self, key: &String, value: Object) {
+        self.tokens[key] = value
+    }
+
+    pub fn invalidate(mut self: Self, key: &String) {
+        self.tokens.remove(key)
+    }
+}
+
+impl AuthValidator {
+    pub fn new() -> Self {
+        return AuthValidator {
+            rules: {},
+        }
+    }
+
+    pub fn validate_credentials(self: &Self, username: &String, password: &String) -> bool {
+        return !username.is_empty() && !password.is_empty() && password.len() >= 8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_manager_creation() {
+        let manager = AuthenticationManager::new()
+        assert_eq!(manager.state, "initialized")
+    }
+
+    #[test]
+    fn test_authenticate() {
+        let mut manager = AuthenticationManager::new()
+        let result = manager.authenticate("user1", "password123")
+
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_validate_token() {
+        let manager = AuthenticationManager::new()
+        let result = manager.validate_token("valid_token_example")
+
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_refresh_token() {
+        let mut manager = AuthenticationManager::new()
+        let result = manager.refresh_token("old_token")
+
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_set_mfa() {
+        let mut manager = AuthenticationManager::new()
+        let result = manager.set_mfa("user1", "totp")
+
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_token_cache() {
+        let mut cache = TokenCache::new(300000)
+
+        cache.set(&"token1", {})
+        assert!(cache.get(&"token1").is_some())
+
+        cache.invalidate(&"token1")
+        assert!(cache.get(&"token1").is_none())
+    }
+}

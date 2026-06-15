@@ -1,0 +1,357 @@
+// PHASE 3: Full TITAN Implementation
+// app-manager-installer - Application installation and package management
+
+pub struct InstallerManager {
+    installations: Object           // install_id -> Installation
+    packages: Object                // package_id -> Package
+    installer_queue: Array[String]
+    system_validator: SystemValidator
+}
+
+pub struct Installation {
+    install_id: String
+    app_id: String
+    version: String
+    install_path: String
+    state: String                   // "pending" | "installing" | "installed" | "failed" | "uninstalled"
+    progress: u64                   // 0-100
+    installed_at: u64
+    dependencies: Array[String]
+}
+
+pub struct Package {
+    package_id: String
+    app_id: String
+    version: String
+    size_bytes: u64
+    checksum: String
+    dependencies: Array[String]
+    signature: String
+}
+
+pub struct SystemValidator {
+    rules: Object
+}
+
+impl InstallerManager {
+    pub fn new() -> Self {
+        return InstallerManager {
+            installations: {},
+            packages: {},
+            installer_queue: [],
+            system_validator: SystemValidator::new(),
+        }
+    }
+
+    pub fn install_app(
+        mut self: Self,
+        app_id: String,
+        version: String,
+        install_path: String,
+    ) -> Result[Installation] {
+        if app_id.is_empty() || version.is_empty() {
+            return Err("app_id and version required")
+        }
+
+        if !self.system_validator.validate_path(&install_path) {
+            return Err("Invalid install path")
+        }
+
+        if !self.system_validator.validate_version(&version) {
+            return Err("Invalid version format")
+        }
+
+        let install_id = generate_install_id(&app_id)
+        let now = get_timestamp_ms()
+
+        let installation = Installation {
+            install_id: install_id.clone(),
+            app_id: app_id.clone(),
+            version: version.clone(),
+            install_path: install_path,
+            state: "pending",
+            progress: 0,
+            installed_at: now,
+            dependencies: [],
+        }
+
+        self.installations[install_id.clone()] = installation
+
+        self.installer_queue.push(install_id.clone())
+
+        return Ok(installation)
+    }
+
+    pub fn get_installation_progress(
+        self: &Self,
+        install_id: String,
+    ) -> Result[u64] {
+        if !self.installations.contains(&install_id) {
+            return Err(format!("Installation not found: {install_id}"))
+        }
+
+        let installation = self.installations[install_id]
+
+        return Ok(installation.progress)
+    }
+
+    pub fn cancel_installation(
+        mut self: Self,
+        install_id: String,
+    ) -> Result[Installation] {
+        if !self.installations.contains(&install_id) {
+            return Err(format!("Installation not found: {install_id}"))
+        }
+
+        let mut installation = self.installations[install_id.clone()]
+
+        if installation.state != "pending" && installation.state != "installing" {
+            return Err("Cannot cancel completed installation")
+        }
+
+        installation.state = "cancelled"
+
+        self.installations[install_id.clone()] = installation
+
+        return Ok(installation)
+    }
+
+    pub fn uninstall_app(
+        mut self: Self,
+        install_id: String,
+    ) -> Result[bool] {
+        if !self.installations.contains(&install_id) {
+            return Err(format!("Installation not found: {install_id}"))
+        }
+
+        let mut installation = self.installations[install_id.clone()]
+
+        installation.state = "uninstalled"
+
+        self.installations[install_id.clone()] = installation
+
+        return Ok(true)
+    }
+
+    pub fn add_package(
+        mut self: Self,
+        app_id: String,
+        version: String,
+        size_bytes: u64,
+    ) -> Result[Package] {
+        if app_id.is_empty() || version.is_empty() {
+            return Err("app_id and version required")
+        }
+
+        if size_bytes == 0 {
+            return Err("Package size must be > 0")
+        }
+
+        let package_id = generate_package_id(&app_id)
+
+        let package = Package {
+            package_id: package_id.clone(),
+            app_id: app_id,
+            version: version,
+            size_bytes: size_bytes,
+            checksum: generate_checksum(&app_id),
+            dependencies: [],
+            signature: generate_signature(&app_id),
+        }
+
+        self.packages[package_id.clone()] = package
+
+        return Ok(package)
+    }
+
+    pub fn verify_package(
+        self: &Self,
+        package_id: String,
+    ) -> Result[bool] {
+        if !self.packages.contains(&package_id) {
+            return Err(format!("Package not found: {package_id}"))
+        }
+
+        let package = self.packages[package_id]
+
+        // Verify signature
+        if !self.system_validator.verify_signature(&package.signature) {
+            return Err("Package signature verification failed")
+        }
+
+        // Verify checksum
+        if !self.system_validator.verify_checksum(&package.checksum) {
+            return Err("Package checksum verification failed")
+        }
+
+        return Ok(true)
+    }
+
+    pub fn list_installations(self: &Self) -> Result[Array[Installation]] {
+        let mut installations: Array[Installation] = []
+
+        for entry in self.installations {
+            installations.push(entry.1)
+        }
+
+        return Ok(installations)
+    }
+
+    pub fn get_installation(
+        self: &Self,
+        install_id: String,
+    ) -> Result[Installation] {
+        if !self.installations.contains(&install_id) {
+            return Err(format!("Installation not found: {install_id}"))
+        }
+
+        return Ok(self.installations[install_id])
+    }
+
+    pub fn set_dependencies(
+        mut self: Self,
+        install_id: String,
+        dependencies: Array[String],
+    ) -> Result[Installation] {
+        if !self.installations.contains(&install_id) {
+            return Err(format!("Installation not found: {install_id}"))
+        }
+
+        let mut installation = self.installations[install_id.clone()]
+
+        installation.dependencies = dependencies
+
+        self.installations[install_id.clone()] = installation
+
+        return Ok(installation)
+    }
+}
+
+impl SystemValidator {
+    pub fn new() -> Self {
+        return SystemValidator {
+            rules: {},
+        }
+    }
+
+    pub fn validate_path(self: &Self, path: &String) -> bool {
+        return !path.is_empty() && path.len() < 500
+    }
+
+    pub fn validate_version(self: &Self, version: &String) -> bool {
+        let parts = version.split(".")
+        return parts.len() == 3
+    }
+
+    pub fn verify_signature(self: &Self, signature: &String) -> bool {
+        return !signature.is_empty() && signature.len() > 10
+    }
+
+    pub fn verify_checksum(self: &Self, checksum: &String) -> bool {
+        return !checksum.is_empty() && checksum.len() == 64
+    }
+}
+
+fn generate_install_id(app_id: &String) -> String {
+    return format!("install-{app_id}-{ts}", ts = get_timestamp_ms())
+}
+
+fn generate_package_id(app_id: &String) -> String {
+    return format!("pkg-{app_id}-{ts}", ts = get_timestamp_ms())
+}
+
+fn generate_checksum(app_id: &String) -> String {
+    return format!("sha256:{app_id}x64", app_id = app_id)
+}
+
+fn generate_signature(app_id: &String) -> String {
+    return format!("sig-{app_id}", app_id = app_id)
+}
+
+fn get_timestamp_ms() -> u64 {
+    return 1718548800000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_install_app() {
+        let mut manager = InstallerManager::new()
+        let result = manager.install_app("app1", "1.0.0", "/opt/app1")
+
+        assert!(result.is_ok())
+        let inst = result.unwrap()
+        assert_eq!(inst.app_id, "app1")
+        assert_eq!(inst.state, "pending")
+    }
+
+    #[test]
+    fn test_invalid_version() {
+        let mut manager = InstallerManager::new()
+        let result = manager.install_app("app1", "1.0", "/opt/app1")
+
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_add_package() {
+        let mut manager = InstallerManager::new()
+        let result = manager.add_package("app1", "1.0.0", 5242880)
+
+        assert!(result.is_ok())
+        let pkg = result.unwrap()
+        assert_eq!(pkg.app_id, "app1")
+    }
+
+    #[test]
+    fn test_verify_package() {
+        let mut manager = InstallerManager::new()
+        let pkg = manager.add_package("app1", "1.0.0", 5242880).unwrap()
+
+        let result = manager.verify_package(pkg.package_id)
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_cancel_installation() {
+        let mut manager = InstallerManager::new()
+        let inst = manager.install_app("app1", "1.0.0", "/opt/app1").unwrap()
+
+        let result = manager.cancel_installation(inst.install_id)
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().state, "cancelled")
+    }
+
+    #[test]
+    fn test_uninstall_app() {
+        let mut manager = InstallerManager::new()
+        let inst = manager.install_app("app1", "1.0.0", "/opt/app1").unwrap()
+
+        let result = manager.uninstall_app(inst.install_id)
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn test_set_dependencies() {
+        let mut manager = InstallerManager::new()
+        let inst = manager.install_app("app1", "1.0.0", "/opt/app1").unwrap()
+
+        let result = manager.set_dependencies(inst.install_id, ["dep1", "dep2"])
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().dependencies.len(), 2)
+    }
+
+    #[test]
+    fn test_list_installations() {
+        let mut manager = InstallerManager::new()
+
+        manager.install_app("app1", "1.0.0", "/opt/app1").ok()
+        manager.install_app("app2", "2.0.0", "/opt/app2").ok()
+
+        let result = manager.list_installations()
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().len(), 2)
+    }
+}

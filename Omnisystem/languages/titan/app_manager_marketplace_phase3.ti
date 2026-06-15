@@ -1,0 +1,415 @@
+// PHASE 3: Full TITAN Implementation
+// app-manager-marketplace - App marketplace and listing management
+
+pub struct MarketplaceManager {
+    listings: Object                // app_id -> Listing
+    reviews: Object                 // app_id -> Array[Review]
+    ratings: Object                 // app_id -> RatingStats
+    search_index: SearchIndex
+}
+
+pub struct Listing {
+    app_id: String
+    title: String
+    description: String
+    category: String
+    version: String
+    publisher: String
+    price: f64
+    downloads: u64
+    rating: f64
+    verified: bool
+    published_at: u64
+    updated_at: u64
+}
+
+pub struct Review {
+    review_id: String
+    app_id: String
+    user_id: String
+    rating: u64
+    title: String
+    content: String
+    helpful_count: u64
+    created_at: u64
+}
+
+pub struct RatingStats {
+    app_id: String
+    average_rating: f64
+    total_reviews: u64
+    five_star: u64
+    four_star: u64
+    three_star: u64
+    two_star: u64
+    one_star: u64
+}
+
+pub struct SearchIndex {
+    index: Object                   // keyword -> Array[app_id]
+}
+
+impl MarketplaceManager {
+    pub fn new() -> Self {
+        return MarketplaceManager {
+            listings: {},
+            reviews: {},
+            ratings: {},
+            search_index: SearchIndex::new(),
+        }
+    }
+
+    pub fn publish_listing(
+        mut self: Self,
+        app_id: String,
+        title: String,
+        description: String,
+        category: String,
+        version: String,
+        publisher: String,
+    ) -> Result[Listing] {
+        if app_id.is_empty() || title.is_empty() {
+            return Err("app_id and title required")
+        }
+
+        if description.len() < 20 {
+            return Err("Description must be at least 20 characters")
+        }
+
+        let now = get_timestamp_ms()
+
+        let listing = Listing {
+            app_id: app_id.clone(),
+            title: title.clone(),
+            description: description,
+            category: category,
+            version: version,
+            publisher: publisher,
+            price: 0.0,
+            downloads: 0,
+            rating: 0.0,
+            verified: false,
+            published_at: now,
+            updated_at: now,
+        }
+
+        self.listings[app_id.clone()] = listing
+
+        // Index for search
+        self.search_index.add(&app_id, &title)
+
+        return Ok(listing)
+    }
+
+    pub fn get_listing(self: &Self, app_id: String) -> Result[Listing] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        return Ok(self.listings[app_id])
+    }
+
+    pub fn update_listing(
+        mut self: Self,
+        app_id: String,
+        updates: Object,
+    ) -> Result[Listing] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        let mut listing = self.listings[app_id.clone()]
+
+        if let Some(title) = updates["title"] {
+            listing.title = title as String
+        }
+
+        if let Some(desc) = updates["description"] {
+            listing.description = desc as String
+        }
+
+        if let Some(price) = updates["price"] {
+            listing.price = price as f64
+        }
+
+        listing.updated_at = get_timestamp_ms()
+
+        self.listings[app_id.clone()] = listing
+
+        return Ok(listing)
+    }
+
+    pub fn add_review(
+        mut self: Self,
+        app_id: String,
+        user_id: String,
+        rating: u64,
+        content: String,
+    ) -> Result[Review] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        if rating < 1 || rating > 5 {
+            return Err("Rating must be 1-5")
+        }
+
+        if content.len() < 10 {
+            return Err("Review content must be at least 10 characters")
+        }
+
+        let review_id = generate_review_id(&app_id)
+
+        let review = Review {
+            review_id: review_id.clone(),
+            app_id: app_id.clone(),
+            user_id: user_id,
+            rating: rating,
+            title: content.substring(0, 50),
+            content: content,
+            helpful_count: 0,
+            created_at: get_timestamp_ms(),
+        }
+
+        if !self.reviews.contains(&app_id) {
+            self.reviews[app_id.clone()] = []
+        }
+
+        let mut app_reviews = self.reviews[app_id.clone()]
+        app_reviews.push(review.clone())
+        self.reviews[app_id.clone()] = app_reviews
+
+        // Update rating stats
+        self.update_rating_stats(&app_id)
+
+        return Ok(review)
+    }
+
+    pub fn search_apps(
+        self: &Self,
+        query: String,
+    ) -> Result[Array[Listing]] {
+        if query.is_empty() {
+            return Err("Search query required")
+        }
+
+        let mut results: Array[Listing] = []
+
+        for entry in self.listings {
+            let listing = entry.1
+
+            if listing.title.contains(&query) || listing.description.contains(&query) {
+                results.push(listing)
+            }
+        }
+
+        return Ok(results)
+    }
+
+    pub fn get_reviews(
+        self: &Self,
+        app_id: String,
+    ) -> Result[Array[Review]] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        if !self.reviews.contains(&app_id) {
+            return Ok([])
+        }
+
+        return Ok(self.reviews[app_id])
+    }
+
+    pub fn get_rating_stats(
+        self: &Self,
+        app_id: String,
+    ) -> Result[RatingStats] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        if !self.ratings.contains(&app_id) {
+            return Err("No rating stats available")
+        }
+
+        return Ok(self.ratings[app_id])
+    }
+
+    pub fn increment_downloads(
+        mut self: Self,
+        app_id: String,
+    ) -> Result[Listing] {
+        if !self.listings.contains(&app_id) {
+            return Err(format!("Listing not found: {app_id}"))
+        }
+
+        let mut listing = self.listings[app_id.clone()]
+
+        listing.downloads = listing.downloads + 1
+
+        self.listings[app_id.clone()] = listing
+
+        return Ok(listing)
+    }
+
+    fn update_rating_stats(mut self: Self, app_id: &String) {
+        if !self.reviews.contains(app_id) {
+            return
+        }
+
+        let reviews = self.reviews[app_id.clone()]
+
+        let mut stats = RatingStats {
+            app_id: app_id.clone(),
+            average_rating: 0.0,
+            total_reviews: reviews.len() as u64,
+            five_star: 0,
+            four_star: 0,
+            three_star: 0,
+            two_star: 0,
+            one_star: 0,
+        }
+
+        let mut total = 0.0
+
+        for review in reviews {
+            match review.rating {
+                5 => { stats.five_star = stats.five_star + 1 }
+                4 => { stats.four_star = stats.four_star + 1 }
+                3 => { stats.three_star = stats.three_star + 1 }
+                2 => { stats.two_star = stats.two_star + 1 }
+                1 => { stats.one_star = stats.one_star + 1 }
+                _ => {}
+            }
+
+            total = total + (review.rating as f64)
+        }
+
+        if stats.total_reviews > 0 {
+            stats.average_rating = total / (stats.total_reviews as f64)
+        }
+
+        self.ratings[app_id.clone()] = stats
+    }
+}
+
+impl SearchIndex {
+    pub fn new() -> Self {
+        return SearchIndex {
+            index: {},
+        }
+    }
+
+    pub fn add(mut self: Self, app_id: &String, keywords: &String) {
+        let words = keywords.split(" ")
+
+        for word in words {
+            if !self.index.contains(&word) {
+                self.index[word] = []
+            }
+
+            let mut apps = self.index[word]
+            apps.push(app_id.clone())
+            self.index[word] = apps
+        }
+    }
+}
+
+fn generate_review_id(app_id: &String) -> String {
+    return format!("review-{app_id}-{ts}", ts = get_timestamp_ms())
+}
+
+fn get_timestamp_ms() -> u64 {
+    return 1718548800000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*
+
+    #[test]
+    fn test_publish_listing() {
+        let mut manager = MarketplaceManager::new()
+        let result = manager.publish_listing("app1", "Test App", "This is a test application for marketplace", "productivity", "1.0.0", "publisher1")
+
+        assert!(result.is_ok())
+        let listing = result.unwrap()
+        assert_eq!(listing.app_id, "app1")
+        assert!(!listing.verified)
+    }
+
+    #[test]
+    fn test_update_listing() {
+        let mut manager = MarketplaceManager::new()
+        manager.publish_listing("app1", "Old Title", "This is a test application for marketplace", "productivity", "1.0.0", "pub").ok()
+
+        let result = manager.update_listing("app1", {
+            "title": "New Title",
+            "price": 9.99,
+        })
+
+        assert!(result.is_ok())
+        let updated = result.unwrap()
+        assert_eq!(updated.title, "New Title")
+        assert_eq!(updated.price, 9.99)
+    }
+
+    #[test]
+    fn test_add_review() {
+        let mut manager = MarketplaceManager::new()
+        manager.publish_listing("app1", "App1", "This is a test application for marketplace", "productivity", "1.0.0", "pub").ok()
+
+        let result = manager.add_review("app1", "user1", 5, "This is an excellent application that works great!")
+
+        assert!(result.is_ok())
+        let review = result.unwrap()
+        assert_eq!(review.rating, 5)
+    }
+
+    #[test]
+    fn test_invalid_rating() {
+        let mut manager = MarketplaceManager::new()
+        manager.publish_listing("app1", "App1", "This is a test application for marketplace", "productivity", "1.0.0", "pub").ok()
+
+        let result = manager.add_review("app1", "user1", 6, "Invalid rating test")
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn test_search_apps() {
+        let mut manager = MarketplaceManager::new()
+
+        manager.publish_listing("app1", "Photo Editor", "This is a test application for marketplace", "graphics", "1.0.0", "pub").ok()
+        manager.publish_listing("app2", "Video Converter", "This is a test application for marketplace", "media", "1.0.0", "pub").ok()
+
+        let result = manager.search_apps("Photo")
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().len(), 1)
+    }
+
+    #[test]
+    fn test_get_reviews() {
+        let mut manager = MarketplaceManager::new()
+        manager.publish_listing("app1", "App1", "This is a test application for marketplace", "productivity", "1.0.0", "pub").ok()
+
+        manager.add_review("app1", "user1", 5, "Great application!").ok()
+        manager.add_review("app1", "user2", 4, "Good app, needs improvement").ok()
+
+        let result = manager.get_reviews("app1")
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().len(), 2)
+    }
+
+    #[test]
+    fn test_increment_downloads() {
+        let mut manager = MarketplaceManager::new()
+        let listing = manager.publish_listing("app1", "App1", "This is a test application for marketplace", "productivity", "1.0.0", "pub").unwrap()
+
+        assert_eq!(listing.downloads, 0)
+
+        let result = manager.increment_downloads("app1")
+        assert!(result.is_ok())
+        assert_eq!(result.unwrap().downloads, 1)
+    }
+}
