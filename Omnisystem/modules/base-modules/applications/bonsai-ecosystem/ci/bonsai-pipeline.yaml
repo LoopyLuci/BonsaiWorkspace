@@ -1,0 +1,124 @@
+# Bonsai Ecosystem CI/CD Pipeline
+# Complete build, test, package, and deploy pipeline for all platforms
+
+pipeline:
+  name: "Bonsai Ecosystem CI/CD"
+  version: "1.0"
+
+  triggers:
+    - push:
+        branches: [main, develop]
+    - pull_request:
+        branches: [main]
+    - schedule: "0 3 * * *"  # Nightly at 3 AM UTC
+
+stages:
+
+  # ── Stage 1: Quality Checks ────────────────────────
+  - name: "Quality Gates"
+    description: "Lint, format, and dependency checks"
+    jobs:
+      - name: "cargo-check"
+        command: "cargo check --workspace --all-targets"
+        timeout: 1800
+        parallel: true
+
+      - name: "cargo-clippy"
+        command: "cargo clippy --workspace -- -D warnings"
+        timeout: 1200
+        parallel: true
+
+      - name: "cargo-fmt"
+        command: "cargo fmt --all -- --check"
+        timeout: 300
+
+      - name: "cargo-audit"
+        command: "cargo audit"
+        timeout: 300
+
+  # ── Stage 2: Unit & Integration Tests ──────────────
+  - name: "Tests"
+    description: "Comprehensive test suite"
+    depends_on: ["Quality Gates"]
+    jobs:
+      - name: "unit-tests"
+        command: "cargo test --workspace --lib --release"
+        timeout: 1800
+        parallel: true
+
+      - name: "integration-tests"
+        command: "cargo test --workspace --test '*' --release"
+        timeout: 2700
+        parallel: true
+
+      - name: "doc-tests"
+        command: "cargo test --workspace --doc"
+        timeout: 900
+        parallel: true
+
+  # ── Stage 3: Build Artifacts ───────────────────────
+  - name: "Build"
+    description: "Build release binaries for all platforms"
+    depends_on: ["Tests"]
+    jobs:
+      - name: "build-binaries"
+        command: "cargo build --release --workspace"
+        timeout: 3600
+        artifacts:
+          - "target/release/bonsai-workspace*"
+          - "target/release/bonsai-model-workshop*"
+          - "target/release/bonsai-mcp-manager*"
+          - "target/release/bonsai-api-gateway*"
+
+  # ── Stage 4: Create Installers ─────────────────────
+  - name: "Package"
+    description: "Create installers for all platforms"
+    depends_on: ["Build"]
+    jobs:
+      - name: "windows-installer"
+        command: "./scripts/installers/build-windows-installer.ps1"
+        runs_on: "windows"
+        timeout: 1200
+        artifacts:
+          - "dist/windows/*.exe"
+
+      - name: "android-apk"
+        command: "./scripts/installers/build-android-apk.ps1"
+        runs_on: "windows"
+        timeout: 1800
+        artifacts:
+          - "dist/android/*.apk"
+
+  # ── Stage 5: Security Scan ────────────────────────
+  - name: "Security"
+    description: "Security and compliance checks"
+    depends_on: ["Build"]
+    jobs:
+      - name: "dependency-scan"
+        command: "cargo deny check"
+        timeout: 600
+
+  # ── Stage 6: Release (main branch only) ───────────
+  - name: "Release"
+    description: "Create GitHub release with artifacts"
+    if: "github.ref == 'refs/heads/main'"
+    depends_on: ["Package", "Security"]
+    jobs:
+      - name: "github-release"
+        command: "./scripts/create-github-release.ps1"
+        timeout: 600
+
+notifications:
+  on_success:
+    slack: false
+    discord: false
+  on_failure:
+    slack: true
+    discord: true
+  channels:
+    slack: "#bonsai-ci"
+    discord: "webhook_url"
+
+cache:
+  cargo: true
+  npm: true
