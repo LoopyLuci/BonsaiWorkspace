@@ -30,13 +30,22 @@ $Config = @{
 # Define projects
 $Config.Projects = @(
     @{
-        Name = "Desktop Environment"
+        Name = "Desktop Environment (Main)"
         Key = "desktop"
         Path = "Omnisystem\applications\bonsai-desktop-environment"
         Type = "cargo"
         BinaryName = "Omnisystem"
         OutputName = "Omnisystem.exe"
         Description = "BonsaiEcosystem Desktop Environment v29.0.0"
+    },
+    @{
+        Name = "Desktop Environment (TUI)"
+        Key = "desktop"
+        Path = "Omnisystem\applications\bonsai-desktop-environment"
+        Type = "cargo"
+        BinaryName = "Omnisystem_TUI"
+        OutputName = "Omnisystem_TUI.exe"
+        Description = "BonsaiEcosystem Desktop Environment - Interactive TUI"
     },
     @{
         Name = "Omnisystem GUI Launcher"
