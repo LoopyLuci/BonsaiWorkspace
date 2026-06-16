@@ -1,9 +1,12 @@
-// Omnisystem.exe - GUI Launcher with BonsaiEcosystem Integration
+// Omnisystem.exe - Complete Application Launcher with BonsaiEcosystem Integration
 // Multi-language enterprise application built with TITAN + SYLVA + AETHER + AXIOM
 //
 // Initialization sequence:
-// 1. Initialize BonsaiEcosystem (Phase 1-5)
-// 2. Launch Omnisystem GUI (OmnisystemGUI_v2.ti)
+// 1. Initialize BonsaiEcosystem (Phase 1-5: all 11 apps and services)
+// 2. Launch Omnisystem App Menu (OmnisystemAppMenu.ti)
+//    - Access all 11 BonsaiEcosystem applications
+//    - Access 4 Omnisystem core tools
+//    - Monitor 5 system services
 // 3. Graceful shutdown on exit
 
 use std::process::Command;
@@ -31,7 +34,7 @@ fn main() {
     let gui_source = exe_dir.join("Omnisystem")
         .join("languages")
         .join("titan")
-        .join("OmnisystemGUI_v2.ti");
+        .join("OmnisystemAppMenu.ti");
 
     let titan_dir = gui_source.parent().unwrap();
 
@@ -45,7 +48,8 @@ fn main() {
         std::process::exit(1);
     }
     if !gui_source.exists() {
-        eprintln!("Error: Omnisystem GUI not found at {:?}", gui_source);
+        eprintln!("Error: Omnisystem App Menu not found at {:?}", gui_source);
+        eprintln!("Expected: OmnisystemAppMenu.ti");
         std::process::exit(1);
     }
 
@@ -81,13 +85,13 @@ fn main() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // PHASE 2: Launch Omnisystem GUI
+    // PHASE 2: Launch Omnisystem App Menu
     // ─────────────────────────────────────────────────────────────────────────────
-    println!("Launching Omnisystem GUI...\n");
+    println!("Launching Omnisystem App Menu...\n");
 
     let gui_result = Command::new(&titan_exe)
         .arg("run")
-        .arg("OmnisystemGUI_v2.ti")
+        .arg("OmnisystemAppMenu.ti")
         .current_dir(titan_dir)
         .spawn();
 
