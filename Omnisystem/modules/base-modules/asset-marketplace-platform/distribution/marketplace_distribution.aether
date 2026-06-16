@@ -1,0 +1,382 @@
+// ASSET MARKETPLACE PLATFORM - DISTRIBUTION LAYER (AETHER)
+// Global CDN distribution, replication, and inventory sync
+// Location: modules/base-modules/asset-marketplace-platform/distribution/
+// 2026-06-15
+
+pub enum InventorySyncStatus {
+    Synced,
+    Pending,
+    Syncing,
+    Failed
+}
+
+pub struct InventoryItem {
+    id: String
+    listingId: String
+    quantity: Int
+    reserved: Int
+    available: Int
+    lastSynced: Int
+}
+
+pub struct ReplicationJob {
+    id: String
+    listingId: String
+    targetRegion: String
+    status: String
+    progress: Float
+    createdAt: Int
+    completedAt: Int
+}
+
+pub struct CDNDistribution {
+    id: String
+    listingId: String
+    regions: Array[String]
+    totalReplicas: Int
+    activeReplicas: Int
+    bandwidthUsed: Float
+    lastUpdated: Int
+}
+
+pub struct SyncManifest {
+    id: String
+    timestamp: Int
+    changes: Array[InventoryChange]
+    checksum: String
+}
+
+pub struct InventoryChange {
+    listingId: String
+    changeType: String
+    previousValue: Int
+    newValue: Int
+    timestamp: Int
+}
+
+pub class MarketplaceDistributionEngine {
+    inventory: Object
+    replications: Object
+    distributions: Object
+    syncQueue: Array[SyncManifest]
+    cdnRegions: Array[String]
+    replicationFactor: Int
+    syncInterval: Int
+
+    pub fn new() -> Self {
+        MarketplaceDistributionEngine {
+            inventory: Object::new(),
+            replications: Object::new(),
+            distributions: Object::new(),
+            syncQueue: Array::new(),
+            cdnRegions: ["us-east", "us-west", "eu-central", "ap-southeast", "ap-northeast"],
+            replicationFactor: 3,
+            syncInterval: 300
+        }
+    }
+
+    pub fn initialize_inventory(mut self: Self, listingId: String, initialQuantity: Int) -> Result {
+        let itemId = generate_uuid()
+
+        let item = InventoryItem {
+            id: itemId,
+            listingId: listingId,
+            quantity: initialQuantity,
+            reserved: 0,
+            available: initialQuantity,
+            lastSynced: current_timestamp()
+        }
+
+        self.inventory[itemId] = item.clone()
+
+        let distribution = CDNDistribution {
+            id: generate_uuid(),
+            listingId: listingId,
+            regions: self.cdnRegions.clone(),
+            totalReplicas: 0,
+            activeReplicas: 0,
+            bandwidthUsed: 0.0,
+            lastUpdated: current_timestamp()
+        }
+
+        self.distributions[listingId] = distribution
+
+        Ok(itemId)
+    }
+
+    pub fn reserve_inventory(mut self: Self, listingId: String, quantity: Int) -> Result {
+        let item = find_inventory_by_listing(listingId)
+
+        if item.available < quantity {
+            return Err("Insufficient inventory")
+        }
+
+        let mut updated = item
+        updated.reserved = updated.reserved + quantity
+        updated.available = updated.available - quantity
+
+        self.inventory[item.id] = updated
+
+        queue_sync_change(InventoryChange {
+            listingId: listingId,
+            changeType: "reservation",
+            previousValue: item.available,
+            newValue: updated.available,
+            timestamp: current_timestamp()
+        })
+
+        Ok("Inventory reserved")
+    }
+
+    pub fn release_inventory(mut self: Self, listingId: String, quantity: Int) -> Result {
+        let item = find_inventory_by_listing(listingId)
+
+        if item.reserved < quantity {
+            return Err("Cannot release more than reserved")
+        }
+
+        let mut updated = item
+        updated.reserved = updated.reserved - quantity
+        updated.available = updated.available + quantity
+
+        self.inventory[item.id] = updated
+
+        queue_sync_change(InventoryChange {
+            listingId: listingId,
+            changeType: "release",
+            previousValue: item.available,
+            newValue: updated.available,
+            timestamp: current_timestamp()
+        })
+
+        Ok("Inventory released")
+    }
+
+    pub fn confirm_sale(mut self: Self, listingId: String, quantity: Int) -> Result {
+        let item = find_inventory_by_listing(listingId)
+
+        if item.reserved < quantity {
+            return Err("Cannot confirm more than reserved")
+        }
+
+        let mut updated = item
+        updated.reserved = updated.reserved - quantity
+        updated.quantity = updated.quantity - quantity
+
+        self.inventory[item.id] = updated
+
+        queue_sync_change(InventoryChange {
+            listingId: listingId,
+            changeType: "sale",
+            previousValue: item.quantity,
+            newValue: updated.quantity,
+            timestamp: current_timestamp()
+        })
+
+        Ok("Sale confirmed")
+    }
+
+    pub fn start_replication(mut self: Self, listingId: String, targetRegion: String) -> Result {
+        let replicationId = generate_uuid()
+
+        let job = ReplicationJob {
+            id: replicationId,
+            listingId: listingId,
+            targetRegion: targetRegion,
+            status: "pending",
+            progress: 0.0,
+            createdAt: current_timestamp(),
+            completedAt: 0
+        }
+
+        self.replications[replicationId] = job.clone()
+
+        queue_replication_job(job)
+
+        Ok(replicationId)
+    }
+
+    pub fn get_replication_status(self: Self, jobId: String) -> Result {
+        if self.replications.has(jobId) {
+            let job = self.replications[jobId]
+            let status = Object::new()
+            status["status"] = job.status
+            status["progress"] = job.progress
+            status["targetRegion"] = job.targetRegion
+
+            return Ok(status)
+        }
+
+        Err("Replication job not found")
+    }
+
+    pub fn complete_replication(mut self: Self, jobId: String) -> Result {
+        let mut job = self.replications[jobId]
+
+        job.status = "completed"
+        job.progress = 100.0
+        job.completedAt = current_timestamp()
+
+        self.replications[jobId] = job.clone()
+
+        let mut distribution = self.distributions[job.listingId]
+        distribution.activeReplicas = distribution.activeReplicas + 1
+        distribution.totalReplicas = distribution.totalReplicas + 1
+        distribution.lastUpdated = current_timestamp()
+
+        self.distributions[job.listingId] = distribution
+
+        broadcast_replication_complete(jobId)
+
+        Ok("Replication complete")
+    }
+
+    pub fn get_distribution_status(self: Self, listingId: String) -> Result {
+        if self.distributions.has(listingId) {
+            let dist = self.distributions[listingId]
+            let status = Object::new()
+            status["regions"] = dist.regions
+            status["totalReplicas"] = dist.totalReplicas
+            status["activeReplicas"] = dist.activeReplicas
+            status["bandwidthUsed"] = dist.bandwidthUsed
+
+            return Ok(status)
+        }
+
+        Err("Distribution not found")
+    }
+
+    pub fn sync_inventory(mut self: Self) -> Result {
+        let manifest = SyncManifest {
+            id: generate_uuid(),
+            timestamp: current_timestamp(),
+            changes: Array::new(),
+            checksum: ""
+        }
+
+        for itemId in self.inventory.keys() {
+            let item = self.inventory[itemId]
+            item.lastSynced = current_timestamp()
+            self.inventory[itemId] = item
+        }
+
+        self.syncQueue.push(manifest)
+
+        process_sync_queue()
+
+        Ok("Sync initiated")
+    }
+
+    pub fn get_sync_status(self: Self) -> Object {
+        let status = Object::new()
+        status["pendingManifests"] = self.syncQueue.len()
+        status["lastSync"] = get_last_sync_time()
+        status["syncInterval"] = self.syncInterval
+
+        status
+    }
+
+    pub fn get_inventory_level(self: Self, listingId: String) -> Result {
+        let item = find_inventory_by_listing(listingId)
+
+        let level = Object::new()
+        level["total"] = item.quantity
+        level["reserved"] = item.reserved
+        level["available"] = item.available
+
+        Ok(level)
+    }
+
+    pub fn allocate_replica(mut self: Self, listingId: String, region: String) -> Result {
+        let distribution = self.distributions[listingId]
+
+        if !distribution.regions.contains(region) {
+            return Err("Region not in distribution")
+        }
+
+        self.start_replication(listingId, region)?
+
+        Ok("Replication started")
+    }
+
+    pub fn get_optimal_region(self: Self, userRegion: String) -> Result {
+        let distance_map = calculate_region_distances(userRegion, self.cdnRegions)
+        let optimal = distance_map.get_closest()
+
+        Ok(optimal)
+    }
+
+    pub fn balance_inventory(mut self: Self) -> Result {
+        for listingId in self.distributions.keys() {
+            let dist = self.distributions[listingId]
+            let item = find_inventory_by_listing(listingId)
+
+            if dist.activeReplicas < self.replicationFactor {
+                let needed = self.replicationFactor - dist.activeReplicas
+
+                for i in 0..needed {
+                    let region = dist.regions[i % dist.regions.len()]
+                    self.allocate_replica(listingId, region)?
+                }
+            }
+        }
+
+        Ok("Inventory balanced")
+    }
+
+    pub fn handle_region_failure(mut self: Self, region: String) -> Result {
+        for listingId in self.distributions.keys() {
+            let mut dist = self.distributions[listingId]
+
+            if dist.regions.contains(region) {
+                dist.activeReplicas = max(0, dist.activeReplicas - 1)
+                self.distributions[listingId] = dist
+
+                if dist.activeReplicas < self.replicationFactor {
+                    self.balance_inventory()?
+                }
+            }
+        }
+
+        broadcast_region_recovered(region)
+
+        Ok("Region failure handled")
+    }
+}
+
+fn queue_sync_change(change: InventoryChange) {
+    // Add change to current manifest
+}
+
+fn queue_replication_job(job: ReplicationJob) {
+    // Add to replication queue
+    // Start processing
+}
+
+fn process_sync_queue() {
+    // Broadcast all manifests to replicas
+    // Verify checksums
+    // Retry failed syncs
+}
+
+fn find_inventory_by_listing(listingId: String) -> InventoryItem {
+    // Find first inventory item matching listing ID
+}
+
+fn calculate_region_distances(userRegion: String, regions: Array[String]) -> Object {
+    // Calculate distance from user region to all available regions
+}
+
+fn get_last_sync_time() -> Int {
+    // Return timestamp of last successful sync
+}
+
+fn max(a: Int, b: Int) -> Int {
+    if a > b { a } else { b }
+}
+
+pub struct ReplicationMetrics {
+    bandwidth: Float
+    latency: Int
+    errorRate: Float
+}

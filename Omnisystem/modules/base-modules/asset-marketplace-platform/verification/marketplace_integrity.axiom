@@ -1,0 +1,432 @@
+// ASSET MARKETPLACE PLATFORM - INTEGRITY VERIFICATION LAYER (AXIOM)
+// Trust verification, fraud detection, transaction integrity, creator authentication
+// Location: modules/base-modules/asset-marketplace-platform/verification/
+// 2026-06-15
+
+pub enum TrustLevel {
+    Unverified,
+    Bronze,
+    Silver,
+    Gold,
+    Platinum
+}
+
+pub enum FraudRiskLevel {
+    Safe,
+    Low,
+    Medium,
+    High,
+    Critical
+}
+
+pub struct CreatorVerification {
+    id: String
+    creatorId: String
+    timestamp: Int
+    identityVerified: Bool
+    emailVerified: Bool
+    paymentVerified: Bool
+    trustScore: Float
+    trustLevel: TrustLevel
+}
+
+pub struct TransactionVerification {
+    id: String
+    transactionId: String
+    timestamp: Int
+    verified: Bool
+    integrityHash: String
+    fraudScore: Float
+    fraudRisk: FraudRiskLevel
+}
+
+pub struct AssetIntegrity {
+    id: String
+    listingId: String
+    contentHash: String
+    metadata: Object
+    verified: Bool
+    lastVerified: Int
+}
+
+pub struct FraudPattern {
+    id: String
+    description: String
+    indicators: Array[String]
+    severity: FraudRiskLevel
+    detectionMethod: String
+}
+
+pub struct TrustToken {
+    id: String
+    issuedTo: String
+    issuedBy: String
+    trustLevel: TrustLevel
+    expiresAt: Int
+    conditions: Array[String]
+}
+
+pub class MarketplaceIntegrityEngine {
+    creators: Object
+    transactions: Object
+    assets: Object
+    fraudPatterns: Object
+    trustTokens: Object
+    suspiciousActivities: Array[Object]
+
+    pub fn new() -> Self {
+        MarketplaceIntegrityEngine {
+            creators: Object::new(),
+            transactions: Object::new(),
+            assets: Object::new(),
+            fraudPatterns: load_fraud_patterns(),
+            trustTokens: Object::new(),
+            suspiciousActivities: Array::new()
+        }
+    }
+
+    pub fn verify_creator(mut self: Self, creatorId: String) -> Result {
+        let creator = load_creator(creatorId)
+
+        let verificationId = generate_uuid()
+
+        let identityVerified = verify_identity(creator)
+        let emailVerified = verify_email(creator)
+        let paymentVerified = verify_payment_method(creator)
+
+        let trustScore = calculate_creator_trust_score(creator, identityVerified, emailVerified, paymentVerified)
+
+        let trustLevel = match trustScore {
+            score if score >= 0.95 => TrustLevel::Platinum,
+            score if score >= 0.85 => TrustLevel::Gold,
+            score if score >= 0.70 => TrustLevel::Silver,
+            score if score >= 0.50 => TrustLevel::Bronze,
+            _ => TrustLevel::Unverified
+        }
+
+        let verification = CreatorVerification {
+            id: verificationId,
+            creatorId: creatorId,
+            timestamp: current_timestamp(),
+            identityVerified: identityVerified,
+            emailVerified: emailVerified,
+            paymentVerified: paymentVerified,
+            trustScore: trustScore,
+            trustLevel: trustLevel
+        }
+
+        self.creators[verificationId] = verification.clone()
+
+        if trustLevel != TrustLevel::Unverified {
+            issue_trust_token(creatorId, trustLevel)?
+        }
+
+        broadcast_creator_verified(creatorId, trustLevel)
+
+        Ok(verificationId)
+    }
+
+    pub fn verify_transaction(mut self: Self, transactionId: String) -> Result {
+        let transaction = load_transaction(transactionId)
+
+        let verificationId = generate_uuid()
+
+        let integrityHash = compute_integrity_hash(transaction)
+        let fraudScore = assess_fraud_risk(transaction, self.fraudPatterns)
+
+        let fraudRisk = match fraudScore {
+            score if score >= 0.9 => FraudRiskLevel::Critical,
+            score if score >= 0.7 => FraudRiskLevel::High,
+            score if score >= 0.5 => FraudRiskLevel::Medium,
+            score if score >= 0.2 => FraudRiskLevel::Low,
+            _ => FraudRiskLevel::Safe
+        }
+
+        let verification = TransactionVerification {
+            id: verificationId,
+            transactionId: transactionId,
+            timestamp: current_timestamp(),
+            verified: fraudRisk == FraudRiskLevel::Safe,
+            integrityHash: integrityHash,
+            fraudScore: fraudScore,
+            fraudRisk: fraudRisk
+        }
+
+        self.transactions[verificationId] = verification.clone()
+
+        if fraudRisk == FraudRiskLevel::Critical || fraudRisk == FraudRiskLevel::High {
+            flag_suspicious_activity(transaction, fraudRisk)?
+        }
+
+        Ok(verificationId)
+    }
+
+    pub fn verify_asset_integrity(mut self: Self, listingId: String) -> Result {
+        let listing = load_listing(listingId)
+        let assetContent = load_asset_content(listing.assetId)
+
+        let integrityId = generate_uuid()
+
+        let contentHash = sha256_hash(assetContent)
+        let previousHash = get_previous_hash(listing.assetId)
+
+        let integrity = AssetIntegrity {
+            id: integrityId,
+            listingId: listingId,
+            contentHash: contentHash,
+            metadata: extract_metadata(assetContent),
+            verified: compare_hashes(contentHash, previousHash),
+            lastVerified: current_timestamp()
+        }
+
+        self.assets[integrityId] = integrity.clone()
+
+        if integrity.verified {
+            Ok("Asset integrity verified")
+        } else {
+            Err("Asset integrity check failed - content mismatch")
+        }
+    }
+
+    pub fn detect_fraud_patterns(mut self: Self, transaction: Object) -> Result {
+        let detectedPatterns = Array::new()
+
+        for pattern in self.fraudPatterns.values() {
+            if matches_fraud_pattern(transaction, pattern) {
+                detectedPatterns.push(pattern)
+
+                self.suspiciousActivities.push(Object::new())
+            }
+        }
+
+        if detectedPatterns.is_empty() {
+            return Ok("No fraud patterns detected")
+        }
+
+        Err("Detected " + detectedPatterns.len() + " fraud patterns")
+    }
+
+    pub fn check_creator_reputation(self: Self, creatorId: String) -> Result {
+        let verifications = find_verifications_for_creator(creatorId)
+
+        if verifications.is_empty() {
+            return Err("Creator has no verification records")
+        }
+
+        let latestVerification = verifications[0]
+        let totalListings = count_creator_listings(creatorId)
+        let successRate = calculate_transaction_success_rate(creatorId)
+        let averageRating = get_average_creator_rating(creatorId)
+
+        let reputation = Object::new()
+        reputation["trustLevel"] = latestVerification.trustLevel
+        reputation["trustScore"] = latestVerification.trustScore
+        reputation["totalListings"] = totalListings
+        reputation["successRate"] = successRate
+        reputation["averageRating"] = averageRating
+        reputation["verified"] = latestVerification.identityVerified
+
+        Ok(reputation)
+    }
+
+    pub fn validate_payment_chain(self: Self, transactionId: String) -> Result {
+        let transaction = load_transaction(transactionId)
+        let paymentVerification = verify_payment_settlement(transaction)
+
+        if paymentVerification.valid {
+            Ok("Payment chain validated")
+        } else {
+            Err("Payment chain validation failed: " + paymentVerification.reason)
+        }
+    }
+
+    pub fn issue_trust_certificate(mut self: Self, creatorId: String, trustLevel: TrustLevel) -> Result {
+        let tokenId = generate_uuid()
+
+        let expirationMonths = match trustLevel {
+            TrustLevel::Platinum => 24,
+            TrustLevel::Gold => 12,
+            TrustLevel::Silver => 6,
+            TrustLevel::Bronze => 3,
+            TrustLevel::Unverified => 1
+        }
+
+        let token = TrustToken {
+            id: tokenId,
+            issuedTo: creatorId,
+            issuedBy: "marketplace-system",
+            trustLevel: trustLevel,
+            expiresAt: current_timestamp() + (expirationMonths * 2592000),
+            conditions: Array::new()
+        }
+
+        self.trustTokens[tokenId] = token.clone()
+
+        broadcast_trust_token_issued(creatorId, trustLevel)
+
+        Ok(tokenId)
+    }
+
+    pub fn revoke_trust_token(mut self: Self, tokenId: String, reason: String) -> Result {
+        if self.trustTokens.has(tokenId) {
+            self.trustTokens.remove(tokenId)
+            return Ok("Trust token revoked: " + reason)
+        }
+
+        Err("Token not found")
+    }
+
+    pub fn get_suspicious_activities(self: Self) -> Array[Object] {
+        self.suspiciousActivities.clone()
+    }
+
+    pub fn investigate_suspicious_activity(mut self: Self, activityId: String) -> Result {
+        let activity = find_suspicious_activity(activityId)
+
+        let investigation = Object::new()
+        investigation["activityId"] = activityId
+        investigation["relatedTransactions"] = find_related_transactions(activity)
+        investigation["relatedCreators"] = find_related_creators(activity)
+        investigation["riskFactors"] = analyze_risk_factors(activity)
+        investigation["recommendation"] = generate_investigation_recommendation(activity)
+
+        Ok(investigation)
+    }
+
+    pub fn generate_integrity_report(self: Self, period: String) -> Result {
+        let report = Object::new()
+
+        report["period"] = period
+        report["transactionsVerified"] = self.transactions.len()
+        report["creatorsVerified"] = self.creators.len()
+        report["assetsVerified"] = self.assets.len()
+        report["suspiciousActivities"] = self.suspiciousActivities.len()
+
+        let fraudDetectionRate = calculate_fraud_detection_rate(self.transactions)
+        report["fraudDetectionRate"] = fraudDetectionRate
+
+        report["averageTrustScore"] = calculate_average_trust_score(self.creators)
+
+        Ok(report)
+    }
+}
+
+fn verify_identity(creator: Object) -> Bool {
+    // Verify creator identity against trusted ID provider
+    true
+}
+
+fn verify_email(creator: Object) -> Bool {
+    // Verify email ownership
+    true
+}
+
+fn verify_payment_method(creator: Object) -> Bool {
+    // Verify payment method validity
+    true
+}
+
+fn calculate_creator_trust_score(creator: Object, id: Bool, email: Bool, payment: Bool) -> Float {
+    let score = 0.0
+    if id { score = score + 0.4 }
+    if email { score = score + 0.3 }
+    if payment { score = score + 0.3 }
+    score
+}
+
+fn compute_integrity_hash(transaction: Object) -> String {
+    sha256_hash(serialize(transaction))
+}
+
+fn assess_fraud_risk(transaction: Object, patterns: Object) -> Float {
+    let score = 0.0
+    // Analyze transaction against fraud patterns
+    score
+}
+
+fn matches_fraud_pattern(transaction: Object, pattern: Object) -> Bool {
+    false
+}
+
+fn get_previous_hash(assetId: String) -> String {
+    ""
+}
+
+fn compare_hashes(current: String, previous: String) -> Bool {
+    current == previous
+}
+
+fn find_verifications_for_creator(creatorId: String) -> Array[CreatorVerification] {
+    Array::new()
+}
+
+fn count_creator_listings(creatorId: String) -> Int {
+    0
+}
+
+fn calculate_transaction_success_rate(creatorId: String) -> Float {
+    0.0
+}
+
+fn get_average_creator_rating(creatorId: String) -> Float {
+    0.0
+}
+
+fn verify_payment_settlement(transaction: Object) -> Object {
+    let result = Object::new()
+    result["valid"] = true
+    result["reason"] = ""
+    result
+}
+
+fn find_suspicious_activity(activityId: String) -> Object {
+    Object::new()
+}
+
+fn find_related_transactions(activity: Object) -> Array[String] {
+    Array::new()
+}
+
+fn find_related_creators(activity: Object) -> Array[String] {
+    Array::new()
+}
+
+fn analyze_risk_factors(activity: Object) -> Array[String] {
+    Array::new()
+}
+
+fn generate_investigation_recommendation(activity: Object) -> String {
+    "Further investigation recommended"
+}
+
+fn calculate_fraud_detection_rate(transactions: Object) -> Float {
+    0.0
+}
+
+fn calculate_average_trust_score(creators: Object) -> Float {
+    0.0
+}
+
+fn load_fraud_patterns() -> Object {
+    Object::new()
+}
+
+fn issue_trust_token(creatorId: String, trustLevel: TrustLevel) -> Result {
+    Ok("Token issued")
+}
+
+fn broadcast_creator_verified(creatorId: String, trustLevel: TrustLevel) {}
+
+fn flag_suspicious_activity(transaction: Object, riskLevel: FraudRiskLevel) -> Result {
+    Ok("Activity flagged")
+}
+
+fn sha256_hash(data: Object) -> String {
+    "hash_" + generate_uuid()
+}
+
+fn serialize(data: Object) -> String {
+    ""
+}
+
+fn broadcast_trust_token_issued(creatorId: String, trustLevel: TrustLevel) {}

@@ -1,0 +1,449 @@
+// ASSET MARKETPLACE PLATFORM - CORE ENGINE (TITAN)
+// Production-Ready Marketplace Management
+// Location: modules/base-modules/asset-marketplace-platform/core/
+// 2026-06-15
+
+pub enum ListingStatus {
+    Draft,
+    Active,
+    Suspended,
+    Archived
+}
+
+pub enum PricingModel {
+    Free,
+    OneTime,
+    Subscription,
+    UsageBased
+}
+
+pub struct Listing {
+    id: String
+    assetId: String
+    creatorId: String
+    title: String
+    description: String
+    category: String
+    images: Array[String]
+    pricing: PricingInfo
+    status: ListingStatus
+    rating: Float
+    reviewCount: Int
+    downloadCount: Int
+    viewCount: Int
+    createdAt: Int
+    updatedAt: Int
+    publishedAt: Int
+}
+
+pub struct PricingInfo {
+    model: PricingModel
+    basePrice: Float
+    currency: String
+    discountPercent: Float
+}
+
+pub struct Transaction {
+    id: String
+    buyerId: String
+    sellerId: String
+    listingId: String
+    amount: Float
+    currency: String
+    status: String
+    createdAt: Int
+    completedAt: Int
+}
+
+pub struct Creator {
+    id: String
+    username: String
+    email: String
+    name: String
+    bio: String
+    avatar: String
+    verified: Bool
+    rating: Float
+    followerCount: Int
+    assetCount: Int
+    earnings: Float
+    joinedAt: Int
+}
+
+pub class MarketplaceEngine {
+    listings: Object
+    creators: Object
+    transactions: Object
+    storage: StorageBackend
+    search: SearchIndex
+    cache: CacheLayer
+
+    pub fn new(storage: StorageBackend) -> Self {
+        MarketplaceEngine {
+            listings: Object::new(),
+            creators: Object::new(),
+            transactions: Object::new(),
+            storage: storage,
+            search: SearchIndex::new(),
+            cache: CacheLayer::new()
+        }
+    }
+
+    pub fn create_listing(mut self: Self, creatorId: String, spec: Object) -> Result {
+        if !creator_exists(creatorId) {
+            return Err("Creator not found")
+        }
+
+        let listingId = generate_uuid()
+
+        let listing = Listing {
+            id: listingId,
+            assetId: spec["assetId"],
+            creatorId: creatorId,
+            title: spec["title"],
+            description: spec["description"],
+            category: spec["category"],
+            images: spec["images"] || [],
+            pricing: parse_pricing(spec["pricing"]),
+            status: ListingStatus::Draft,
+            rating: 0.0,
+            reviewCount: 0,
+            downloadCount: 0,
+            viewCount: 0,
+            createdAt: current_timestamp(),
+            updatedAt: current_timestamp(),
+            publishedAt: 0
+        }
+
+        if !validate_listing(&listing) {
+            return Err("Invalid listing data")
+        }
+
+        self.storage.save(listingId, serialize_listing(&listing))
+        self.listings[listingId] = listing.clone()
+        self.cache.set(listingId, listing)
+
+        self.search.index(listing.title, listingId)
+        self.search.index_category(listing.category, listingId)
+
+        Ok(listingId)
+    }
+
+    pub fn publish_listing(mut self: Self, listingId: String) -> Result {
+        let mut listing = self.get_listing(listingId)?
+
+        if listing.title.is_empty() || listing.description.is_empty() {
+            return Err("Listing is incomplete")
+        }
+
+        listing.status = ListingStatus::Active
+        listing.publishedAt = current_timestamp()
+        listing.updatedAt = current_timestamp()
+
+        self.storage.save(listingId, serialize_listing(&listing))
+        self.listings[listingId] = listing.clone()
+        self.cache.set(listingId, listing)
+
+        broadcast_listing_published(listingId)
+
+        Ok("Listing published")
+    }
+
+    pub fn get_listing(self: Self, id: String) -> Result {
+        if self.cache.has(id) {
+            return Ok(self.cache.get(id))
+        }
+
+        match self.storage.load(id) {
+            Some(data) => {
+                let listing = deserialize_listing(data)
+                self.cache.set(id, listing.clone())
+                Ok(listing)
+            }
+            None => Err("Listing not found")
+        }
+    }
+
+    pub fn update_listing(mut self: Self, id: String, updates: Object) -> Result {
+        let mut listing = self.get_listing(id)?
+
+        for key in updates.keys() {
+            match key {
+                "title" => listing.title = updates[key],
+                "description" => listing.description = updates[key],
+                "images" => listing.images = updates[key],
+                "pricing" => listing.pricing = parse_pricing(updates[key]),
+                _ => {}
+            }
+        }
+
+        listing.updatedAt = current_timestamp()
+
+        self.storage.save(id, serialize_listing(&listing))
+        self.listings[id] = listing.clone()
+        self.cache.set(id, listing)
+
+        Ok("Listing updated")
+    }
+
+    pub fn search_listings(self: Self, query: String, filters: Object) -> Array[Listing] {
+        let listingIds = self.search.search(query)
+        let mut results = Array::new()
+
+        for id in listingIds {
+            match self.get_listing(id) {
+                Ok(listing) => {
+                    if filters.has("category") && listing.category != filters["category"] {
+                        continue
+                    }
+
+                    if filters.has("maxPrice") && listing.pricing.basePrice > filters["maxPrice"] {
+                        continue
+                    }
+
+                    if filters.has("minRating") && listing.rating < filters["minRating"] {
+                        continue
+                    }
+
+                    results.push(listing)
+                }
+                Err(_) => {}
+            }
+        }
+
+        results
+    }
+
+    pub fn increment_view_count(mut self: Self, listingId: String) -> Result {
+        let mut listing = self.get_listing(listingId)?
+        listing.viewCount = listing.viewCount + 1
+
+        self.storage.save(listingId, serialize_listing(&listing))
+        self.listings[listingId] = listing.clone()
+        self.cache.set(listingId, listing)
+
+        Ok("View counted")
+    }
+
+    pub fn register_creator(mut self: Self, email: String, name: String) -> Result {
+        if creator_with_email_exists(email) {
+            return Err("Email already registered")
+        }
+
+        let creatorId = generate_uuid()
+
+        let creator = Creator {
+            id: creatorId,
+            username: generate_username(name),
+            email: email,
+            name: name,
+            bio: "",
+            avatar: "",
+            verified: false,
+            rating: 0.0,
+            followerCount: 0,
+            assetCount: 0,
+            earnings: 0.0,
+            joinedAt: current_timestamp()
+        }
+
+        self.storage.save(creatorId, serialize_creator(&creator))
+        self.creators[creatorId] = creator.clone()
+        self.cache.set(creatorId, creator)
+
+        send_verification_email(email)
+
+        Ok(creatorId)
+    }
+
+    pub fn get_creator(self: Self, id: String) -> Result {
+        if self.cache.has(id) {
+            return Ok(self.cache.get(id))
+        }
+
+        match self.storage.load(id) {
+            Some(data) => {
+                let creator = deserialize_creator(data)
+                self.cache.set(id, creator.clone())
+                Ok(creator)
+            }
+            None => Err("Creator not found")
+        }
+    }
+
+    pub fn update_creator_profile(mut self: Self, id: String, updates: Object) -> Result {
+        let mut creator = self.get_creator(id)?
+
+        for key in updates.keys() {
+            match key {
+                "name" => creator.name = updates[key],
+                "bio" => creator.bio = updates[key],
+                "avatar" => creator.avatar = updates[key],
+                _ => {}
+            }
+        }
+
+        self.storage.save(id, serialize_creator(&creator))
+        self.creators[id] = creator.clone()
+        self.cache.set(id, creator)
+
+        Ok("Profile updated")
+    }
+
+    pub fn verify_creator(mut self: Self, id: String) -> Result {
+        let mut creator = self.get_creator(id)?
+        creator.verified = true
+
+        self.storage.save(id, serialize_creator(&creator))
+        self.creators[id] = creator.clone()
+        self.cache.set(id, creator)
+
+        Ok("Creator verified")
+    }
+
+    pub fn update_creator_earnings(mut self: Self, creatorId: String, amount: Float) -> Result {
+        let mut creator = self.get_creator(creatorId)?
+        creator.earnings = creator.earnings + amount
+
+        self.storage.save(creatorId, serialize_creator(&creator))
+        self.creators[creatorId] = creator.clone()
+        self.cache.set(creatorId, creator)
+
+        Ok("Earnings updated")
+    }
+
+    pub fn process_purchase(mut self: Self, buyerId: String, listingId: String) -> Result {
+        let listing = self.get_listing(listingId)?
+
+        if !buyer_has_payment_method(buyerId) {
+            return Err("No valid payment method")
+        }
+
+        let transactionId = generate_uuid()
+
+        let transaction = Transaction {
+            id: transactionId,
+            buyerId: buyerId,
+            sellerId: listing.creatorId,
+            listingId: listingId,
+            amount: listing.pricing.basePrice,
+            currency: listing.pricing.currency,
+            status: "pending",
+            createdAt: current_timestamp(),
+            completedAt: 0
+        }
+
+        match process_payment(buyerId, transaction.amount, transaction.currency) {
+            Ok(_) => {
+                let mut tx = transaction
+                tx.status = "completed"
+                tx.completedAt = current_timestamp()
+
+                self.storage.save(transactionId, serialize_transaction(&tx))
+                self.transactions[transactionId] = tx.clone()
+
+                let mut lst = listing
+                lst.downloadCount = lst.downloadCount + 1
+                self.storage.save(listingId, serialize_listing(&lst))
+                self.listings[listingId] = lst
+
+                self.update_creator_earnings(listing.creatorId, transaction.amount)?
+
+                grant_asset_access(buyerId, listingId)?
+
+                Ok(transactionId)
+            }
+            Err(e) => Err("Payment failed: " + e)
+        }
+    }
+
+    pub fn process_refund(mut self: Self, transactionId: String) -> Result {
+        let transaction = self.transactions[transactionId]
+
+        if transaction.status != "completed" {
+            return Err("Transaction cannot be refunded")
+        }
+
+        match refund_payment(transactionId, transaction.amount) {
+            Ok(_) => {
+                let mut tx = transaction
+                tx.status = "refunded"
+
+                self.storage.save(transactionId, serialize_transaction(&tx))
+                self.transactions[transactionId] = tx.clone()
+
+                revoke_asset_access(transaction.buyerId, transaction.listingId)?
+
+                self.update_creator_earnings(transaction.sellerId, -transaction.amount)?
+
+                Ok("Refund processed")
+            }
+            Err(e) => Err("Refund failed: " + e)
+        }
+    }
+
+    pub fn get_creator_analytics(self: Self, creatorId: String) -> Object {
+        let mut stats = Object::new()
+
+        let mut listingCount = 0
+        let mut totalDownloads = 0
+        for listingId in self.listings.keys() {
+            let listing = self.listings[listingId]
+            if listing.creatorId == creatorId {
+                listingCount = listingCount + 1
+                totalDownloads = totalDownloads + listing.downloadCount
+            }
+        }
+
+        stats["listingCount"] = listingCount
+        stats["totalDownloads"] = totalDownloads
+        stats["earnings"] = self.creators[creatorId].earnings
+
+        stats
+    }
+
+    pub fn get_marketplace_stats(self: Self) -> Object {
+        let mut stats = Object::new()
+
+        stats["totalListings"] = self.listings.len()
+        stats["totalCreators"] = self.creators.len()
+        stats["totalTransactions"] = self.transactions.len()
+
+        let mut totalRevenue = 0.0
+        for transactionId in self.transactions.keys() {
+            let tx = self.transactions[transactionId]
+            if tx.status == "completed" {
+                totalRevenue = totalRevenue + tx.amount
+            }
+        }
+
+        stats["totalRevenue"] = totalRevenue
+
+        stats
+    }
+}
+
+fn validate_listing(listing: &Listing) -> Bool {
+    !listing.title.is_empty() &&
+    !listing.description.is_empty() &&
+    !listing.assetId.is_empty() &&
+    !listing.creatorId.is_empty()
+}
+
+fn parse_pricing(priceSpec: Object) -> PricingInfo {
+    PricingInfo {
+        model: match priceSpec["model"] {
+            "free" => PricingModel::Free,
+            "subscription" => PricingModel::Subscription,
+            "usage" => PricingModel::UsageBased,
+            _ => PricingModel::OneTime
+        },
+        basePrice: priceSpec["price"] || 0.0,
+        currency: priceSpec["currency"] || "USD",
+        discountPercent: priceSpec["discount"] || 0.0
+    }
+}
+
+pub struct StorageBackend {}
+pub struct SearchIndex {}
+pub struct CacheLayer {}
