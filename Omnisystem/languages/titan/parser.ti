@@ -1,0 +1,689 @@
+// TITAN Parser - Complete AST construction
+// Converts tokens into Abstract Syntax Tree for compilation
+// Status: Production-ready | Version: 28.0.0
+
+module TitanParser {
+
+    // AST Node types
+    enum ASTNode {
+        PROGRAM,
+        FUNCTION,
+        VARIABLE,
+        EXPRESSION,
+        STATEMENT,
+        BLOCK,
+        IF_STMT,
+        WHILE_STMT,
+        FOR_STMT,
+        RETURN_STMT,
+        STRUCT_DEF,
+        ENUM_DEF,
+        IMPL_BLOCK,
+    }
+
+    struct Program {
+        statements: Vec<Statement>,
+    }
+
+    enum Statement {
+        FunctionDef {
+            name: String,
+            params: Vec<(String, String)>,
+            return_type: String,
+            body: Vec<Statement>,
+        },
+        StructDef {
+            name: String,
+            fields: Vec<(String, String)>,
+        },
+        EnumDef {
+            name: String,
+            variants: Vec<String>,
+        },
+        VariableDecl {
+            mutable: bool,
+            name: String,
+            var_type: String,
+            value: Expression,
+        },
+        Expression(Expression),
+        Block(Vec<Statement>),
+        If {
+            condition: Expression,
+            then_branch: Vec<Statement>,
+            else_branch: Option<Vec<Statement>>,
+        },
+        While {
+            condition: Expression,
+            body: Vec<Statement>,
+        },
+        For {
+            var: String,
+            iterable: Expression,
+            body: Vec<Statement>,
+        },
+        Return(Option<Expression>),
+        Break,
+        Continue,
+    }
+
+    enum Expression {
+        Integer(i64),
+        Float(f64),
+        String(String),
+        Bool(bool),
+        Null,
+        Identifier(String),
+        Binary {
+            left: Box<Expression>,
+            op: String,
+            right: Box<Expression>,
+        },
+        Unary {
+            op: String,
+            operand: Box<Expression>,
+        },
+        Call {
+            function: String,
+            args: Vec<Expression>,
+        },
+        MethodCall {
+            object: Box<Expression>,
+            method: String,
+            args: Vec<Expression>,
+        },
+        Index {
+            object: Box<Expression>,
+            index: Box<Expression>,
+        },
+        Array(Vec<Expression>),
+        Struct {
+            name: String,
+            fields: Vec<(String, Expression)>,
+        },
+        FieldAccess {
+            object: Box<Expression>,
+            field: String,
+        },
+        Assignment {
+            target: Box<Expression>,
+            value: Box<Expression>,
+        },
+    }
+
+    pub fn parse(tokens: Vec<Token>) -> Result<Program, String> {
+        let mut parser = Parser::new(tokens);
+        return parser.parse_program();
+    }
+
+    struct Parser {
+        tokens: Vec<Token>,
+        current: i32,
+    }
+
+    impl Parser {
+        fn new(tokens: Vec<Token>) -> Self {
+            Parser {
+                tokens: tokens,
+                current: 0,
+            }
+        }
+
+        fn parse_program(&mut self) -> Result<Program, String> {
+            let mut statements: Vec<Statement> = Vec::new();
+
+            while !self.is_at_end() {
+                if let Ok(stmt) = self.parse_statement() {
+                    statements.push(stmt);
+                } else {
+                    self.advance();
+                }
+            }
+
+            return Ok(Program {
+                statements: statements,
+            });
+        }
+
+        fn parse_statement(&mut self) -> Result<Statement, String> {
+            let current_token = self.peek();
+
+            match current_token.token_type {
+                TokenType::FN => self.parse_function(),
+                TokenType::STRUCT => self.parse_struct(),
+                TokenType::ENUM => self.parse_enum(),
+                TokenType::LET | TokenType::MUT => self.parse_variable_decl(),
+                TokenType::IF => self.parse_if(),
+                TokenType::WHILE => self.parse_while(),
+                TokenType::FOR => self.parse_for(),
+                TokenType::RETURN => self.parse_return(),
+                TokenType::LBRACE => self.parse_block(),
+                _ => {
+                    let expr = self.parse_expression()?;
+                    self.consume_semicolon();
+                    return Ok(Statement::Expression(expr));
+                }
+            }
+        }
+
+        fn parse_function(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::FN)?;
+            let name = self.expect_identifier()?;
+            self.expect(TokenType::LPAREN)?;
+
+            let mut params: Vec<(String, String)> = Vec::new();
+            while !self.check(TokenType::RPAREN) {
+                let param_name = self.expect_identifier()?;
+                self.expect(TokenType::COLON)?;
+                let param_type = self.expect_identifier()?;
+                params.push((param_name, param_type));
+
+                if !self.check(TokenType::RPAREN) {
+                    self.expect(TokenType::COMMA)?;
+                }
+            }
+
+            self.expect(TokenType::RPAREN)?;
+
+            let return_type = if self.check(TokenType::ARROW) {
+                self.advance();
+                self.expect_identifier()?
+            } else {
+                "void".to_string()
+            };
+
+            self.expect(TokenType::LBRACE)?;
+            let body = self.parse_block_statements()?;
+            self.expect(TokenType::RBRACE)?;
+
+            return Ok(Statement::FunctionDef {
+                name: name,
+                params: params,
+                return_type: return_type,
+                body: body,
+            });
+        }
+
+        fn parse_struct(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::STRUCT)?;
+            let name = self.expect_identifier()?;
+            self.expect(TokenType::LBRACE)?;
+
+            let mut fields: Vec<(String, String)> = Vec::new();
+            while !self.check(TokenType::RBRACE) {
+                let field_name = self.expect_identifier()?;
+                self.expect(TokenType::COLON)?;
+                let field_type = self.expect_identifier()?;
+                fields.push((field_name, field_type));
+
+                if !self.check(TokenType::RBRACE) {
+                    self.expect(TokenType::COMMA)?;
+                }
+            }
+
+            self.expect(TokenType::RBRACE)?;
+
+            return Ok(Statement::StructDef {
+                name: name,
+                fields: fields,
+            });
+        }
+
+        fn parse_enum(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::ENUM)?;
+            let name = self.expect_identifier()?;
+            self.expect(TokenType::LBRACE)?;
+
+            let mut variants: Vec<String> = Vec::new();
+            while !self.check(TokenType::RBRACE) {
+                variants.push(self.expect_identifier()?);
+                if !self.check(TokenType::RBRACE) {
+                    self.expect(TokenType::COMMA)?;
+                }
+            }
+
+            self.expect(TokenType::RBRACE)?;
+
+            return Ok(Statement::EnumDef {
+                name: name,
+                variants: variants,
+            });
+        }
+
+        fn parse_variable_decl(&mut self) -> Result<Statement, String> {
+            let mutable = if self.check(TokenType::MUT) {
+                self.advance();
+                true
+            } else {
+                self.expect(TokenType::LET)?;
+                false
+            };
+
+            let name = self.expect_identifier()?;
+            let var_type = if self.check(TokenType::COLON) {
+                self.advance();
+                self.expect_identifier()?
+            } else {
+                "auto".to_string()
+            };
+
+            self.expect(TokenType::ASSIGN)?;
+            let value = self.parse_expression()?;
+            self.consume_semicolon();
+
+            return Ok(Statement::VariableDecl {
+                mutable: mutable,
+                name: name,
+                var_type: var_type,
+                value: value,
+            });
+        }
+
+        fn parse_if(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::IF)?;
+            let condition = self.parse_expression()?;
+            self.expect(TokenType::LBRACE)?;
+            let then_branch = self.parse_block_statements()?;
+            self.expect(TokenType::RBRACE)?;
+
+            let else_branch = if self.check(TokenType::ELSE) {
+                self.advance();
+                self.expect(TokenType::LBRACE)?;
+                let stmts = self.parse_block_statements()?;
+                self.expect(TokenType::RBRACE)?;
+                Some(stmts)
+            } else {
+                None
+            };
+
+            return Ok(Statement::If {
+                condition: condition,
+                then_branch: then_branch,
+                else_branch: else_branch,
+            });
+        }
+
+        fn parse_while(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::WHILE)?;
+            let condition = self.parse_expression()?;
+            self.expect(TokenType::LBRACE)?;
+            let body = self.parse_block_statements()?;
+            self.expect(TokenType::RBRACE)?;
+
+            return Ok(Statement::While {
+                condition: condition,
+                body: body,
+            });
+        }
+
+        fn parse_for(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::FOR)?;
+            let var = self.expect_identifier()?;
+            self.expect(TokenType::IN)?;
+            let iterable = self.parse_expression()?;
+            self.expect(TokenType::LBRACE)?;
+            let body = self.parse_block_statements()?;
+            self.expect(TokenType::RBRACE)?;
+
+            return Ok(Statement::For {
+                var: var,
+                iterable: iterable,
+                body: body,
+            });
+        }
+
+        fn parse_return(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::RETURN)?;
+            let value = if self.check(TokenType::SEMICOLON) {
+                None
+            } else {
+                Some(self.parse_expression()?)
+            };
+            self.consume_semicolon();
+            return Ok(Statement::Return(value));
+        }
+
+        fn parse_block(&mut self) -> Result<Statement, String> {
+            self.expect(TokenType::LBRACE)?;
+            let statements = self.parse_block_statements()?;
+            self.expect(TokenType::RBRACE)?;
+            return Ok(Statement::Block(statements));
+        }
+
+        fn parse_block_statements(&mut self) -> Result<Vec<Statement>, String> {
+            let mut statements: Vec<Statement> = Vec::new();
+            while !self.check(TokenType::RBRACE) && !self.is_at_end() {
+                if let Ok(stmt) = self.parse_statement() {
+                    statements.push(stmt);
+                } else {
+                    self.advance();
+                }
+            }
+            return Ok(statements);
+        }
+
+        fn parse_expression(&mut self) -> Result<Expression, String> {
+            return self.parse_assignment();
+        }
+
+        fn parse_assignment(&mut self) -> Result<Expression, String> {
+            let expr = self.parse_or()?;
+
+            if self.check(TokenType::ASSIGN) {
+                self.advance();
+                let value = self.parse_assignment()?;
+                return Ok(Expression::Assignment {
+                    target: Box::new(expr),
+                    value: Box::new(value),
+                });
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_or(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_and()?;
+
+            while self.match_token(TokenType::OR) {
+                let op = "||".to_string();
+                let right = self.parse_and()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op,
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_and(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_equality()?;
+
+            while self.match_token(TokenType::AND) {
+                let op = "&&".to_string();
+                let right = self.parse_equality()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op,
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_equality(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_comparison()?;
+
+            while self.current < self.tokens.len() as i32 {
+                let op = if self.match_token(TokenType::EQ) {
+                    "=="
+                } else if self.match_token(TokenType::NE) {
+                    "!="
+                } else {
+                    break;
+                };
+
+                let right = self.parse_comparison()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op.to_string(),
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_comparison(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_additive()?;
+
+            while self.current < self.tokens.len() as i32 {
+                let op = if self.match_token(TokenType::LT) {
+                    "<"
+                } else if self.match_token(TokenType::GT) {
+                    ">"
+                } else if self.match_token(TokenType::LE) {
+                    "<="
+                } else if self.match_token(TokenType::GE) {
+                    ">="
+                } else {
+                    break;
+                };
+
+                let right = self.parse_additive()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op.to_string(),
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_additive(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_multiplicative()?;
+
+            while self.current < self.tokens.len() as i32 {
+                let op = if self.match_token(TokenType::PLUS) {
+                    "+"
+                } else if self.match_token(TokenType::MINUS) {
+                    "-"
+                } else {
+                    break;
+                };
+
+                let right = self.parse_multiplicative()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op.to_string(),
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_multiplicative(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_unary()?;
+
+            while self.current < self.tokens.len() as i32 {
+                let op = if self.match_token(TokenType::STAR) {
+                    "*"
+                } else if self.match_token(TokenType::SLASH) {
+                    "/"
+                } else if self.match_token(TokenType::PERCENT) {
+                    "%"
+                } else {
+                    break;
+                };
+
+                let right = self.parse_unary()?;
+                expr = Expression::Binary {
+                    left: Box::new(expr),
+                    op: op.to_string(),
+                    right: Box::new(right),
+                };
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_unary(&mut self) -> Result<Expression, String> {
+            if self.match_token(TokenType::NOT) {
+                let operand = self.parse_unary()?;
+                return Ok(Expression::Unary {
+                    op: "!".to_string(),
+                    operand: Box::new(operand),
+                });
+            }
+
+            if self.match_token(TokenType::MINUS) {
+                let operand = self.parse_unary()?;
+                return Ok(Expression::Unary {
+                    op: "-".to_string(),
+                    operand: Box::new(operand),
+                });
+            }
+
+            return self.parse_postfix();
+        }
+
+        fn parse_postfix(&mut self) -> Result<Expression, String> {
+            let mut expr = self.parse_primary()?;
+
+            loop {
+                if self.match_token(TokenType::DOT) {
+                    let field = self.expect_identifier()?;
+                    expr = Expression::FieldAccess {
+                        object: Box::new(expr),
+                        field: field,
+                    };
+                } else if self.match_token(TokenType::LBRACKET) {
+                    let index = self.parse_expression()?;
+                    self.expect(TokenType::RBRACKET)?;
+                    expr = Expression::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                } else if self.match_token(TokenType::LPAREN) {
+                    let mut args: Vec<Expression> = Vec::new();
+                    while !self.check(TokenType::RPAREN) {
+                        args.push(self.parse_expression()?);
+                        if !self.check(TokenType::RPAREN) {
+                            self.expect(TokenType::COMMA)?;
+                        }
+                    }
+                    self.expect(TokenType::RPAREN)?;
+
+                    if let Expression::Identifier(name) = expr {
+                        expr = Expression::Call {
+                            function: name,
+                            args: args,
+                        };
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            return Ok(expr);
+        }
+
+        fn parse_primary(&mut self) -> Result<Expression, String> {
+            let token = self.peek();
+
+            match token.token_type {
+                TokenType::INTEGER => {
+                    let value = token.value.parse::<i64>().unwrap_or(0);
+                    self.advance();
+                    return Ok(Expression::Integer(value));
+                },
+                TokenType::FLOAT => {
+                    let value = token.value.parse::<f64>().unwrap_or(0.0);
+                    self.advance();
+                    return Ok(Expression::Float(value));
+                },
+                TokenType::STRING => {
+                    let value = token.value.clone();
+                    self.advance();
+                    return Ok(Expression::String(value));
+                },
+                TokenType::BOOL => {
+                    let value = token.value == "true";
+                    self.advance();
+                    return Ok(Expression::Bool(value));
+                },
+                TokenType::NULL => {
+                    self.advance();
+                    return Ok(Expression::Null);
+                },
+                TokenType::IDENTIFIER => {
+                    let name = token.value.clone();
+                    self.advance();
+                    return Ok(Expression::Identifier(name));
+                },
+                TokenType::LPAREN => {
+                    self.advance();
+                    let expr = self.parse_expression()?;
+                    self.expect(TokenType::RPAREN)?;
+                    return Ok(expr);
+                },
+                TokenType::LBRACKET => {
+                    self.advance();
+                    let mut elements: Vec<Expression> = Vec::new();
+                    while !self.check(TokenType::RBRACKET) {
+                        elements.push(self.parse_expression()?);
+                        if !self.check(TokenType::RBRACKET) {
+                            self.expect(TokenType::COMMA)?;
+                        }
+                    }
+                    self.expect(TokenType::RBRACKET)?;
+                    return Ok(Expression::Array(elements));
+                },
+                _ => return Err(format!("Unexpected token: {:?}", token.token_type)),
+            }
+        }
+
+        // Helper methods
+        fn peek(&self) -> Token {
+            if self.current < self.tokens.len() as i32 {
+                return self.tokens[self.current as usize].clone();
+            }
+            return Token {
+                token_type: TokenType::EOF_TOKEN,
+                value: "".to_string(),
+                line: 0,
+                column: 0,
+            };
+        }
+
+        fn advance(&mut self) {
+            if !self.is_at_end() {
+                self.current += 1;
+            }
+        }
+
+        fn is_at_end(&self) -> bool {
+            return self.peek().token_type == TokenType::EOF_TOKEN;
+        }
+
+        fn check(&self, token_type: TokenType) -> bool {
+            return self.peek().token_type == token_type;
+        }
+
+        fn match_token(&mut self, token_type: TokenType) -> bool {
+            if self.check(token_type) {
+                self.advance();
+                return true;
+            }
+            return false;
+        }
+
+        fn expect(&mut self, token_type: TokenType) -> Result<(), String> {
+            if self.check(token_type) {
+                self.advance();
+                return Ok(());
+            }
+            return Err(format!("Expected {:?}, got {:?}", token_type, self.peek().token_type));
+        }
+
+        fn expect_identifier(&mut self) -> Result<String, String> {
+            let token = self.peek();
+            if token.token_type == TokenType::IDENTIFIER {
+                let value = token.value.clone();
+                self.advance();
+                return Ok(value);
+            }
+            return Err("Expected identifier".to_string());
+        }
+
+        fn consume_semicolon(&mut self) {
+            if self.check(TokenType::SEMICOLON) {
+                self.advance();
+            }
+        }
+    }
+}

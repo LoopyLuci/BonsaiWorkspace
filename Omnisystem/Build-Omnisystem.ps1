@@ -1,22 +1,18 @@
 #Requires -Version 5.0
 <#
 .SYNOPSIS
-    Omnisystem Build Script - Creates Omnisystem.exe
+    Omnisystem Build Script - Creates Omnisystem.exe in root
 
 .DESCRIPTION
-    Builds the Omnisystem application using Rust Cargo and creates a standalone
-    executable in the Omnisystem directory.
+    One-line build: run once, get Omnisystem.exe in root. That's it.
 
 .EXAMPLE
     .\Build-Omnisystem.ps1
-    .\Build-Omnisystem.ps1 -Debug
-    .\Build-Omnisystem.ps1 -Clean -Release
+    .\Build-Omnisystem.ps1 -Launch
 
 #>
 
 param(
-    [switch]$Debug,
-    [switch]$Clean,
     [switch]$Launch
 )
 
@@ -25,123 +21,131 @@ $ErrorActionPreference = "Stop"
 # Setup paths
 $OmnisystemDir = Split-Path -Parent $PSCommandPath
 $RootDir = Split-Path -Parent $OmnisystemDir
-$GuiDir = Join-Path $OmnisystemDir "omnisystem-gui"
+$LauncherScript = Join-Path $OmnisystemDir "Omnisystem.Launcher.ps1"
 $ExePath = Join-Path $RootDir "Omnisystem.exe"
+$TempDir = Join-Path $OmnisystemDir ".build-temp"
 
 Write-Host ""
-Write-Host "OMNISYSTEM BUILD SCRIPT" -ForegroundColor Cyan
+Write-Host "OMNISYSTEM BUILD" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "Omnisystem Dir: $OmnisystemDir" -ForegroundColor Green
-Write-Host "Root Dir: $RootDir" -ForegroundColor Green
-Write-Host "GUI Directory: $GuiDir" -ForegroundColor Green
-Write-Host "Output: $ExePath" -ForegroundColor Green
-
-$BuildMode = if ($Debug) { "DEBUG (with symbols)" } else { "RELEASE (optimized)" }
-Write-Host "Build Mode: $BuildMode" -ForegroundColor Green
-Write-Host ""
-
-# Validate paths
-if (-not (Test-Path $GuiDir)) {
-    Write-Host "ERROR: GUI directory not found at $GuiDir" -ForegroundColor Red
+# Verify launcher script exists
+if (-not (Test-Path $LauncherScript)) {
+    Write-Host "ERROR: Launcher script not found" -ForegroundColor Red
     exit 1
 }
 
-# Check for Cargo
-$CargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
-if (-not $CargoCmd) {
-    Write-Host "ERROR: Cargo not found. Install Rust from https://rustup.rs/" -ForegroundColor Red
+Write-Host "Creating Omnisystem.exe..." -ForegroundColor Yellow
+
+# Create temp directory for build artifacts
+if (-not (Test-Path $TempDir)) {
+    New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+}
+
+# C# source for minimal launcher
+$CsSource = @"
+using System;
+using System.Diagnostics;
+using System.IO;
+
+namespace Omnisystem {
+    class Program {
+        static void Main(string[] args) {
+            // Get Omnisystem directory
+            string omnisystemDir = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..", "Omnisystem"
+            );
+            string launcherScript = Path.Combine(omnisystemDir, "Omnisystem.Launcher.ps1");
+
+            // Launch PowerShell with the launcher script
+            ProcessStartInfo psi = new ProcessStartInfo {
+                FileName = "powershell.exe",
+                Arguments = $"-NoExit -ExecutionPolicy Bypass -File \"{launcherScript}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = false
+            };
+
+            try {
+                using (Process p = Process.Start(psi)) {
+                    p.WaitForExit();
+                }
+            } catch (Exception ex) {
+                Console.WriteLine("ERROR: Failed to launch Omnisystem");
+                Console.WriteLine(ex.Message);
+                Environment.Exit(1);
+            }
+        }
+    }
+}
+"@
+
+# Compile C# to exe
+$CsFile = Join-Path $TempDir "Program.cs"
+$CsExe = Join-Path $TempDir "Omnisystem_build.exe"
+
+# Write C# source
+Set-Content -Path $CsFile -Value $CsSource
+
+# Compile using csc.exe
+$CscPath = "C:\Program Files\Microsoft Visual Studio\*\*\MSBuild\Current\Bin\Roslyn\csc.exe"
+$CscExe = Get-ChildItem $CscPath -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if ($CscExe) {
+    Write-Host "Compiling with C# compiler..." -ForegroundColor Yellow
+    & $CscExe.FullName /out:$CsExe $CsFile 2>&1 | Out-Null
+} else {
+    # Fallback: try System.Reflection.Metadata approach
+    Write-Host "Using .NET compilation..." -ForegroundColor Yellow
+
+    $CompilerPath = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
+    if (Test-Path $CompilerPath) {
+        $ProjFile = Join-Path $TempDir "build.csproj"
+
+        @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+</Project>
+"@ | Set-Content $ProjFile
+
+        & $CompilerPath publish $ProjFile -c Release -o (Split-Path $CsExe) 2>&1 | Out-Null
+        $CsExe = Join-Path (Split-Path $CsExe) "build" "build.exe"
+    } else {
+        Write-Host "ERROR: No C# compiler found. Install .NET SDK from https://dotnet.microsoft.com/download" -ForegroundColor Red
+        exit 1
+    }
+}
+
+if (-not (Test-Path $CsExe)) {
+    Write-Host "ERROR: Failed to compile launcher" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Cargo found: $($CargoCmd.Source)" -ForegroundColor Green
+# Copy to root
+Copy-Item $CsExe $ExePath -Force
+
+if (-not (Test-Path $ExePath)) {
+    Write-Host "ERROR: Failed to create Omnisystem.exe" -ForegroundColor Red
+    exit 1
+}
+
+$FileSize = [math]::Round((Get-Item $ExePath).Length / 1KB, 2)
+Write-Host ""
+Write-Host "SUCCESS: Omnisystem.exe ready ($FileSize KB)" -ForegroundColor Green
+Write-Host "Location: $ExePath" -ForegroundColor Green
 Write-Host ""
 
-# Change to GUI directory
-Push-Location $GuiDir
+# Cleanup temp
+Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 
-try {
-    # Clean if requested
-    if ($Clean) {
-        Write-Host ""
-        Write-Host "CLEANING BUILD ARTIFACTS" -ForegroundColor Cyan
-        Write-Host ""
-
-        if (Test-Path "target") {
-            Write-Host "Removing target directory..." -ForegroundColor Yellow
-            Remove-Item -Recurse -Force "target" -ErrorAction SilentlyContinue
-            Write-Host "Cleaned" -ForegroundColor Green
-        }
-
-        Write-Host ""
-    }
-
-    # Build the application
-    Write-Host "BUILDING OMNISYSTEM" -ForegroundColor Cyan
+# Launch if requested
+if ($Launch) {
+    Write-Host "Launching..." -ForegroundColor Cyan
     Write-Host ""
-
-    if ($Debug) {
-        Write-Host "Building DEBUG mode..." -ForegroundColor Yellow
-        & cargo build
-        $BuiltExePath = "target/debug/Omnisystem.exe"
-    } else {
-        Write-Host "Building RELEASE mode..." -ForegroundColor Yellow
-        & cargo build --release
-        $BuiltExePath = "target/release/Omnisystem.exe"
-    }
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Build failed" -ForegroundColor Red
-        Pop-Location
-        exit 1
-    }
-
-    Write-Host ""
-    Write-Host "Build completed successfully" -ForegroundColor Green
-    Write-Host ""
-
-    # Locate the executable
-    Write-Host "LOCATING EXECUTABLE" -ForegroundColor Cyan
-    Write-Host ""
-
-    if (Test-Path $BuiltExePath) {
-        $FoundExe = (Resolve-Path $BuiltExePath).Path
-        Write-Host "Found: $FoundExe" -ForegroundColor Green
-    } else {
-        Write-Host "ERROR: Executable not found at: $BuiltExePath" -ForegroundColor Red
-        Pop-Location
-        exit 1
-    }
-
-    Write-Host ""
-
-    # Copy to root
-    Write-Host "CREATING EXECUTABLE" -ForegroundColor Cyan
-    Write-Host ""
-
-    Copy-Item -Path $FoundExe -Destination $ExePath -Force
-    Write-Host "Copied to: $ExePath" -ForegroundColor Green
-
-    # Verify
-    if (Test-Path $ExePath) {
-        $FileSize = [math]::Round((Get-Item $ExePath).Length / 1MB, 2)
-        Write-Host ""
-        Write-Host "SUCCESS: Omnisystem.exe created ($FileSize MB)" -ForegroundColor Green
-        Write-Host ""
-
-        # Launch if requested
-        if ($Launch) {
-            Write-Host "LAUNCHING OMNISYSTEM" -ForegroundColor Cyan
-            Write-Host ""
-            Write-Host "Launching: $ExePath" -ForegroundColor Yellow
-            & $ExePath
-        }
-    } else {
-        Write-Host "ERROR: Copy failed" -ForegroundColor Red
-        Pop-Location
-        exit 1
-    }
-
-} finally {
-    Pop-Location
+    & $ExePath
 }
