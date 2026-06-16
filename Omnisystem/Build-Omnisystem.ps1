@@ -23,15 +23,17 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Setup paths
-$ProjectRoot = Split-Path -Parent $PSCommandPath
-$GuiDir = Join-Path $ProjectRoot "omnisystem-gui"
-$ExePath = Join-Path $ProjectRoot "Omnisystem.exe"
+$OmnisystemDir = Split-Path -Parent $PSCommandPath
+$RootDir = Split-Path -Parent $OmnisystemDir
+$GuiDir = Join-Path $OmnisystemDir "omnisystem-gui"
+$ExePath = Join-Path $RootDir "Omnisystem.exe"
 
 Write-Host ""
 Write-Host "OMNISYSTEM BUILD SCRIPT" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "Project Root: $ProjectRoot" -ForegroundColor Green
+Write-Host "Omnisystem Dir: $OmnisystemDir" -ForegroundColor Green
+Write-Host "Root Dir: $RootDir" -ForegroundColor Green
 Write-Host "GUI Directory: $GuiDir" -ForegroundColor Green
 Write-Host "Output: $ExePath" -ForegroundColor Green
 
