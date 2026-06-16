@@ -22,7 +22,7 @@ $BuildMode = if ($Release) { "release" } else { "debug" }
 
 $Config = @{
     BuildDir = Join-Path $RootDir "build"
-    OutputDir = Join-Path $RootDir "build\output"
+    OutputDir = Join-Path $RootDir "Omnisystem\launchers"
     LogFile = Join-Path $RootDir "build\build.log"
     Projects = @()
 }
@@ -254,12 +254,23 @@ function Build-TauriProject {
         if ($BinaryPath) {
             Write-Success "Binary created: $($Project.BinaryName).exe"
 
-            # Copy to output
+            # Copy to output with file locking handling
             $OutputPath = Join-Path $Config.OutputDir $Project.OutputName
-            Copy-Item -Path $BinaryPath -Destination $OutputPath -Force
-            Write-Success "Copied to: $($Project.OutputName)"
+            try {
+                # Try to stop running process if it exists
+                $ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($Project.OutputName)
+                Stop-Process -Name $ProcessName -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500
 
-            return $true
+                Copy-Item -Path $BinaryPath -Destination $OutputPath -Force -ErrorAction Stop
+                Write-Success "Copied to: $($Project.OutputName)"
+                return $true
+            }
+            catch {
+                Write-Error "Failed to copy binary: $_"
+                Write-Log "ERROR: $($Project.Name) - Copy failed: $_"
+                return $false
+            }
         } else {
             Write-Error "Binary not found at expected paths"
             Write-Log "ERROR: $($Project.Name) - Binary not found"
