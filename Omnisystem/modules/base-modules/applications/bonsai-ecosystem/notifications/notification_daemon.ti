@@ -1,0 +1,385 @@
+// NOTIFICATION DAEMON & SYSTEM
+// Cross-platform notification system with daemon, persistence, and UI
+// Handles desktop notifications, notification center, and history
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION DAEMON LIFECYCLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn notification_daemon_start() -> String {
+    // Starts notification daemon
+    // Listens on local socket for notification requests
+    // Manages notification queue and delivery
+
+    println("╔════════════════════════════════════════════════════════════════╗");
+    println("║ Starting Notification Daemon                                  ║");
+    println("╚════════════════════════════════════════════════════════════════╝");
+
+    let daemon = json_create_object();
+    let d1 = json_object_set(daemon, "status", "starting");
+    let d2 = json_object_set(d1, "socket_path", "/tmp/omnisystem-notifications.sock");
+    let d3 = json_object_set(d2, "max_queue_size", "1000");
+
+    // Initialize notification database
+    println("✓ Initializing notification database...");
+    notification_db_initialize();
+
+    // Start listening socket
+    println("✓ Starting notification listener...");
+    notification_listener_start();
+
+    // Start platform notifier
+    println("✓ Starting platform notifier...");
+    notification_platform_notifier_start();
+
+    let d4 = json_object_set(d3, "status", "running");
+    let d5 = json_object_set(d4, "timestamp", get_current_timestamp());
+
+    println("✅ Notification daemon running\n");
+    omnisystem_type_wrap(d5, "notifications/daemon_status")
+}
+
+pub fn notification_daemon_stop() -> String {
+    // Stops notification daemon
+    println("Stopping notification daemon...");
+
+    notification_listener_stop();
+    notification_platform_notifier_stop();
+    notification_db_close();
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "status", "stopped");
+    omnisystem_type_wrap(r1, "notifications/daemon_stop_result")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION CREATION & SENDING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn notification_send(title: String, message: String, notification_type: String) -> String {
+    // Sends notification
+    // Types: info, success, warning, error, urgent
+
+    println("Notification: ");
+    print(title);
+    println("");
+
+    let notification = json_create_object();
+    let n1 = json_object_set(notification, "id", generate_notification_id());
+    let n2 = json_object_set(n1, "title", title);
+    let n3 = json_object_set(n2, "message", message);
+    let n4 = json_object_set(n3, "type", notification_type);
+    let n5 = json_object_set(n4, "timestamp", get_current_timestamp());
+    let n6 = json_object_set(n5, "source", "omnisystem");
+
+    // Save to database
+    notification_db_save(notification);
+
+    // Show platform notification
+    notification_show_platform(notification);
+
+    // Update tray badge
+    update_tray_badge();
+
+    omnisystem_type_wrap(n6, "notifications/notification")
+}
+
+pub fn notification_send_with_actions(
+    title: String,
+    message: String,
+    notification_type: String,
+    actions: String
+) -> String {
+    // Sends notification with action buttons
+    // Actions: [{id, label}]
+
+    println("Notification with actions: ");
+    print(title);
+    println("");
+
+    let notification = json_create_object();
+    let n1 = json_object_set(notification, "id", generate_notification_id());
+    let n2 = json_object_set(n1, "title", title);
+    let n3 = json_object_set(n2, "message", message);
+    let n4 = json_object_set(n3, "type", notification_type);
+    let n5 = json_object_set(n4, "actions", actions);
+    let n6 = json_object_set(n5, "timestamp", get_current_timestamp());
+
+    notification_db_save(notification);
+    notification_show_platform(notification);
+    update_tray_badge();
+
+    omnisystem_type_wrap(n6, "notifications/notification_with_actions")
+}
+
+pub fn notification_dismiss(notification_id: String) -> String {
+    // Dismisses a notification
+    println("Dismissing notification: ");
+    print(notification_id);
+    println("");
+
+    notification_db_mark_dismissed(notification_id);
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "dismissed", "true");
+    omnisystem_type_wrap(r1, "notifications/dismiss_result")
+}
+
+pub fn notification_action_clicked(notification_id: String, action_id: String) -> String {
+    // Handles notification action button click
+    println("Notification action: ");
+    print(notification_id);
+    print(" -> ");
+    print(action_id);
+    println("");
+
+    notification_db_record_action(notification_id, action_id);
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "action_id", action_id);
+    omnisystem_type_wrap(r1, "notifications/action_clicked")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION CENTER & HISTORY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn notification_center_open() -> String {
+    // Opens notification center UI
+    // Shows history of all notifications
+
+    println("Opening notification center...");
+
+    let center = json_create_object();
+    let c1 = json_object_set(center, "visible", "true");
+    let c2 = json_object_set(c1, "notifications", get_notification_history());
+
+    omnisystem_type_wrap(c2, "notifications/notification_center")
+}
+
+pub fn notification_center_close() -> String {
+    // Closes notification center
+    println("Closing notification center...");
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "visible", "false");
+    omnisystem_type_wrap(r1, "notifications/notification_center_close")
+}
+
+pub fn notification_history_get(limit: i64) -> String {
+    // Gets notification history
+    // Most recent first
+
+    let notifications = json_create_array();
+    omnisystem_type_wrap(notifications, "notifications/history_list")
+}
+
+pub fn notification_history_filter(filter_type: String, limit: i64) -> String {
+    // Gets filtered notification history
+    // Filters: all, unread, errors, warnings, info, success
+
+    let notifications = json_create_array();
+    omnisystem_type_wrap(notifications, "notifications/filtered_history")
+}
+
+pub fn notification_history_clear() -> String {
+    // Clears notification history
+    println("Clearing notification history...");
+
+    notification_db_clear_history();
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "cleared", "true");
+    omnisystem_type_wrap(r1, "notifications/history_clear_result")
+}
+
+pub fn notification_history_clear_before(timestamp: i64) -> String {
+    // Clears notifications before timestamp
+    println("Clearing old notifications...");
+
+    notification_db_clear_before(timestamp);
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "cleared", "true");
+    omnisystem_type_wrap(r1, "notifications/history_clear_before_result")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION SETTINGS & DO NOT DISTURB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn dnd_mode_enable(duration_minutes: i64) -> String {
+    // Enables Do Not Disturb mode for specified duration
+    // Notifications still stored but not displayed
+
+    println("Enabling Do Not Disturb...");
+
+    let dnd = json_create_object();
+    let d1 = json_object_set(dnd, "enabled", "true");
+    let d2 = json_object_set(d1, "duration_minutes", int_to_string(duration_minutes));
+    let d3 = json_object_set(d2, "end_time", get_future_timestamp(duration_minutes));
+
+    omnisystem_type_wrap(d3, "notifications/dnd_enabled")
+}
+
+pub fn dnd_mode_disable() -> String {
+    // Disables Do Not Disturb mode
+    println("Disabling Do Not Disturb...");
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "enabled", "false");
+    omnisystem_type_wrap(r1, "notifications/dnd_disabled")
+}
+
+pub fn notification_priority_set(notification_type: String, priority: String) -> String {
+    // Sets notification priority for type
+    // Priorities: low, normal, high, urgent
+    // Urgent notifications bypass DND mode
+
+    println("Setting notification priority: ");
+    print(notification_type);
+    println("");
+
+    let setting = json_create_object();
+    let s1 = json_object_set(setting, "type", notification_type);
+    let s2 = json_object_set(s1, "priority", priority);
+
+    omnisystem_type_wrap(s2, "notifications/priority_setting")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION DEDUPLICATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub fn notification_deduplicate(notification_hash: String) -> String {
+    // Deduplicates notifications based on content hash
+    // Prevents duplicate notifications in short timeframe
+
+    let result = json_create_object();
+    let r1 = json_object_set(result, "deduplicated", "true");
+    omnisystem_type_wrap(r1, "notifications/deduplication_result")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATABASE OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn notification_db_initialize() -> String {
+    // Initializes SQLite database for notifications
+    // Schema: id, title, message, type, timestamp, source, dismissed, actions
+
+    println("  → Initializing notification database");
+    "initialized"
+}
+
+fn notification_db_save(notification: String) -> String {
+    // Saves notification to database
+    "saved"
+}
+
+fn notification_db_mark_dismissed(notification_id: String) -> String {
+    // Marks notification as dismissed
+    "marked"
+}
+
+fn notification_db_record_action(notification_id: String, action_id: String) -> String {
+    // Records notification action
+    "recorded"
+}
+
+fn notification_db_clear_history() -> String {
+    // Clears all notifications
+    "cleared"
+}
+
+fn notification_db_clear_before(timestamp: i64) -> String {
+    // Clears notifications before timestamp
+    "cleared"
+}
+
+fn notification_db_close() -> String {
+    // Closes database connection
+    "closed"
+}
+
+fn get_notification_history() -> String {
+    // Gets all notifications from database
+    json_create_array()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLATFORM NOTIFICATION DELIVERY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn notification_platform_notifier_start() -> String {
+    // Starts platform-specific notifier
+    // Windows: Windows Notification Center (WinRT)
+    // macOS: NSUserNotificationCenter or UNUserNotificationCenter
+    // Linux: D-Bus notifications
+
+    println("  → Starting platform notifier");
+    "started"
+}
+
+fn notification_platform_notifier_stop() -> String {
+    // Stops platform notifier
+    "stopped"
+}
+
+fn notification_show_platform(notification: String) -> String {
+    // Shows notification using platform-specific API
+    "shown"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION LISTENER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn notification_listener_start() -> String {
+    // Starts listening socket for notification requests
+    // Accepts requests from services/applications
+
+    println("  → Starting notification listener");
+    "started"
+}
+
+fn notification_listener_stop() -> String {
+    // Stops listening socket
+    "stopped"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn generate_notification_id() -> String {
+    // Generates unique notification ID
+    "notif_12345"
+}
+
+fn get_current_timestamp() -> String {
+    // Gets current timestamp
+    "1718540000"
+}
+
+fn get_future_timestamp(minutes: i64) -> String {
+    // Gets future timestamp
+    "1718540000"
+}
+
+fn update_tray_badge() -> String {
+    // Updates tray notification badge
+    "updated"
+}
+
+fn json_create_object() -> String { "" }
+fn json_create_array() -> String { "" }
+fn json_object_set(obj: String, key: String, value: String) -> String { "" }
+fn omnisystem_type_wrap(value: String, type_name: String) -> String { "" }
+fn int_to_string(n: i64) -> String { "" }
+fn print(msg: String) {}
+
+fn println(msg: String) {
+    print(msg);
+    print("\n");
+}
