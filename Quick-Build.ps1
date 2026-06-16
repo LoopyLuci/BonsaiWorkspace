@@ -1,9 +1,8 @@
 # ============================================================================
-# QUICK BUILD - Simple one-command build of all Omnisystem launchers
+# QUICK BUILD - Build BonsaiEcosystem Desktop using Omnisystem Native Code
 # ============================================================================
-# Usage: .\Quick-Build.ps1              (builds all, forces rebuild)
+# Usage: .\Quick-Build.ps1              (builds desktop, forces rebuild)
 #        .\Quick-Build.ps1 -Release     (release build)
-#        .\Quick-Build.ps1 -Target desktop (desktop only)
 #        .\Quick-Build.ps1 -NoClean     (use cache, don't force rebuild)
 
 param(
