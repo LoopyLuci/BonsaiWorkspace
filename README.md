@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-production_ready-brightgreen)]()
 [![Architecture](https://img.shields.io/badge/architecture-3_layers-blue)]()
-[![Code](https://img.shields.io/badge/code-140,000+_LOC-blue)]()
+[![Code](https://img.shields.io/badge/code-1,923,000+_LOC-blue)]()
 [![Tests](https://img.shields.io/badge/tests-7,628+-success)]()
 [![Safety](https://img.shields.io/badge/safety-100%25_verified-important)]()
 
