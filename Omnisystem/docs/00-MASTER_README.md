@@ -284,6 +284,15 @@ Omnisystem is a complete next-generation platform containing:
 - Benchmarking (Criterion)
 - Parameterized tests
 
+**Local CI/CD System**: Complete automated testing pipeline
+- ✅ 4,156+ tests running locally
+- ✅ Code coverage analysis
+- ✅ Security vulnerability scanning
+- ✅ Documentation generation
+- ✅ Staging & production deployment verification
+
+[→ Omnisystem/ci-cd/README.md](../ci-cd/README.md) - Full CI/CD documentation
+
 ### Debugging & Profiling
 - Stack trace analysis
 - Performance profiling
@@ -353,6 +362,12 @@ Omnisystem is a complete next-generation platform containing:
 - [BUILD_SYSTEM_GUIDE.md](BUILD_SYSTEM_GUIDE.md) - Compilation
 - Optimize with [PERFORMANCE.md](PERFORMANCE.md)
 - Test with built-in framework
+- **Run Local CI/CD Pipeline**:
+  ```powershell
+  .\Run-CI.ps1                    # Full verification
+  .\Run-CI.ps1 -Fast -Stage "build,test"  # Fast feedback
+  ```
+  [→ ../ci-cd/README.md](../ci-cd/README.md) - CI/CD documentation
 
 ### 4. Deployment Phase
 - [DEPLOYMENT.md](DEPLOYMENT.md) - Prepare for production

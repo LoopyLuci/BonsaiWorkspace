@@ -283,12 +283,48 @@ cat docs/getting-started/       # Quick start guides
 ```
 
 ### **Build From Source**
+
+**Option 1: Quick Build**
 ```bash
 cd Omnisystem/
 cargo build --release           # Build everything
 cargo test --all                # Run all tests
-./scripts/deploy.sh             # Deploy to your target
 ```
+
+**Option 2: Local CI/CD Pipeline (Recommended)**
+
+Omnisystem includes a complete **local-only CI/CD system** that runs all verification stages on your device with zero GitHub dependency:
+
+```powershell
+# Full verification pipeline (8 stages)
+.\Run-CI.ps1 -Full
+
+# Individual stages
+.\Run-CI.ps1 -BuildOnly        # Compile 1,039+ crates
+.\Run-CI.ps1 -TestOnly         # Run 4,156+ tests
+.\Run-CI.ps1 -LintOnly         # Format + linting checks
+.\Run-CI.ps1 -SecurityOnly     # Vulnerability scanning
+.\Run-CI.ps1 -CoverageOnly     # Code coverage analysis
+.\Run-CI.ps1 -DocsOnly         # Generate documentation
+.\Run-CI.ps1 -DeployStagingOnly # Deploy to staging
+.\Run-CI.ps1 -DeployProdOnly   # Deploy to production (manual approval)
+
+# Fast feedback loop
+.\Run-CI.ps1 -Fast -Stage "build,test"
+```
+
+**CI/CD Documentation:**
+- 📖 [Local CI/CD System Guide](Omnisystem/ci-cd/README.md) — Complete usage reference
+- 📋 [CI/CD Migration Guide](Omnisystem/ci-cd/MIGRATION.md) — Details on GitHub Actions → Local conversion
+- 📊 [Conversion Summary](CI-CD-CONVERSION-SUMMARY.md) — Overview of CI/CD infrastructure
+
+**Key Features:**
+- ✅ **Zero external dependency** — Everything runs locally on your device
+- ✅ **8-stage pipeline** — Build, lint, test, security, coverage, docs, staging, production
+- ✅ **Instant feedback** — No queue, results immediately in terminal
+- ✅ **Complete safety gates** — Manual approval required for production
+- ✅ **Emergency rollback** — One-command disaster recovery
+- ✅ **Full transparency** — See exactly what's running
 
 ### **Key Documentation Links**
 
@@ -296,6 +332,7 @@ cargo test --all                # Run all tests
 |------|-----------|
 | **Omnisystem Overview** | [Omnisystem/README.md](Omnisystem/README.md) (1,500+ lines, 150+ docs links) |
 | **UOSC Microkernel** | [UOSC/README.md](Omnisystem/UOSC/README.md) (complete kernel documentation) |
+| **Local CI/CD System** | [Omnisystem/ci-cd/README.md](Omnisystem/ci-cd/README.md) (comprehensive guide) |
 | **Getting Started** | [docs/getting-started/](Omnisystem/docs/getting-started/) |
 | **Architecture** | [docs/architecture/](Omnisystem/docs/architecture/) |
 | **Deployment** | [docs/deployment/](Omnisystem/docs/deployment/) (6 modes) |
