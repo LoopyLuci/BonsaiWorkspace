@@ -602,23 +602,33 @@ We're at an inflection point:
 
 ## 📚 Complete Documentation
 
-### **All Documentation Lives In Two Places**
+### **All Documentation Lives In Three Places**
 
-1. **[Omnisystem/README.md](Omnisystem/README.md)** (1,502 lines)
-   - Complete feature inventory with 150+ documentation links
-   - All systems, languages, frameworks explained
-   - Smart navigation by use case, technology, problem domain
-   - For developers, operators, architects, contributors
+1. **[README.md](README.md)** (This File - Project Overview)
+   - Vision and core principles
+   - 3-layer architecture overview
+   - All capabilities summarized
+   - Getting started directions
+   - **→ See [Omnisystem/docs/INDEX.md](Omnisystem/docs/INDEX.md) for complete navigation**
 
-2. **[Omnisystem/docs/](Omnisystem/docs/)**
+2. **[Omnisystem/docs/INDEX.md](Omnisystem/docs/INDEX.md)** (Navigation Hub)
+   - Complete documentation index
+   - Navigation by role (developers, ops, architects)
+   - Navigation by topic
+   - Organized directory map
+   - **→ Links to all detailed documentation**
+
+3. **[Omnisystem/docs/](Omnisystem/docs/)** (Detailed Guides)
    - Complete guides for every component
    - Architecture documentation
    - Deployment guides (6 modes)
    - Security, performance, observability
    - API reference
    - Examples and tutorials
+   - 17 documentation directories
+   - 200+ documentation files
 
-3. **[Omnisystem/UOSC/docs/](Omnisystem/UOSC/docs/)**
+4. **[Omnisystem/UOSC/docs/](Omnisystem/UOSC/docs/)**
    - UOSC microkernel documentation
    - Kernel architecture (9 subsystems)
    - All 50 hypercalls fully specified

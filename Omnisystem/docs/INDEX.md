@@ -7,6 +7,13 @@
 
 ---
 
+## 📌 Start Here
+
+**New to Omnisystem?** Start with the **[Project README](../../README.md)** for vision and overview.  
+**Looking for a specific topic?** Use the navigation below to find what you need.
+
+---
+
 ## Quick Navigation
 
 ### 🚀 Getting Started
@@ -109,6 +116,37 @@ Z:/Projects/Omnisystem/
 
 ---
 
+## 🔗 Documentation Navigation
+
+**This is INDEX.md** — Your complete documentation navigation hub
+
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[README.md](../../README.md)** | Project vision, architecture overview | Getting oriented, understanding goals |
+| **[INDEX.md](.)** (YOU ARE HERE) | Complete documentation guide | Finding specific topics, navigation |
+| **[Omnisystem/docs/](.)** | Detailed documentation | In-depth learning, reference |
+
+### How They Connect
+
+1. **README.md** (Root) → High-level project overview and vision
+   - Directs users: "For complete documentation navigation, see Omnisystem/docs/INDEX.md"
+   
+2. **docs/INDEX.md** (This File) → Complete documentation map and navigation
+   - Directs users: "For project vision, see the main README.md"
+   - Organizes all 200+ documentation files by topic
+
+3. **docs/** → Detailed guides and references
+   - 17 directories, 200+ files
+   - Organized by topic, purpose, and audience
+
+---
+
 **Status**: ✅ Documentation organized and indexed  
 **Version**: 29.0.0  
 **Last Updated**: 2026-06-16
+
+**Quick Links:**
+- [← Back to Project README](../../README.md)
+- [→ All Documentation](.)
+- [↑ Getting Started](01-getting-started/)
+- [↑ Architecture](00-core/)
