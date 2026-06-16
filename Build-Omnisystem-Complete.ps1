@@ -39,7 +39,6 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSCommandPath
 $OmnisystemDir = Join-Path $ProjectRoot "Omnisystem"
 $GuiDir = Join-Path $OmnisystemDir "gui"
-$CompilersDir = Join-Path $OmnisystemDir
 
 $titanDir = Join-Path $OmnisystemDir "titan_compiler"
 $sylvaDir = Join-Path $OmnisystemDir "sylva_compiler"

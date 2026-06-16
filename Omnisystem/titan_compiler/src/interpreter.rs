@@ -94,9 +94,12 @@ impl Interpreter {
         // First pass: collect functions
         for stmt in &program.statements {
             if let Stmt::FnDef { name, params, body, .. } = stmt {
+                let param_types: Vec<(String, String)> = params.iter().map(|(n, t)| {
+                    (n.clone(), t.as_ref().unwrap_or(&"i64".to_string()).clone())
+                }).collect();
                 self.functions.insert(
                     name.clone(),
-                    (params.clone(), body.clone()),
+                    (param_types, body.clone()),
                 );
             }
         }
@@ -150,7 +153,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_expr(&self, expr: &Expr) -> Result<Value, String> {
+    fn eval_expr(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
             Expr::Integer(n) => Ok(Value::Integer(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),

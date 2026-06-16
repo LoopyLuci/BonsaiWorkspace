@@ -30,30 +30,34 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
                     }
                 }
                 tokens.push(match ident.as_str() {
-                    \"tensor\" => Token::Tensor,
-                    \"let\" => Token::Let,
-                    \"model\" => Token::Model,
-                    \"dense\" => Token::Dense,
-                    \"conv2d\" => Token::Conv2d,
-                    \"train\" => Token::Train,
-                    \"predict\" => Token::Predict,
-                    \"randn\" => Token::Randn,
+                    "tensor" => Token::Tensor,
+                    "let" => Token::Let,
+                    "model" => Token::Model,
+                    "dense" => Token::Dense,
+                    "conv2d" => Token::Conv2d,
+                    "train" => Token::Train,
+                    "predict" => Token::Predict,
+                    "randn" => Token::Randn,
+                    "zeros" => Token::Zeros,
+                    "ones" => Token::Ones,
                     _ => Token::Identifier(ident),
                 });
             },
             '0'..='9' => {
-                let mut num = String::new();
+                let mut num_str = String::new();
                 while let Some(&c) = chars.peek() {
                     if c.is_numeric() || c == '.' {
-                        num.push(c);
+                        num_str.push(c);
                         chars.next();
                     } else {
                         break;
                     }
                 }
-                tokens.push(Token::Number(num.parse().unwrap_or(0.0)));
+                tokens.push(Token::Number(num_str.parse().unwrap_or(0.0)));
             },
-            _ => { chars.next(); },
+            _ => {
+                chars.next();
+            }
         }
     }
 
