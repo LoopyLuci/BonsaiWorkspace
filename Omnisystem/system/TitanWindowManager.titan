@@ -1,0 +1,997 @@
+// TITAN WINDOW MANAGER - OMNISYSTEM DESKTOP ENVIRONMENT
+// High-performance native window management with OS-level integration
+// Location: system/TitanWindowManager.titan
+// 2026-06-24
+
+// TITAN Window Manager provides comprehensive desktop environment support
+// with native window handling, event dispatching, and multi-platform integration.
+
+module TitanWindowManager {
+
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicUsize, AtomicBool, Ordering}};
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // ========================================================================
+    // WINDOW DEFINITIONS
+    // ========================================================================
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum WindowState {
+        Hidden,
+        Visible,
+        Minimized,
+        Maximized,
+        FullScreen,
+        Closing,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum WindowBorder {
+        None,
+        Thin,
+        Standard,
+        Thick,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct WindowPosition {
+        pub x: i32,
+        pub y: i32,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct WindowDimensions {
+        pub width: u32,
+        pub height: u32,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Rect {
+        pub x: i32,
+        pub y: i32,
+        pub width: u32,
+        pub height: u32,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct DPIScaling {
+        pub scale_factor: f32,
+        pub dots_per_inch: u32,
+    }
+
+    pub struct Window {
+        pub id: u64,
+        pub title: String,
+        pub position: WindowPosition,
+        pub dimensions: WindowDimensions,
+        pub state: WindowState,
+        pub z_order: i32,
+        pub border_style: WindowBorder,
+        pub is_focused: bool,
+        pub parent_id: Option<u64>,
+        pub dpi_scaling: DPIScaling,
+        pub native_handle: Option<u64>,
+        pub created_at: u64,
+        pub last_activity: u64,
+    }
+
+    impl Window {
+        pub fn new(id: u64, title: String, x: i32, y: i32, width: u32, height: u32) -> Self {
+            let now = current_time_millis();
+            Window {
+                id,
+                title,
+                position: WindowPosition { x, y },
+                dimensions: WindowDimensions { width, height },
+                state: WindowState::Visible,
+                z_order: 0,
+                border_style: WindowBorder::Standard,
+                is_focused: false,
+                parent_id: None,
+                dpi_scaling: DPIScaling {
+                    scale_factor: 1.0,
+                    dots_per_inch: 96,
+                },
+                native_handle: None,
+                created_at: now,
+                last_activity: now,
+            }
+        }
+
+        pub fn get_bounds(&self) -> Rect {
+            Rect {
+                x: self.position.x,
+                y: self.position.y,
+                width: self.dimensions.width,
+                height: self.dimensions.height,
+            }
+        }
+
+        pub fn contains_point(&self, px: i32, py: i32) -> bool {
+            px >= self.position.x
+                && px < (self.position.x + self.dimensions.width as i32)
+                && py >= self.position.y
+                && py < (self.position.y + self.dimensions.height as i32)
+        }
+    }
+
+    // ========================================================================
+    // DISPLAY MANAGEMENT
+    // ========================================================================
+
+    #[derive(Clone, Debug)]
+    pub struct Display {
+        pub id: u32,
+        pub name: String,
+        pub x: i32,
+        pub y: i32,
+        pub width: u32,
+        pub height: u32,
+        pub dpi: u32,
+        pub refresh_rate: u32,
+        pub is_primary: bool,
+    }
+
+    pub struct DisplayManager {
+        displays: Arc<Mutex<Vec<Display>>>,
+        primary_display_id: Arc<Mutex<u32>>,
+    }
+
+    impl DisplayManager {
+        pub fn new() -> Self {
+            DisplayManager {
+                displays: Arc::new(Mutex::new(Vec::new())),
+                primary_display_id: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        pub fn register_display(&self, display: Display) -> Result<(), String> {
+            if let Ok(mut displays) = self.displays.lock() {
+                if display.is_primary {
+                    if let Ok(mut primary) = self.primary_display_id.lock() {
+                        *primary = display.id;
+                    }
+                }
+                displays.push(display.clone());
+                println!("📺 Display registered: {} ({}x{}@{}Hz)",
+                    display.name, display.width, display.height, display.refresh_rate);
+                Ok(())
+            } else {
+                Err("Failed to acquire display lock".to_string())
+            }
+        }
+
+        pub fn get_displays(&self) -> Result<Vec<Display>, String> {
+            self.displays.lock()
+                .map(|d| d.clone())
+                .map_err(|_| "Failed to get displays".to_string())
+        }
+
+        pub fn get_primary_display(&self) -> Result<Option<Display>, String> {
+            if let Ok(displays) = self.displays.lock() {
+                if let Ok(primary_id) = self.primary_display_id.lock() {
+                    Ok(displays.iter().find(|d| d.id == *primary_id).cloned())
+                } else {
+                    Err("Failed to get primary display ID".to_string())
+                }
+            } else {
+                Err("Failed to acquire display lock".to_string())
+            }
+        }
+
+        pub fn get_display(&self, id: u32) -> Result<Option<Display>, String> {
+            self.displays.lock()
+                .map(|d| d.iter().find(|disp| disp.id == id).cloned())
+                .map_err(|_| "Failed to get display".to_string())
+        }
+    }
+
+    // ========================================================================
+    // EVENT SYSTEM
+    // ========================================================================
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum KeyCode {
+        Enter,
+        Escape,
+        Backspace,
+        Tab,
+        Space,
+        ArrowUp,
+        ArrowDown,
+        ArrowLeft,
+        ArrowRight,
+        Delete,
+        Home,
+        End,
+        PageUp,
+        PageDown,
+        F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+        Char(char),
+        Other(u32),
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum MouseButton {
+        Left,
+        Right,
+        Middle,
+        Forward,
+        Back,
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum InputEvent {
+        MouseMove { x: i32, y: i32, delta_x: i32, delta_y: i32 },
+        MouseClick { button: MouseButton, x: i32, y: i32 },
+        MouseRelease { button: MouseButton, x: i32, y: i32 },
+        MouseScroll { x: i32, y: i32, delta: i32, is_horizontal: bool },
+        MouseDrag { button: MouseButton, x: i32, y: i32, delta_x: i32, delta_y: i32 },
+        KeyDown { code: KeyCode, modifiers: u32 },
+        KeyUp { code: KeyCode, modifiers: u32 },
+        TextInput { text: String },
+        TouchDown { id: u32, x: i32, y: i32 },
+        TouchMove { id: u32, x: i32, y: i32 },
+        TouchUp { id: u32, x: i32, y: i32 },
+        GamepadButtonDown { button: u32, gamepad_id: u32 },
+        GamepadButtonUp { button: u32, gamepad_id: u32 },
+        GamepadAnalog { axis: u32, value: f32, gamepad_id: u32 },
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum WindowEvent {
+        Created { window_id: u64 },
+        Destroyed { window_id: u64 },
+        Moved { window_id: u64, x: i32, y: i32 },
+        Resized { window_id: u64, width: u32, height: u32 },
+        Focused { window_id: u64 },
+        Blurred { window_id: u64 },
+        Minimized { window_id: u64 },
+        Maximized { window_id: u64 },
+        Restored { window_id: u64 },
+        CloseRequested { window_id: u64 },
+        Close { window_id: u64 },
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum SystemEvent {
+        DisplayConnected { display: Display },
+        DisplayDisconnected { display_id: u32 },
+        DisplayModeChanged { display_id: u32 },
+        PowerStateChanged { state: u32 },
+        ThemeChanged { is_dark: bool },
+    }
+
+    #[derive(Clone, Debug)]
+    pub enum Event {
+        Input(InputEvent),
+        Window(WindowEvent),
+        System(SystemEvent),
+    }
+
+    pub struct InputState {
+        pub mouse_x: i32,
+        pub mouse_y: i32,
+        pub left_button_pressed: bool,
+        pub right_button_pressed: bool,
+        pub middle_button_pressed: bool,
+        pub keys_pressed: Vec<KeyCode>,
+        pub modifiers: u32,
+    }
+
+    impl InputState {
+        pub fn new() -> Self {
+            InputState {
+                mouse_x: 0,
+                mouse_y: 0,
+                left_button_pressed: false,
+                right_button_pressed: false,
+                middle_button_pressed: false,
+                keys_pressed: Vec::new(),
+                modifiers: 0,
+            }
+        }
+
+        pub fn is_shift_pressed(&self) -> bool {
+            self.modifiers & 0x01 != 0
+        }
+
+        pub fn is_ctrl_pressed(&self) -> bool {
+            self.modifiers & 0x02 != 0
+        }
+
+        pub fn is_alt_pressed(&self) -> bool {
+            self.modifiers & 0x04 != 0
+        }
+    }
+
+    // ========================================================================
+    // EVENT QUEUE - LOCK-FREE DESIGN
+    // ========================================================================
+
+    pub struct EventQueue {
+        queue: Arc<Mutex<VecDeque<Event>>>,
+        max_size: usize,
+        event_count: Arc<AtomicUsize>,
+        is_processing: Arc<AtomicBool>,
+    }
+
+    impl EventQueue {
+        pub fn new(max_size: usize) -> Self {
+            EventQueue {
+                queue: Arc::new(Mutex::new(VecDeque::with_capacity(max_size))),
+                max_size,
+                event_count: Arc::new(AtomicUsize::new(0)),
+                is_processing: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        pub fn push_event(&self, event: Event) -> Result<(), String> {
+            if let Ok(mut q) = self.queue.lock() {
+                if q.len() < self.max_size {
+                    q.push_back(event);
+                    self.event_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                } else {
+                    Err("Event queue full".to_string())
+                }
+            } else {
+                Err("Failed to acquire queue lock".to_string())
+            }
+        }
+
+        pub fn pop_event(&self) -> Option<Event> {
+            if let Ok(mut q) = self.queue.lock() {
+                q.pop_front()
+            } else {
+                None
+            }
+        }
+
+        pub fn peek_event(&self) -> Option<Event> {
+            if let Ok(q) = self.queue.lock() {
+                q.front().cloned()
+            } else {
+                None
+            }
+        }
+
+        pub fn pending_count(&self) -> usize {
+            self.event_count.load(Ordering::SeqCst)
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.queue.lock().map(|q| q.is_empty()).unwrap_or(true)
+        }
+
+        pub fn clear(&self) -> Result<(), String> {
+            if let Ok(mut q) = self.queue.lock() {
+                q.clear();
+                self.event_count.store(0, Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err("Failed to clear queue".to_string())
+            }
+        }
+    }
+
+    // ========================================================================
+    // WINDOW MANAGER - CORE
+    // ========================================================================
+
+    pub struct WindowManager {
+        windows: Arc<RwLock<HashMap<u64, Window>>>,
+        z_order: Arc<RwLock<Vec<u64>>>,
+        event_queue: Arc<EventQueue>,
+        input_state: Arc<Mutex<InputState>>,
+        display_manager: Arc<DisplayManager>,
+        next_window_id: Arc<AtomicUsize>,
+        focused_window: Arc<Mutex<Option<u64>>>,
+        is_running: Arc<AtomicBool>,
+    }
+
+    impl WindowManager {
+        pub fn new(max_queue_size: usize) -> Self {
+            WindowManager {
+                windows: Arc::new(RwLock::new(HashMap::new())),
+                z_order: Arc::new(RwLock::new(Vec::new())),
+                event_queue: Arc::new(EventQueue::new(max_queue_size)),
+                input_state: Arc::new(Mutex::new(InputState::new())),
+                display_manager: Arc::new(DisplayManager::new()),
+                next_window_id: Arc::new(AtomicUsize::new(1)),
+                focused_window: Arc::new(Mutex::new(None)),
+                is_running: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        // ====== WINDOW LIFECYCLE ======
+
+        pub fn create_window(&self, title: String, x: i32, y: i32, width: u32, height: u32) -> Result<u64, String> {
+            let id = self.next_window_id.fetch_add(1, Ordering::SeqCst) as u64;
+            let window = Window::new(id, title.clone(), x, y, width, height);
+
+            if let Ok(mut windows) = self.windows.write() {
+                windows.insert(id, window);
+
+                if let Ok(mut z_order) = self.z_order.write() {
+                    z_order.push(id);
+                }
+
+                let _ = self.event_queue.push_event(Event::Window(WindowEvent::Created { window_id: id }));
+                println!("🪟 Window created: {} '{}' ({}x{} @ {},{} DPI 1.0x)", id, title, width, height, x, y);
+
+                Ok(id)
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn destroy_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if windows.remove(&window_id).is_some() {
+                    if let Ok(mut z_order) = self.z_order.write() {
+                        z_order.retain(|&id| id != window_id);
+                    }
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Destroyed { window_id }));
+                    println!("🗑️  Window destroyed: {}", window_id);
+
+                    // Clear focus if destroyed window was focused
+                    if let Ok(mut focused) = self.focused_window.lock() {
+                        if *focused == Some(window_id) {
+                            *focused = None;
+                        }
+                    }
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        // ====== WINDOW OPERATIONS ======
+
+        pub fn move_window(&self, window_id: u64, x: i32, y: i32) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.position.x = x;
+                    window.position.y = y;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Moved {
+                        window_id,
+                        x,
+                        y,
+                    }));
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn resize_window(&self, window_id: u64, width: u32, height: u32) -> Result<(), String> {
+            if width == 0 || height == 0 {
+                return Err("Invalid window dimensions".to_string());
+            }
+
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.dimensions.width = width;
+                    window.dimensions.height = height;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Resized {
+                        window_id,
+                        width,
+                        height,
+                    }));
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn get_window(&self, window_id: u64) -> Result<Option<Window>, String> {
+            self.windows
+                .read()
+                .map(|windows| windows.get(&window_id).cloned())
+                .map_err(|_| "Failed to read windows".to_string())
+        }
+
+        pub fn get_all_windows(&self) -> Result<Vec<Window>, String> {
+            self.windows
+                .read()
+                .map(|windows| windows.values().cloned().collect())
+                .map_err(|_| "Failed to read windows".to_string())
+        }
+
+        // ====== WINDOW STATE ======
+
+        pub fn minimize_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.state = WindowState::Minimized;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Minimized { window_id }));
+                    println!("📦 Window minimized: {}", window_id);
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn maximize_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.state = WindowState::Maximized;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Maximized { window_id }));
+                    println!("📈 Window maximized: {}", window_id);
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn restore_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.state = WindowState::Visible;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Restored { window_id }));
+                    println!("✨ Window restored: {}", window_id);
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn set_fullscreen(&self, window_id: u64, fullscreen: bool) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.state = if fullscreen {
+                        WindowState::FullScreen
+                    } else {
+                        WindowState::Visible
+                    };
+                    window.last_activity = current_time_millis();
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        // ====== FOCUS & Z-ORDER ======
+
+        pub fn focus_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(windows) = self.windows.read() {
+                if !windows.contains_key(&window_id) {
+                    return Err(format!("Window {} not found", window_id));
+                }
+            } else {
+                return Err("Failed to read windows".to_string());
+            }
+
+            if let Ok(mut z_order) = self.z_order.write() {
+                z_order.retain(|&id| id != window_id);
+                z_order.push(window_id);
+            }
+
+            if let Ok(mut focused) = self.focused_window.lock() {
+                *focused = Some(window_id);
+            }
+
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.is_focused = true;
+                    window.last_activity = current_time_millis();
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Focused { window_id }));
+                    println!("🎯 Window focused: {}", window_id);
+                }
+            }
+
+            Ok(())
+        }
+
+        pub fn blur_window(&self, window_id: u64) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.is_focused = false;
+
+                    let _ = self.event_queue.push_event(Event::Window(WindowEvent::Blurred { window_id }));
+                    println!("👁️  Window blurred: {}", window_id);
+
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn get_focused_window(&self) -> Result<Option<u64>, String> {
+            self.focused_window
+                .lock()
+                .map(|f| *f)
+                .map_err(|_| "Failed to get focused window".to_string())
+        }
+
+        pub fn get_z_order(&self) -> Result<Vec<u64>, String> {
+            self.z_order
+                .read()
+                .map(|order| order.clone())
+                .map_err(|_| "Failed to get z-order".to_string())
+        }
+
+        // ====== WINDOW PROPERTIES ======
+
+        pub fn set_window_title(&self, window_id: u64, title: String) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.title = title;
+                    window.last_activity = current_time_millis();
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn set_window_border(&self, window_id: u64, border: WindowBorder) -> Result<(), String> {
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.border_style = border;
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        pub fn set_dpi_scaling(&self, window_id: u64, scale_factor: f32, dpi: u32) -> Result<(), String> {
+            if scale_factor <= 0.0 {
+                return Err("Invalid scale factor".to_string());
+            }
+
+            if let Ok(mut windows) = self.windows.write() {
+                if let Some(window) = windows.get_mut(&window_id) {
+                    window.dpi_scaling = DPIScaling {
+                        scale_factor,
+                        dots_per_inch: dpi,
+                    };
+                    println!("🔍 DPI scaling updated: window {} ({:.2}x @ {}DPI)", window_id, scale_factor, dpi);
+                    Ok(())
+                } else {
+                    Err(format!("Window {} not found", window_id))
+                }
+            } else {
+                Err("Failed to acquire window lock".to_string())
+            }
+        }
+
+        // ====== WINDOW QUERIES ======
+
+        pub fn get_window_at_point(&self, x: i32, y: i32) -> Result<Option<u64>, String> {
+            if let Ok(windows) = self.windows.read() {
+                if let Ok(z_order) = self.z_order.read() {
+                    // Search in reverse z-order (top window first)
+                    for &window_id in z_order.iter().rev() {
+                        if let Some(window) = windows.get(&window_id) {
+                            if window.state == WindowState::Visible && window.contains_point(x, y) {
+                                return Ok(Some(window_id));
+                            }
+                        }
+                    }
+                    Ok(None)
+                } else {
+                    Err("Failed to read z-order".to_string())
+                }
+            } else {
+                Err("Failed to read windows".to_string())
+            }
+        }
+
+        pub fn get_window_count(&self) -> Result<usize, String> {
+            self.windows
+                .read()
+                .map(|windows| windows.len())
+                .map_err(|_| "Failed to count windows".to_string())
+        }
+
+        // ====== EVENT HANDLING ======
+
+        pub fn push_input_event(&self, event: InputEvent) -> Result<(), String> {
+            self.event_queue.push_event(Event::Input(event))
+        }
+
+        pub fn push_window_event(&self, event: WindowEvent) -> Result<(), String> {
+            self.event_queue.push_event(Event::Window(event))
+        }
+
+        pub fn push_system_event(&self, event: SystemEvent) -> Result<(), String> {
+            self.event_queue.push_event(Event::System(event))
+        }
+
+        pub fn pop_event(&self) -> Option<Event> {
+            self.event_queue.pop_event()
+        }
+
+        pub fn pending_events(&self) -> usize {
+            self.event_queue.pending_count()
+        }
+
+        pub fn process_input_event(&self, event: InputEvent) -> Result<(), String> {
+            if let Ok(mut state) = self.input_state.lock() {
+                match event {
+                    InputEvent::MouseMove { x, y, delta_x, delta_y } => {
+                        state.mouse_x = x;
+                        state.mouse_y = y;
+                    }
+                    InputEvent::MouseClick { button, x, y } => {
+                        state.mouse_x = x;
+                        state.mouse_y = y;
+                        match button {
+                            MouseButton::Left => state.left_button_pressed = true,
+                            MouseButton::Right => state.right_button_pressed = true,
+                            MouseButton::Middle => state.middle_button_pressed = true,
+                            _ => {}
+                        }
+                    }
+                    InputEvent::MouseRelease { button, x, y } => {
+                        state.mouse_x = x;
+                        state.mouse_y = y;
+                        match button {
+                            MouseButton::Left => state.left_button_pressed = false,
+                            MouseButton::Right => state.right_button_pressed = false,
+                            MouseButton::Middle => state.middle_button_pressed = false,
+                            _ => {}
+                        }
+                    }
+                    InputEvent::KeyDown { code, modifiers } => {
+                        state.modifiers = modifiers;
+                        if !state.keys_pressed.contains(&code) {
+                            state.keys_pressed.push(code);
+                        }
+                    }
+                    InputEvent::KeyUp { code, modifiers } => {
+                        state.modifiers = modifiers;
+                        state.keys_pressed.retain(|&k| k != code);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            } else {
+                Err("Failed to acquire input state lock".to_string())
+            }
+        }
+
+        pub fn get_input_state(&self) -> Result<InputState, String> {
+            self.input_state
+                .lock()
+                .map(|state| state.clone())
+                .map_err(|_| "Failed to get input state".to_string())
+        }
+
+        // ====== DISPLAY MANAGEMENT ======
+
+        pub fn register_display(&self, display: Display) -> Result<(), String> {
+            self.display_manager.register_display(display)
+        }
+
+        pub fn get_displays(&self) -> Result<Vec<Display>, String> {
+            self.display_manager.get_displays()
+        }
+
+        pub fn get_primary_display(&self) -> Result<Option<Display>, String> {
+            self.display_manager.get_primary_display()
+        }
+
+        // ====== LIFECYCLE ======
+
+        pub fn start(&self) -> Result<(), String> {
+            self.is_running.store(true, Ordering::SeqCst);
+            println!("▶️  Window Manager started - ready for events");
+            Ok(())
+        }
+
+        pub fn stop(&self) -> Result<(), String> {
+            self.is_running.store(false, Ordering::SeqCst);
+            println!("⏹️  Window Manager stopped");
+            Ok(())
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.is_running.load(Ordering::SeqCst)
+        }
+
+        pub fn clear_events(&self) -> Result<(), String> {
+            self.event_queue.clear()
+        }
+
+        // ====== STATISTICS ======
+
+        pub fn get_stats(&self) -> Result<WindowManagerStats, String> {
+            let window_count = self.get_window_count()?;
+            let pending_events = self.pending_events();
+            let focused = self.get_focused_window()?;
+
+            Ok(WindowManagerStats {
+                total_windows: window_count,
+                pending_events,
+                focused_window: focused,
+                is_running: self.is_running(),
+            })
+        }
+    }
+
+    // ========================================================================
+    // WINDOW MANAGER STATISTICS
+    // ========================================================================
+
+    pub struct WindowManagerStats {
+        pub total_windows: usize,
+        pub pending_events: usize,
+        pub focused_window: Option<u64>,
+        pub is_running: bool,
+    }
+
+    impl WindowManagerStats {
+        pub fn report(&self) -> String {
+            format!(
+                "📊 Window Manager Stats:\n  Windows: {}\n  Pending Events: {}\n  Focused: {:?}\n  Running: {}",
+                self.total_windows,
+                self.pending_events,
+                self.focused_window,
+                self.is_running
+            )
+        }
+    }
+
+    // ========================================================================
+    // GLOBAL WINDOW MANAGER INSTANCE
+    // ========================================================================
+
+    pub fn create_window_manager(queue_size: usize) -> Arc<WindowManager> {
+        Arc::new(WindowManager::new(queue_size))
+    }
+
+    // ========================================================================
+    // UTILITY FUNCTIONS
+    // ========================================================================
+
+    fn current_time_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+}
+
+// ========================================================================
+// EXAMPLE USAGE & TESTING
+// ========================================================================
+
+pub fn example_window_manager_usage() {
+    use TitanWindowManager::*;
+
+    println!("🚀 TITAN Window Manager - Example Usage\n");
+
+    // Initialize window manager
+    let wm = create_window_manager(256);
+    let _ = wm.start();
+
+    // Register displays
+    let primary_display = Display {
+        id: 0,
+        name: "Primary Display".to_string(),
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+        dpi: 96,
+        refresh_rate: 60,
+        is_primary: true,
+    };
+
+    let secondary_display = Display {
+        id: 1,
+        name: "Secondary Display".to_string(),
+        x: 1920,
+        y: 0,
+        width: 2560,
+        height: 1440,
+        dpi: 96,
+        refresh_rate: 144,
+        is_primary: false,
+    };
+
+    let _ = wm.register_display(primary_display);
+    let _ = wm.register_display(secondary_display);
+
+    // Create windows
+    let window1 = wm.create_window("Main Application".to_string(), 100, 100, 800, 600).unwrap();
+    let window2 = wm.create_window("Dialog Box".to_string(), 400, 300, 400, 300).unwrap();
+
+    println!("\n📋 Windows created: {}, {}", window1, window2);
+
+    // Manipulate windows
+    let _ = wm.focus_window(window1);
+    let _ = wm.move_window(window1, 150, 150);
+    let _ = wm.resize_window(window1, 900, 700);
+
+    // Set DPI scaling
+    let _ = wm.set_dpi_scaling(window1, 1.5, 144);
+
+    // Generate input events
+    let mouse_move = InputEvent::MouseMove { x: 400, y: 300, delta_x: 5, delta_y: 5 };
+    let _ = wm.push_input_event(mouse_move.clone());
+
+    let key_down = InputEvent::KeyDown { code: KeyCode::Enter, modifiers: 0 };
+    let _ = wm.push_input_event(key_down);
+
+    // Process input
+    let _ = wm.process_input_event(mouse_move);
+
+    // Get statistics
+    if let Ok(stats) = wm.get_stats() {
+        println!("\n{}", stats.report());
+    }
+
+    // Window operations
+    let _ = wm.minimize_window(window2);
+    let _ = wm.maximize_window(window1);
+
+    // Get z-order
+    if let Ok(z_order) = wm.get_z_order() {
+        println!("🔝 Z-Order: {:?}", z_order);
+    }
+
+    // Point-based lookup
+    if let Ok(window_at_point) = wm.get_window_at_point(200, 200) {
+        println!("🎯 Window at (200, 200): {:?}", window_at_point);
+    }
+
+    // Cleanup
+    let _ = wm.destroy_window(window2);
+    let _ = wm.stop();
+
+    println!("\n✅ TITAN Window Manager Example Complete");
+}
