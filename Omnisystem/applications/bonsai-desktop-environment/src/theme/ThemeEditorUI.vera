@@ -1,0 +1,1088 @@
+// Theme System - Complete Theme Editor and Selector
+// Support for light, dark, high-contrast, and custom themes
+
+use std::collections::HashMap;
+
+pub struct ThemeEditor {
+    id: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Available themes
+    built_in_themes: Vec<BuiltInTheme>,
+    custom_themes: HashMap<String, CustomTheme>,
+
+    // Current editing state
+    current_theme: Option<CustomTheme>,
+    preview_theme: Theme,
+    unsaved_changes: bool,
+
+    // UI state
+    selected_section: String,
+    color_picker_visible: bool,
+    selected_color_field: Option<ColorField>,
+}
+
+impl ThemeEditor {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "theme-editor".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            built_in_themes: Self::load_built_in_themes(),
+            custom_themes: HashMap::new(),
+            current_theme: None,
+            preview_theme: asset_manager.get_current_theme(),
+            unsaved_changes: false,
+            selected_section: "colors".to_string(),
+            color_picker_visible: false,
+            selected_color_field: None,
+        }
+    }
+
+    // ============================================================================
+    // THEME SELECTION
+    // ============================================================================
+
+    pub fn render_theme_selector(&self) -> Widget {
+        Panel {
+            id: "theme-selector-panel".to_string(),
+            padding: 24.0,
+            background_color: self.theme.colors.background,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+                    margin_bottom: 24.0,
+
+                    children: vec![
+                        Label {
+                            text: "Choose Theme".to_string(),
+                            font_size: 24.0,
+                            font_weight: 700,
+                        },
+                        Spacer {},
+                        Button {
+                            label: "Create Custom".to_string(),
+                            icon: self.asset_manager.load_icon("plus", 16),
+                            variant: "primary".to_string(),
+                            onClick: || {
+                                THEME_EDITOR.show_create_theme_dialog();
+                            },
+                        },
+                    ],
+                },
+
+                // Built-in themes grid
+                Label {
+                    text: "Built-in Themes".to_string(),
+                    font_size: 14.0,
+                    font_weight: 600,
+                    margin_bottom: 12.0,
+                },
+
+                Grid {
+                    id: "builtin-themes-grid".to_string(),
+                    columns: 4,
+                    gap: 16.0,
+                    margin_bottom: 32.0,
+
+                    children: self
+                        .built_in_themes
+                        .iter()
+                        .map(|theme| self.render_theme_card(theme.name.as_str(), &theme.description, &theme.preview_colors))
+                        .collect(),
+                },
+
+                // Custom themes grid
+                if !self.custom_themes.is_empty() {
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Custom Themes".to_string(),
+                                font_size: 14.0,
+                                font_weight: 600,
+                            },
+                            Grid {
+                                columns: 4,
+                                gap: 16.0,
+
+                                children: self
+                                    .custom_themes
+                                    .values()
+                                    .map(|custom_theme| {
+                                        self.render_custom_theme_card(&custom_theme)
+                                    })
+                                    .collect(),
+                            },
+                        ],
+                    }
+                } else {
+                    EmptyWidget {}
+                },
+            ],
+        }
+    }
+
+    fn render_theme_card(
+        &self,
+        name: &str,
+        description: &str,
+        colors: &ColorPreview,
+    ) -> Widget {
+        Card {
+            id: format!("theme-card-{}", name.to_lowercase()),
+            padding: 16.0,
+            cursor: "pointer".to_string(),
+            on_hover_scale: 1.05,
+
+            children: vec![
+                // Color preview
+                Row {
+                    spacing: 2.0,
+                    margin_bottom: 12.0,
+
+                    children: vec![
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: colors.primary,
+                            border_radius: 4.0,
+                        },
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: colors.secondary,
+                            border_radius: 4.0,
+                        },
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: colors.background,
+                            border_radius: 4.0,
+                            border: true,
+                        },
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: colors.accent,
+                            border_radius: 4.0,
+                        },
+                    ],
+                },
+
+                // Theme name
+                Label {
+                    text: name.to_string(),
+                    font_size: 14.0,
+                    font_weight: 600,
+                    margin_bottom: 4.0,
+                },
+
+                // Description
+                Label {
+                    text: description.to_string(),
+                    font_size: 11.0,
+                    color: self.theme.colors.foreground_secondary,
+                    word_wrap: true,
+                    margin_bottom: 12.0,
+                },
+
+                // Apply button
+                Button {
+                    label: "Apply".to_string(),
+                    width: "100%".to_string(),
+                    variant: "primary".to_string(),
+                    onClick: {
+                        let theme_name = name.to_string();
+                        move || {
+                            THEME_EDITOR.apply_built_in_theme(&theme_name);
+                        }
+                    },
+                },
+            ],
+        }
+    }
+
+    fn render_custom_theme_card(&self, custom_theme: &CustomTheme) -> Widget {
+        Card {
+            id: format!("custom-theme-card-{}", custom_theme.id),
+            padding: 16.0,
+
+            children: vec![
+                Row {
+                    spacing: 2.0,
+                    margin_bottom: 12.0,
+
+                    children: vec![
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: custom_theme.colors.primary,
+                        },
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: custom_theme.colors.secondary,
+                        },
+                        Rectangle {
+                            width: 20.0,
+                            height: 40.0,
+                            color: custom_theme.colors.background,
+                        },
+                    ],
+                },
+
+                Label {
+                    text: custom_theme.name.clone(),
+                    font_size: 14.0,
+                    font_weight: 600,
+                    margin_bottom: 12.0,
+                },
+
+                Row {
+                    spacing: 6.0,
+
+                    children: vec![
+                        Button {
+                            label: "Edit".to_string(),
+                            variant: "secondary".to_string(),
+                            size: "small".to_string(),
+                            width: "50%".to_string(),
+                            onClick: {
+                                let theme_id = custom_theme.id.clone();
+                                move || {
+                                    THEME_EDITOR.edit_custom_theme(&theme_id);
+                                }
+                            },
+                        },
+                        Button {
+                            label: "Delete".to_string(),
+                            variant: "danger".to_string(),
+                            size: "small".to_string(),
+                            width: "50%".to_string(),
+                            onClick: {
+                                let theme_id = custom_theme.id.clone();
+                                move || {
+                                    THEME_EDITOR.delete_custom_theme(&theme_id);
+                                }
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    // ============================================================================
+    // THEME EDITOR
+    // ============================================================================
+
+    pub fn render_theme_editor(&self) -> Widget {
+        Panel {
+            id: "theme-editor-panel".to_string(),
+            padding: 24.0,
+            background_color: self.theme.colors.background,
+
+            children: vec![
+                // Header
+                Row {
+                    spacing: 12.0,
+                    margin_bottom: 24.0,
+
+                    children: vec![
+                        Label {
+                            text: "Edit Theme".to_string(),
+                            font_size: 24.0,
+                            font_weight: 700,
+                        },
+                        Spacer {},
+                        Label {
+                            text: if self.unsaved_changes {
+                                "Unsaved changes"
+                            } else {
+                                ""
+                            },
+                            color: self.theme.colors.warning,
+                            font_size: 12.0,
+                            font_weight: 600,
+                        },
+                    ],
+                },
+
+                Row {
+                    spacing: 24.0,
+
+                    children: vec![
+                        // Left panel - sections
+                        Column {
+                            width: "20%".to_string(),
+                            spacing: 4.0,
+
+                            children: vec![
+                                self.render_section_button("colors", "Colors"),
+                                self.render_section_button("typography", "Typography"),
+                                self.render_section_button("spacing", "Spacing"),
+                                self.render_section_button("shadows", "Shadows"),
+                                self.render_section_button("borders", "Borders"),
+                            ],
+                        },
+
+                        // Middle panel - content
+                        Column {
+                            width: "50%".to_string(),
+                            spacing: 16.0,
+
+                            children: {
+                                match self.selected_section.as_str() {
+                                    "colors" => self.render_color_section(),
+                                    "typography" => self.render_typography_section(),
+                                    "spacing" => self.render_spacing_section(),
+                                    "shadows" => self.render_shadow_section(),
+                                    "borders" => self.render_border_section(),
+                                    _ => vec![],
+                                }
+                            },
+                        },
+
+                        // Right panel - preview
+                        Column {
+                            width: "30%".to_string(),
+                            spacing: 12.0,
+
+                            children: vec![
+                                Label {
+                                    text: "Preview".to_string(),
+                                    font_size: 14.0,
+                                    font_weight: 600,
+                                    margin_bottom: 12.0,
+                                },
+
+                                self.render_preview_panel(),
+                            ],
+                        },
+                    ],
+                },
+
+                Separator { margin: 24.0 },
+
+                // Footer buttons
+                Row {
+                    spacing: 8.0,
+
+                    children: vec![
+                        Spacer {},
+                        Button {
+                            label: "Cancel".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                THEME_EDITOR.close_editor();
+                            },
+                        },
+                        Button {
+                            label: "Reset".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                THEME_EDITOR.reset_changes();
+                            },
+                        },
+                        Button {
+                            label: "Save".to_string(),
+                            variant: "primary".to_string(),
+                            onClick: || {
+                                THEME_EDITOR.save_theme();
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_section_button(&self, section_id: &str, label: &str) -> Widget {
+        Button {
+            id: format!("section-{}", section_id),
+            label: label.to_string(),
+            width: "100%".to_string(),
+            variant: if self.selected_section == section_id {
+                "primary".to_string()
+            } else {
+                "secondary".to_string()
+            },
+            text_align: "left".to_string(),
+            onClick: {
+                let section = section_id.to_string();
+                move || {
+                    THEME_EDITOR.select_section(&section);
+                }
+            },
+        }
+    }
+
+    fn render_color_section(&self) -> Vec<Widget> {
+        vec![
+            // Primary color
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Primary Color".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Row {
+                        spacing: 12.0,
+
+                        children: vec![
+                            // Color preview
+                            Rectangle {
+                                width: 60.0,
+                                height: 60.0,
+                                color: self.preview_theme.colors.primary,
+                                border: true,
+                                border_color: self.theme.colors.border,
+                                border_radius: 4.0,
+                                cursor: "pointer".to_string(),
+                                onClick: || {
+                                    THEME_EDITOR.show_color_picker(ColorField::Primary);
+                                },
+                            },
+
+                            // Hex input
+                            Column {
+                                spacing: 4.0,
+                                width: "1fr".to_string(),
+
+                                children: vec![
+                                    TextField {
+                                        id: "color-primary-hex".to_string(),
+                                        value: self.color_to_hex(&self.preview_theme.colors.primary),
+                                        placeholder: "#0D47A1".to_string(),
+                                        width: "100%".to_string(),
+                                        onInput: |hex_value| {
+                                            THEME_EDITOR.update_color_from_hex(ColorField::Primary, &hex_value);
+                                        },
+                                    },
+                                    Label {
+                                        text: "Click or enter hex code".to_string(),
+                                        font_size: 10.0,
+                                        color: self.theme.colors.foreground_secondary,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+
+            // Secondary color
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Secondary Color".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Row {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Rectangle {
+                                width: 60.0,
+                                height: 60.0,
+                                color: self.preview_theme.colors.secondary,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                                onClick: || {
+                                    THEME_EDITOR.show_color_picker(ColorField::Secondary);
+                                },
+                            },
+                            TextField {
+                                id: "color-secondary-hex".to_string(),
+                                value: self.color_to_hex(&self.preview_theme.colors.secondary),
+                                placeholder: "#FF5722".to_string(),
+                                width: "100%".to_string(),
+                            },
+                        ],
+                    },
+                ],
+            },
+
+            // Background color
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Background Color".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Row {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Rectangle {
+                                width: 60.0,
+                                height: 60.0,
+                                color: self.preview_theme.colors.background,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                                onClick: || {
+                                    THEME_EDITOR.show_color_picker(ColorField::Background);
+                                },
+                            },
+                            TextField {
+                                id: "color-background-hex".to_string(),
+                                value: self.color_to_hex(&self.preview_theme.colors.background),
+                                placeholder: "#FFFFFF".to_string(),
+                                width: "100%".to_string(),
+                            },
+                        ],
+                    },
+                ],
+            },
+
+            // Accent color
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Accent Color".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Row {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Rectangle {
+                                width: 60.0,
+                                height: 60.0,
+                                color: self.preview_theme.colors.accent,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                                onClick: || {
+                                    THEME_EDITOR.show_color_picker(ColorField::Accent);
+                                },
+                            },
+                            TextField {
+                                id: "color-accent-hex".to_string(),
+                                value: self.color_to_hex(&self.preview_theme.colors.accent),
+                                placeholder: "#FFC107".to_string(),
+                                width: "100%".to_string(),
+                            },
+                        ],
+                    },
+                ],
+            },
+
+            // Error, warning, success colors
+            Row {
+                spacing: 12.0,
+
+                children: vec![
+                    Column {
+                        spacing: 8.0,
+                        width: "33%".to_string(),
+
+                        children: vec![
+                            Label {
+                                text: "Error".to_string(),
+                                font_size: 10.0,
+                            },
+                            Rectangle {
+                                width: 40.0,
+                                height: 40.0,
+                                color: self.preview_theme.colors.error,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                            },
+                        ],
+                    },
+                    Column {
+                        spacing: 8.0,
+                        width: "33%".to_string(),
+
+                        children: vec![
+                            Label {
+                                text: "Warning".to_string(),
+                                font_size: 10.0,
+                            },
+                            Rectangle {
+                                width: 40.0,
+                                height: 40.0,
+                                color: self.preview_theme.colors.warning,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                            },
+                        ],
+                    },
+                    Column {
+                        spacing: 8.0,
+                        width: "33%".to_string(),
+
+                        children: vec![
+                            Label {
+                                text: "Success".to_string(),
+                                font_size: 10.0,
+                            },
+                            Rectangle {
+                                width: 40.0,
+                                height: 40.0,
+                                color: self.preview_theme.colors.success,
+                                border: true,
+                                cursor: "pointer".to_string(),
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_typography_section(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Font Family".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Select {
+                        options: vec![
+                            ("System Default".to_string(), "system".to_string()),
+                            ("Inter".to_string(), "inter".to_string()),
+                            ("Roboto".to_string(), "roboto".to_string()),
+                            ("Open Sans".to_string(), "opensans".to_string()),
+                        ],
+                        selected: "system".to_string(),
+                        on_change: |font| {
+                            THEME_EDITOR.set_font(&font);
+                        },
+                    },
+                ],
+            },
+
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Base Font Size".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Slider {
+                        min: 12,
+                        max: 18,
+                        value: 14,
+                        on_change: |size| {
+                            THEME_EDITOR.set_base_font_size(size as f32);
+                        },
+                    },
+                    Label {
+                        text: "14px".to_string(),
+                        font_size: 10.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Line Height".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Slider {
+                        min: 120,
+                        max: 180,
+                        value: 150,
+                        on_change: |height| {
+                            THEME_EDITOR.set_line_height(height as f32 / 100.0);
+                        },
+                    },
+                    Label {
+                        text: "1.5".to_string(),
+                        font_size: 10.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_spacing_section(&self) -> Vec<Widget> {
+        vec![
+            Label {
+                text: "Adjust spacing scale (affects padding and margins throughout the UI)".to_string(),
+                font_size: 11.0,
+                color: self.theme.colors.foreground_secondary,
+                margin_bottom: 16.0,
+            },
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Spacing Scale".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Slider {
+                        min: 80,
+                        max: 120,
+                        value: 100,
+                        on_change: |scale| {
+                            THEME_EDITOR.set_spacing_scale(scale as f32 / 100.0);
+                        },
+                    },
+                    Label {
+                        text: "1.0x (100%)".to_string(),
+                        font_size: 10.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_shadow_section(&self) -> Vec<Widget> {
+        vec![
+            Label {
+                text: "Card shadows and depth effects".to_string(),
+                font_size: 11.0,
+                color: self.theme.colors.foreground_secondary,
+                margin_bottom: 16.0,
+            },
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Checkbox {
+                        label: "Enable shadows".to_string(),
+                        checked: true,
+                    },
+                    Label {
+                        text: "Shadow Depth".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Slider {
+                        min: 1,
+                        max: 5,
+                        value: 2,
+                        on_change: |depth| {
+                            THEME_EDITOR.set_shadow_depth(depth);
+                        },
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_border_section(&self) -> Vec<Widget> {
+        vec![
+            Label {
+                text: "Border styles and radius".to_string(),
+                font_size: 11.0,
+                color: self.theme.colors.foreground_secondary,
+                margin_bottom: 16.0,
+            },
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Label {
+                        text: "Border Radius".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                    },
+                    Slider {
+                        min: 0,
+                        max: 16,
+                        value: 4,
+                        on_change: |radius| {
+                            THEME_EDITOR.set_border_radius(radius as f32);
+                        },
+                    },
+                    Label {
+                        text: "4px".to_string(),
+                        font_size: 10.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_preview_panel(&self) -> Widget {
+        Panel {
+            id: "theme-preview".to_string(),
+            padding: 16.0,
+            background_color: self.preview_theme.colors.background,
+            border: true,
+            border_color: self.theme.colors.border,
+
+            children: vec![
+                Label {
+                    text: "Sample Content".to_string(),
+                    font_size: 14.0,
+                    font_weight: 600,
+                    color: self.preview_theme.colors.foreground,
+                    margin_bottom: 12.0,
+                },
+
+                Button {
+                    label: "Primary Button".to_string(),
+                    width: "100%".to_string(),
+                    margin_bottom: 8.0,
+                },
+
+                Button {
+                    label: "Secondary Button".to_string(),
+                    variant: "secondary".to_string(),
+                    width: "100%".to_string(),
+                    margin_bottom: 8.0,
+                },
+
+                Row {
+                    spacing: 4.0,
+                    margin_bottom: 8.0,
+
+                    children: vec![
+                        Rectangle {
+                            width: 10.0,
+                            height: 10.0,
+                            color: self.preview_theme.colors.success,
+                        },
+                        Label {
+                            text: "Success state".to_string(),
+                            font_size: 11.0,
+                        },
+                    ],
+                },
+
+                Row {
+                    spacing: 4.0,
+
+                    children: vec![
+                        Rectangle {
+                            width: 10.0,
+                            height: 10.0,
+                            color: self.preview_theme.colors.error,
+                        },
+                        Label {
+                            text: "Error state".to_string(),
+                            font_size: 11.0,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    // ============================================================================
+    // HELPER METHODS
+    // ============================================================================
+
+    fn load_built_in_themes() -> Vec<BuiltInTheme> {
+        vec![
+            BuiltInTheme {
+                name: "Light".to_string(),
+                description: "Bright theme with white background".to_string(),
+                preview_colors: ColorPreview {
+                    primary: Color::from_hex("#0D47A1"),
+                    secondary: Color::from_hex("#FF5722"),
+                    background: Color::from_hex("#FFFFFF"),
+                    accent: Color::from_hex("#FFC107"),
+                },
+            },
+            BuiltInTheme {
+                name: "Dark".to_string(),
+                description: "Professional dark theme".to_string(),
+                preview_colors: ColorPreview {
+                    primary: Color::from_hex("#1976D2"),
+                    secondary: Color::from_hex("#FF7043"),
+                    background: Color::from_hex("#121212"),
+                    accent: Color::from_hex("#FFB74D"),
+                },
+            },
+            BuiltInTheme {
+                name: "High Contrast".to_string(),
+                description: "Maximum accessibility and readability".to_string(),
+                preview_colors: ColorPreview {
+                    primary: Color::from_hex("#000000"),
+                    secondary: Color::from_hex("#FFFF00"),
+                    background: Color::from_hex("#FFFFFF"),
+                    accent: Color::from_hex("#FF0000"),
+                },
+            },
+            BuiltInTheme {
+                name: "Blue Light Filter".to_string(),
+                description: "Warm theme for evening viewing".to_string(),
+                preview_colors: ColorPreview {
+                    primary: Color::from_hex("#D84315"),
+                    secondary: Color::from_hex("#FF6F00"),
+                    background: Color::from_hex("#FFF3E0"),
+                    accent: Color::from_hex("#FF6F00"),
+                },
+            },
+        ]
+    }
+
+    fn color_to_hex(&self, color: &Color) -> String {
+        format!("#{:06X}", color.to_rgb())
+    }
+
+    fn apply_built_in_theme(&self, theme_name: &str) {
+        // Load and apply built-in theme
+        EVENT_SYSTEM.fire_event(format!("theme:apply:{}", theme_name));
+    }
+
+    fn edit_custom_theme(&self, theme_id: &str) {
+        // Load custom theme for editing
+    }
+
+    fn delete_custom_theme(&self, theme_id: &str) {
+        // Delete custom theme
+    }
+
+    fn show_color_picker(&self, field: ColorField) {
+        // Show color picker dialog
+    }
+
+    fn update_color_from_hex(&self, field: ColorField, hex: &str) {
+        // Parse hex and update color
+    }
+
+    fn select_section(&mut self, section: &str) {
+        self.selected_section = section.to_string();
+    }
+
+    fn show_create_theme_dialog(&self) {
+        // Show dialog to create new custom theme
+    }
+
+    fn close_editor(&self) {
+        // Close editor without saving
+    }
+
+    fn reset_changes(&self) {
+        // Reset to last saved state
+    }
+
+    fn save_theme(&self) {
+        // Save current theme
+    }
+
+    fn set_font(&self, font_family: &str) {
+        // Set font family in preview
+    }
+
+    fn set_base_font_size(&self, size: f32) {
+        // Update base font size
+    }
+
+    fn set_line_height(&self, height: f32) {
+        // Update line height
+    }
+
+    fn set_spacing_scale(&self, scale: f32) {
+        // Update spacing scale
+    }
+
+    fn set_shadow_depth(&self, depth: i32) {
+        // Update shadow depth
+    }
+
+    fn set_border_radius(&self, radius: f32) {
+        // Update border radius
+    }
+
+    fn show_icon_picker(&self) {
+        // Show icon picker
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Debug)]
+pub struct BuiltInTheme {
+    pub name: String,
+    pub description: String,
+    pub preview_colors: ColorPreview,
+}
+
+#[derive(Clone, Debug)]
+pub struct ColorPreview {
+    pub primary: Color,
+    pub secondary: Color,
+    pub background: Color,
+    pub accent: Color,
+}
+
+#[derive(Clone, Debug)]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub colors: ThemeColors,
+    pub typography: ThemeTypography,
+    pub spacing: f32,
+    pub created_at: SystemTime,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThemeColors {
+    pub primary: Color,
+    pub secondary: Color,
+    pub background: Color,
+    pub foreground: Color,
+    pub accent: Color,
+    pub error: Color,
+    pub warning: Color,
+    pub success: Color,
+    pub info: Color,
+    pub surface: Color,
+    pub border: Color,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThemeTypography {
+    pub font_family: String,
+    pub font_size: f32,
+    pub line_height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ColorField {
+    Primary,
+    Secondary,
+    Background,
+    Accent,
+    Error,
+    Warning,
+    Success,
+}
+
+// Global theme editor
+pub static THEME_EDITOR: LazyStatic<Mutex<ThemeEditor>> =
+    LazyStatic::new(|| {
+        Mutex::new(ThemeEditor::new(AssetManager::global()))
+    });
