@@ -1,0 +1,877 @@
+// Notification System - Desktop Notifications & Notification Center
+// Comprehensive implementation with toast notifications and persistent history
+
+use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, Duration};
+use std::sync::{Mutex, Arc};
+
+pub struct NotificationSystem {
+    id: String,
+    title: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Notification storage
+    active_notifications: Arc<Mutex<VecDeque<Toast>>>,
+    notification_history: Arc<Mutex<Vec<Notification>>>,
+
+    // Settings
+    do_not_disturb: bool,
+    sound_enabled: bool,
+    notification_timeout_ms: u32,
+    max_history_items: usize,
+
+    // Notification preferences by type
+    notification_preferences: HashMap<String, NotificationPreference>,
+
+    // Notification center UI state
+    center_visible: bool,
+    center_filtered_type: String,
+}
+
+impl NotificationSystem {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        let mut preferences = HashMap::new();
+
+        // Default preferences for common notification types
+        preferences.insert("info".to_string(), NotificationPreference {
+            enabled: true,
+            sound_enabled: false,
+            show_toast: true,
+        });
+        preferences.insert("warning".to_string(), NotificationPreference {
+            enabled: true,
+            sound_enabled: true,
+            show_toast: true,
+        });
+        preferences.insert("error".to_string(), NotificationPreference {
+            enabled: true,
+            sound_enabled: true,
+            show_toast: true,
+        });
+        preferences.insert("success".to_string(), NotificationPreference {
+            enabled: true,
+            sound_enabled: false,
+            show_toast: true,
+        });
+
+        Self {
+            id: "notification-system".to_string(),
+            title: "Notifications".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager,
+            active_notifications: Arc::new(Mutex::new(VecDeque::new())),
+            notification_history: Arc::new(Mutex::new(Vec::new())),
+            do_not_disturb: false,
+            sound_enabled: true,
+            notification_timeout_ms: 5000,
+            max_history_items: 1000,
+            notification_preferences: preferences,
+            center_visible: false,
+            center_filtered_type: "all".to_string(),
+        }
+    }
+
+    // ============================================================================
+    // PUBLIC API - Notification Management
+    // ============================================================================
+
+    /// Show a notification (choose toast and/or center based on settings)
+    pub fn show_notification(&self, notification: NotificationRequest) {
+        // Check if notifications of this type are enabled
+        if !self.is_notification_type_enabled(&notification.notification_type) {
+            return;
+        }
+
+        // Check Do Not Disturb mode
+        if self.do_not_disturb && notification.notification_type != "error" {
+            // Always show errors even in DND mode
+            return;
+        }
+
+        // Create notification object
+        let notification_obj = Notification {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: notification.title.clone(),
+            message: notification.message.clone(),
+            notification_type: notification.notification_type.clone(),
+            icon: notification.icon.clone(),
+            timestamp: SystemTime::now(),
+            read: false,
+            actions: notification.actions.clone(),
+            data: notification.data.clone(),
+        };
+
+        // Add to history (persistent)
+        {
+            let mut history = self.notification_history.lock().unwrap();
+            history.push(notification_obj.clone());
+
+            // Trim history if too large
+            if history.len() > self.max_history_items {
+                history.remove(0);
+            }
+        }
+
+        // Check if should show toast
+        if self.notification_preferences
+            .get(&notification.notification_type)
+            .map(|p| p.show_toast)
+            .unwrap_or(true)
+        {
+            // Create and show toast notification
+            let toast = Toast {
+                id: notification_obj.id.clone(),
+                title: notification.title,
+                message: notification.message,
+                notification_type: notification.notification_type.clone(),
+                icon: notification.icon,
+                created_at: SystemTime::now(),
+                auto_dismiss_ms: self.notification_timeout_ms,
+                actions: notification.actions.clone(),
+                progress: None,
+            };
+
+            {
+                let mut active = self.active_notifications.lock().unwrap();
+                active.push_back(toast);
+            }
+        }
+
+        // Play sound if enabled for this type
+        if self.sound_enabled {
+            if self.notification_preferences
+                .get(&notification.notification_type)
+                .map(|p| p.sound_enabled)
+                .unwrap_or(false)
+            {
+                self.play_notification_sound(&notification.notification_type);
+            }
+        }
+    }
+
+    /// Update a notification with progress (for long operations)
+    pub fn update_notification_progress(
+        &self,
+        notification_id: &str,
+        progress: f32,
+        message: Option<String>,
+    ) {
+        let mut active = self.active_notifications.lock().unwrap();
+        if let Some(toast) = active.iter_mut().find(|n| n.id == notification_id) {
+            toast.progress = Some(progress);
+            if let Some(msg) = message {
+                toast.message = msg;
+            }
+        }
+    }
+
+    /// Dismiss a notification immediately
+    pub fn dismiss_notification(&self, notification_id: &str) {
+        let mut active = self.active_notifications.lock().unwrap();
+        active.retain(|n| n.id != notification_id);
+    }
+
+    /// Mark notification as read in history
+    pub fn mark_as_read(&self, notification_id: &str) {
+        let mut history = self.notification_history.lock().unwrap();
+        if let Some(notif) = history.iter_mut().find(|n| n.id == notification_id) {
+            notif.read = true;
+        }
+    }
+
+    /// Get current active toasts to render
+    pub fn get_active_toasts(&self) -> Vec<Toast> {
+        let active = self.active_notifications.lock().unwrap();
+        active.iter().cloned().collect()
+    }
+
+    /// Get notification history for notification center
+    pub fn get_notification_history(&self, filter_type: Option<&str>) -> Vec<Notification> {
+        let history = self.notification_history.lock().unwrap();
+        if let Some(filter_type) = filter_type {
+            history
+                .iter()
+                .filter(|n| n.notification_type == filter_type)
+                .cloned()
+                .collect()
+        } else {
+            history.iter().rev().cloned().collect()
+        }
+    }
+
+    /// Clear all notifications from history
+    pub fn clear_history(&self) {
+        let mut history = self.notification_history.lock().unwrap();
+        history.clear();
+    }
+
+    /// Clear all notifications of a specific type
+    pub fn clear_history_by_type(&self, notification_type: &str) {
+        let mut history = self.notification_history.lock().unwrap();
+        history.retain(|n| n.notification_type != notification_type);
+    }
+
+    /// Get statistics about notifications
+    pub fn get_statistics(&self) -> NotificationStats {
+        let history = self.notification_history.lock().unwrap();
+        let active = self.active_notifications.lock().unwrap();
+
+        let total = history.len();
+        let unread = history.iter().filter(|n| !n.read).count();
+
+        let type_counts = {
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for notification in history.iter() {
+                *counts
+                    .entry(notification.notification_type.clone())
+                    .or_insert(0) += 1;
+            }
+            counts
+        };
+
+        NotificationStats {
+            total_notifications: total,
+            unread_count: unread,
+            active_toasts: active.len(),
+            notifications_by_type: type_counts,
+            history_size_mb: (total as f32) * 0.001, // Rough estimate
+        }
+    }
+
+    // ============================================================================
+    // SETTINGS MANAGEMENT
+    // ============================================================================
+
+    pub fn set_do_not_disturb(&mut self, enabled: bool) {
+        self.do_not_disturb = enabled;
+    }
+
+    pub fn toggle_do_not_disturb(&mut self) {
+        self.do_not_disturb = !self.do_not_disturb;
+    }
+
+    pub fn set_sound_enabled(&mut self, enabled: bool) {
+        self.sound_enabled = enabled;
+    }
+
+    pub fn set_notification_type_enabled(&mut self, notification_type: &str, enabled: bool) {
+        if let Some(pref) = self.notification_preferences.get_mut(notification_type) {
+            pref.enabled = enabled;
+        }
+    }
+
+    pub fn set_notification_timeout(&mut self, ms: u32) {
+        self.notification_timeout_ms = ms;
+    }
+
+    pub fn get_notification_preferences(&self) -> HashMap<String, NotificationPreference> {
+        self.notification_preferences.clone()
+    }
+
+    // ============================================================================
+    // UI RENDERING
+    // ============================================================================
+
+    pub fn render(&self) -> Vec<Widget> {
+        // Render active toasts
+        self.render_active_toasts()
+    }
+
+    pub fn render_toast_container(&self) -> Widget {
+        let toasts = self.get_active_toasts();
+
+        Column {
+            id: "toast-container".to_string(),
+            position: "fixed".to_string(),
+            top: 20.0,
+            right: 20.0,
+            spacing: 12.0,
+            z_index: 10000,
+
+            children: toasts.iter().map(|toast| self.render_toast(toast)).collect(),
+        }
+    }
+
+    fn render_active_toasts(&self) -> Vec<Widget> {
+        let toasts = self.get_active_toasts();
+        toasts.iter().map(|toast| self.render_toast(toast)).collect()
+    }
+
+    fn render_toast(&self, toast: &Toast) -> Widget {
+        let toast_color = match toast.notification_type.as_str() {
+            "error" => self.theme.colors.error,
+            "warning" => self.theme.colors.warning,
+            "success" => self.theme.colors.success,
+            _ => self.theme.colors.info,
+        };
+
+        Card {
+            id: format!("toast-{}", toast.id),
+            width: 400.0,
+            padding: 16.0,
+            background_color: self.theme.colors.surface,
+            border_color: toast_color,
+            border_width: 2.0,
+            border_radius: 8.0,
+            box_shadow: true,
+            animation: "slideInRight 0.3s ease".to_string(),
+            auto_dismiss_after_ms: Some(toast.auto_dismiss_ms),
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+                    vertical_align: "start".to_string(),
+
+                    children: vec![
+                        // Icon (colored circle with icon)
+                        Column {
+                            width: "auto".to_string(),
+                            children: vec![
+                                Circle {
+                                    radius: 20.0,
+                                    color: toast_color,
+                                    children: vec![
+                                        Image {
+                                            source: self.asset_manager.load_icon_for_type(
+                                                &toast.notification_type,
+                                            ),
+                                            width: 24.0,
+                                            height: 24.0,
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+
+                        // Content
+                        Column {
+                            spacing: 4.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                // Title
+                                Label {
+                                    text: toast.title.clone(),
+                                    font_size: 14.0,
+                                    font_weight: 600,
+                                    color: self.theme.colors.foreground,
+                                },
+
+                                // Message
+                                Label {
+                                    text: toast.message.clone(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                    word_wrap: true,
+                                },
+
+                                // Progress bar (if present)
+                                if let Some(progress) = toast.progress {
+                                    ProgressBar {
+                                        value: (progress * 100.0) as i32,
+                                        max: 100,
+                                        height: 4.0,
+                                        margin_top: 8.0,
+                                        color: toast_color,
+                                    }
+                                } else {
+                                    EmptyWidget {}
+                                },
+
+                                // Action buttons (if present)
+                                if !toast.actions.is_empty() {
+                                    Row {
+                                        spacing: 8.0,
+                                        margin_top: 12.0,
+
+                                        children: toast
+                                            .actions
+                                            .iter()
+                                            .map(|action| {
+                                                Button {
+                                                    label: action.label.clone(),
+                                                    variant: "secondary".to_string(),
+                                                    size: "small".to_string(),
+                                                    onClick: {
+                                                        let action_id = action.action_id.clone();
+                                                        let toast_id = toast.id.clone();
+                                                        move || {
+                                                            NOTIFICATION_SYSTEM
+                                                                .handle_action(&toast_id, &action_id);
+                                                        }
+                                                    },
+                                                }
+                                            })
+                                            .collect(),
+                                    }
+                                } else {
+                                    EmptyWidget {}
+                                },
+                            ],
+                        },
+
+                        // Close button
+                        Button {
+                            label: "".to_string(),
+                            icon: self.asset_manager.load_icon("x", 16),
+                            variant: "ghost".to_string(),
+                            padding: 0.0,
+                            onClick: {
+                                let toast_id = toast.id.clone();
+                                move || {
+                                    NOTIFICATION_SYSTEM.dismiss_notification(&toast_id);
+                                }
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    // Render notification center panel
+    pub fn render_notification_center(&self) -> Widget {
+        Panel {
+            id: "notification-center".to_string(),
+            width: 600.0,
+            height: "max".to_string(),
+            padding: 20.0,
+            background_color: self.theme.colors.background,
+
+            children: vec![
+                // Header
+                Row {
+                    spacing: 12.0,
+                    margin_bottom: 20.0,
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("bell", 24),
+                            width: 24.0,
+                            height: 24.0,
+                        },
+                        Label {
+                            text: "Notification Center".to_string(),
+                            font_size: 20.0,
+                            font_weight: 700,
+                        },
+                        Spacer {},
+                        Badge {
+                            text: format!("{} unread", self.get_unread_count()),
+                            color: self.theme.colors.warning,
+                        },
+                    ],
+                },
+
+                // Filter buttons
+                Row {
+                    spacing: 8.0,
+                    margin_bottom: 16.0,
+
+                    children: vec![
+                        Button {
+                            label: "All".to_string(),
+                            variant: if self.center_filtered_type == "all" {
+                                "primary".to_string()
+                            } else {
+                                "secondary".to_string()
+                            },
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.set_filter("all");
+                            },
+                        },
+                        Button {
+                            label: "Info".to_string(),
+                            variant: if self.center_filtered_type == "info" {
+                                "primary".to_string()
+                            } else {
+                                "secondary".to_string()
+                            },
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.set_filter("info");
+                            },
+                        },
+                        Button {
+                            label: "Warning".to_string(),
+                            variant: if self.center_filtered_type == "warning" {
+                                "primary".to_string()
+                            } else {
+                                "secondary".to_string()
+                            },
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.set_filter("warning");
+                            },
+                        },
+                        Button {
+                            label: "Error".to_string(),
+                            variant: if self.center_filtered_type == "error" {
+                                "primary".to_string()
+                            } else {
+                                "secondary".to_string()
+                            },
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.set_filter("error");
+                            },
+                        },
+                        Button {
+                            label: "Success".to_string(),
+                            variant: if self.center_filtered_type == "success" {
+                                "primary".to_string()
+                            } else {
+                                "secondary".to_string()
+                            },
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.set_filter("success");
+                            },
+                        },
+                        Spacer {},
+                        Button {
+                            label: "Mark All Read".to_string(),
+                            variant: "secondary".to_string(),
+                            size: "small".to_string(),
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.mark_all_read();
+                            },
+                        },
+                    ],
+                },
+
+                // Notification list
+                ScrollView {
+                    id: "notification-list".to_string(),
+                    height: 600.0,
+
+                    children: {
+                        let filter = if self.center_filtered_type == "all" {
+                            None
+                        } else {
+                            Some(self.center_filtered_type.as_str())
+                        };
+
+                        let notifications = self.get_notification_history(filter);
+
+                        if notifications.is_empty() {
+                            vec![
+                                Column {
+                                    alignment: "center".to_string(),
+                                    spacing: 12.0,
+                                    padding: 40.0,
+
+                                    children: vec![
+                                        Image {
+                                            source: self.asset_manager.load_icon("inbox", 48),
+                                            width: 48.0,
+                                            height: 48.0,
+                                            opacity: 0.5,
+                                        },
+                                        Label {
+                                            text: "No notifications".to_string(),
+                                            font_size: 14.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                    ],
+                                },
+                            ]
+                        } else {
+                            notifications
+                                .iter()
+                                .map(|notif| self.render_notification_item(notif))
+                                .collect()
+                        }
+                    },
+                },
+
+                // Footer
+                Separator { margin: 16.0 },
+
+                Row {
+                    spacing: 8.0,
+
+                    children: vec![
+                        Button {
+                            label: "Clear History".to_string(),
+                            icon: self.asset_manager.load_icon("trash", 16),
+                            variant: "danger".to_string(),
+                            onClick: || {
+                                NOTIFICATION_SYSTEM.clear_history();
+                            },
+                        },
+                        Spacer {},
+                        Label {
+                            text: format!("Total: {} notifications", self.get_total_count()),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_notification_item(&self, notification: &Notification) -> Widget {
+        let bg_color = if notification.read {
+            self.theme.colors.surface
+        } else {
+            self.theme.colors.surface_light
+        };
+
+        let type_color = match notification.notification_type.as_str() {
+            "error" => self.theme.colors.error,
+            "warning" => self.theme.colors.warning,
+            "success" => self.theme.colors.success,
+            _ => self.theme.colors.info,
+        };
+
+        Card {
+            id: format!("notif-item-{}", notification.id),
+            padding: 12.0,
+            background_color: bg_color,
+            margin_bottom: 8.0,
+            cursor: "pointer".to_string(),
+            onClick: {
+                let notif_id = notification.id.clone();
+                move || {
+                    NOTIFICATION_SYSTEM.mark_as_read(&notif_id);
+                }
+            },
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        // Type indicator
+                        Rectangle {
+                            width: 4.0,
+                            height: 60.0,
+                            color: type_color,
+                            border_radius: 2.0,
+                        },
+
+                        // Content
+                        Column {
+                            spacing: 4.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: notification.title.clone(),
+                                            font_size: 13.0,
+                                            font_weight: 600,
+                                            color: self.theme.colors.foreground,
+                                        },
+                                        if !notification.read {
+                                            Circle {
+                                                radius: 4.0,
+                                                color: type_color,
+                                            }
+                                        } else {
+                                            EmptyWidget {}
+                                        },
+                                    ],
+                                },
+
+                                Label {
+                                    text: notification.message.clone(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                    word_wrap: true,
+                                },
+
+                                Label {
+                                    text: format_relative_time(notification.timestamp),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_tertiary,
+                                },
+                            ],
+                        },
+
+                        // Actions
+                        Column {
+                            width: "auto".to_string(),
+                            spacing: 4.0,
+
+                            children: {
+                                let mut actions = vec![];
+                                for action in &notification.actions {
+                                    actions.push(Button {
+                                        label: action.label.clone(),
+                                        variant: "secondary".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: {
+                                            let action_id = action.action_id.clone();
+                                            let notif_id = notification.id.clone();
+                                            move || {
+                                                NOTIFICATION_SYSTEM
+                                                    .handle_action(&notif_id, &action_id);
+                                            }
+                                        },
+                                    });
+                                }
+                                actions
+                            },
+                        },
+
+                        // Dismiss button
+                        Button {
+                            label: "".to_string(),
+                            icon: self.asset_manager.load_icon("x", 14),
+                            variant: "ghost".to_string(),
+                            size: "small".to_string(),
+                            onClick: {
+                                let notif_id = notification.id.clone();
+                                move || {
+                                    NOTIFICATION_SYSTEM.dismiss_notification(&notif_id);
+                                }
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    // ============================================================================
+    // HELPER METHODS
+    // ============================================================================
+
+    fn is_notification_type_enabled(&self, notification_type: &str) -> bool {
+        self.notification_preferences
+            .get(notification_type)
+            .map(|p| p.enabled)
+            .unwrap_or(true)
+    }
+
+    fn play_notification_sound(&self, notification_type: &str) {
+        // Play platform-specific notification sound
+        let sound_file = match notification_type {
+            "error" => "notification-error.wav",
+            "warning" => "notification-warning.wav",
+            "success" => "notification-success.wav",
+            _ => "notification-info.wav",
+        };
+
+        // Load and play sound from asset manager
+        if let Some(sound) = self.asset_manager.load_sound(sound_file) {
+            sound.play();
+        }
+    }
+
+    fn get_unread_count(&self) -> usize {
+        let history = self.notification_history.lock().unwrap();
+        history.iter().filter(|n| !n.read).count()
+    }
+
+    fn get_total_count(&self) -> usize {
+        let history = self.notification_history.lock().unwrap();
+        history.len()
+    }
+
+    fn handle_action(&self, notification_id: &str, action_id: &str) {
+        // Handle notification action click
+        // Fire event for the application to handle
+        EVENT_SYSTEM.fire_event(format!(
+            "notification:action:{}:{}",
+            notification_id, action_id
+        ));
+    }
+
+    fn mark_all_read(&self) {
+        let mut history = self.notification_history.lock().unwrap();
+        for notification in history.iter_mut() {
+            notification.read = true;
+        }
+    }
+
+    fn set_filter(&mut self, filter_type: &str) {
+        self.center_filtered_type = filter_type.to_string();
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Debug)]
+pub struct Toast {
+    pub id: String,
+    pub title: String,
+    pub message: String,
+    pub notification_type: String,
+    pub icon: Option<String>,
+    pub created_at: SystemTime,
+    pub auto_dismiss_ms: u32,
+    pub actions: Vec<NotificationAction>,
+    pub progress: Option<f32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Notification {
+    pub id: String,
+    pub title: String,
+    pub message: String,
+    pub notification_type: String,
+    pub icon: Option<String>,
+    pub timestamp: SystemTime,
+    pub read: bool,
+    pub actions: Vec<NotificationAction>,
+    pub data: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NotificationRequest {
+    pub title: String,
+    pub message: String,
+    pub notification_type: String,
+    pub icon: Option<String>,
+    pub actions: Vec<NotificationAction>,
+    pub data: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NotificationAction {
+    pub action_id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct NotificationPreference {
+    pub enabled: bool,
+    pub sound_enabled: bool,
+    pub show_toast: bool,
+}
+
+#[derive(Debug)]
+pub struct NotificationStats {
+    pub total_notifications: usize,
+    pub unread_count: usize,
+    pub active_toasts: usize,
+    pub notifications_by_type: HashMap<String, usize>,
+    pub history_size_mb: f32,
+}
+
+// Global notification system
+pub static NOTIFICATION_SYSTEM: LazyStatic<Mutex<NotificationSystem>> =
+    LazyStatic::new(|| Mutex::new(NotificationSystem::new(AssetManager::global())));
+
+// Helper function for relative time formatting
+fn format_relative_time(time: SystemTime) -> String {
+    let elapsed = SystemTime::now()
+        .duration_since(time)
+        .unwrap_or_default();
+
+    if elapsed.as_secs() < 60 {
+        "Just now".to_string()
+    } else if elapsed.as_secs() < 3600 {
+        format!("{}m ago", elapsed.as_secs() / 60)
+    } else if elapsed.as_secs() < 86400 {
+        format!("{}h ago", elapsed.as_secs() / 3600)
+    } else {
+        format!("{}d ago", elapsed.as_secs() / 86400)
+    }
+}
