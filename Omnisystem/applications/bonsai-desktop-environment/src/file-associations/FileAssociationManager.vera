@@ -1,0 +1,1019 @@
+// File Association System - File Type Management and "Open With" Handling
+// Complete implementation for associating file types with applications
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub struct FileAssociationManager {
+    id: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // File type registry
+    file_types: HashMap<String, FileTypeAssociation>,
+    extension_map: HashMap<String, String>, // ".txt" -> "file-type-id"
+
+    // Application registry
+    applications: HashMap<String, ApplicationInfo>,
+
+    // User preferences
+    default_associations: HashMap<String, String>, // ".txt" -> "app-id"
+
+    // Platform-specific handlers
+    platform_handler: PlatformFileAssociationHandler,
+}
+
+impl FileAssociationManager {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        let mut manager = Self {
+            id: "file-association-manager".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            file_types: HashMap::new(),
+            extension_map: HashMap::new(),
+            applications: HashMap::new(),
+            default_associations: HashMap::new(),
+            platform_handler: PlatformFileAssociationHandler::new(),
+        };
+
+        // Load default file types
+        manager.load_default_file_types();
+        manager.load_system_applications();
+
+        manager
+    }
+
+    // ============================================================================
+    // FILE TYPE MANAGEMENT
+    // ============================================================================
+
+    /// Register a new file type
+    pub fn register_file_type(
+        &mut self,
+        extension: &str,
+        name: &str,
+        description: &str,
+        icon_name: &str,
+        default_app_id: Option<&str>,
+    ) -> Result<String> {
+        let file_type_id = format!("filetype-{}", uuid::Uuid::new_v4());
+
+        let file_type = FileTypeAssociation {
+            id: file_type_id.clone(),
+            extension: extension.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            icon_name: icon_name.to_string(),
+            associated_apps: vec![],
+            default_app: default_app_id.map(|s| s.to_string()),
+            created_at: SystemTime::now(),
+            modified_at: SystemTime::now(),
+        };
+
+        self.file_types.insert(file_type_id.clone(), file_type);
+        self.extension_map
+            .insert(extension.to_lowercase(), file_type_id.clone());
+
+        if let Some(app_id) = default_app_id {
+            self.default_associations
+                .insert(extension.to_lowercase(), app_id.to_string());
+
+            // Update platform registry
+            self.platform_handler.set_file_type_handler(
+                extension,
+                app_id,
+                &self.applications.get(app_id).unwrap().path,
+            );
+        }
+
+        Ok(file_type_id)
+    }
+
+    /// Update file type association
+    pub fn update_file_type(
+        &mut self,
+        extension: &str,
+        icon_name: Option<String>,
+        default_app_id: Option<String>,
+    ) -> Result<()> {
+        let ext_lower = extension.to_lowercase();
+
+        if let Some(type_id) = self.extension_map.get(&ext_lower) {
+            if let Some(file_type) = self.file_types.get_mut(type_id) {
+                if let Some(icon) = icon_name {
+                    file_type.icon_name = icon;
+                }
+                file_type.modified_at = SystemTime::now();
+            }
+        }
+
+        if let Some(app_id) = default_app_id {
+            self.default_associations.insert(ext_lower.clone(), app_id.clone());
+
+            // Update platform registry
+            if let Some(app) = self.applications.get(&app_id) {
+                self.platform_handler
+                    .set_file_type_handler(extension, &app_id, &app.path);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get file type by extension
+    pub fn get_file_type(&self, extension: &str) -> Option<FileTypeAssociation> {
+        let ext_lower = extension.to_lowercase();
+        self.extension_map
+            .get(&ext_lower)
+            .and_then(|id| self.file_types.get(id).cloned())
+    }
+
+    /// Get all file types
+    pub fn get_all_file_types(&self) -> Vec<FileTypeAssociation> {
+        self.file_types.values().cloned().collect()
+    }
+
+    /// Delete file type association
+    pub fn delete_file_type(&mut self, extension: &str) -> Result<()> {
+        let ext_lower = extension.to_lowercase();
+
+        if let Some(type_id) = self.extension_map.remove(&ext_lower) {
+            self.file_types.remove(&type_id);
+            self.default_associations.remove(&ext_lower);
+
+            // Update platform registry
+            self.platform_handler.unregister_file_type(extension);
+
+            Ok(())
+        } else {
+            Err("File type not found".to_string())
+        }
+    }
+
+    // ============================================================================
+    // APPLICATION ASSOCIATION
+    // ============================================================================
+
+    /// Associate application with file type
+    pub fn associate_app_with_filetype(
+        &mut self,
+        extension: &str,
+        app_id: &str,
+    ) -> Result<()> {
+        let ext_lower = extension.to_lowercase();
+
+        if let Some(type_id) = self.extension_map.get(&ext_lower) {
+            if let Some(file_type) = self.file_types.get_mut(type_id) {
+                if !file_type.associated_apps.contains(&app_id.to_string()) {
+                    file_type.associated_apps.push(app_id.to_string());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Set default application for file type
+    pub fn set_default_app_for_filetype(
+        &mut self,
+        extension: &str,
+        app_id: &str,
+    ) -> Result<()> {
+        let ext_lower = extension.to_lowercase();
+
+        self.default_associations
+            .insert(ext_lower.clone(), app_id.to_string());
+
+        // Update file type association
+        if let Some(type_id) = self.extension_map.get(&ext_lower) {
+            if let Some(file_type) = self.file_types.get_mut(type_id) {
+                file_type.default_app = Some(app_id.to_string());
+            }
+        }
+
+        // Update platform registry
+        if let Some(app) = self.applications.get(app_id) {
+            self.platform_handler
+                .set_file_type_handler(extension, app_id, &app.path);
+        }
+
+        Ok(())
+    }
+
+    /// Get default application for file type
+    pub fn get_default_app_for_filetype(&self, extension: &str) -> Option<ApplicationInfo> {
+        let ext_lower = extension.to_lowercase();
+        self.default_associations
+            .get(&ext_lower)
+            .and_then(|app_id| self.applications.get(app_id).cloned())
+    }
+
+    /// Get all applications that can open a file type
+    pub fn get_apps_for_filetype(&self, extension: &str) -> Vec<ApplicationInfo> {
+        let ext_lower = extension.to_lowercase();
+
+        if let Some(type_id) = self.extension_map.get(&ext_lower) {
+            if let Some(file_type) = self.file_types.get(type_id) {
+                return file_type
+                    .associated_apps
+                    .iter()
+                    .filter_map(|app_id| self.applications.get(app_id).cloned())
+                    .collect();
+            }
+        }
+
+        vec![]
+    }
+
+    // ============================================================================
+    // APPLICATION MANAGEMENT
+    // ============================================================================
+
+    /// Register an application
+    pub fn register_application(
+        &mut self,
+        name: &str,
+        path: &str,
+        icon_name: &str,
+        supported_types: Vec<String>,
+    ) -> Result<String> {
+        let app_id = format!("app-{}", uuid::Uuid::new_v4());
+
+        let app_info = ApplicationInfo {
+            id: app_id.clone(),
+            name: name.to_string(),
+            path: path.to_string(),
+            icon_name: icon_name.to_string(),
+            supported_file_types: supported_types,
+            executable: PathBuf::from(path),
+            installed: true,
+        };
+
+        self.applications.insert(app_id.clone(), app_info);
+
+        Ok(app_id)
+    }
+
+    /// Get application info
+    pub fn get_application(&self, app_id: &str) -> Option<ApplicationInfo> {
+        self.applications.get(app_id).cloned()
+    }
+
+    /// Get all registered applications
+    pub fn get_all_applications(&self) -> Vec<ApplicationInfo> {
+        self.applications.values().cloned().collect()
+    }
+
+    // ============================================================================
+    // OPEN WITH FUNCTIONALITY
+    // ============================================================================
+
+    /// Open a file with specified application
+    pub fn open_file_with(
+        &self,
+        file_path: &str,
+        app_id: &str,
+    ) -> Result<()> {
+        if let Some(app) = self.applications.get(app_id) {
+            self.platform_handler
+                .launch_application(&app.path, file_path)?;
+            Ok(())
+        } else {
+            Err(format!("Application {} not found", app_id))
+        }
+    }
+
+    /// Open a file with default application
+    pub fn open_file(&self, file_path: &str) -> Result<()> {
+        let path = Path::new(file_path);
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+
+        if let Some(app) = self.get_default_app_for_filetype(extension) {
+            self.open_file_with(file_path, &app.id)
+        } else {
+            Err(format!(
+                "No default application for file type: {}",
+                extension
+            ))
+        }
+    }
+
+    // ============================================================================
+    // UI RENDERING
+    // ============================================================================
+
+    /// Render file type manager UI
+    pub fn render_manager(&self) -> Widget {
+        Panel {
+            id: "file-association-manager".to_string(),
+            padding: 24.0,
+            background_color: self.theme.colors.background,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+                    margin_bottom: 20.0,
+
+                    children: vec![
+                        Label {
+                            text: "File Type Associations".to_string(),
+                            font_size: 20.0,
+                            font_weight: 700,
+                        },
+                        Spacer {},
+                        Button {
+                            label: "Add File Type".to_string(),
+                            icon: self.asset_manager.load_icon("plus", 16),
+                            variant: "primary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER.show_add_file_type_dialog();
+                            },
+                        },
+                    ],
+                },
+
+                // Search and filter
+                TextField {
+                    id: "file-type-search".to_string(),
+                    placeholder: "Search file types...".to_string(),
+                    width: "100%".to_string(),
+                    icon: self.asset_manager.load_icon("search", 16),
+                    margin_bottom: 16.0,
+                    onInput: |query| {
+                        FILE_ASSOCIATION_MANAGER.filter_file_types(&query);
+                    },
+                },
+
+                // File types list
+                DataGrid {
+                    id: "file-types-grid".to_string(),
+                    columns: vec![
+                        ("Extension".to_string(), "10%".to_string()),
+                        ("Name".to_string(), "20%".to_string()),
+                        ("Description".to_string(), "30%".to_string()),
+                        ("Default App".to_string(), "25%".to_string()),
+                        ("Actions".to_string(), "15%".to_string()),
+                    ],
+                    rows: self
+                        .get_all_file_types()
+                        .iter()
+                        .map(|ft| {
+                            let default_app = ft
+                                .default_app
+                                .as_ref()
+                                .and_then(|id| self.applications.get(id))
+                                .map(|app| app.name.clone())
+                                .unwrap_or_else(|| "-".to_string());
+
+                            vec![
+                                ft.extension.clone(),
+                                ft.name.clone(),
+                                ft.description.clone(),
+                                default_app,
+                                "Edit | Change | Delete".to_string(),
+                            ]
+                        })
+                        .collect(),
+                    height: 500.0,
+                    sortable: true,
+                    filterable: true,
+                },
+            ],
+        }
+    }
+
+    /// Render file type editor dialog
+    pub fn render_file_type_editor(&self, file_type: Option<&FileTypeAssociation>) -> Widget {
+        let is_new = file_type.is_none();
+        let title = if is_new {
+            "Add File Type"
+        } else {
+            "Edit File Type"
+        };
+
+        let ft = file_type.unwrap_or(&FileTypeAssociation {
+            id: String::new(),
+            extension: String::new(),
+            name: String::new(),
+            description: String::new(),
+            icon_name: "file".to_string(),
+            associated_apps: vec![],
+            default_app: None,
+            created_at: SystemTime::now(),
+            modified_at: SystemTime::now(),
+        });
+
+        Modal {
+            id: "file-type-editor-modal".to_string(),
+            title: title.to_string(),
+            width: 600.0,
+
+            children: vec![
+                Column {
+                    spacing: 16.0,
+
+                    children: vec![
+                        // Extension
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "File Extension".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                TextField {
+                                    id: "file-type-extension".to_string(),
+                                    placeholder: "e.g., .docx, .pdf".to_string(),
+                                    value: ft.extension.clone(),
+                                    width: "100%".to_string(),
+                                    disabled: !is_new,
+                                },
+                            ],
+                        },
+
+                        // Name
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "File Type Name".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                TextField {
+                                    id: "file-type-name".to_string(),
+                                    placeholder: "e.g., Microsoft Word Document".to_string(),
+                                    value: ft.name.clone(),
+                                    width: "100%".to_string(),
+                                },
+                            ],
+                        },
+
+                        // Description
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "Description".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                TextField {
+                                    id: "file-type-description".to_string(),
+                                    placeholder: "Enter description...".to_string(),
+                                    value: ft.description.clone(),
+                                    width: "100%".to_string(),
+                                    multiline: true,
+                                    height: 80.0,
+                                },
+                            ],
+                        },
+
+                        // Icon selection
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "File Icon".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                Row {
+                                    spacing: 12.0,
+
+                                    children: vec![
+                                        // Icon preview
+                                        Card {
+                                            padding: 12.0,
+                                            width: 48.0,
+                                            height: 48.0,
+
+                                            children: vec![
+                                                Image {
+                                                    source: self
+                                                        .asset_manager
+                                                        .load_icon_for_extension(&ft.extension),
+                                                    width: 48.0,
+                                                    height: 48.0,
+                                                },
+                                            ],
+                                        },
+
+                                        // Icon picker
+                                        Column {
+                                            spacing: 4.0,
+                                            width: "1fr".to_string(),
+
+                                            children: vec![
+                                                TextField {
+                                                    id: "file-type-icon".to_string(),
+                                                    placeholder: "Icon name from asset library".to_string(),
+                                                    value: ft.icon_name.clone(),
+                                                    width: "100%".to_string(),
+                                                },
+                                                Button {
+                                                    label: "Browse Icon Library".to_string(),
+                                                    variant: "secondary".to_string(),
+                                                    size: "small".to_string(),
+                                                    onClick: || {
+                                                        FILE_ASSOCIATION_MANAGER
+                                                            .show_icon_picker();
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+
+                        // Default application
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "Default Application".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                self.render_app_selector(ft.default_app.as_deref()),
+                            ],
+                        },
+
+                        // Associated applications
+                        if !ft.associated_apps.is_empty() {
+                            Column {
+                                spacing: 4.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Also Opens With".to_string(),
+                                        font_size: 12.0,
+                                        font_weight: 600,
+                                    },
+                                    Column {
+                                        spacing: 4.0,
+
+                                        children: ft
+                                            .associated_apps
+                                            .iter()
+                                            .filter_map(|app_id| {
+                                                self.applications.get(app_id).map(|app| {
+                                                    Row {
+                                                        spacing: 8.0,
+
+                                                        children: vec![
+                                                            Image {
+                                                                source: self
+                                                                    .asset_manager
+                                                                    .load_icon(&app.icon_name, 16),
+                                                                width: 16.0,
+                                                                height: 16.0,
+                                                            },
+                                                            Label {
+                                                                text: app.name.clone(),
+                                                                font_size: 12.0,
+                                                            },
+                                                        ],
+                                                    }
+                                                })
+                                            })
+                                            .collect(),
+                                    },
+                                ],
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+                    ],
+                },
+
+                Separator { margin: 16.0 },
+
+                // Footer buttons
+                Row {
+                    spacing: 8.0,
+
+                    children: vec![
+                        if !is_new {
+                            Button {
+                                label: "Delete".to_string(),
+                                variant: "danger".to_string(),
+                                onClick: || {
+                                    FILE_ASSOCIATION_MANAGER.delete_current_file_type();
+                                },
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+                        Spacer {},
+                        Button {
+                            label: "Cancel".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER.close_editor();
+                            },
+                        },
+                        Button {
+                            label: "Save".to_string(),
+                            variant: "primary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER.save_file_type();
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    /// Render "Open With" dialog
+    pub fn render_open_with_dialog(&self, file_path: &str) -> Widget {
+        let path = Path::new(file_path);
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("");
+
+        let apps = self.get_apps_for_filetype(extension);
+        let default_app = self.get_default_app_for_filetype(extension);
+
+        Modal {
+            id: "open-with-dialog".to_string(),
+            title: format!("Open {} with...", file_path),
+            width: 500.0,
+
+            children: vec![
+                Label {
+                    text: format!("Choose an application to open: {}", file_path),
+                    font_size: 12.0,
+                    margin_bottom: 16.0,
+                },
+
+                // Application list
+                DataGrid {
+                    id: "open-with-apps".to_string(),
+                    columns: vec![
+                        ("Application".to_string(), "50%".to_string()),
+                        ("Path".to_string(), "35%".to_string()),
+                        ("Default".to_string(), "15%".to_string()),
+                    ],
+                    rows: apps
+                        .iter()
+                        .map(|app| {
+                            let is_default = default_app
+                                .as_ref()
+                                .map(|da| da.id == app.id)
+                                .unwrap_or(false);
+
+                            vec![
+                                format!(
+                                    "{} {}",
+                                    if is_default { "⭐" } else { "" },
+                                    app.name
+                                ),
+                                app.path.clone(),
+                                if is_default { "✓" } else { "" }.to_string(),
+                            ]
+                        })
+                        .collect(),
+                    height: 300.0,
+                },
+
+                Checkbox {
+                    id: "open-with-default-checkbox".to_string(),
+                    label: "Set as default application for this file type".to_string(),
+                    checked: false,
+                },
+
+                Separator { margin: 16.0 },
+
+                Row {
+                    spacing: 8.0,
+
+                    children: vec![
+                        Spacer {},
+                        Button {
+                            label: "Browse for More".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER.browse_applications();
+                            },
+                        },
+                        Button {
+                            label: "Cancel".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER.close_open_with_dialog();
+                            },
+                        },
+                        Button {
+                            label: "Open".to_string(),
+                            variant: "primary".to_string(),
+                            onClick: || {
+                                FILE_ASSOCIATION_MANAGER
+                                    .open_with_selected_app(file_path);
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_app_selector(&self, selected_app_id: Option<&str>) -> Widget {
+        let apps = self.get_all_applications();
+
+        Column {
+            spacing: 4.0,
+
+            children: vec![
+                // Dropdown selector
+                Select {
+                    id: "default-app-select".to_string(),
+                    options: vec![("None".to_string(), "".to_string())]
+                        .into_iter()
+                        .chain(
+                            apps.iter()
+                                .map(|app| (app.name.clone(), app.id.clone())),
+                        )
+                        .collect(),
+                    selected: selected_app_id.unwrap_or("").to_string(),
+                    on_change: |app_id| {
+                        FILE_ASSOCIATION_MANAGER.set_default_app(&app_id);
+                    },
+                },
+
+                // App details
+                if let Some(app_id) = selected_app_id {
+                    if let Some(app) = self.applications.get(app_id) {
+                        Column {
+                            spacing: 4.0,
+                            padding: 12.0,
+                            background_color: self.theme.colors.surface,
+                            border: true,
+                            margin_top: 8.0,
+
+                            children: vec![
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        Image {
+                                            source: self
+                                                .asset_manager
+                                                .load_icon(&app.icon_name, 24),
+                                            width: 24.0,
+                                            height: 24.0,
+                                        },
+                                        Column {
+                                            spacing: 2.0,
+
+                                            children: vec![
+                                                Label {
+                                                    text: app.name.clone(),
+                                                    font_size: 12.0,
+                                                    font_weight: 600,
+                                                },
+                                                Label {
+                                                    text: app.path.clone(),
+                                                    font_size: 10.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    } else {
+                        EmptyWidget {}
+                    }
+                } else {
+                    EmptyWidget {}
+                },
+            ],
+        }
+    }
+
+    // ============================================================================
+    // PRIVATE HELPER METHODS
+    // ============================================================================
+
+    fn load_default_file_types(&mut self) {
+        // Load common file types
+        let common_types = vec![
+            (".txt", "Text Document", "Plain text file", "file-text"),
+            (".pdf", "PDF Document", "Portable Document Format", "file-pdf"),
+            (".doc", "Word Document", "Microsoft Word document", "file-word"),
+            (".docx", "Word Document", "Microsoft Word 2007+ document", "file-word"),
+            (".xlsx", "Excel Spreadsheet", "Microsoft Excel spreadsheet", "file-excel"),
+            (".jpg", "JPEG Image", "JPEG image file", "file-image"),
+            (".png", "PNG Image", "Portable Network Graphics", "file-image"),
+            (".zip", "ZIP Archive", "Compressed archive file", "file-archive"),
+            (".mp4", "Video File", "MPEG-4 video file", "file-video"),
+            (".mp3", "Audio File", "MP3 audio file", "file-audio"),
+        ];
+
+        for (ext, name, desc, icon) in common_types {
+            let _ = self.register_file_type(ext, name, desc, icon, None);
+        }
+    }
+
+    fn load_system_applications(&mut self) {
+        // Load system applications
+        #[cfg(target_os = "windows")]
+        {
+            let _ = self.register_application(
+                "Notepad",
+                "notepad.exe",
+                "file-text",
+                vec![".txt".to_string()],
+            );
+            let _ = self.register_application(
+                "Word",
+                "winword.exe",
+                "file-word",
+                vec![".doc".to_string(), ".docx".to_string()],
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = self.register_application(
+                "TextEdit",
+                "/Applications/TextEdit.app",
+                "file-text",
+                vec![".txt".to_string()],
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = self.register_application(
+                "gedit",
+                "/usr/bin/gedit",
+                "file-text",
+                vec![".txt".to_string()],
+            );
+        }
+    }
+
+    fn filter_file_types(&mut self, query: &str) {
+        // Filter file types based on search query
+        // Implementation would update UI state
+    }
+
+    fn show_add_file_type_dialog(&self) {
+        // Show dialog to add new file type
+    }
+
+    fn show_icon_picker(&self) {
+        // Show icon picker dialog
+    }
+
+    fn delete_current_file_type(&self) {
+        // Delete currently edited file type
+    }
+
+    fn close_editor(&self) {
+        // Close editor dialog
+    }
+
+    fn save_file_type(&self) {
+        // Save file type changes
+    }
+
+    fn set_default_app(&self, app_id: &str) {
+        // Set default app
+    }
+
+    fn browse_applications(&self) {
+        // Browse for applications
+    }
+
+    fn close_open_with_dialog(&self) {
+        // Close open with dialog
+    }
+
+    fn open_with_selected_app(&self, file_path: &str) {
+        // Open file with selected app
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Debug)]
+pub struct FileTypeAssociation {
+    pub id: String,
+    pub extension: String,
+    pub name: String,
+    pub description: String,
+    pub icon_name: String,
+    pub associated_apps: Vec<String>,
+    pub default_app: Option<String>,
+    pub created_at: SystemTime,
+    pub modified_at: SystemTime,
+}
+
+#[derive(Clone, Debug)]
+pub struct ApplicationInfo {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub icon_name: String,
+    pub supported_file_types: Vec<String>,
+    pub executable: PathBuf,
+    pub installed: bool,
+}
+
+// ============================================================================
+// PLATFORM-SPECIFIC HANDLER
+// ============================================================================
+
+pub struct PlatformFileAssociationHandler;
+
+impl PlatformFileAssociationHandler {
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_file_type_handler(&self, extension: &str, app_id: &str, app_path: &str) {
+        // Update Windows registry
+        // HKEY_CLASSES_ROOT\.ext -> progid
+        // HKEY_CLASSES_ROOT\progid\shell\open\command -> app_path
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_file_type_handler(&self, extension: &str, app_id: &str, app_path: &str) {
+        // Update LaunchServices database
+        // duti -s com.apple.app-bundle-id .ext all
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_file_type_handler(&self, extension: &str, app_id: &str, app_path: &str) {
+        // Update .desktop file associations
+        // Update freedesktop.org MIME type database
+    }
+
+    #[cfg(target_os = "windows")]
+    fn unregister_file_type(&self, extension: &str) {
+        // Remove from Windows registry
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unregister_file_type(&self, extension: &str) {
+        // Remove from LaunchServices
+    }
+
+    #[cfg(target_os = "linux")]
+    fn unregister_file_type(&self, extension: &str) {
+        // Remove from freedesktop.org MIME types
+    }
+
+    pub fn launch_application(&self, app_path: &str, file_path: &str) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new(app_path)
+                .arg(file_path)
+                .spawn()?;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-a")
+                .arg(app_path)
+                .arg(file_path)
+                .spawn()?;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            std::process::Command::new(app_path)
+                .arg(file_path)
+                .spawn()?;
+        }
+
+        Ok(())
+    }
+}
+
+// Global file association manager
+pub static FILE_ASSOCIATION_MANAGER: LazyStatic<Mutex<FileAssociationManager>> =
+    LazyStatic::new(|| {
+        Mutex::new(FileAssociationManager::new(AssetManager::global()))
+    });
