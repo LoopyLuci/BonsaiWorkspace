@@ -7,6 +7,33 @@
 [![Code](https://img.shields.io/badge/code-1,923,000+_LOC-blue)]()
 [![Tests](https://img.shields.io/badge/tests-7,628+-success)]()
 [![Safety](https://img.shields.io/badge/safety-100%25_verified-important)]()
+[![GUI](https://img.shields.io/badge/GUI-Professional_Desktop-success)]()
+
+---
+
+## 🎨 NEW: Professional Desktop GUI
+
+**Omnisystem now includes a beautiful, enterprise-grade graphical user interface!**
+
+When you launch `Omnisystem.exe`, you get a modern, fully-functional desktop application with:
+
+- **8 System Tabs**: Overview, Authentication, Services, Monitoring, Performance, Files, Applications, Settings
+- **Real-Time Monitoring**: Live CPU, memory, disk, and network metrics (60 FPS rendering)
+- **100-Year Security Dashboard**: Passwordless FIDO2, post-quantum crypto, hardware attestation, duress detection
+- **System Control Panel**: Manage all 35 Omnisystem modules with real-time status
+- **Professional Themes**: Dark, Light, and High Contrast (WCAG AAA accessible)
+- **Graphics Engine**: Hardware-accelerated 2D rendering with gradients, shadows, and animations
+- **Window Management**: Multi-window support, drag-to-move, resize, minimize/maximize
+- **Application Launcher**: Browse and install apps from the Omnisystem marketplace
+- **Smart Settings**: Display, security, network, and privacy configuration
+
+**See it in action:**
+```powershell
+cd Z:\Projects\Omnisystem\Omnisystem\launchers
+.\Omnisystem.exe
+```
+
+📖 **[Full Desktop GUI Documentation](./DESKTOP_GUI_README.md)**
 
 ---
 
