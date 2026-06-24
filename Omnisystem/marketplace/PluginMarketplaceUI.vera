@@ -1,0 +1,1199 @@
+// Omnisystem Plugin Marketplace - Extensibility and Plugin Management
+// Browse, install, manage, and configure community plugins and extensions
+
+use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+
+pub struct PluginMarketplace {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Marketplace data
+    available_plugins: Vec<PluginListing>,
+    installed_plugins: Vec<InstalledPlugin>,
+    plugin_categories: Vec<String>,
+    featured_plugins: Vec<String>,
+
+    // UI state
+    current_tab: MarketplaceTab,
+    search_query: String,
+    selected_category: String,
+    selected_plugin: Option<String>,
+    sort_by: SortOption,
+    filter_rating: f32,
+
+    // Installation state
+    installing_plugins: HashMap<String, InstallationProgress>,
+    plugin_cache_dir: PathBuf,
+}
+
+impl PluginMarketplace {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "plugin-marketplace".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            available_plugins: Self::load_available_plugins(),
+            installed_plugins: Self::load_installed_plugins(),
+            plugin_categories: Self::get_categories(),
+            featured_plugins: Self::get_featured(),
+            current_tab: MarketplaceTab::Browse,
+            search_query: String::new(),
+            selected_category: "All".to_string(),
+            selected_plugin: None,
+            sort_by: SortOption::Downloads,
+            filter_rating: 0.0,
+            installing_plugins: HashMap::new(),
+            plugin_cache_dir: Self::get_cache_dir(),
+        }
+    }
+
+    pub fn render(&self) -> Widget {
+        ApplicationWindow {
+            id: "plugin-marketplace".to_string(),
+            title: "Omnisystem Plugin Marketplace".to_string(),
+            width: 1400,
+            height: 900,
+
+            children: vec![
+                // Header
+                self.render_header(),
+
+                // Main content with tabs
+                Row {
+                    spacing: 0.0,
+
+                    children: vec![
+                        // Sidebar
+                        self.render_sidebar(),
+
+                        // Main content area
+                        Panel {
+                            padding: 0.0,
+                            width: "1fr".to_string(),
+                            height: "1fr".to_string(),
+                            background_color: self.theme.colors.background,
+
+                            children: match self.current_tab {
+                                MarketplaceTab::Browse => self.render_browse_tab(),
+                                MarketplaceTab::Installed => self.render_installed_tab(),
+                                MarketplaceTab::Updates => self.render_updates_tab(),
+                                MarketplaceTab::Settings => self.render_settings_tab(),
+                            },
+                        },
+                    ],
+                },
+
+                // Footer
+                self.render_footer(),
+            ],
+        }
+    }
+
+    fn render_header(&self) -> Widget {
+        Panel {
+            id: "marketplace-header".to_string(),
+            height: 70.0,
+            padding: 20.0,
+            background_color: self.theme.colors.primary,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("plugin", 32),
+                            width: 32.0,
+                            height: 32.0,
+                        },
+                        Label {
+                            text: "Plugin Marketplace".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            color: self.theme.colors.white,
+                        },
+
+                        Spacer {},
+
+                        // Search bar
+                        Row {
+                            spacing: 8.0,
+                            width: "400px".to_string(),
+
+                            children: vec![
+                                TextField {
+                                    id: "search-plugins".to_string(),
+                                    placeholder: "Search plugins...".to_string(),
+                                    value: self.search_query.clone(),
+                                    onChange: |query| {
+                                        MARKETPLACE_STATE.set_search_query(&query);
+                                    },
+                                },
+                                Button {
+                                    label: "🔍".to_string(),
+                                    onClick: || {
+                                        MARKETPLACE_STATE.perform_search();
+                                    },
+                                },
+                            ],
+                        },
+
+                        Label {
+                            text: format!("{} plugins available", self.available_plugins.len()),
+                            font_size: 12.0,
+                            color: self.theme.colors.white_secondary,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_sidebar(&self) -> Widget {
+        Panel {
+            width: "250px".to_string(),
+            background_color: self.theme.colors.surface,
+            border_right: true,
+            padding: 16.0,
+
+            children: vec![
+                // Navigation tabs
+                Column {
+                    spacing: 0.0,
+                    margin_bottom: 24.0,
+
+                    children: vec![
+                        self.render_nav_item("Browse", MarketplaceTab::Browse),
+                        self.render_nav_item("Installed", MarketplaceTab::Installed),
+                        self.render_nav_item("Updates", MarketplaceTab::Updates),
+                        self.render_nav_item("Settings", MarketplaceTab::Settings),
+                    ],
+                },
+
+                Separator { margin: 8.0 },
+
+                // Categories
+                Label {
+                    text: "Categories".to_string(),
+                    font_size: 12.0,
+                    font_weight: 700,
+                    margin_bottom: 12.0,
+                },
+
+                Column {
+                    spacing: 4.0,
+                    margin_bottom: 24.0,
+
+                    children: self.plugin_categories.iter().map(|category| {
+                        self.render_category_item(category)
+                    }).collect(),
+                },
+
+                // Filter by rating
+                Label {
+                    text: "Minimum Rating".to_string(),
+                    font_size: 12.0,
+                    font_weight: 700,
+                    margin_bottom: 8.0,
+                },
+
+                Row {
+                    spacing: 8.0,
+
+                    children: vec![
+                        Slider {
+                            value: (self.filter_rating * 5.0) as i32,
+                            min: 0,
+                            max: 5,
+                            onChange: |rating| {
+                                MARKETPLACE_STATE.set_filter_rating(rating as f32 / 5.0);
+                            },
+                        },
+                        Label {
+                            text: format!("{:.1}★", self.filter_rating),
+                            font_size: 12.0,
+                        },
+                    ],
+                },
+
+                Separator { margin: 16.0 },
+
+                // Featured plugins
+                Label {
+                    text: "Featured".to_string(),
+                    font_size: 12.0,
+                    font_weight: 700,
+                    margin_bottom: 12.0,
+                },
+
+                Column {
+                    spacing: 8.0,
+
+                    children: self.featured_plugins.iter().map(|plugin_id| {
+                        if let Some(plugin) = self.available_plugins.iter().find(|p| &p.id == plugin_id) {
+                            self.render_featured_item(plugin)
+                        } else {
+                            EmptyWidget {}
+                        }
+                    }).collect(),
+                },
+            ],
+        }
+    }
+
+    fn render_browse_tab(&self) -> Vec<Widget> {
+        vec![
+            Panel {
+                padding: 20.0,
+                height: "1fr".to_string(),
+
+                children: vec![
+                    // Sort options
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 20.0,
+
+                        children: vec![
+                            Label {
+                                text: "Sort by:".to_string(),
+                                font_size: 12.0,
+                                font_weight: 600,
+                            },
+                            Dropdown {
+                                options: vec!["Downloads", "Rating", "New", "Trending", "Name"],
+                                selected: match self.sort_by {
+                                    SortOption::Downloads => 0,
+                                    SortOption::Rating => 1,
+                                    SortOption::New => 2,
+                                    SortOption::Trending => 3,
+                                    SortOption::Name => 4,
+                                },
+                                onChange: |index| {
+                                    let sort = match index {
+                                        1 => SortOption::Rating,
+                                        2 => SortOption::New,
+                                        3 => SortOption::Trending,
+                                        4 => SortOption::Name,
+                                        _ => SortOption::Downloads,
+                                    };
+                                    MARKETPLACE_STATE.set_sort(sort);
+                                },
+                            },
+
+                            Spacer {},
+
+                            Label {
+                                text: format!("{} matching plugins", self.get_filtered_plugins().len()),
+                                font_size: 12.0,
+                                color: self.theme.colors.foreground_secondary,
+                            },
+                        ],
+                    },
+
+                    // Plugin grid
+                    if self.get_filtered_plugins().is_empty() {
+                        Panel {
+                            padding: 40.0,
+                            alignment: "center".to_string(),
+
+                            children: vec![
+                                Label {
+                                    text: "No plugins found".to_string(),
+                                    font_size: 14.0,
+                                    margin_bottom: 8.0,
+                                },
+                                Label {
+                                    text: "Try different search terms or filters".to_string(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+                            ],
+                        }
+                    } else {
+                        Column {
+                            spacing: 12.0,
+
+                            children: self.get_filtered_plugins().iter().map(|plugin| {
+                                self.render_plugin_card(plugin)
+                            }).collect(),
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_installed_tab(&self) -> Vec<Widget> {
+        if self.installed_plugins.is_empty() {
+            vec![
+                Panel {
+                    padding: 60.0,
+                    alignment: "center".to_string(),
+
+                    children: vec![
+                        Circle {
+                            radius: 40.0,
+                            color: self.theme.colors.primary,
+                            margin_bottom: 24.0,
+
+                            children: vec![
+                                Image {
+                                    source: self.asset_manager.load_icon("plugin", 48),
+                                    width: 48.0,
+                                    height: 48.0,
+                                },
+                            ],
+                        },
+
+                        Label {
+                            text: "No plugins installed".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            margin_bottom: 12.0,
+                        },
+
+                        Label {
+                            text: "Browse the marketplace to install plugins and extend Omnisystem".to_string(),
+                            font_size: 12.0,
+                            color: self.theme.colors.foreground_secondary,
+                            margin_bottom: 24.0,
+                        },
+
+                        Button {
+                            label: "Browse Plugins".to_string(),
+                            onClick: || {
+                                MARKETPLACE_STATE.switch_tab(MarketplaceTab::Browse);
+                            },
+                        },
+                    ],
+                },
+            ]
+        } else {
+            vec![
+                Panel {
+                    padding: 20.0,
+
+                    children: vec![
+                        Label {
+                            text: "Installed Plugins".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            margin_bottom: 20.0,
+                        },
+
+                        Column {
+                            spacing: 12.0,
+
+                            children: self.installed_plugins.iter().map(|plugin| {
+                                self.render_installed_plugin_card(plugin)
+                            }).collect(),
+                        },
+                    ],
+                },
+            ]
+        }
+    }
+
+    fn render_updates_tab(&self) -> Vec<Widget> {
+        let available_updates: Vec<_> = self.installed_plugins.iter()
+            .filter(|p| p.has_update_available)
+            .collect();
+
+        if available_updates.is_empty() {
+            vec![
+                Panel {
+                    padding: 60.0,
+                    alignment: "center".to_string(),
+
+                    children: vec![
+                        Circle {
+                            radius: 40.0,
+                            color: self.theme.colors.success,
+                            margin_bottom: 24.0,
+
+                            children: vec![
+                                Label {
+                                    text: "✓".to_string(),
+                                    font_size: 32.0,
+                                    color: self.theme.colors.white,
+                                },
+                            ],
+                        },
+
+                        Label {
+                            text: "All plugins are up to date".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            margin_bottom: 12.0,
+                        },
+
+                        Label {
+                            text: "You're running the latest versions of all installed plugins".to_string(),
+                            font_size: 12.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                    ],
+                },
+            ]
+        } else {
+            vec![
+                Panel {
+                    padding: 20.0,
+
+                    children: vec![
+                        Label {
+                            text: format!("{} Updates Available", available_updates.len()),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            margin_bottom: 20.0,
+                        },
+
+                        Button {
+                            label: "Update All".to_string(),
+                            variant: "primary".to_string(),
+                            margin_bottom: 20.0,
+                            onClick: || {
+                                MARKETPLACE_STATE.update_all_plugins();
+                            },
+                        },
+
+                        Column {
+                            spacing: 12.0,
+
+                            children: available_updates.iter().map(|plugin| {
+                                self.render_update_item(plugin)
+                            }).collect(),
+                        },
+                    ],
+                },
+            ]
+        }
+    }
+
+    fn render_settings_tab(&self) -> Vec<Widget> {
+        vec![
+            Panel {
+                padding: 40.0,
+
+                children: vec![
+                    Label {
+                        text: "Plugin Settings".to_string(),
+                        font_size: 18.0,
+                        font_weight: 700,
+                        margin_bottom: 30.0,
+                    },
+
+                    // Auto-update settings
+                    Column {
+                        spacing: 16.0,
+                        margin_bottom: 30.0,
+
+                        children: vec![
+                            Label {
+                                text: "Updates".to_string(),
+                                font_size: 14.0,
+                                font_weight: 700,
+                                margin_bottom: 12.0,
+                            },
+
+                            Checkbox {
+                                label: "Automatically check for plugin updates".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Automatically install updates".to_string(),
+                                checked: false,
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Check for updates:".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    Dropdown {
+                                        options: vec!["Daily", "Weekly", "Monthly"],
+                                        selected: 0,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    // Plugin permissions
+                    Column {
+                        spacing: 16.0,
+                        margin_bottom: 30.0,
+
+                        children: vec![
+                            Label {
+                                text: "Permissions".to_string(),
+                                font_size: 14.0,
+                                font_weight: 700,
+                                margin_bottom: 12.0,
+                            },
+
+                            Checkbox {
+                                label: "Allow plugins to access file system".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Allow plugins to access network".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Allow plugins to modify application settings".to_string(),
+                                checked: false,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    // Plugin paths
+                    Column {
+                        spacing: 16.0,
+                        margin_bottom: 30.0,
+
+                        children: vec![
+                            Label {
+                                text: "Storage".to_string(),
+                                font_size: 14.0,
+                                font_weight: 700,
+                                margin_bottom: 12.0,
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Plugin cache directory:".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    Spacer {},
+                                    Label {
+                                        text: self.plugin_cache_dir.to_string_lossy().to_string(),
+                                        font_size: 11.0,
+                                        color: self.theme.colors.foreground_secondary,
+                                    },
+                                    Button {
+                                        label: "Browse".to_string(),
+                                        size: "small".to_string(),
+                                    },
+                                ],
+                            },
+
+                            Button {
+                                label: "Clear Cache".to_string(),
+                                variant: "secondary".to_string(),
+                                onClick: || {
+                                    MARKETPLACE_STATE.clear_plugin_cache();
+                                },
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    // About
+                    Column {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "About Plugin System".to_string(),
+                                font_size: 14.0,
+                                font_weight: 700,
+                                margin_bottom: 12.0,
+                            },
+
+                            Label {
+                                text: "Omnisystem Plugin System v2.0".to_string(),
+                                font_size: 12.0,
+                            },
+
+                            Label {
+                                text: "Supports all 7 Omnisystem languages: VERA, HELIX, NEXUS, TITAN, SYLVA, AETHER, AXIOM".to_string(),
+                                font_size: 11.0,
+                                color: self.theme.colors.foreground_secondary,
+                                margin_bottom: 12.0,
+                            },
+
+                            Button {
+                                label: "Plugin Development Guide".to_string(),
+                                variant: "secondary".to_string(),
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_plugin_card(&self, plugin: &PluginListing) -> Widget {
+        let is_installed = self.installed_plugins.iter().any(|p| p.id == plugin.id);
+        let is_installing = self.installing_plugins.contains_key(&plugin.id);
+
+        Panel {
+            padding: 16.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+            margin_bottom: 8.0,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+
+                    children: vec![
+                        // Icon
+                        Image {
+                            source: self.asset_manager.load_icon(&plugin.icon, 64),
+                            width: 64.0,
+                            height: 64.0,
+                        },
+
+                        // Details
+                        Column {
+                            spacing: 4.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 12.0,
+
+                                    children: vec![
+                                        Column {
+                                            spacing: 4.0,
+
+                                            children: vec![
+                                                Label {
+                                                    text: plugin.name.clone(),
+                                                    font_size: 14.0,
+                                                    font_weight: 700,
+                                                },
+                                                Label {
+                                                    text: format!("by {}", plugin.author),
+                                                    font_size: 11.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                },
+                                            ],
+                                        },
+
+                                        Spacer {},
+
+                                        Column {
+                                            spacing: 4.0,
+                                            alignment: "right".to_string(),
+
+                                            children: vec![
+                                                Row {
+                                                    spacing: 4.0,
+
+                                                    children: vec![
+                                                        Label {
+                                                            text: format!("{:.1}★", plugin.rating),
+                                                            font_size: 12.0,
+                                                            font_weight: 600,
+                                                        },
+                                                        Label {
+                                                            text: format!("({})", plugin.review_count),
+                                                            font_size: 10.0,
+                                                            color: self.theme.colors.foreground_secondary,
+                                                        },
+                                                    ],
+                                                },
+                                                Label {
+                                                    text: format!("{} downloads", plugin.download_count),
+                                                    font_size: 10.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+
+                                Label {
+                                    text: plugin.description.clone(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                    margin_top: 8.0,
+                                    margin_bottom: 8.0,
+                                },
+
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        if !plugin.tags.is_empty() {
+                                            Row {
+                                                spacing: 4.0,
+
+                                                children: plugin.tags.iter().take(3).map(|tag| {
+                                                    Badge {
+                                                        label: tag.clone(),
+                                                        size: "small".to_string(),
+                                                    }
+                                                }).collect(),
+                                            }
+                                        } else {
+                                            EmptyWidget {}
+                                        },
+
+                                        Spacer {},
+
+                                        Label {
+                                            text: format!("v{}", plugin.version),
+                                            font_size: 10.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+
+                                        if is_installing {
+                                            Button {
+                                                label: "Installing...".to_string(),
+                                                disabled: true,
+                                            }
+                                        } else if is_installed {
+                                            Button {
+                                                label: "Uninstall".to_string(),
+                                                variant: "secondary".to_string(),
+                                                onClick: || {
+                                                    MARKETPLACE_STATE.uninstall_plugin(&plugin.id);
+                                                },
+                                            }
+                                        } else {
+                                            Button {
+                                                label: "Install".to_string(),
+                                                variant: "primary".to_string(),
+                                                onClick: || {
+                                                    MARKETPLACE_STATE.install_plugin(&plugin.id);
+                                                },
+                                            }
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_installed_plugin_card(&self, plugin: &InstalledPlugin) -> Widget {
+        Panel {
+            padding: 16.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon(&plugin.icon, 48),
+                            width: 48.0,
+                            height: 48.0,
+                        },
+
+                        Column {
+                            spacing: 4.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 12.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: plugin.name.clone(),
+                                            font_size: 13.0,
+                                            font_weight: 700,
+                                        },
+                                        Label {
+                                            text: format!("v{}", plugin.version),
+                                            font_size: 11.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                        if plugin.enabled {
+                                            Badge {
+                                                label: "Enabled".to_string(),
+                                                color: self.theme.colors.success,
+                                            }
+                                        } else {
+                                            Badge {
+                                                label: "Disabled".to_string(),
+                                                color: self.theme.colors.warning,
+                                            }
+                                        },
+                                    ],
+                                },
+
+                                Label {
+                                    text: format!("by {} • {} downloads", plugin.author, plugin.download_count),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+                            ],
+                        },
+
+                        Spacer {},
+
+                        if plugin.has_update_available {
+                            Button {
+                                label: "Update Available".to_string(),
+                                onClick: || {
+                                    MARKETPLACE_STATE.update_plugin(&plugin.id);
+                                },
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+
+                        Checkbox {
+                            checked: plugin.enabled,
+                            onChange: |enabled| {
+                                MARKETPLACE_STATE.toggle_plugin(&plugin.id, enabled);
+                            },
+                        },
+
+                        Dropdown {
+                            options: vec!["Settings", "Uninstall"],
+                            selected: 0,
+                            onChange: |index| {
+                                match index {
+                                    0 => MARKETPLACE_STATE.show_plugin_settings(&plugin.id),
+                                    _ => MARKETPLACE_STATE.uninstall_plugin(&plugin.id),
+                                }
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_update_item(&self, plugin: &InstalledPlugin) -> Widget {
+        Panel {
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+
+                    children: vec![
+                        Label {
+                            text: plugin.name.clone(),
+                            font_size: 12.0,
+                            font_weight: 600,
+                        },
+
+                        Spacer {},
+
+                        Label {
+                            text: format!("{} → {}", plugin.version, plugin.available_version),
+                            font_size: 11.0,
+                            color: self.theme.colors.primary,
+                        },
+
+                        Button {
+                            label: "Update".to_string(),
+                            size: "small".to_string(),
+                            onClick: || {
+                                MARKETPLACE_STATE.update_plugin(&plugin.id);
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_nav_item(&self, label: &str, tab: MarketplaceTab) -> Widget {
+        Button {
+            label: label.to_string(),
+            variant: if std::mem::discriminant(&self.current_tab) == std::mem::discriminant(&tab) {
+                "primary"
+            } else {
+                "secondary"
+            },
+            width: "100%".to_string(),
+            margin_bottom: 4.0,
+            onClick: || {
+                MARKETPLACE_STATE.switch_tab(tab);
+            },
+        }
+    }
+
+    fn render_category_item(&self, category: &str) -> Widget {
+        Button {
+            label: category.to_string(),
+            variant: if self.selected_category == category {
+                "primary"
+            } else {
+                "tertiary"
+            },
+            width: "100%".to_string(),
+            onClick: || {
+                MARKETPLACE_STATE.set_category(category);
+            },
+        }
+    }
+
+    fn render_featured_item(&self, plugin: &PluginListing) -> Widget {
+        Panel {
+            padding: 12.0,
+            background_color: self.theme.colors.primary_light,
+            border: true,
+
+            children: vec![
+                Label {
+                    text: plugin.name.clone(),
+                    font_size: 11.0,
+                    font_weight: 600,
+                    margin_bottom: 4.0,
+                },
+                Label {
+                    text: format!("{:.1}★ • {} downloads", plugin.rating, plugin.download_count),
+                    font_size: 10.0,
+                    color: self.theme.colors.foreground_secondary,
+                },
+            ],
+        }
+    }
+
+    fn render_footer(&self) -> Widget {
+        Panel {
+            height: 50.0,
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_top: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Label {
+                            text: format!(
+                                "{} plugins installed • {} updates available",
+                                self.installed_plugins.len(),
+                                self.installed_plugins.iter().filter(|p| p.has_update_available).count()
+                            ),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+
+                        Spacer {},
+
+                        Label {
+                            text: "Last updated: Today at 3:45 PM".to_string(),
+                            font_size: 10.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn get_filtered_plugins(&self) -> Vec<&PluginListing> {
+        self.available_plugins
+            .iter()
+            .filter(|p| {
+                // Search filter
+                let search_match = self.search_query.is_empty()
+                    || p.name.to_lowercase().contains(&self.search_query.to_lowercase())
+                    || p.description.to_lowercase().contains(&self.search_query.to_lowercase());
+
+                // Category filter
+                let category_match = self.selected_category == "All"
+                    || p.category == self.selected_category;
+
+                // Rating filter
+                let rating_match = p.rating >= self.filter_rating;
+
+                search_match && category_match && rating_match
+            })
+            .collect()
+    }
+
+    // ============================================================================
+    // PLUGIN LOADING AND MANAGEMENT
+    // ============================================================================
+
+    fn load_available_plugins() -> Vec<PluginListing> {
+        vec![
+            PluginListing {
+                id: "dark-mode-themes".to_string(),
+                name: "Dark Mode Themes".to_string(),
+                description: "10+ carefully crafted dark themes for Omnisystem".to_string(),
+                author: "Omnisystem Team".to_string(),
+                version: "2.0.0".to_string(),
+                category: "Themes".to_string(),
+                tags: vec!["theme".to_string(), "dark".to_string(), "ui".to_string()],
+                icon: "theme".to_string(),
+                rating: 4.8,
+                review_count: 342,
+                download_count: 15420,
+            },
+            PluginListing {
+                id: "git-integration".to_string(),
+                name: "Git Integration".to_string(),
+                description: "Seamless Git integration with status bar and workflows".to_string(),
+                author: "Git Community".to_string(),
+                version: "1.2.0".to_string(),
+                category: "Development".to_string(),
+                tags: vec!["git".to_string(), "vcs".to_string(), "development".to_string()],
+                icon: "git".to_string(),
+                rating: 4.6,
+                review_count: 289,
+                download_count: 12340,
+            },
+            PluginListing {
+                id: "productivity-timer".to_string(),
+                name: "Productivity Timer".to_string(),
+                description: "Pomodoro timer with notifications and break reminders".to_string(),
+                author: "Productivity Labs".to_string(),
+                version: "3.1.0".to_string(),
+                category: "Productivity".to_string(),
+                tags: vec!["timer".to_string(), "productivity".to_string(), "pomodoro".to_string()],
+                icon: "timer".to_string(),
+                rating: 4.7,
+                review_count: 156,
+                download_count: 8930,
+            },
+        ]
+    }
+
+    fn load_installed_plugins() -> Vec<InstalledPlugin> {
+        vec![
+            InstalledPlugin {
+                id: "dark-mode-themes".to_string(),
+                name: "Dark Mode Themes".to_string(),
+                author: "Omnisystem Team".to_string(),
+                version: "1.9.0".to_string(),
+                available_version: "2.0.0".to_string(),
+                icon: "theme".to_string(),
+                enabled: true,
+                has_update_available: true,
+                download_count: 15420,
+            },
+        ]
+    }
+
+    fn get_categories() -> Vec<String> {
+        vec![
+            "All".to_string(),
+            "Themes".to_string(),
+            "Development".to_string(),
+            "Productivity".to_string(),
+            "Integration".to_string(),
+            "Analytics".to_string(),
+            "Security".to_string(),
+            "Utilities".to_string(),
+        ]
+    }
+
+    fn get_featured() -> Vec<String> {
+        vec![
+            "dark-mode-themes".to_string(),
+            "git-integration".to_string(),
+        ]
+    }
+
+    fn get_cache_dir() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            PathBuf::from(env!("APPDATA")).join("Omnisystem\\Plugins")
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            PathBuf::from(env!("HOME")).join("Library/Application Support/Omnisystem/Plugins")
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            PathBuf::from(env!("HOME")).join(".local/share/omnisystem/plugins")
+        }
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarketplaceTab {
+    Browse,
+    Installed,
+    Updates,
+    Settings,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SortOption {
+    Downloads,
+    Rating,
+    New,
+    Trending,
+    Name,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginListing {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub icon: String,
+    pub rating: f32,
+    pub review_count: u32,
+    pub download_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstalledPlugin {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub version: String,
+    pub available_version: String,
+    pub icon: String,
+    pub enabled: bool,
+    pub has_update_available: bool,
+    pub download_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct InstallationProgress {
+    pub plugin_id: String,
+    pub progress: f32,
+    pub status: String,
+}
+
+// Global marketplace state
+pub static MARKETPLACE_STATE: LazyStatic<Mutex<PluginMarketplace>> =
+    LazyStatic::new(|| {
+        Mutex::new(PluginMarketplace::new(AssetManager::global()))
+    });

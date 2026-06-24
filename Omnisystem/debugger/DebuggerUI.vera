@@ -1,0 +1,812 @@
+// Omnisystem Debugger Integration - Multi-Language Debugging Framework
+// Support for debugging all 7 Omnisystem languages with breakpoints, watches, and stepping
+
+use std::collections::HashMap;
+
+pub struct OmnisystemDebugger {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Debugging state
+    current_tab: DebuggerTab,
+    is_debugging: bool,
+    is_paused: bool,
+    active_session: Option<DebugSession>,
+
+    // Breakpoints
+    breakpoints: Vec<Breakpoint>,
+    breakpoints_enabled: bool,
+
+    // Variables and watches
+    call_stack: Vec<StackFrame>,
+    local_variables: Vec<Variable>,
+    watch_expressions: Vec<WatchExpression>,
+    console_output: Vec<ConsoleMessage>,
+
+    // Debugging options
+    debug_language: DebugLanguage,
+    auto_expand_variables: bool,
+    show_hidden_variables: bool,
+}
+
+impl OmnisystemDebugger {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "omnisystem-debugger".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            current_tab: DebuggerTab::Breakpoints,
+            is_debugging: false,
+            is_paused: false,
+            active_session: None,
+            breakpoints: vec![],
+            breakpoints_enabled: true,
+            call_stack: vec![],
+            local_variables: vec![],
+            watch_expressions: vec![],
+            console_output: vec![],
+            debug_language: DebugLanguage::VERA,
+            auto_expand_variables: true,
+            show_hidden_variables: false,
+        }
+    }
+
+    pub fn render(&self) -> Widget {
+        ApplicationWindow {
+            id: "debugger-main".to_string(),
+            title: "Omnisystem Debugger".to_string(),
+            width: 1600,
+            height: 900,
+
+            children: vec![
+                // Toolbar
+                self.render_toolbar(),
+
+                // Main debugging interface
+                Row {
+                    spacing: 0.0,
+                    height: "1fr".to_string(),
+
+                    children: vec![
+                        // Left panel - Code and execution
+                        Panel {
+                            width: "60%".to_string(),
+                            padding: 0.0,
+
+                            children: vec![
+                                self.render_code_editor(),
+                            ],
+                        },
+
+                        // Splitter
+                        Splitter { width: 4.0 },
+
+                        // Right panel - Debugging info
+                        Panel {
+                            width: "40%".to_string(),
+                            padding: 0.0,
+                            background_color: self.theme.colors.surface,
+
+                            children: vec![
+                                self.render_debug_panel(),
+                            ],
+                        },
+                    ],
+                },
+
+                // Bottom console
+                Splitter { height: 4.0 },
+
+                self.render_console(),
+            ],
+        }
+    }
+
+    fn render_toolbar(&self) -> Widget {
+        Panel {
+            height: 50.0,
+            padding: 8.0,
+            background_color: self.theme.colors.surface,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 8.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        // Debug controls
+                        Button {
+                            label: if self.is_debugging { "⏹ Stop" } else { "▶ Start Debugging" },
+                            variant: if self.is_debugging { "danger" } else { "primary" },
+                            onClick: || {
+                                if DEBUGGER_STATE.is_debugging() {
+                                    DEBUGGER_STATE.stop_debugging();
+                                } else {
+                                    DEBUGGER_STATE.start_debugging();
+                                }
+                            },
+                        },
+
+                        if self.is_debugging {
+                            Button {
+                                label: if self.is_paused { "▶ Continue" } else { "⏸ Pause" },
+                                onClick: || {
+                                    if DEBUGGER_STATE.is_paused() {
+                                        DEBUGGER_STATE.continue_execution();
+                                    } else {
+                                        DEBUGGER_STATE.pause_execution();
+                                    }
+                                },
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+
+                        Separator { width: 1.0, height: 30.0, margin: 4.0 },
+
+                        if self.is_paused {
+                            Row {
+                                spacing: 4.0,
+
+                                children: vec![
+                                    Button {
+                                        label: "Step Over (F10)".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: || {
+                                            DEBUGGER_STATE.step_over();
+                                        },
+                                    },
+                                    Button {
+                                        label: "Step Into (F11)".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: || {
+                                            DEBUGGER_STATE.step_into();
+                                        },
+                                    },
+                                    Button {
+                                        label: "Step Out (Shift+F11)".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: || {
+                                            DEBUGGER_STATE.step_out();
+                                        },
+                                    },
+                                ],
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+
+                        Separator { width: 1.0, height: 30.0, margin: 4.0 },
+
+                        // Language selector
+                        Label {
+                            text: "Language:".to_string(),
+                            font_size: 11.0,
+                            font_weight: 600,
+                        },
+
+                        Dropdown {
+                            options: vec!["VERA", "HELIX", "NEXUS", "TITAN", "SYLVA", "AETHER", "AXIOM"],
+                            selected: 0,
+                            onChange: |index| {
+                                let lang = match index {
+                                    1 => DebugLanguage::HELIX,
+                                    2 => DebugLanguage::NEXUS,
+                                    3 => DebugLanguage::TITAN,
+                                    4 => DebugLanguage::SYLVA,
+                                    5 => DebugLanguage::AETHER,
+                                    6 => DebugLanguage::AXIOM,
+                                    _ => DebugLanguage::VERA,
+                                };
+                                DEBUGGER_STATE.set_debug_language(lang);
+                            },
+                        },
+
+                        Spacer {},
+
+                        // Status
+                        Label {
+                            text: if self.is_debugging {
+                                if self.is_paused { "Paused" } else { "Running" }
+                            } else {
+                                "Ready"
+                            },
+                            font_size: 11.0,
+                            color: if self.is_debugging {
+                                if self.is_paused { self.theme.colors.warning } else { self.theme.colors.success }
+                            } else {
+                                self.theme.colors.foreground_secondary
+                            },
+                            font_weight: 600,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_code_editor(&self) -> Widget {
+        CodeEditor {
+            id: "debug-editor".to_string(),
+            content: "// Your code here\nfn main() {\n    println!(\"Hello, debugger!\");\n}".to_string(),
+            language: "vera".to_string(),
+            height: "100%".to_string(),
+            width: "100%".to_string(),
+            line_numbers: true,
+            theme: self.theme.colors.surface,
+            gutter_decorations: vec![
+                // Example breakpoint
+                GutterDecoration {
+                    line: 3,
+                    icon: "🔴".to_string(),
+                    tooltip: "Breakpoint".to_string(),
+                    onClick: || {
+                        // Toggle breakpoint
+                    },
+                },
+                // Current execution line
+                GutterDecoration {
+                    line: 2,
+                    icon: "▶".to_string(),
+                    color: self.theme.colors.success,
+                    tooltip: "Current line".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn render_debug_panel(&self) -> Widget {
+        Column {
+            spacing: 0.0,
+            height: "100%".to_string(),
+
+            children: vec![
+                // Tab navigation
+                Row {
+                    spacing: 0.0,
+                    border_bottom: true,
+                    height: 40.0,
+
+                    children: vec![
+                        self.render_tab_button("Call Stack", DebuggerTab::CallStack),
+                        self.render_tab_button("Variables", DebuggerTab::Variables),
+                        self.render_tab_button("Watches", DebuggerTab::Watches),
+                        self.render_tab_button("Breakpoints", DebuggerTab::Breakpoints),
+                    ],
+                },
+
+                // Tab content
+                Panel {
+                    padding: 12.0,
+                    width: "100%".to_string(),
+                    height: "1fr".to_string(),
+
+                    children: match self.current_tab {
+                        DebuggerTab::CallStack => self.render_call_stack_tab(),
+                        DebuggerTab::Variables => self.render_variables_tab(),
+                        DebuggerTab::Watches => self.render_watches_tab(),
+                        DebuggerTab::Breakpoints => self.render_breakpoints_tab(),
+                    },
+                },
+            ],
+        }
+    }
+
+    fn render_call_stack_tab(&self) -> Vec<Widget> {
+        if self.call_stack.is_empty() {
+            return vec![
+                Label {
+                    text: "No call stack available".to_string(),
+                    font_size: 12.0,
+                    color: self.theme.colors.foreground_secondary,
+                },
+            ];
+        }
+
+        vec![
+            Column {
+                spacing: 4.0,
+
+                children: self.call_stack.iter().enumerate().map(|(idx, frame)| {
+                    Panel {
+                        padding: 8.0,
+                        background_color: if idx == 0 { self.theme.colors.primary_light } else { self.theme.colors.surface },
+                        border: true,
+
+                        children: vec![
+                            Column {
+                                spacing: 2.0,
+
+                                children: vec![
+                                    Label {
+                                        text: frame.function_name.clone(),
+                                        font_size: 12.0,
+                                        font_weight: 700,
+                                    },
+                                    Label {
+                                        text: format!("{}:{}", frame.file, frame.line),
+                                        font_size: 10.0,
+                                        color: self.theme.colors.foreground_secondary,
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                }).collect(),
+            },
+        ]
+    }
+
+    fn render_variables_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Row {
+                        spacing: 8.0,
+                        margin_bottom: 8.0,
+
+                        children: vec![
+                            Checkbox {
+                                label: "Auto-expand".to_string(),
+                                checked: self.auto_expand_variables,
+                                onChange: |enabled| {
+                                    DEBUGGER_STATE.set_auto_expand(enabled);
+                                },
+                            },
+                            Checkbox {
+                                label: "Show hidden".to_string(),
+                                checked: self.show_hidden_variables,
+                                onChange: |enabled| {
+                                    DEBUGGER_STATE.set_show_hidden(enabled);
+                                },
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 8.0 },
+
+                    if self.local_variables.is_empty() {
+                        Label {
+                            text: "No variables in scope".to_string(),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        }
+                    } else {
+                        Column {
+                            spacing: 4.0,
+
+                            children: self.local_variables.iter().map(|var| {
+                                self.render_variable(var)
+                            }).collect(),
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_variable(&self, var: &Variable) -> Widget {
+        Panel {
+            padding: 8.0,
+            background_color: self.theme.colors.surface,
+            margin_bottom: 4.0,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        if var.has_children {
+                            Button {
+                                label: if var.expanded { "▼" } else { "▶" },
+                                size: "small".to_string(),
+                                onClick: || {
+                                    // Toggle expansion
+                                },
+                            }
+                        } else {
+                            Label {
+                                text: " ".to_string(),
+                                width: "20px".to_string(),
+                            }
+                        },
+
+                        Column {
+                            spacing: 2.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: var.name.clone(),
+                                            font_size: 11.0,
+                                            font_weight: 600,
+                                        },
+                                        Label {
+                                            text: format!("({})", var.var_type),
+                                            font_size: 10.0,
+                                            color: self.theme.colors.primary,
+                                        },
+                                    ],
+                                },
+                                Label {
+                                    text: var.value.clone(),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.success,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_watches_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Row {
+                        spacing: 8.0,
+                        margin_bottom: 12.0,
+
+                        children: vec![
+                            TextField {
+                                id: "add-watch".to_string(),
+                                placeholder: "Add watch expression...".to_string(),
+                                width: "1fr".to_string(),
+                            },
+                            Button {
+                                label: "+".to_string(),
+                                size: "small".to_string(),
+                                onClick: || {
+                                    // Add watch
+                                },
+                            },
+                        ],
+                    },
+
+                    if self.watch_expressions.is_empty() {
+                        Label {
+                            text: "No watch expressions".to_string(),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        }
+                    } else {
+                        Column {
+                            spacing: 4.0,
+
+                            children: self.watch_expressions.iter().map(|watch| {
+                                Panel {
+                                    padding: 8.0,
+                                    background_color: self.theme.colors.surface,
+
+                                    children: vec![
+                                        Row {
+                                            spacing: 8.0,
+
+                                            children: vec![
+                                                Column {
+                                                    spacing: 2.0,
+                                                    width: "1fr".to_string(),
+
+                                                    children: vec![
+                                                        Label {
+                                                            text: watch.expression.clone(),
+                                                            font_size: 11.0,
+                                                            font_weight: 600,
+                                                        },
+                                                        Label {
+                                                            text: watch.result.clone(),
+                                                            font_size: 10.0,
+                                                            color: self.theme.colors.success,
+                                                        },
+                                                    ],
+                                                },
+
+                                                Button {
+                                                    label: "×".to_string(),
+                                                    size: "small".to_string(),
+                                                    onClick: || {
+                                                        // Remove watch
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                }
+                            }).collect(),
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_breakpoints_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 8.0,
+
+                children: vec![
+                    Row {
+                        spacing: 8.0,
+                        margin_bottom: 12.0,
+
+                        children: vec![
+                            Checkbox {
+                                label: "Enable all".to_string(),
+                                checked: self.breakpoints_enabled,
+                                onChange: |enabled| {
+                                    DEBUGGER_STATE.set_breakpoints_enabled(enabled);
+                                },
+                            },
+                            Button {
+                                label: "Clear all".to_string(),
+                                size: "small".to_string(),
+                                onClick: || {
+                                    DEBUGGER_STATE.clear_breakpoints();
+                                },
+                            },
+                        ],
+                    },
+
+                    if self.breakpoints.is_empty() {
+                        Label {
+                            text: "No breakpoints".to_string(),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        }
+                    } else {
+                        Column {
+                            spacing: 4.0,
+
+                            children: self.breakpoints.iter().map(|bp| {
+                                Panel {
+                                    padding: 8.0,
+                                    background_color: self.theme.colors.surface,
+
+                                    children: vec![
+                                        Row {
+                                            spacing: 8.0,
+
+                                            children: vec![
+                                                Checkbox {
+                                                    checked: bp.enabled,
+                                                    onChange: |enabled| {
+                                                        // Toggle breakpoint
+                                                    },
+                                                },
+
+                                                Column {
+                                                    spacing: 2.0,
+                                                    width: "1fr".to_string(),
+
+                                                    children: vec![
+                                                        Label {
+                                                            text: format!("{}:{}", bp.file, bp.line),
+                                                            font_size: 11.0,
+                                                            font_weight: 600,
+                                                        },
+                                                        if let Some(condition) = &bp.condition {
+                                                            Label {
+                                                                text: format!("Condition: {}", condition),
+                                                                font_size: 10.0,
+                                                                color: self.theme.colors.foreground_secondary,
+                                                            }
+                                                        } else {
+                                                            EmptyWidget {}
+                                                        },
+                                                    ],
+                                                },
+
+                                                Label {
+                                                    text: format!("Hits: {}", bp.hit_count),
+                                                    font_size: 10.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                },
+
+                                                Button {
+                                                    label: "×".to_string(),
+                                                    size: "small".to_string(),
+                                                    onClick: || {
+                                                        // Remove breakpoint
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                }
+                            }).collect(),
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_console(&self) -> Widget {
+        Panel {
+            height: "25%".to_string(),
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_top: true,
+
+            children: vec![
+                Column {
+                    spacing: 8.0,
+                    height: "100%".to_string(),
+
+                    children: vec![
+                        Row {
+                            spacing: 8.0,
+                            margin_bottom: 8.0,
+
+                            children: vec![
+                                Label {
+                                    text: "Debug Console".to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 700,
+                                },
+                                Spacer {},
+                                Button {
+                                    label: "Clear".to_string(),
+                                    size: "small".to_string(),
+                                    onClick: || {
+                                        DEBUGGER_STATE.clear_console();
+                                    },
+                                },
+                            ],
+                        },
+
+                        CodeEditor {
+                            id: "debug-console-output".to_string(),
+                            content: self.console_output.iter()
+                                .map(|msg| format!("[{}] {}", msg.level, msg.text))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            language: "plaintext".to_string(),
+                            height: "70%".to_string(),
+                            read_only: true,
+                            auto_scroll: true,
+                        },
+
+                        Row {
+                            spacing: 8.0,
+                            height: "30%".to_string(),
+
+                            children: vec![
+                                TextField {
+                                    id: "debug-console-input".to_string(),
+                                    placeholder: "Evaluate expression...".to_string(),
+                                    width: "1fr".to_string(),
+                                },
+                                Button {
+                                    label: "Evaluate".to_string(),
+                                    size: "small".to_string(),
+                                    onClick: || {
+                                        DEBUGGER_STATE.evaluate_expression();
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_tab_button(&self, label: &str, tab: DebuggerTab) -> Widget {
+        Button {
+            label: label.to_string(),
+            variant: if std::mem::discriminant(&self.current_tab) == std::mem::discriminant(&tab) {
+                "primary"
+            } else {
+                "secondary"
+            },
+            width: "auto".to_string(),
+            onClick: || {
+                DEBUGGER_STATE.switch_tab(tab);
+            },
+        }
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DebuggerTab {
+    CallStack,
+    Variables,
+    Watches,
+    Breakpoints,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DebugLanguage {
+    VERA,
+    HELIX,
+    NEXUS,
+    TITAN,
+    SYLVA,
+    AETHER,
+    AXIOM,
+}
+
+#[derive(Clone, Debug)]
+pub struct DebugSession {
+    id: String,
+    language: DebugLanguage,
+    started_at: String,
+    status: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct StackFrame {
+    pub function_name: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub locals: Vec<Variable>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Variable {
+    pub name: String,
+    pub var_type: String,
+    pub value: String,
+    pub has_children: bool,
+    pub expanded: bool,
+    pub children: Vec<Variable>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchExpression {
+    pub expression: String,
+    pub result: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Breakpoint {
+    pub file: String,
+    pub line: u32,
+    pub enabled: bool,
+    pub condition: Option<String>,
+    pub hit_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConsoleMessage {
+    pub level: String,
+    pub text: String,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GutterDecoration {
+    pub line: u32,
+    pub icon: String,
+    pub tooltip: String,
+    pub color: Option<u32>,
+    pub onClick: fn(),
+}
+
+// Global debugger state
+pub static DEBUGGER_STATE: LazyStatic<Mutex<OmnisystemDebugger>> =
+    LazyStatic::new(|| {
+        Mutex::new(OmnisystemDebugger::new(AssetManager::global()))
+    });

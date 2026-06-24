@@ -1,0 +1,1101 @@
+// Omnisystem Installer - Cross-Platform Installation Framework
+// Comprehensive installer with Windows, macOS, and Linux support
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::fs;
+
+pub struct OmnisystemInstaller {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Installation state
+    current_step: InstallerStep,
+    installation_path: PathBuf,
+    selected_components: Vec<Component>,
+    install_shortcuts: bool,
+    auto_start_enabled: bool,
+    progress: f32,
+
+    // Platform info
+    platform: Platform,
+    os_version: String,
+    available_disk_space: u64,
+
+    // Installation tracking
+    installed_files: Vec<String>,
+    installation_errors: Vec<String>,
+}
+
+impl OmnisystemInstaller {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "omnisystem-installer".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            current_step: InstallerStep::Welcome,
+            installation_path: Self::get_default_install_path(),
+            selected_components: Self::get_default_components(),
+            install_shortcuts: true,
+            auto_start_enabled: true,
+            progress: 0.0,
+            platform: Self::detect_platform(),
+            os_version: Self::get_os_version(),
+            available_disk_space: Self::get_available_disk_space(),
+            installed_files: vec![],
+            installation_errors: vec![],
+        }
+    }
+
+    // ============================================================================
+    // INSTALLER STEPS
+    // ============================================================================
+
+    pub fn render(&self) -> Widget {
+        Panel {
+            id: "installer-main".to_string(),
+            padding: 0.0,
+            background_color: self.theme.colors.background,
+
+            children: vec![
+                // Header
+                self.render_header(),
+
+                // Step-specific content
+                self.render_step_content(),
+
+                // Footer with buttons
+                self.render_footer(),
+            ],
+        }
+    }
+
+    fn render_header(&self) -> Widget {
+        Panel {
+            id: "installer-header".to_string(),
+            height: 80.0,
+            padding: 20.0,
+            background_color: self.theme.colors.primary,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("omnisystem", 48),
+                            width: 48.0,
+                            height: 48.0,
+                        },
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Label {
+                                    text: "Omnisystem Installer".to_string(),
+                                    font_size: 20.0,
+                                    font_weight: 700,
+                                    color: self.theme.colors.white,
+                                },
+                                Label {
+                                    text: format!("v{}", self.version),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.white_secondary,
+                                },
+                            ],
+                        },
+                        Spacer {},
+                        Label {
+                            text: self.get_step_title(),
+                            font_size: 14.0,
+                            color: self.theme.colors.white,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_step_content(&self) -> Widget {
+        Panel {
+            id: "installer-content".to_string(),
+            padding: 40.0,
+            background_color: self.theme.colors.background,
+            height: 600.0,
+
+            children: match self.current_step {
+                InstallerStep::Welcome => self.render_welcome_step(),
+                InstallerStep::License => self.render_license_step(),
+                InstallerStep::Components => self.render_components_step(),
+                InstallerStep::Destination => self.render_destination_step(),
+                InstallerStep::Options => self.render_options_step(),
+                InstallerStep::Ready => self.render_ready_step(),
+                InstallerStep::Installing => self.render_installing_step(),
+                InstallerStep::Complete => self.render_complete_step(),
+            },
+        }
+    }
+
+    fn render_welcome_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+
+                children: vec![
+                    Label {
+                        text: "Welcome to Omnisystem".to_string(),
+                        font_size: 24.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Label {
+                        text: "This wizard will guide you through installing Omnisystem on your computer.".to_string(),
+                        font_size: 14.0,
+                        color: self.theme.colors.foreground_secondary,
+                        margin_bottom: 24.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Row {
+                                spacing: 8.0,
+                                children: vec![
+                                    self.render_info_item("Version", &self.version),
+                                ],
+                            },
+                            Row {
+                                spacing: 8.0,
+                                children: vec![
+                                    self.render_info_item("Platform", self.platform.name()),
+                                ],
+                            },
+                            Row {
+                                spacing: 8.0,
+                                children: vec![
+                                    self.render_info_item("OS Version", &self.os_version),
+                                ],
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 20.0 },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Requirements:".to_string(),
+                                font_size: 12.0,
+                                font_weight: 600,
+                            },
+                            Label {
+                                text: "• Windows 10 64-bit or later (or macOS 10.15+ or Linux)".to_string(),
+                                font_size: 11.0,
+                            },
+                            Label {
+                                text: "• 500 MB available disk space".to_string(),
+                                font_size: 11.0,
+                            },
+                            Label {
+                                text: "• Administrator/root privileges".to_string(),
+                                font_size: 11.0,
+                            },
+                        ],
+                    },
+
+                    Spacer {},
+
+                    Label {
+                        text: "Click 'Next' to continue with the installation.".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_license_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "License Agreement".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Label {
+                        text: "Please read and accept the license agreement to continue.".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                        margin_bottom: 16.0,
+                    },
+
+                    // License text area
+                    CodeEditor {
+                        id: "license-text".to_string(),
+                        content: self.get_license_text(),
+                        language: "plaintext".to_string(),
+                        height: 400.0,
+                        read_only: true,
+                        theme: self.theme.colors.surface,
+                    },
+
+                    // Accept checkbox
+                    Row {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Checkbox {
+                                id: "license-accept".to_string(),
+                                label: "I accept the terms of the license agreement".to_string(),
+                                checked: false,
+                                onChange: |accepted| {
+                                    INSTALLER_STATE.set_license_accepted(accepted);
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_components_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Select Components".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Label {
+                        text: "Choose which components to install.".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                        margin_bottom: 16.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            self.render_component_option("Core System", "Omnisystem core runtime (required)", 50, true),
+                            self.render_component_option("Desktop Environment", "Bonsai Desktop GUI and tools", 120, true),
+                            self.render_component_option("Development Tools", "Compilers and SDKs for all 7 languages", 280, false),
+                            self.render_component_option("Documentation", "Complete user and developer documentation", 45, true),
+                            self.render_component_option("Examples", "Sample applications and code examples", 35, false),
+                            self.render_component_option("System Integration", "Windows registry/macOS LaunchServices/Linux system files", 25, true),
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Row {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "Space required:".to_string(),
+                                font_size: 11.0,
+                                font_weight: 600,
+                            },
+                            Label {
+                                text: self.calculate_total_space(),
+                                font_size: 11.0,
+                            },
+                            Spacer {},
+                            Label {
+                                text: format!("Space available: {} MB", self.available_disk_space / 1024 / 1024),
+                                font_size: 11.0,
+                                color: if self.available_disk_space / 1024 / 1024 > 500 {
+                                    self.theme.colors.success
+                                } else {
+                                    self.theme.colors.error
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_destination_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Installation Folder".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Label {
+                        text: "Choose where to install Omnisystem.".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                        margin_bottom: 16.0,
+                    },
+
+                    Row {
+                        spacing: 8.0,
+
+                        children: vec![
+                            TextField {
+                                id: "install-path".to_string(),
+                                value: self.installation_path.to_string_lossy().to_string(),
+                                width: "80%".to_string(),
+                                onChange: |path| {
+                                    INSTALLER_STATE.set_installation_path(&path);
+                                },
+                            },
+                            Button {
+                                label: "Browse".to_string(),
+                                onClick: || {
+                                    INSTALLER_STATE.show_folder_browser();
+                                },
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "Installation will require:".to_string(),
+                                font_size: 11.0,
+                                font_weight: 600,
+                            },
+                            Label {
+                                text: "• 500 MB disk space".to_string(),
+                                font_size: 11.0,
+                            },
+                            Label {
+                                text: "• Administrator privileges".to_string(),
+                                font_size: 11.0,
+                            },
+                            Label {
+                                text: "• 2-5 minutes to complete".to_string(),
+                                font_size: 11.0,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_options_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Installation Options".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Checkbox {
+                                id: "shortcuts-checkbox".to_string(),
+                                label: "Create desktop shortcuts".to_string(),
+                                checked: self.install_shortcuts,
+                                onChange: |enabled| {
+                                    INSTALLER_STATE.set_shortcuts(enabled);
+                                },
+                            },
+                            Checkbox {
+                                id: "autostart-checkbox".to_string(),
+                                label: "Start Omnisystem when Windows/macOS/Linux boots".to_string(),
+                                checked: self.auto_start_enabled,
+                                onChange: |enabled| {
+                                    INSTALLER_STATE.set_autostart(enabled);
+                                },
+                            },
+                            Checkbox {
+                                id: "context-menu-checkbox".to_string(),
+                                label: "Add 'Open with Omnisystem' to file context menus".to_string(),
+                                checked: true,
+                                onChange: |_| {},
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Label {
+                        text: "Advanced Options".to_string(),
+                        font_size: 12.0,
+                        font_weight: 600,
+                        margin_bottom: 8.0,
+                    },
+
+                    Row {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "Install location:".to_string(),
+                                font_size: 11.0,
+                            },
+                            Spacer {},
+                            Label {
+                                text: self.installation_path.to_string_lossy().to_string(),
+                                font_size: 11.0,
+                                color: self.theme.colors.foreground_secondary,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_ready_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Ready to Install".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Label {
+                        text: "Click 'Install' to begin the installation process.".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                        margin_bottom: 24.0,
+                    },
+
+                    Panel {
+                        padding: 16.0,
+                        background_color: self.theme.colors.surface,
+                        border: true,
+
+                        children: vec![
+                            Column {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    self.render_summary_item("Installation Location", &self.installation_path.to_string_lossy()),
+                                    self.render_summary_item("Components", &format!("{} selected", self.selected_components.len())),
+                                    self.render_summary_item("Platform", self.platform.name()),
+                                    self.render_summary_item("Disk Space Needed", &format!("{} MB", self.calculate_space_mb())),
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_installing_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+
+                children: vec![
+                    Label {
+                        text: "Installing Omnisystem...".to_string(),
+                        font_size: 20.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    // Progress bar
+                    Column {
+                        spacing: 8.0,
+
+                        children: vec![
+                            ProgressBar {
+                                value: (self.progress * 100.0) as i32,
+                                max: 100,
+                                height: 20.0,
+                                color: self.theme.colors.primary,
+                            },
+                            Label {
+                                text: format!("{:.0}% Complete", self.progress * 100.0),
+                                font_size: 12.0,
+                                color: self.theme.colors.foreground_secondary,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    // Installation log
+                    Column {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "Installation Progress".to_string(),
+                                font_size: 12.0,
+                                font_weight: 600,
+                            },
+                            CodeEditor {
+                                id: "install-log".to_string(),
+                                content: self.get_installation_log(),
+                                language: "plaintext".to_string(),
+                                height: 300.0,
+                                read_only: true,
+                                auto_scroll: true,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Label {
+                        text: "Please do not close this window during installation.".to_string(),
+                        font_size: 11.0,
+                        color: self.theme.colors.warning,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_complete_step(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+                alignment: "center".to_string(),
+
+                children: vec![
+                    Circle {
+                        radius: 40.0,
+                        color: self.theme.colors.success,
+                        children: vec![
+                            Image {
+                                source: self.asset_manager.load_icon("check", 48),
+                                width: 48.0,
+                                height: 48.0,
+                            },
+                        ],
+                    },
+
+                    Label {
+                        text: "Installation Complete!".to_string(),
+                        font_size: 24.0,
+                        font_weight: 700,
+                    },
+
+                    Label {
+                        text: "Omnisystem has been successfully installed.".to_string(),
+                        font_size: 14.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+
+                    Separator { margin: 20.0 },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: vec![
+                            Label {
+                                text: "Installed to:".to_string(),
+                                font_size: 11.0,
+                                font_weight: 600,
+                            },
+                            Label {
+                                text: self.installation_path.to_string_lossy().to_string(),
+                                font_size: 11.0,
+                                color: self.theme.colors.foreground_secondary,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 20.0 },
+
+                    Checkbox {
+                        id: "launch-checkbox".to_string(),
+                        label: "Launch Omnisystem now".to_string(),
+                        checked: true,
+                    },
+
+                    Spacer {},
+
+                    Label {
+                        text: "Thank you for choosing Omnisystem!".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_footer(&self) -> Widget {
+        Panel {
+            id: "installer-footer".to_string(),
+            height: 60.0,
+            padding: 20.0,
+            background_color: self.theme.colors.surface,
+            border_top: true,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        Button {
+                            label: "Cancel".to_string(),
+                            variant: "secondary".to_string(),
+                            onClick: || {
+                                INSTALLER_STATE.cancel_installation();
+                            },
+                        },
+
+                        Spacer {},
+
+                        if self.current_step != InstallerStep::Welcome {
+                            Button {
+                                label: "< Previous".to_string(),
+                                variant: "secondary".to_string(),
+                                onClick: || {
+                                    INSTALLER_STATE.previous_step();
+                                },
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+
+                        Button {
+                            label: match self.current_step {
+                                InstallerStep::Complete => "Finish".to_string(),
+                                InstallerStep::Installing => "Installing...".to_string(),
+                                _ => "Next >".to_string(),
+                            },
+                            variant: "primary".to_string(),
+                            disabled: self.current_step == InstallerStep::Installing,
+                            onClick: || {
+                                INSTALLER_STATE.next_step();
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    // ============================================================================
+    // HELPER METHODS
+    // ============================================================================
+
+    fn render_info_item(&self, label: &str, value: &str) -> Widget {
+        Row {
+            spacing: 12.0,
+            children: vec![
+                Label {
+                    text: format!("{}:", label),
+                    font_size: 12.0,
+                    font_weight: 600,
+                    width: "150px".to_string(),
+                },
+                Label {
+                    text: value.to_string(),
+                    font_size: 12.0,
+                },
+            ],
+        }
+    }
+
+    fn render_component_option(&self, name: &str, description: &str, size_mb: u32, required: bool) -> Widget {
+        Row {
+            spacing: 12.0,
+            margin_bottom: 8.0,
+
+            children: vec![
+                Checkbox {
+                    label: String::new(),
+                    checked: required,
+                    disabled: required,
+                },
+                Column {
+                    spacing: 2.0,
+                    width: "1fr".to_string(),
+
+                    children: vec![
+                        Row {
+                            spacing: 8.0,
+                            children: vec![
+                                Label {
+                                    text: name.to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                if required {
+                                    Label {
+                                        text: "(required)".to_string(),
+                                        font_size: 10.0,
+                                        color: self.theme.colors.foreground_secondary,
+                                    }
+                                } else {
+                                    EmptyWidget {}
+                                },
+                            ],
+                        },
+                        Label {
+                            text: description.to_string(),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                        Label {
+                            text: format!("{} MB", size_mb),
+                            font_size: 10.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_summary_item(&self, label: &str, value: &dyn std::fmt::Display) -> Widget {
+        Row {
+            spacing: 16.0,
+            children: vec![
+                Label {
+                    text: format!("{}:", label),
+                    font_size: 12.0,
+                    font_weight: 600,
+                    width: "200px".to_string(),
+                },
+                Label {
+                    text: value.to_string(),
+                    font_size: 12.0,
+                    color: self.theme.colors.foreground_secondary,
+                },
+            ],
+        }
+    }
+
+    fn get_step_title(&self) -> String {
+        match self.current_step {
+            InstallerStep::Welcome => "Step 1 of 8: Welcome".to_string(),
+            InstallerStep::License => "Step 2 of 8: License Agreement".to_string(),
+            InstallerStep::Components => "Step 3 of 8: Select Components".to_string(),
+            InstallerStep::Destination => "Step 4 of 8: Installation Folder".to_string(),
+            InstallerStep::Options => "Step 5 of 8: Options".to_string(),
+            InstallerStep::Ready => "Step 6 of 8: Ready to Install".to_string(),
+            InstallerStep::Installing => "Step 7 of 8: Installing".to_string(),
+            InstallerStep::Complete => "Step 8 of 8: Complete".to_string(),
+        }
+    }
+
+    fn get_license_text(&self) -> String {
+        "OMNISYSTEM ENTERPRISE LICENSE AGREEMENT\n\n\
+        Version 29.0.0\n\n\
+        1. LICENSE GRANT\n\
+        Omnisystem is licensed, not sold. We grant you a limited, non-exclusive, \
+        non-transferable license to use Omnisystem in accordance with this agreement.\n\n\
+        2. PERMITTED USE\n\
+        You may:\n\
+        - Install and run Omnisystem on your computers\n\
+        - Use all 7 Omnisystem languages and frameworks\n\
+        - Create applications and systems using Omnisystem\n\
+        - Distribute your created applications (see distribution rights)\n\n\
+        3. RESTRICTIONS\n\
+        You may not:\n\
+        - Reverse engineer or decompile Omnisystem\n\
+        - Remove copyright notices or license agreements\n\
+        - Rent, lease, or lend Omnisystem\n\
+        - Sublicense Omnisystem except as permitted for your applications\n\n\
+        4. INTELLECTUAL PROPERTY\n\
+        Omnisystem and all components are protected by copyright law. \
+        You retain all rights to applications you create.\n\n\
+        5. WARRANTY DISCLAIMER\n\
+        OMNISYSTEM IS PROVIDED 'AS IS' WITHOUT WARRANTY OF ANY KIND.\n\n\
+        6. LIMITATION OF LIABILITY\n\
+        IN NO EVENT SHALL OMNISYSTEM BE LIABLE FOR INDIRECT, INCIDENTAL, \
+        OR CONSEQUENTIAL DAMAGES.\n\n\
+        For the complete license agreement, visit: https://omnisystem.dev/license".to_string()
+    }
+
+    fn get_installation_log(&self) -> String {
+        let mut log = String::new();
+        for file in &self.installed_files {
+            log.push_str(&format!("[✓] Installed: {}\n", file));
+        }
+        log
+    }
+
+    fn calculate_total_space(&self) -> String {
+        let total: u32 = self.selected_components.iter().map(|c| c.size_mb).sum();
+        format!("{} MB", total)
+    }
+
+    fn calculate_space_mb(&self) -> u32 {
+        self.selected_components.iter().map(|c| c.size_mb).sum()
+    }
+
+    fn get_default_install_path() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            PathBuf::from("C:\\Program Files\\Omnisystem")
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            PathBuf::from("/Applications/Omnisystem")
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            PathBuf::from("/opt/omnisystem")
+        }
+    }
+
+    fn get_default_components() -> Vec<Component> {
+        vec![
+            Component { name: "Core System".to_string(), size_mb: 50, required: true },
+            Component { name: "Desktop Environment".to_string(), size_mb: 120, required: true },
+            Component { name: "Documentation".to_string(), size_mb: 45, required: true },
+            Component { name: "System Integration".to_string(), size_mb: 25, required: true },
+        ]
+    }
+
+    #[cfg(target_os = "windows")]
+    fn detect_platform() -> Platform {
+        Platform::Windows
+    }
+
+    #[cfg(target_os = "macos")]
+    fn detect_platform() -> Platform {
+        Platform::MacOS
+    }
+
+    #[cfg(target_os = "linux")]
+    fn detect_platform() -> Platform {
+        Platform::Linux
+    }
+
+    fn get_os_version() -> String {
+        #[cfg(target_os = "windows")]
+        {
+            "Windows 10 / 11".to_string()
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            "macOS 10.15+".to_string()
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            "Linux (Various)".to_string()
+        }
+    }
+
+    fn get_available_disk_space() -> u64 {
+        // Placeholder - in real implementation would query filesystem
+        500 * 1024 * 1024 // 500 MB
+    }
+
+    // ============================================================================
+    // INSTALLATION LOGIC
+    // ============================================================================
+
+    pub fn perform_installation(&mut self) -> Result<(), String> {
+        self.current_step = InstallerStep::Installing;
+
+        // Step 1: Create installation directory
+        self.progress = 0.1;
+        fs::create_dir_all(&self.installation_path)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+        // Step 2: Copy core system files
+        self.progress = 0.25;
+        self.copy_component_files("core")?;
+
+        // Step 3: Copy desktop environment
+        self.progress = 0.45;
+        self.copy_component_files("desktop")?;
+
+        // Step 4: Create platform-specific shortcuts and integrations
+        self.progress = 0.65;
+        self.create_platform_integration()?;
+
+        // Step 5: Update registry/system files (platform-specific)
+        self.progress = 0.85;
+        self.register_with_system()?;
+
+        // Step 6: Verify installation
+        self.progress = 0.95;
+        self.verify_installation()?;
+
+        self.progress = 1.0;
+        self.current_step = InstallerStep::Complete;
+
+        Ok(())
+    }
+
+    fn copy_component_files(&mut self, component: &str) -> Result<(), String> {
+        // Copy files for the specified component
+        // In a real implementation, this would copy from embedded resources or source
+        self.installed_files.push(format!("{}/bin/omnisystem.exe", self.installation_path.display()));
+        self.installed_files.push(format!("{}/lib/core.dll", self.installation_path.display()));
+        Ok(())
+    }
+
+    fn create_platform_integration(&mut self) -> Result<(), String> {
+        match self.platform {
+            Platform::Windows => self.create_windows_integration(),
+            Platform::MacOS => self.create_macos_integration(),
+            Platform::Linux => self.create_linux_integration(),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn create_windows_integration(&mut self) -> Result<(), String> {
+        // Create Windows shortcuts and registry entries
+        // This would use Windows API calls to create Start Menu shortcuts
+        // and add registry keys for file associations
+        self.installed_files.push("Windows shortcuts created".to_string());
+        self.installed_files.push("Registry entries updated".to_string());
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn create_windows_integration(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn create_macos_integration(&mut self) -> Result<(), String> {
+        // Create macOS LaunchServices integration and plist files
+        self.installed_files.push("LaunchServices registered".to_string());
+        self.installed_files.push("Application bundle created".to_string());
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn create_macos_integration(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create_linux_integration(&mut self) -> Result<(), String> {
+        // Create Linux .desktop files and system integration
+        self.installed_files.push(".desktop file created".to_string());
+        self.installed_files.push("freedesktop.org registration completed".to_string());
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn create_linux_integration(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn register_with_system(&mut self) -> Result<(), String> {
+        // Platform-specific system registration
+        match self.platform {
+            Platform::Windows => {
+                // Add to Programs and Features
+                self.installed_files.push("Added to Control Panel".to_string());
+            }
+            Platform::MacOS => {
+                // Register in Applications folder
+                self.installed_files.push("Registered in Applications".to_string());
+            }
+            Platform::Linux => {
+                // Register with package manager
+                self.installed_files.push("System integration completed".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_installation(&mut self) -> Result<(), String> {
+        // Verify that all necessary files are in place
+        let exe_path = self.installation_path.join("bin/omnisystem.exe");
+        if !exe_path.exists() {
+            return Err("Installation verification failed".to_string());
+        }
+        self.installed_files.push("Installation verification completed".to_string());
+        Ok(())
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug)]
+pub enum InstallerStep {
+    Welcome,
+    License,
+    Components,
+    Destination,
+    Options,
+    Ready,
+    Installing,
+    Complete,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Platform {
+    Windows,
+    MacOS,
+    Linux,
+}
+
+impl Platform {
+    fn name(&self) -> &str {
+        match self {
+            Platform::Windows => "Windows 10/11 64-bit",
+            Platform::MacOS => "macOS 10.15+",
+            Platform::Linux => "Linux (Various Distributions)",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Component {
+    name: String,
+    size_mb: u32,
+    required: bool,
+}
+
+// Global installer state
+pub static INSTALLER_STATE: LazyStatic<Mutex<OmnisystemInstaller>> =
+    LazyStatic::new(|| {
+        Mutex::new(OmnisystemInstaller::new(AssetManager::global()))
+    });

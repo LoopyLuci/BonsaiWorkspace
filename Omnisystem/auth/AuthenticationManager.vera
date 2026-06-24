@@ -1,0 +1,917 @@
+// Omnisystem Authentication & Permission Management - Role-Based Access Control
+// User authentication, session management, role/permission matrix, and audit logging
+
+use std::collections::HashMap;
+
+pub struct AuthenticationManager {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // User data
+    users: Vec<User>,
+    roles: Vec<Role>,
+    permissions: Vec<Permission>,
+    user_role_mapping: HashMap<String, Vec<String>>,
+
+    // Session management
+    active_sessions: Vec<Session>,
+    session_timeout: u32,
+    max_concurrent_sessions: u32,
+
+    // Security settings
+    password_policy: PasswordPolicy,
+    mfa_enabled: bool,
+    session_log: Vec<SessionLog>,
+    audit_log: Vec<AuditLogEntry>,
+
+    // UI state
+    current_tab: AuthTab,
+    selected_user: Option<String>,
+    selected_role: Option<String>,
+}
+
+impl AuthenticationManager {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "auth-manager".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            users: Self::load_default_users(),
+            roles: Self::load_default_roles(),
+            permissions: Self::load_default_permissions(),
+            user_role_mapping: Self::load_default_mappings(),
+            active_sessions: vec![],
+            session_timeout: 3600,
+            max_concurrent_sessions: 5,
+            password_policy: PasswordPolicy::default(),
+            mfa_enabled: true,
+            session_log: vec![],
+            audit_log: vec![],
+            current_tab: AuthTab::Users,
+            selected_user: None,
+            selected_role: None,
+        }
+    }
+
+    pub fn render(&self) -> Widget {
+        ApplicationWindow {
+            id: "auth-manager".to_string(),
+            title: "Authentication & Permissions".to_string(),
+            width: 1600,
+            height: 1000,
+
+            children: vec![
+                self.render_header(),
+
+                Row {
+                    spacing: 0.0,
+                    height: "1fr".to_string(),
+
+                    children: vec![
+                        // Sidebar
+                        self.render_sidebar(),
+
+                        // Main content
+                        Panel {
+                            width: "1fr".to_string(),
+                            padding: 20.0,
+                            background_color: self.theme.colors.background,
+
+                            children: match self.current_tab {
+                                AuthTab::Users => self.render_users_tab(),
+                                AuthTab::Roles => self.render_roles_tab(),
+                                AuthTab::Permissions => self.render_permissions_tab(),
+                                AuthTab::Sessions => self.render_sessions_tab(),
+                                AuthTab::Audit => self.render_audit_tab(),
+                                AuthTab::Security => self.render_security_tab(),
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_header(&self) -> Widget {
+        Panel {
+            height: 60.0,
+            padding: 16.0,
+            background_color: self.theme.colors.primary,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("lock", 32),
+                            width: 32.0,
+                            height: 32.0,
+                        },
+
+                        Label {
+                            text: "Authentication & Permissions".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            color: self.theme.colors.white,
+                        },
+
+                        Spacer {},
+
+                        Row {
+                            spacing: 12.0,
+
+                            children: vec![
+                                Badge {
+                                    label: format!("{} users", self.users.len()),
+                                },
+                                Badge {
+                                    label: format!("{} active sessions", self.active_sessions.len()),
+                                    color: self.theme.colors.success,
+                                },
+                                Badge {
+                                    label: if self.mfa_enabled { "MFA Enabled" } else { "MFA Disabled" },
+                                    color: if self.mfa_enabled { self.theme.colors.success } else { self.theme.colors.warning },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_sidebar(&self) -> Widget {
+        Panel {
+            width: "180px".to_string(),
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_right: true,
+
+            children: vec![
+                Column {
+                    spacing: 2.0,
+
+                    children: vec![
+                        self.render_tab_button("Users", AuthTab::Users),
+                        self.render_tab_button("Roles", AuthTab::Roles),
+                        self.render_tab_button("Permissions", AuthTab::Permissions),
+                        self.render_tab_button("Sessions", AuthTab::Sessions),
+                        self.render_tab_button("Audit Log", AuthTab::Audit),
+                        self.render_tab_button("Security", AuthTab::Security),
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_users_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Users".to_string(),
+                                font_size: 16.0,
+                                font_weight: 700,
+                            },
+
+                            Spacer {},
+
+                            Button {
+                                label: "+ Add User".to_string(),
+                                variant: "primary".to_string(),
+                                onClick: || {
+                                    AUTH_MANAGER_STATE.show_add_user_dialog();
+                                },
+                            },
+                        ],
+                    },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.users.iter().map(|user| {
+                            self.render_user_item(user)
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_user_item(&self, user: &User) -> Widget {
+        Panel {
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        Circle {
+                            radius: 20.0,
+                            color: self.theme.colors.primary,
+                            children: vec![
+                                Label {
+                                    text: user.username.chars().next().unwrap_or('U').to_uppercase().to_string(),
+                                    font_size: 18.0,
+                                    color: self.theme.colors.white,
+                                    font_weight: 700,
+                                },
+                            ],
+                        },
+
+                        Column {
+                            spacing: 2.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: user.username.clone(),
+                                            font_size: 12.0,
+                                            font_weight: 700,
+                                        },
+                                        if user.active {
+                                            Badge { label: "Active".to_string(), color: self.theme.colors.success }
+                                        } else {
+                                            Badge { label: "Inactive".to_string(), color: self.theme.colors.warning }
+                                        },
+                                    ],
+                                },
+
+                                Label {
+                                    text: user.email.clone(),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+
+                                Label {
+                                    text: format!("Roles: {}", user.roles.join(", ")),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+                            ],
+                        },
+
+                        Spacer {},
+
+                        Column {
+                            spacing: 4.0,
+
+                            children: vec![
+                                Button {
+                                    label: "Edit".to_string(),
+                                    size: "small".to_string(),
+                                    onClick: || {
+                                        AUTH_MANAGER_STATE.edit_user(&user.id);
+                                    },
+                                },
+
+                                Button {
+                                    label: "Reset Password".to_string(),
+                                    size: "small".to_string(),
+                                    onClick: || {
+                                        AUTH_MANAGER_STATE.reset_user_password(&user.id);
+                                    },
+                                },
+
+                                Button {
+                                    label: "Delete".to_string(),
+                                    size: "small".to_string(),
+                                    variant: "danger".to_string(),
+                                    onClick: || {
+                                        AUTH_MANAGER_STATE.delete_user(&user.id);
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_roles_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Roles".to_string(),
+                                font_size: 16.0,
+                                font_weight: 700,
+                            },
+
+                            Spacer {},
+
+                            Button {
+                                label: "+ Create Role".to_string(),
+                                variant: "primary".to_string(),
+                                onClick: || {
+                                    AUTH_MANAGER_STATE.show_create_role_dialog();
+                                },
+                            },
+                        ],
+                    },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.roles.iter().map(|role| {
+                            Panel {
+                                padding: 12.0,
+                                background_color: self.theme.colors.surface,
+                                border: true,
+
+                                children: vec![
+                                    Row {
+                                        spacing: 12.0,
+
+                                        children: vec![
+                                            Column {
+                                                spacing: 2.0,
+                                                width: "1fr".to_string(),
+
+                                                children: vec![
+                                                    Label {
+                                                        text: role.name.clone(),
+                                                        font_size: 12.0,
+                                                        font_weight: 700,
+                                                    },
+
+                                                    Label {
+                                                        text: role.description.clone(),
+                                                        font_size: 10.0,
+                                                        color: self.theme.colors.foreground_secondary,
+                                                    },
+
+                                                    Label {
+                                                        text: format!("{} permissions", role.permissions.len()),
+                                                        font_size: 9.0,
+                                                        color: self.theme.colors.foreground_secondary,
+                                                    },
+                                                ],
+                                            },
+
+                                            Spacer {},
+
+                                            Row {
+                                                spacing: 4.0,
+
+                                                children: vec![
+                                                    Button {
+                                                        label: "Edit".to_string(),
+                                                        size: "small".to_string(),
+                                                    },
+
+                                                    Button {
+                                                        label: "Delete".to_string(),
+                                                        size: "small".to_string(),
+                                                        variant: "danger".to_string(),
+                                                    },
+                                                ],
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_permissions_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Permissions Matrix".to_string(),
+                        font_size: 16.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    // Permission matrix table
+                    DataGrid {
+                        columns: vec![
+                            "Permission".to_string(),
+                            "Description".to_string(),
+                            "Admin".to_string(),
+                            "Developer".to_string(),
+                            "User".to_string(),
+                        ],
+                        rows: self.permissions.iter().map(|perm| {
+                            vec![
+                                perm.name.clone(),
+                                perm.description.clone(),
+                                "✓".to_string(),
+                                if perm.resource.contains("dev") { "✓" } else { "✗" }.to_string(),
+                                if perm.resource.contains("user") { "✓" } else { "✗" }.to_string(),
+                            ]
+                        }).collect(),
+                        sortable: true,
+                        selectable: true,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_sessions_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: format!("Active Sessions ({})", self.active_sessions.len()),
+                                font_size: 16.0,
+                                font_weight: 700,
+                            },
+
+                            Spacer {},
+
+                            Button {
+                                label: "Terminate All".to_string(),
+                                variant: "danger".to_string(),
+                                onClick: || {
+                                    AUTH_MANAGER_STATE.terminate_all_sessions();
+                                },
+                            },
+                        ],
+                    },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.active_sessions.iter().map(|session| {
+                            Panel {
+                                padding: 12.0,
+                                background_color: self.theme.colors.surface,
+                                border: true,
+
+                                children: vec![
+                                    Row {
+                                        spacing: 12.0,
+
+                                        children: vec![
+                                            Column {
+                                                spacing: 2.0,
+                                                width: "1fr".to_string(),
+
+                                                children: vec![
+                                                    Label {
+                                                        text: session.username.clone(),
+                                                        font_size: 12.0,
+                                                        font_weight: 700,
+                                                    },
+
+                                                    Label {
+                                                        text: format!("Started: {} | Last Activity: {}", session.start_time, session.last_activity),
+                                                        font_size: 10.0,
+                                                        color: self.theme.colors.foreground_secondary,
+                                                    },
+
+                                                    Label {
+                                                        text: format!("IP: {} | Device: {}", session.ip_address, session.device),
+                                                        font_size: 9.0,
+                                                        color: self.theme.colors.foreground_secondary,
+                                                    },
+                                                ],
+                                            },
+
+                                            Spacer {},
+
+                                            Button {
+                                                label: "Terminate".to_string(),
+                                                size: "small".to_string(),
+                                                variant: "danger".to_string(),
+                                                onClick: || {
+                                                    AUTH_MANAGER_STATE.terminate_session(&session.id);
+                                                },
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_audit_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Audit Log".to_string(),
+                                font_size: 16.0,
+                                font_weight: 700,
+                            },
+
+                            Spacer {},
+
+                            Button {
+                                label: "Export Report".to_string(),
+                                size: "small".to_string(),
+                                onClick: || {
+                                    AUTH_MANAGER_STATE.export_audit_log();
+                                },
+                            },
+
+                            Button {
+                                label: "Clear Log".to_string(),
+                                size: "small".to_string(),
+                                variant: "danger".to_string(),
+                                onClick: || {
+                                    AUTH_MANAGER_STATE.clear_audit_log();
+                                },
+                            },
+                        ],
+                    },
+
+                    Column {
+                        spacing: 4.0,
+
+                        children: self.audit_log.iter().map(|entry| {
+                            Panel {
+                                padding: 10.0,
+                                background_color: self.theme.colors.surface,
+
+                                children: vec![
+                                    Row {
+                                        spacing: 12.0,
+
+                                        children: vec![
+                                            Label {
+                                                text: entry.timestamp.clone(),
+                                                font_size: 10.0,
+                                                color: self.theme.colors.foreground_secondary,
+                                                width: "140px".to_string(),
+                                            },
+
+                                            Label {
+                                                text: entry.user.clone(),
+                                                font_size: 11.0,
+                                                font_weight: 600,
+                                                width: "120px".to_string(),
+                                            },
+
+                                            Label {
+                                                text: entry.action.clone(),
+                                                font_size: 11.0,
+                                                width: "150px".to_string(),
+                                            },
+
+                                            Label {
+                                                text: entry.details.clone(),
+                                                font_size: 10.0,
+                                                color: self.theme.colors.foreground_secondary,
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_security_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+
+                children: vec![
+                    Label {
+                        text: "Security Settings".to_string(),
+                        font_size: 16.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Multi-Factor Authentication".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Checkbox {
+                                label: "Enable MFA for all users".to_string(),
+                                checked: self.mfa_enabled,
+                                onChange: |enabled| {
+                                    AUTH_MANAGER_STATE.set_mfa_enabled(enabled);
+                                },
+                            },
+
+                            Checkbox {
+                                label: "Require MFA for privileged operations".to_string(),
+                                checked: true,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Session Settings".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Session timeout (minutes):".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    TextField {
+                                        value: format!("{}", self.session_timeout / 60),
+                                        width: "80px".to_string(),
+                                    },
+                                ],
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Max concurrent sessions:".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    TextField {
+                                        value: self.max_concurrent_sessions.to_string(),
+                                        width: "80px".to_string(),
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 16.0 },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Password Policy".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Minimum length:".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    Slider {
+                                        value: 8,
+                                        min: 6,
+                                        max: 20,
+                                    },
+                                ],
+                            },
+
+                            Checkbox {
+                                label: "Require uppercase letters".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Require numbers".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Require special characters".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Password expiration".to_string(),
+                                checked: true,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_tab_button(&self, label: &str, tab: AuthTab) -> Widget {
+        Button {
+            label: label.to_string(),
+            variant: if std::mem::discriminant(&self.current_tab) == std::mem::discriminant(&tab) {
+                "primary"
+            } else {
+                "secondary"
+            },
+            width: "100%".to_string(),
+            margin_bottom: 4.0,
+            onClick: || {
+                AUTH_MANAGER_STATE.switch_tab(tab);
+            },
+        }
+    }
+
+    fn load_default_users() -> Vec<User> {
+        vec![
+            User {
+                id: "user-admin".to_string(),
+                username: "admin".to_string(),
+                email: "admin@omnisystem.dev".to_string(),
+                roles: vec!["Admin".to_string()],
+                active: true,
+                created_at: "2026-01-01".to_string(),
+                last_login: "2026-06-23".to_string(),
+            },
+            User {
+                id: "user-dev".to_string(),
+                username: "developer".to_string(),
+                email: "dev@omnisystem.dev".to_string(),
+                roles: vec!["Developer".to_string()],
+                active: true,
+                created_at: "2026-02-15".to_string(),
+                last_login: "2026-06-22".to_string(),
+            },
+        ]
+    }
+
+    fn load_default_roles() -> Vec<Role> {
+        vec![
+            Role {
+                id: "role-admin".to_string(),
+                name: "Admin".to_string(),
+                description: "Full system access".to_string(),
+                permissions: vec!["admin.all".to_string()],
+            },
+            Role {
+                id: "role-dev".to_string(),
+                name: "Developer".to_string(),
+                description: "Development and debugging access".to_string(),
+                permissions: vec!["debug".to_string(), "compile".to_string()],
+            },
+        ]
+    }
+
+    fn load_default_permissions() -> Vec<Permission> {
+        vec![
+            Permission { name: "User Management".to_string(), description: "Create, edit, delete users".to_string(), resource: "admin.users".to_string() },
+            Permission { name: "Role Management".to_string(), description: "Manage system roles".to_string(), resource: "admin.roles".to_string() },
+            Permission { name: "Debugging".to_string(), description: "Debug applications".to_string(), resource: "dev.debug".to_string() },
+        ]
+    }
+
+    fn load_default_mappings() -> HashMap<String, Vec<String>> {
+        let mut map = HashMap::new();
+        map.insert("user-admin".to_string(), vec!["Admin".to_string()]);
+        map.insert("user-dev".to_string(), vec!["Developer".to_string()]);
+        map
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AuthTab {
+    Users,
+    Roles,
+    Permissions,
+    Sessions,
+    Audit,
+    Security,
+}
+
+#[derive(Clone, Debug)]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub email: String,
+    pub roles: Vec<String>,
+    pub active: bool,
+    pub created_at: String,
+    pub last_login: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Role {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub permissions: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Permission {
+    pub name: String,
+    pub description: String,
+    pub resource: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Session {
+    pub id: String,
+    pub username: String,
+    pub start_time: String,
+    pub last_activity: String,
+    pub ip_address: String,
+    pub device: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditLogEntry {
+    pub timestamp: String,
+    pub user: String,
+    pub action: String,
+    pub details: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PasswordPolicy {
+    pub min_length: u32,
+    pub require_uppercase: bool,
+    pub require_numbers: bool,
+    pub require_special: bool,
+    pub expiration_days: u32,
+}
+
+impl Default for PasswordPolicy {
+    fn default() -> Self {
+        Self {
+            min_length: 8,
+            require_uppercase: true,
+            require_numbers: true,
+            require_special: true,
+            expiration_days: 90,
+        }
+    }
+}
+
+pub static AUTH_MANAGER_STATE: LazyStatic<Mutex<AuthenticationManager>> =
+    LazyStatic::new(|| {
+        Mutex::new(AuthenticationManager::new(AssetManager::global()))
+    });

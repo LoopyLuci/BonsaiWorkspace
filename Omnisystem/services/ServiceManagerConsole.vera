@@ -1,0 +1,898 @@
+// Omnisystem Service Manager - Comprehensive Service Lifecycle Management
+// Start, stop, restart, enable, disable services with dependency tracking and health monitoring
+
+use std::collections::HashMap;
+
+pub struct ServiceManagerConsole {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Service data
+    services: Vec<ServiceInfo>,
+    service_groups: Vec<ServiceGroup>,
+    service_dependencies: HashMap<String, Vec<String>>,
+    service_logs: HashMap<String, Vec<LogEntry>>,
+
+    // UI state
+    current_tab: ServiceManagerTab,
+    selected_service: Option<String>,
+    show_system_services: bool,
+    filter_by_status: ServiceStatusFilter,
+    sort_by: ServiceSortOption,
+
+    // Operations
+    pending_operations: Vec<PendingOperation>,
+    operation_history: Vec<OperationHistory>,
+}
+
+impl ServiceManagerConsole {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "service-manager".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            services: Self::load_services(),
+            service_groups: Self::get_service_groups(),
+            service_dependencies: Self::get_service_dependencies(),
+            service_logs: HashMap::new(),
+            current_tab: ServiceManagerTab::Services,
+            selected_service: None,
+            show_system_services: false,
+            filter_by_status: ServiceStatusFilter::All,
+            sort_by: ServiceSortOption::Name,
+            pending_operations: vec![],
+            operation_history: vec![],
+        }
+    }
+
+    pub fn render(&self) -> Widget {
+        ApplicationWindow {
+            id: "service-manager".to_string(),
+            title: "Omnisystem Service Manager".to_string(),
+            width: 1600,
+            height: 900,
+
+            children: vec![
+                self.render_header(),
+
+                Row {
+                    spacing: 0.0,
+                    height: "1fr".to_string(),
+
+                    children: vec![
+                        // Sidebar
+                        self.render_sidebar(),
+
+                        // Main content
+                        Panel {
+                            width: "1fr".to_string(),
+                            padding: 20.0,
+                            background_color: self.theme.colors.background,
+
+                            children: match self.current_tab {
+                                ServiceManagerTab::Services => self.render_services_tab(),
+                                ServiceManagerTab::Dependencies => self.render_dependencies_tab(),
+                                ServiceManagerTab::History => self.render_history_tab(),
+                                ServiceManagerTab::Settings => self.render_settings_tab(),
+                            },
+                        },
+                    ],
+                },
+
+                self.render_footer(),
+            ],
+        }
+    }
+
+    fn render_header(&self) -> Widget {
+        Panel {
+            height: 60.0,
+            padding: 16.0,
+            background_color: self.theme.colors.primary,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("service", 32),
+                            width: 32.0,
+                            height: 32.0,
+                        },
+
+                        Label {
+                            text: "Service Manager".to_string(),
+                            font_size: 18.0,
+                            font_weight: 700,
+                            color: self.theme.colors.white,
+                        },
+
+                        Spacer {},
+
+                        // Service status summary
+                        Row {
+                            spacing: 24.0,
+
+                            children: vec![
+                                Row {
+                                    spacing: 6.0,
+                                    children: vec![
+                                        Circle { radius: 6.0, color: self.theme.colors.success },
+                                        Label {
+                                            text: format!("{} Running", self.services.iter().filter(|s| s.status == ServiceStatus::Running).count()),
+                                            font_size: 11.0,
+                                            color: self.theme.colors.white,
+                                        },
+                                    ],
+                                },
+                                Row {
+                                    spacing: 6.0,
+                                    children: vec![
+                                        Circle { radius: 6.0, color: self.theme.colors.warning },
+                                        Label {
+                                            text: format!("{} Stopped", self.services.iter().filter(|s| s.status == ServiceStatus::Stopped).count()),
+                                            font_size: 11.0,
+                                            color: self.theme.colors.white,
+                                        },
+                                    ],
+                                },
+                                Row {
+                                    spacing: 6.0,
+                                    children: vec![
+                                        Circle { radius: 6.0, color: self.theme.colors.error },
+                                        Label {
+                                            text: format!("{} Error", self.services.iter().filter(|s| s.status == ServiceStatus::Error).count()),
+                                            font_size: 11.0,
+                                            color: self.theme.colors.white,
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+
+                        Button {
+                            label: "🔄 Refresh".to_string(),
+                            onClick: || {
+                                SERVICE_MANAGER_STATE.refresh_services();
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_sidebar(&self) -> Widget {
+        Panel {
+            width: "200px".to_string(),
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_right: true,
+
+            children: vec![
+                Column {
+                    spacing: 0.0,
+                    margin_bottom: 20.0,
+
+                    children: vec![
+                        self.render_tab_button("Services", ServiceManagerTab::Services),
+                        self.render_tab_button("Dependencies", ServiceManagerTab::Dependencies),
+                        self.render_tab_button("History", ServiceManagerTab::History),
+                        self.render_tab_button("Settings", ServiceManagerTab::Settings),
+                    ],
+                },
+
+                Separator { margin: 12.0 },
+
+                Label {
+                    text: "Service Groups".to_string(),
+                    font_size: 11.0,
+                    font_weight: 700,
+                    margin_bottom: 12.0,
+                },
+
+                Column {
+                    spacing: 4.0,
+
+                    children: self.service_groups.iter().map(|group| {
+                        Button {
+                            label: group.name.clone(),
+                            variant: "secondary".to_string(),
+                            width: "100%".to_string(),
+                            onClick: || {
+                                SERVICE_MANAGER_STATE.filter_by_group(&group.name);
+                            },
+                        }
+                    }).collect(),
+                },
+
+                Separator { margin: 12.0 },
+
+                Checkbox {
+                    label: "Show system services".to_string(),
+                    checked: self.show_system_services,
+                    onChange: |enabled| {
+                        SERVICE_MANAGER_STATE.set_show_system_services(enabled);
+                    },
+                },
+            ],
+        }
+    }
+
+    fn render_services_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    // Filter and sort
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Filter:".to_string(),
+                                font_size: 11.0,
+                                font_weight: 600,
+                            },
+
+                            Dropdown {
+                                options: vec!["All", "Running", "Stopped", "Error", "Disabled"],
+                                selected: 0,
+                                onChange: |index| {
+                                    let filter = match index {
+                                        1 => ServiceStatusFilter::Running,
+                                        2 => ServiceStatusFilter::Stopped,
+                                        3 => ServiceStatusFilter::Error,
+                                        4 => ServiceStatusFilter::Disabled,
+                                        _ => ServiceStatusFilter::All,
+                                    };
+                                    SERVICE_MANAGER_STATE.set_status_filter(filter);
+                                },
+                            },
+
+                            Label {
+                                text: "Sort:".to_string(),
+                                font_size: 11.0,
+                                font_weight: 600,
+                                margin_left: 12.0,
+                            },
+
+                            Dropdown {
+                                options: vec!["Name", "Status", "Startup Type", "Memory Usage"],
+                                selected: 0,
+                                onChange: |index| {
+                                    let sort = match index {
+                                        1 => ServiceSortOption::Status,
+                                        2 => ServiceSortOption::StartupType,
+                                        3 => ServiceSortOption::MemoryUsage,
+                                        _ => ServiceSortOption::Name,
+                                    };
+                                    SERVICE_MANAGER_STATE.set_sort_option(sort);
+                                },
+                            },
+
+                            Spacer {},
+
+                            TextField {
+                                id: "service-search".to_string(),
+                                placeholder: "Search services...".to_string(),
+                                width: "250px".to_string(),
+                            },
+                        ],
+                    },
+
+                    // Services list
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.get_filtered_sorted_services().iter().map(|service| {
+                            self.render_service_item(service)
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_service_item(&self, service: &ServiceInfo) -> Widget {
+        Panel {
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        // Status indicator
+                        Circle {
+                            radius: 8.0,
+                            color: match service.status {
+                                ServiceStatus::Running => self.theme.colors.success,
+                                ServiceStatus::Stopped => self.theme.colors.warning,
+                                ServiceStatus::Error => self.theme.colors.error,
+                            },
+                        },
+
+                        // Service info
+                        Column {
+                            spacing: 2.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Row {
+                                    spacing: 8.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: service.name.clone(),
+                                            font_size: 12.0,
+                                            font_weight: 700,
+                                        },
+                                        Label {
+                                            text: format!("({})", match service.startup_type {
+                                                StartupType::Automatic => "Automatic",
+                                                StartupType::Manual => "Manual",
+                                                StartupType::Disabled => "Disabled",
+                                            }),
+                                            font_size: 10.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                    ],
+                                },
+
+                                Label {
+                                    text: service.description.clone(),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+
+                                Row {
+                                    spacing: 16.0,
+
+                                    children: vec![
+                                        Label {
+                                            text: format!("PID: {}", service.pid),
+                                            font_size: 9.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                        Label {
+                                            text: format!("Memory: {:.1} MB", service.memory_usage_mb),
+                                            font_size: 9.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                        Label {
+                                            text: format!("Uptime: {}", service.uptime),
+                                            font_size: 9.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+
+                        // Control buttons
+                        Row {
+                            spacing: 4.0,
+
+                            children: vec![
+                                if service.status == ServiceStatus::Running {
+                                    Button {
+                                        label: "Pause".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: || {
+                                            SERVICE_MANAGER_STATE.pause_service(&service.id);
+                                        },
+                                    }
+                                } else {
+                                    EmptyWidget {}
+                                },
+
+                                if service.status == ServiceStatus::Running {
+                                    Button {
+                                        label: "Stop".to_string(),
+                                        size: "small".to_string(),
+                                        onClick: || {
+                                            SERVICE_MANAGER_STATE.stop_service(&service.id);
+                                        },
+                                    }
+                                } else {
+                                    Button {
+                                        label: "Start".to_string(),
+                                        size: "small".to_string(),
+                                        variant: "success".to_string(),
+                                        onClick: || {
+                                            SERVICE_MANAGER_STATE.start_service(&service.id);
+                                        },
+                                    }
+                                },
+
+                                Button {
+                                    label: "Restart".to_string(),
+                                    size: "small".to_string(),
+                                    onClick: || {
+                                        SERVICE_MANAGER_STATE.restart_service(&service.id);
+                                    },
+                                },
+
+                                Dropdown {
+                                    options: vec!["View", "Properties", "Dependencies", "Logs"],
+                                    selected: 0,
+                                    onChange: |index| {
+                                        match index {
+                                            1 => SERVICE_MANAGER_STATE.show_properties(&service.id),
+                                            2 => SERVICE_MANAGER_STATE.show_dependencies(&service.id),
+                                            3 => SERVICE_MANAGER_STATE.show_logs(&service.id),
+                                            _ => {},
+                                        }
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_dependencies_tab(&self) -> Vec<Widget> {
+        if let Some(ref service_id) = self.selected_service {
+            if let Some(deps) = self.service_dependencies.get(service_id) {
+                vec![
+                    Column {
+                        spacing: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Service Dependencies".to_string(),
+                                font_size: 16.0,
+                                font_weight: 700,
+                                margin_bottom: 12.0,
+                            },
+
+                            Label {
+                                text: format!("Dependencies for service: {}", service_id),
+                                font_size: 12.0,
+                                color: self.theme.colors.foreground_secondary,
+                                margin_bottom: 12.0,
+                            },
+
+                            Column {
+                                spacing: 8.0,
+
+                                children: deps.iter().map(|dep| {
+                                    Panel {
+                                        padding: 12.0,
+                                        background_color: self.theme.colors.surface,
+
+                                        children: vec![
+                                            Label {
+                                                text: dep.clone(),
+                                                font_size: 12.0,
+                                                font_weight: 600,
+                                            },
+                                        ],
+                                    }
+                                }).collect(),
+                            },
+                        ],
+                    },
+                ]
+            } else {
+                vec![
+                    Label {
+                        text: "No service selected".to_string(),
+                        font_size: 12.0,
+                        color: self.theme.colors.foreground_secondary,
+                    },
+                ]
+            }
+        } else {
+            vec![
+                Label {
+                    text: "Select a service to view dependencies".to_string(),
+                    font_size: 12.0,
+                    color: self.theme.colors.foreground_secondary,
+                },
+            ]
+        }
+    }
+
+    fn render_history_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Operation History".to_string(),
+                        font_size: 16.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    if self.operation_history.is_empty() {
+                        Label {
+                            text: "No operations yet".to_string(),
+                            font_size: 12.0,
+                            color: self.theme.colors.foreground_secondary,
+                        }
+                    } else {
+                        Column {
+                            spacing: 4.0,
+
+                            children: self.operation_history.iter().map(|op| {
+                                Panel {
+                                    padding: 12.0,
+                                    background_color: self.theme.colors.surface,
+
+                                    children: vec![
+                                        Row {
+                                            spacing: 12.0,
+
+                                            children: vec![
+                                                Label {
+                                                    text: op.timestamp.clone(),
+                                                    font_size: 11.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                    width: "150px".to_string(),
+                                                },
+
+                                                Label {
+                                                    text: op.service.clone(),
+                                                    font_size: 12.0,
+                                                    font_weight: 600,
+                                                    width: "150px".to_string(),
+                                                },
+
+                                                Label {
+                                                    text: op.operation.clone(),
+                                                    font_size: 12.0,
+                                                    width: "100px".to_string(),
+                                                },
+
+                                                Label {
+                                                    text: if op.success { "✓ Success" } else { "✗ Failed" },
+                                                    font_size: 11.0,
+                                                    color: if op.success { self.theme.colors.success } else { self.theme.colors.error },
+                                                    font_weight: 600,
+                                                },
+
+                                                Label {
+                                                    text: op.message.clone(),
+                                                    font_size: 10.0,
+                                                    color: self.theme.colors.foreground_secondary,
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                }
+                            }).collect(),
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_settings_tab(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+
+                children: vec![
+                    Label {
+                        text: "Service Manager Settings".to_string(),
+                        font_size: 16.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Auto-refresh".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Checkbox {
+                                label: "Automatically refresh service status".to_string(),
+                                checked: true,
+                            },
+
+                            Row {
+                                spacing: 8.0,
+
+                                children: vec![
+                                    Label {
+                                        text: "Refresh interval:".to_string(),
+                                        font_size: 11.0,
+                                    },
+                                    Dropdown {
+                                        options: vec!["5 seconds", "10 seconds", "30 seconds", "1 minute"],
+                                        selected: 0,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 12.0 },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Startup Type Management".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Checkbox {
+                                label: "Confirm startup type changes".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Auto-start critical services on system boot".to_string(),
+                                checked: true,
+                            },
+                        ],
+                    },
+
+                    Separator { margin: 12.0 },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            Label {
+                                text: "Service Control".to_string(),
+                                font_size: 12.0,
+                                font_weight: 700,
+                                margin_bottom: 8.0,
+                            },
+
+                            Checkbox {
+                                label: "Show system services by default".to_string(),
+                                checked: false,
+                            },
+
+                            Checkbox {
+                                label: "Confirm before stopping services".to_string(),
+                                checked: true,
+                            },
+
+                            Checkbox {
+                                label: "Log all service operations".to_string(),
+                                checked: true,
+                            },
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_footer(&self) -> Widget {
+        Panel {
+            height: 40.0,
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_top: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Label {
+                            text: format!("Total services: {}", self.services.len()),
+                            font_size: 11.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+
+                        if !self.pending_operations.is_empty() {
+                            Row {
+                                spacing: 6.0,
+                                children: vec![
+                                    Circle { radius: 4.0, color: self.theme.colors.primary },
+                                    Label {
+                                        text: format!("{} operations in progress", self.pending_operations.len()),
+                                        font_size: 11.0,
+                                    },
+                                ],
+                            }
+                        } else {
+                            EmptyWidget {}
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_tab_button(&self, label: &str, tab: ServiceManagerTab) -> Widget {
+        Button {
+            label: label.to_string(),
+            variant: if std::mem::discriminant(&self.current_tab) == std::mem::discriminant(&tab) {
+                "primary"
+            } else {
+                "secondary"
+            },
+            width: "100%".to_string(),
+            margin_bottom: 4.0,
+            onClick: || {
+                SERVICE_MANAGER_STATE.switch_tab(tab);
+            },
+        }
+    }
+
+    fn get_filtered_sorted_services(&self) -> Vec<&ServiceInfo> {
+        let mut services: Vec<_> = self.services.iter()
+            .filter(|s| {
+                match self.filter_by_status {
+                    ServiceStatusFilter::All => true,
+                    ServiceStatusFilter::Running => s.status == ServiceStatus::Running,
+                    ServiceStatusFilter::Stopped => s.status == ServiceStatus::Stopped,
+                    ServiceStatusFilter::Error => s.status == ServiceStatus::Error,
+                    ServiceStatusFilter::Disabled => s.startup_type == StartupType::Disabled,
+                }
+            })
+            .collect();
+
+        services.sort_by(|a, b| {
+            match self.sort_by {
+                ServiceSortOption::Name => a.name.cmp(&b.name),
+                ServiceSortOption::Status => format!("{:?}", a.status).cmp(&format!("{:?}", b.status)),
+                ServiceSortOption::StartupType => format!("{:?}", a.startup_type).cmp(&format!("{:?}", b.startup_type)),
+                ServiceSortOption::MemoryUsage => b.memory_usage_mb.partial_cmp(&a.memory_usage_mb).unwrap(),
+            }
+        });
+
+        services
+    }
+
+    fn load_services() -> Vec<ServiceInfo> {
+        vec![
+            ServiceInfo {
+                id: "omnisystem-core".to_string(),
+                name: "Omnisystem Core".to_string(),
+                description: "Core Omnisystem runtime and services".to_string(),
+                status: ServiceStatus::Running,
+                startup_type: StartupType::Automatic,
+                pid: 1024,
+                memory_usage_mb: 245.5,
+                uptime: "28 days 15 hours".to_string(),
+            },
+            ServiceInfo {
+                id: "plugin-manager".to_string(),
+                name: "Omnisystem Plugin Manager".to_string(),
+                description: "Manages plugin lifecycle and loading".to_string(),
+                status: ServiceStatus::Running,
+                startup_type: StartupType::Automatic,
+                pid: 2048,
+                memory_usage_mb: 120.3,
+                uptime: "28 days 15 hours".to_string(),
+            },
+        ]
+    }
+
+    fn get_service_groups() -> Vec<ServiceGroup> {
+        vec![
+            ServiceGroup { name: "Core Services".to_string() },
+            ServiceGroup { name: "Utilities".to_string() },
+            ServiceGroup { name: "Plugins".to_string() },
+        ]
+    }
+
+    fn get_service_dependencies() -> HashMap<String, Vec<String>> {
+        let mut deps = HashMap::new();
+        deps.insert("omnisystem-core".to_string(), vec!["plugin-manager".to_string()]);
+        deps
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ServiceManagerTab {
+    Services,
+    Dependencies,
+    History,
+    Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ServiceStatus {
+    Running,
+    Stopped,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StartupType {
+    Automatic,
+    Manual,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ServiceStatusFilter {
+    All,
+    Running,
+    Stopped,
+    Error,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ServiceSortOption {
+    Name,
+    Status,
+    StartupType,
+    MemoryUsage,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServiceInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub status: ServiceStatus,
+    pub startup_type: StartupType,
+    pub pid: u32,
+    pub memory_usage_mb: f32,
+    pub uptime: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServiceGroup {
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingOperation {
+    pub service_id: String,
+    pub operation: String,
+    pub progress: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct OperationHistory {
+    pub timestamp: String,
+    pub service: String,
+    pub operation: String,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+pub static SERVICE_MANAGER_STATE: LazyStatic<Mutex<ServiceManagerConsole>> =
+    LazyStatic::new(|| {
+        Mutex::new(ServiceManagerConsole::new(AssetManager::global()))
+    });

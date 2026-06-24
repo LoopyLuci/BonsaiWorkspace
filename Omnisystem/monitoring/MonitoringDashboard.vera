@@ -1,0 +1,913 @@
+// Omnisystem Monitoring Dashboard - Real-time System Health and Performance
+// Comprehensive monitoring with alerts, trends, and drill-down analytics
+
+use std::collections::VecDeque;
+
+pub struct MonitoringDashboard {
+    id: String,
+    version: String,
+    theme: Theme,
+    asset_manager: AssetManager,
+
+    // Monitoring state
+    current_view: MonitoringView,
+    time_range: TimeRange,
+    refresh_interval: u32,
+    auto_refresh_enabled: bool,
+
+    // System metrics
+    metrics: SystemMetrics,
+    metric_history: MetricHistory,
+    alerts: Vec<Alert>,
+    active_alerts: Vec<Alert>,
+
+    // Monitoring settings
+    monitored_processes: Vec<ProcessMonitor>,
+    monitored_services: Vec<ServiceMonitor>,
+    alert_rules: Vec<AlertRule>,
+
+    // Dashboard customization
+    dashboard_widgets: Vec<DashboardWidget>,
+    pinned_metrics: Vec<String>,
+}
+
+impl MonitoringDashboard {
+    pub fn new(asset_manager: AssetManager) -> Self {
+        Self {
+            id: "monitoring-dashboard".to_string(),
+            version: "29.0.0".to_string(),
+            theme: asset_manager.get_current_theme(),
+            asset_manager: asset_manager.clone(),
+            current_view: MonitoringView::Overview,
+            time_range: TimeRange::Last24Hours,
+            refresh_interval: 5,
+            auto_refresh_enabled: true,
+            metrics: SystemMetrics::new(),
+            metric_history: MetricHistory::new(),
+            alerts: vec![],
+            active_alerts: vec![],
+            monitored_processes: Self::get_default_processes(),
+            monitored_services: Self::get_default_services(),
+            alert_rules: Self::get_default_alert_rules(),
+            dashboard_widgets: Self::get_default_widgets(),
+            pinned_metrics: vec!["cpu".to_string(), "memory".to_string(), "disk".to_string()],
+        }
+    }
+
+    pub fn render(&self) -> Widget {
+        ApplicationWindow {
+            id: "monitoring-dashboard".to_string(),
+            title: "Omnisystem Monitoring Dashboard".to_string(),
+            width: 1800,
+            height: 1000,
+
+            children: vec![
+                self.render_header(),
+
+                Row {
+                    spacing: 0.0,
+                    height: "1fr".to_string(),
+
+                    children: vec![
+                        // Sidebar
+                        self.render_sidebar(),
+
+                        // Main content
+                        Panel {
+                            width: "1fr".to_string(),
+                            padding: 20.0,
+                            background_color: self.theme.colors.background,
+
+                            children: match self.current_view {
+                                MonitoringView::Overview => self.render_overview_view(),
+                                MonitoringView::Metrics => self.render_metrics_view(),
+                                MonitoringView::Alerts => self.render_alerts_view(),
+                                MonitoringView::Processes => self.render_processes_view(),
+                                MonitoringView::Services => self.render_services_view(),
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_header(&self) -> Widget {
+        Panel {
+            height: 70.0,
+            padding: 20.0,
+            background_color: self.theme.colors.primary,
+            border_bottom: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    vertical_align: "center".to_string(),
+
+                    children: vec![
+                        Image {
+                            source: self.asset_manager.load_icon("monitor", 32),
+                            width: 32.0,
+                            height: 32.0,
+                        },
+                        Label {
+                            text: "Monitoring Dashboard".to_string(),
+                            font_size: 20.0,
+                            font_weight: 700,
+                            color: self.theme.colors.white,
+                        },
+
+                        Spacer {},
+
+                        // System health indicator
+                        Row {
+                            spacing: 12.0,
+
+                            children: vec![
+                                Label {
+                                    text: "System Health:".to_string(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.white_secondary,
+                                },
+                                Circle {
+                                    radius: 8.0,
+                                    color: self.get_health_color(),
+                                },
+                                Label {
+                                    text: self.get_health_status(),
+                                    font_size: 12.0,
+                                    color: self.theme.colors.white,
+                                    font_weight: 600,
+                                },
+                            ],
+                        },
+
+                        Separator { width: 1.0, height: 40.0, margin: 12.0 },
+
+                        // Time range selector
+                        Dropdown {
+                            options: vec!["Last hour", "Last 24 hours", "Last 7 days", "Last 30 days"],
+                            selected: 1,
+                            onChange: |index| {
+                                let range = match index {
+                                    0 => TimeRange::LastHour,
+                                    2 => TimeRange::Last7Days,
+                                    3 => TimeRange::Last30Days,
+                                    _ => TimeRange::Last24Hours,
+                                };
+                                MONITORING_STATE.set_time_range(range);
+                            },
+                        },
+
+                        // Auto-refresh toggle
+                        Checkbox {
+                            label: "Auto-refresh".to_string(),
+                            checked: self.auto_refresh_enabled,
+                            onChange: |enabled| {
+                                MONITORING_STATE.set_auto_refresh(enabled);
+                            },
+                        },
+
+                        Button {
+                            label: "🔄 Refresh Now".to_string(),
+                            onClick: || {
+                                MONITORING_STATE.refresh_metrics();
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_sidebar(&self) -> Widget {
+        Panel {
+            width: "200px".to_string(),
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border_right: true,
+
+            children: vec![
+                Column {
+                    spacing: 0.0,
+
+                    children: vec![
+                        self.render_sidebar_item("Overview", MonitoringView::Overview),
+                        self.render_sidebar_item("Metrics", MonitoringView::Metrics),
+                        self.render_sidebar_item("Alerts", MonitoringView::Alerts),
+                        self.render_sidebar_item("Processes", MonitoringView::Processes),
+                        self.render_sidebar_item("Services", MonitoringView::Services),
+                    ],
+                },
+
+                Separator { margin: 16.0 },
+
+                // Quick stats
+                Label {
+                    text: "Quick Stats".to_string(),
+                    font_size: 11.0,
+                    font_weight: 700,
+                    margin_bottom: 12.0,
+                },
+
+                Column {
+                    spacing: 8.0,
+
+                    children: vec![
+                        self.render_stat_item("CPU Usage", "42.3%"),
+                        self.render_stat_item("Memory", "58.1%"),
+                        self.render_stat_item("Disk", "73.2%"),
+                        self.render_stat_item("Network", "12.5 Mbps"),
+                        self.render_stat_item("Uptime", "28d 15h"),
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_overview_view(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 20.0,
+
+                children: vec![
+                    Label {
+                        text: "System Overview".to_string(),
+                        font_size: 18.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    // Key metrics cards
+                    Row {
+                        spacing: 16.0,
+                        margin_bottom: 20.0,
+
+                        children: vec![
+                            self.render_metric_card("CPU Usage", "42.3%", "cores", self.theme.colors.warning),
+                            self.render_metric_card("Memory", "58.1%", "of 16 GB", self.theme.colors.warning),
+                            self.render_metric_card("Disk", "73.2%", "of 512 GB", self.theme.colors.success),
+                            self.render_metric_card("Network", "12.5 Mbps", "bandwidth", self.theme.colors.success),
+                        ],
+                    },
+
+                    // Charts
+                    Label {
+                        text: "Performance Trends".to_string(),
+                        font_size: 14.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Row {
+                        spacing: 16.0,
+
+                        children: vec![
+                            Panel {
+                                width: "1fr".to_string(),
+                                height: "300px".to_string(),
+                                padding: 16.0,
+                                background_color: self.theme.colors.surface,
+                                border: true,
+
+                                children: vec![
+                                    Label {
+                                        text: "CPU Usage (24h)".to_string(),
+                                        font_size: 12.0,
+                                        font_weight: 600,
+                                        margin_bottom: 12.0,
+                                    },
+                                    LineChart {
+                                        data: vec![
+                                            ChartPoint { time: "00:00".to_string(), value: 35.0 },
+                                            ChartPoint { time: "04:00".to_string(), value: 28.0 },
+                                            ChartPoint { time: "08:00".to_string(), value: 45.0 },
+                                            ChartPoint { time: "12:00".to_string(), value: 52.0 },
+                                            ChartPoint { time: "16:00".to_string(), value: 48.0 },
+                                            ChartPoint { time: "20:00".to_string(), value: 42.3 },
+                                        ],
+                                        height: "250px".to_string(),
+                                        color: self.theme.colors.primary,
+                                    },
+                                ],
+                            },
+
+                            Panel {
+                                width: "1fr".to_string(),
+                                height: "300px".to_string(),
+                                padding: 16.0,
+                                background_color: self.theme.colors.surface,
+                                border: true,
+
+                                children: vec![
+                                    Label {
+                                        text: "Memory Usage (24h)".to_string(),
+                                        font_size: 12.0,
+                                        font_weight: 600,
+                                        margin_bottom: 12.0,
+                                    },
+                                    AreaChart {
+                                        data: vec![
+                                            ChartPoint { time: "00:00".to_string(), value: 42.0 },
+                                            ChartPoint { time: "04:00".to_string(), value: 45.0 },
+                                            ChartPoint { time: "08:00".to_string(), value: 56.0 },
+                                            ChartPoint { time: "12:00".to_string(), value: 61.0 },
+                                            ChartPoint { time: "16:00".to_string(), value: 58.0 },
+                                            ChartPoint { time: "20:00".to_string(), value: 58.1 },
+                                        ],
+                                        height: "250px".to_string(),
+                                        color: self.theme.colors.primary,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+
+                    // Active alerts
+                    if !self.active_alerts.is_empty() {
+                        Column {
+                            spacing: 12.0,
+
+                            children: vec![
+                                Label {
+                                    text: format!("Active Alerts ({})", self.active_alerts.len()),
+                                    font_size: 14.0,
+                                    font_weight: 700,
+                                    margin_bottom: 12.0,
+                                },
+
+                                Column {
+                                    spacing: 8.0,
+
+                                    children: self.active_alerts.iter().take(5).map(|alert| {
+                                        self.render_alert_item(alert)
+                                    }).collect(),
+                                },
+                            ],
+                        }
+                    } else {
+                        EmptyWidget {}
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_metrics_view(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Detailed Metrics".to_string(),
+                        font_size: 18.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Column {
+                        spacing: 12.0,
+
+                        children: vec![
+                            self.render_metric_detail("CPU Usage", "42.3%", vec![
+                                ("Core 1", "45.2%"),
+                                ("Core 2", "38.5%"),
+                                ("Core 3", "43.1%"),
+                                ("Core 4", "42.7%"),
+                            ]),
+                            self.render_metric_detail("Memory Usage", "58.1%", vec![
+                                ("Used", "9.3 GB"),
+                                ("Available", "6.7 GB"),
+                                ("Cached", "2.5 GB"),
+                                ("Swap", "512 MB / 2 GB"),
+                            ]),
+                            self.render_metric_detail("Disk I/O", "125 MB/s", vec![
+                                ("Read", "85 MB/s"),
+                                ("Write", "40 MB/s"),
+                                ("Queue", "3 pending"),
+                            ]),
+                            self.render_metric_detail("Network", "12.5 Mbps", vec![
+                                ("Inbound", "8.2 Mbps"),
+                                ("Outbound", "4.3 Mbps"),
+                                ("Connections", "48 active"),
+                            ]),
+                        ],
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_alerts_view(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Row {
+                        spacing: 12.0,
+                        margin_bottom: 16.0,
+
+                        children: vec![
+                            Label {
+                                text: "Alerts".to_string(),
+                                font_size: 18.0,
+                                font_weight: 700,
+                            },
+
+                            Badge {
+                                label: format!("{} total", self.alerts.len()),
+                            },
+
+                            Badge {
+                                label: format!("{} active", self.active_alerts.len()),
+                                color: self.theme.colors.error,
+                            },
+
+                            Spacer {},
+
+                            Button {
+                                label: "Clear All".to_string(),
+                                size: "small".to_string(),
+                                onClick: || {
+                                    MONITORING_STATE.clear_alerts();
+                                },
+                            },
+                        ],
+                    },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.alerts.iter().map(|alert| {
+                            self.render_alert_item(alert)
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_processes_view(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Process Monitor".to_string(),
+                        font_size: 18.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    DataGrid {
+                        columns: vec![
+                            "Process".to_string(),
+                            "PID".to_string(),
+                            "CPU".to_string(),
+                            "Memory".to_string(),
+                            "Status".to_string(),
+                        ],
+                        rows: self.monitored_processes.iter().map(|proc| {
+                            vec![
+                                proc.name.clone(),
+                                proc.pid.to_string(),
+                                format!("{:.1}%", proc.cpu_usage),
+                                format!("{:.1} MB", proc.memory_usage),
+                                proc.status.clone(),
+                            ]
+                        }).collect(),
+                        sortable: true,
+                        selectable: true,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_services_view(&self) -> Vec<Widget> {
+        vec![
+            Column {
+                spacing: 16.0,
+
+                children: vec![
+                    Label {
+                        text: "Service Monitor".to_string(),
+                        font_size: 18.0,
+                        font_weight: 700,
+                        margin_bottom: 12.0,
+                    },
+
+                    Column {
+                        spacing: 8.0,
+
+                        children: self.monitored_services.iter().map(|service| {
+                            Panel {
+                                padding: 12.0,
+                                background_color: self.theme.colors.surface,
+                                border: true,
+
+                                children: vec![
+                                    Row {
+                                        spacing: 12.0,
+
+                                        children: vec![
+                                            Circle {
+                                                radius: 6.0,
+                                                color: if service.running { self.theme.colors.success } else { self.theme.colors.error },
+                                            },
+
+                                            Column {
+                                                spacing: 2.0,
+                                                width: "1fr".to_string(),
+
+                                                children: vec![
+                                                    Label {
+                                                        text: service.name.clone(),
+                                                        font_size: 12.0,
+                                                        font_weight: 600,
+                                                    },
+                                                    Label {
+                                                        text: format!("Uptime: {}", service.uptime),
+                                                        font_size: 10.0,
+                                                        color: self.theme.colors.foreground_secondary,
+                                                    },
+                                                ],
+                                            },
+
+                                            Label {
+                                                text: if service.running { "Running" } else { "Stopped" },
+                                                font_size: 11.0,
+                                                color: if service.running { self.theme.colors.success } else { self.theme.colors.error },
+                                                font_weight: 600,
+                                            },
+
+                                            Button {
+                                                label: if service.running { "Stop" } else { "Start" },
+                                                size: "small".to_string(),
+                                                onClick: || {
+                                                    // Control service
+                                                },
+                                            },
+                                        ],
+                                    },
+                                ],
+                            }
+                        }).collect(),
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn render_metric_card(&self, label: &str, value: &str, unit: &str, color: u32) -> Widget {
+        Panel {
+            width: "1fr".to_string(),
+            padding: 20.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+
+            children: vec![
+                Label {
+                    text: label.to_string(),
+                    font_size: 12.0,
+                    color: self.theme.colors.foreground_secondary,
+                    margin_bottom: 8.0,
+                },
+
+                Row {
+                    spacing: 8.0,
+                    margin_bottom: 12.0,
+
+                    children: vec![
+                        Label {
+                            text: value.to_string(),
+                            font_size: 24.0,
+                            font_weight: 700,
+                        },
+                        Label {
+                            text: unit.to_string(),
+                            font_size: 12.0,
+                            color: self.theme.colors.foreground_secondary,
+                        },
+                    ],
+                },
+
+                ProgressBar {
+                    value: value.trim_end_matches('%').parse::<i32>().unwrap_or(0),
+                    max: 100,
+                    height: 4.0,
+                    color,
+                },
+            ],
+        }
+    }
+
+    fn render_metric_detail(&self, name: &str, value: &str, details: Vec<(&str, &str)>) -> Widget {
+        Panel {
+            padding: 16.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+
+            children: vec![
+                Row {
+                    spacing: 16.0,
+                    margin_bottom: 12.0,
+
+                    children: vec![
+                        Column {
+                            spacing: 2.0,
+
+                            children: vec![
+                                Label {
+                                    text: name.to_string(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                Label {
+                                    text: value.to_string(),
+                                    font_size: 16.0,
+                                    font_weight: 700,
+                                    color: self.theme.colors.primary,
+                                },
+                            ],
+                        },
+
+                        Spacer {},
+
+                        Row {
+                            spacing: 24.0,
+
+                            children: details.iter().map(|(label, val)| {
+                                Column {
+                                    spacing: 2.0,
+                                    alignment: "right".to_string(),
+
+                                    children: vec![
+                                        Label {
+                                            text: label.to_string(),
+                                            font_size: 10.0,
+                                            color: self.theme.colors.foreground_secondary,
+                                        },
+                                        Label {
+                                            text: val.to_string(),
+                                            font_size: 11.0,
+                                            font_weight: 600,
+                                        },
+                                    ],
+                                }
+                            }).collect(),
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_alert_item(&self, alert: &Alert) -> Widget {
+        Panel {
+            padding: 12.0,
+            background_color: self.theme.colors.surface,
+            border: true,
+            border_color: match alert.severity {
+                AlertSeverity::Critical => self.theme.colors.error,
+                AlertSeverity::Warning => self.theme.colors.warning,
+                AlertSeverity::Info => self.theme.colors.primary,
+            },
+
+            children: vec![
+                Row {
+                    spacing: 12.0,
+
+                    children: vec![
+                        Circle {
+                            radius: 5.0,
+                            color: match alert.severity {
+                                AlertSeverity::Critical => self.theme.colors.error,
+                                AlertSeverity::Warning => self.theme.colors.warning,
+                                AlertSeverity::Info => self.theme.colors.primary,
+                            },
+                        },
+
+                        Column {
+                            spacing: 2.0,
+                            width: "1fr".to_string(),
+
+                            children: vec![
+                                Label {
+                                    text: alert.message.clone(),
+                                    font_size: 12.0,
+                                    font_weight: 600,
+                                },
+                                Label {
+                                    text: alert.timestamp.clone(),
+                                    font_size: 10.0,
+                                    color: self.theme.colors.foreground_secondary,
+                                },
+                            ],
+                        },
+
+                        Button {
+                            label: "Dismiss".to_string(),
+                            size: "small".to_string(),
+                            onClick: || {
+                                // Dismiss alert
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn render_sidebar_item(&self, label: &str, view: MonitoringView) -> Widget {
+        Button {
+            label: label.to_string(),
+            variant: if std::mem::discriminant(&self.current_view) == std::mem::discriminant(&view) {
+                "primary"
+            } else {
+                "secondary"
+            },
+            width: "100%".to_string(),
+            margin_bottom: 4.0,
+            onClick: || {
+                MONITORING_STATE.switch_view(view);
+            },
+        }
+    }
+
+    fn render_stat_item(&self, label: &str, value: &str) -> Widget {
+        Column {
+            spacing: 2.0,
+
+            children: vec![
+                Label {
+                    text: label.to_string(),
+                    font_size: 10.0,
+                    color: self.theme.colors.foreground_secondary,
+                },
+                Label {
+                    text: value.to_string(),
+                    font_size: 12.0,
+                    font_weight: 700,
+                },
+            ],
+        }
+    }
+
+    fn get_health_color(&self) -> u32 {
+        if self.active_alerts.is_empty() {
+            self.theme.colors.success
+        } else if self.active_alerts.iter().any(|a| matches!(a.severity, AlertSeverity::Critical)) {
+            self.theme.colors.error
+        } else {
+            self.theme.colors.warning
+        }
+    }
+
+    fn get_health_status(&self) -> &str {
+        if self.active_alerts.is_empty() {
+            "Healthy"
+        } else if self.active_alerts.iter().any(|a| matches!(a.severity, AlertSeverity::Critical)) {
+            "Critical"
+        } else {
+            "Warning"
+        }
+    }
+
+    fn get_default_processes() -> Vec<ProcessMonitor> {
+        vec![
+            ProcessMonitor { name: "omnisystem.exe".to_string(), pid: 1024, cpu_usage: 42.3, memory_usage: 245.5, status: "Running".to_string() },
+            ProcessMonitor { name: "bonsai-desktop".to_string(), pid: 2048, cpu_usage: 15.8, memory_usage: 180.2, status: "Running".to_string() },
+        ]
+    }
+
+    fn get_default_services() -> Vec<ServiceMonitor> {
+        vec![
+            ServiceMonitor { name: "Omnisystem Core".to_string(), running: true, uptime: "28d 15h".to_string() },
+            ServiceMonitor { name: "Plugin Manager".to_string(), running: true, uptime: "28d 15h".to_string() },
+        ]
+    }
+
+    fn get_default_alert_rules() -> Vec<AlertRule> {
+        vec![]
+    }
+
+    fn get_default_widgets() -> Vec<DashboardWidget> {
+        vec![]
+    }
+}
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MonitoringView {
+    Overview,
+    Metrics,
+    Alerts,
+    Processes,
+    Services,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TimeRange {
+    LastHour,
+    Last24Hours,
+    Last7Days,
+    Last30Days,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug)]
+pub struct SystemMetrics {
+    cpu_usage: f32,
+    memory_usage: f32,
+    disk_usage: f32,
+    network_bandwidth: f32,
+}
+
+impl SystemMetrics {
+    fn new() -> Self {
+        Self {
+            cpu_usage: 42.3,
+            memory_usage: 58.1,
+            disk_usage: 73.2,
+            network_bandwidth: 12.5,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MetricHistory {
+    cpu_history: VecDeque<f32>,
+    memory_history: VecDeque<f32>,
+}
+
+impl MetricHistory {
+    fn new() -> Self {
+        Self {
+            cpu_history: VecDeque::new(),
+            memory_history: VecDeque::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Alert {
+    id: String,
+    message: String,
+    severity: AlertSeverity,
+    timestamp: String,
+    acknowledged: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessMonitor {
+    name: String,
+    pid: u32,
+    cpu_usage: f32,
+    memory_usage: f32,
+    status: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServiceMonitor {
+    name: String,
+    running: bool,
+    uptime: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AlertRule {
+    name: String,
+    condition: String,
+    severity: AlertSeverity,
+}
+
+#[derive(Clone, Debug)]
+pub struct DashboardWidget {
+    id: String,
+    title: String,
+    widget_type: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChartPoint {
+    time: String,
+    value: f32,
+}
+
+pub static MONITORING_STATE: LazyStatic<Mutex<MonitoringDashboard>> =
+    LazyStatic::new(|| {
+        Mutex::new(MonitoringDashboard::new(AssetManager::global()))
+    });
