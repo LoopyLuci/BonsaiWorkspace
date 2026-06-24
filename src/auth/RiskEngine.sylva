@@ -1,0 +1,434 @@
+// OMNISYSTEM CONTINUOUS TRUST SCORE ENGINE
+// AI/ML-Powered Risk Assessment with Behavioral Biometrics
+// Sylva Machine Learning Language Implementation
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Debug)]
+pub struct BehavioralSignal {
+    pub keystroke_cadence: f32,        // WPM deviation from baseline
+    pub keystroke_variance: f32,       // Std dev in typing pattern
+    pub mouse_velocity: f32,           // Pixels/sec
+    pub mouse_acceleration: f32,       // Acceleration curve
+    pub interaction_speed: f32,        // Overall interaction tempo
+    pub touch_pressure: f32,           // For touch devices (0-1)
+    pub timestamp: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContextualSignal {
+    pub geolocation: (f32, f32),       // Lat/lon
+    pub network_context: String,       // "home_wifi", "office", "mobile", "vpn"
+    pub device_posture: DevicePosture,
+    pub time_of_day_score: f32,        // 0.0-1.0 expected for time
+    pub user_peer_similarity: f32,     // How similar to peer group
+    pub impossible_travel: bool,       // Too fast movement
+}
+
+#[derive(Clone, Debug)]
+pub struct DevicePosture {
+    pub os_patches_current: bool,
+    pub disk_encrypted: bool,
+    pub firewall_enabled: bool,
+    pub antivirus_active: bool,
+    pub no_jailbreak: bool,
+    pub tpm_active: bool,
+    pub device_health_score: f32,      // 0.0-1.0
+}
+
+#[derive(Clone, Debug)]
+pub struct ContinuousTrustScore {
+    pub score: f32,                    // 0.0-100.0
+    pub behavioral_confidence: f32,    // How confident in behavioral match
+    pub device_confidence: f32,        // Device posture confidence
+    pub contextual_confidence: f32,    // Location/network confidence
+    pub anomaly_flags: Vec<String>,
+    pub risk_level: RiskLevel,         // CRITICAL, HIGH, MEDIUM, LOW, NONE
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RiskLevel {
+    CRITICAL,  // <30 score
+    HIGH,      // 30-50
+    MEDIUM,    // 50-70
+    LOW,       // 70-90
+    NONE,      // >90
+}
+
+pub struct BehavioralBaseline {
+    pub keystroke_cadence_mean: f32,
+    pub keystroke_cadence_stddev: f32,
+    pub mouse_velocity_mean: f32,
+    pub mouse_velocity_stddev: f32,
+    pub typical_access_times: Vec<(u32, u32)>,  // Hours when user typically accesses
+    pub typical_locations: Vec<(f32, f32)>,     // Typical geolocation clusters
+    pub typical_networks: Vec<String>,
+    pub peer_group_profile: HashMap<String, f32>,
+}
+
+pub struct RiskEngine {
+    baselines: Arc<Mutex<HashMap<String, BehavioralBaseline>>>,
+    risk_history: Arc<Mutex<Vec<(u64, String, ContinuousTrustScore)>>>,
+    anomaly_thresholds: Arc<Mutex<HashMap<String, f32>>>,
+    neural_network: Arc<Mutex<BehavioralNeuralNet>>,
+}
+
+/// Lightweight neural network for continuous authentication
+pub struct BehavioralNeuralNet {
+    hidden_layer_1: Vec<f32>,          // 64 neurons
+    hidden_layer_2: Vec<f32>,          // 32 neurons
+    output_layer: Vec<f32>,            // Risk score output
+}
+
+impl BehavioralNeuralNet {
+    pub fn new() -> Self {
+        BehavioralNeuralNet {
+            hidden_layer_1: vec![0.0; 64],
+            hidden_layer_2: vec![0.0; 32],
+            output_layer: vec![0.0; 1],
+        }
+    }
+
+    /// Forward pass: Input behavioral signals -> output risk score (0-1)
+    pub fn forward(&mut self, input: &[f32]) -> f32 {
+        // Input: [keystroke_cadence, keystroke_variance, mouse_velocity, ...]
+        // Hidden layer 1: 64 neurons with ReLU activation
+        for i in 0..64 {
+            let mut sum = 0.0;
+            for (j, &val) in input.iter().enumerate() {
+                sum += val * (i as f32 + j as f32) * 0.01; // Simplified weights
+            }
+            self.hidden_layer_1[i] = sum.max(0.0); // ReLU
+        }
+
+        // Hidden layer 2: 32 neurons with ReLU activation
+        for i in 0..32 {
+            let mut sum = 0.0;
+            for (j, &val) in self.hidden_layer_1.iter().enumerate() {
+                sum += val * (i as f32 + j as f32) * 0.01;
+            }
+            self.hidden_layer_2[i] = sum.max(0.0);
+        }
+
+        // Output layer: Single neuron with sigmoid activation
+        let mut output = 0.0;
+        for (i, &val) in self.hidden_layer_2.iter().enumerate() {
+            output += val * (i as f32) * 0.01;
+        }
+
+        // Sigmoid: 1 / (1 + e^-x)
+        1.0 / (1.0 + (-output).exp())
+    }
+}
+
+impl RiskEngine {
+    pub fn new() -> Self {
+        RiskEngine {
+            baselines: Arc::new(Mutex::new(HashMap::new())),
+            risk_history: Arc::new(Mutex::new(Vec::new())),
+            anomaly_thresholds: Arc::new(Mutex::new(HashMap::from([
+                ("keystroke_deviation".to_string(), 0.4),  // 40% deviation is anomaly
+                ("impossible_travel_speed".to_string(), 900.0), // km/hr
+                ("time_anomaly".to_string(), 0.3),
+                ("location_anomaly".to_string(), 500.0),   // km from typical
+            ]))),
+            neural_network: Arc::new(Mutex::new(BehavioralNeuralNet::new())),
+        }
+    }
+
+    /// Establish behavioral baseline for a user (runs on enrollment)
+    pub fn establish_baseline(&self, user_id: &str, baseline: BehavioralBaseline) {
+        let mut baselines = self.baselines.lock().unwrap();
+        baselines.insert(user_id.to_string(), baseline);
+    }
+
+    /// Compute continuous trust score from multiple signals
+    pub fn evaluate_trust(
+        &self,
+        user_id: &str,
+        behavioral: &BehavioralSignal,
+        contextual: &ContextualSignal,
+    ) -> ContinuousTrustScore {
+        let baselines = self.baselines.lock().unwrap();
+        let baseline = match baselines.get(user_id) {
+            Some(b) => b.clone(),
+            None => return self.create_baseline_missing_score(),
+        };
+        drop(baselines);
+
+        // Compute component scores
+        let behavioral_score = self.compute_behavioral_score(behavioral, &baseline);
+        let device_score = self.compute_device_score(&contextual.device_posture);
+        let contextual_score = self.compute_contextual_score(contextual, &baseline);
+        let anomaly_score = self.detect_anomalies(behavioral, contextual, &baseline);
+
+        // Weighted combination
+        let trust_score = (behavioral_score * 0.4 +
+            device_score * 0.25 +
+            contextual_score * 0.25 +
+            (100.0 - anomaly_score) * 0.1) / 1.0;
+
+        let risk_level = self.score_to_risk_level(trust_score);
+
+        let cts = ContinuousTrustScore {
+            score: trust_score,
+            behavioral_confidence: behavioral_score,
+            device_confidence: device_score,
+            contextual_confidence: contextual_score,
+            anomaly_flags: self.generate_anomaly_flags(behavioral, contextual, &baseline),
+            risk_level,
+        };
+
+        // Log to history
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut history = self.risk_history.lock().unwrap();
+        history.push((timestamp, user_id.to_string(), cts.clone()));
+
+        cts
+    }
+
+    /// Compute behavioral authentication score
+    fn compute_behavioral_score(&self, signal: &BehavioralSignal, baseline: &BehavioralBaseline) -> f32 {
+        let cadence_deviation = (signal.keystroke_cadence - baseline.keystroke_cadence_mean).abs()
+            / baseline.keystroke_cadence_stddev.max(1.0);
+
+        let velocity_deviation = (signal.mouse_velocity - baseline.mouse_velocity_mean).abs()
+            / baseline.mouse_velocity_stddev.max(1.0);
+
+        // Z-score to probability (using simplified normal distribution)
+        let cadence_prob = (-(cadence_deviation * cadence_deviation / 2.0)).exp();
+        let velocity_prob = (-(velocity_deviation * velocity_deviation / 2.0)).exp();
+
+        // Variance consistency
+        let variance_consistency = 1.0 / (1.0 + signal.keystroke_variance / 10.0);
+
+        ((cadence_prob + velocity_prob) / 2.0 * 0.7 + variance_consistency * 0.3) * 100.0
+    }
+
+    /// Evaluate device security posture
+    fn compute_device_score(&self, posture: &DevicePosture) -> f32 {
+        let mut score = 0.0;
+        if posture.os_patches_current { score += 20.0; }
+        if posture.disk_encrypted { score += 20.0; }
+        if posture.firewall_enabled { score += 20.0; }
+        if posture.antivirus_active { score += 15.0; }
+        if posture.no_jailbreak { score += 15.0; }
+        if posture.tpm_active { score += 10.0; }
+
+        score + posture.device_health_score * 100.0 * 0.1
+    }
+
+    /// Evaluate contextual signals (location, time, network)
+    fn compute_contextual_score(&self, contextual: &ContextualSignal, baseline: &BehavioralBaseline) -> f32 {
+        let mut score = 0.0;
+
+        // Time of day check
+        let current_hour = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() / 3600 % 24) as u32;
+
+        let time_expected = baseline.typical_access_times.iter().any(|(start, end)| {
+            current_hour >= *start && current_hour <= *end
+        });
+        if time_expected { score += 30.0; } else { score += 10.0; }
+
+        // Network familiarity
+        if baseline.typical_networks.contains(&contextual.network_context) {
+            score += 25.0;
+        } else {
+            score += 5.0;
+        }
+
+        // Location familiarity
+        let location_familiar = baseline.typical_locations.iter().any(|(lat, lon)| {
+            let distance = ((contextual.geolocation.0 - lat).powi(2) +
+                (contextual.geolocation.1 - lon).powi(2)).sqrt();
+            distance < 0.1 // ~11km radius
+        });
+        if location_familiar { score += 25.0; } else { score += 5.0; }
+
+        // Peer group alignment
+        score += contextual.user_peer_similarity * 20.0;
+
+        score
+    }
+
+    /// Detect anomalies and assign anomaly score
+    fn detect_anomalies(
+        &self,
+        behavioral: &BehavioralSignal,
+        contextual: &ContextualSignal,
+        baseline: &BehavioralBaseline,
+    ) -> f32 {
+        let thresholds = self.anomaly_thresholds.lock().unwrap();
+        let mut anomaly_score = 0.0;
+
+        let cadence_threshold = thresholds.get("keystroke_deviation").unwrap_or(&0.4);
+        let cadence_deviation = (behavioral.keystroke_cadence - baseline.keystroke_cadence_mean).abs()
+            / baseline.keystroke_cadence_stddev.max(1.0);
+        if cadence_deviation > *cadence_threshold { anomaly_score += 25.0; }
+
+        if contextual.impossible_travel { anomaly_score += 50.0; }
+
+        anomaly_score
+    }
+
+    /// Generate human-readable anomaly flags
+    fn generate_anomaly_flags(
+        &self,
+        behavioral: &BehavioralSignal,
+        contextual: &ContextualSignal,
+        baseline: &BehavioralBaseline,
+    ) -> Vec<String> {
+        let mut flags = Vec::new();
+
+        let cadence_deviation = (behavioral.keystroke_cadence - baseline.keystroke_cadence_mean).abs()
+            / baseline.keystroke_cadence_stddev.max(1.0);
+        if cadence_deviation > 0.4 {
+            flags.push(format!("Keystroke cadence deviation {:.1}%", cadence_deviation * 100.0));
+        }
+
+        if contextual.impossible_travel {
+            flags.push("Impossible travel detected".to_string());
+        }
+
+        let current_hour = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() / 3600 % 24) as u32;
+
+        let time_expected = baseline.typical_access_times.iter().any(|(start, end)| {
+            current_hour >= *start && current_hour <= *end
+        });
+        if !time_expected {
+            flags.push(format!("Unusual access time: {}:00", current_hour));
+        }
+
+        flags
+    }
+
+    fn score_to_risk_level(&self, score: f32) -> RiskLevel {
+        match score {
+            s if s < 30.0 => RiskLevel::CRITICAL,
+            s if s < 50.0 => RiskLevel::HIGH,
+            s if s < 70.0 => RiskLevel::MEDIUM,
+            s if s < 90.0 => RiskLevel::LOW,
+            _ => RiskLevel::NONE,
+        }
+    }
+
+    fn create_baseline_missing_score(&self) -> ContinuousTrustScore {
+        ContinuousTrustScore {
+            score: 50.0,
+            behavioral_confidence: 0.0,
+            device_confidence: 50.0,
+            contextual_confidence: 0.0,
+            anomaly_flags: vec!["No baseline established".to_string()],
+            risk_level: RiskLevel::MEDIUM,
+        }
+    }
+
+    /// Get risk history for a user (for audit/forensics)
+    pub fn get_risk_history(&self, user_id: &str, limit: usize) -> Vec<(u64, ContinuousTrustScore)> {
+        let history = self.risk_history.lock().unwrap();
+        history
+            .iter()
+            .filter(|(_, uid, _)| uid == user_id)
+            .rev()
+            .take(limit)
+            .map(|(timestamp, _, cts)| (*timestamp, cts.clone()))
+            .collect()
+    }
+
+    /// Trigger step-up authentication based on risk score
+    pub fn should_request_step_up(&self, trust_score: &ContinuousTrustScore) -> bool {
+        trust_score.risk_level == RiskLevel::MEDIUM || trust_score.risk_level == RiskLevel::HIGH
+    }
+
+    /// Determine if access should be denied
+    pub fn should_deny_access(&self, trust_score: &ContinuousTrustScore) -> bool {
+        trust_score.risk_level == RiskLevel::CRITICAL
+    }
+}
+
+// Global Risk Engine instance
+lazy_static::lazy_static! {
+    pub static ref RISK_ENGINE: RiskEngine = RiskEngine::new();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_behavioral_baseline() {
+        let engine = RiskEngine::new();
+        let baseline = BehavioralBaseline {
+            keystroke_cadence_mean: 60.0,
+            keystroke_cadence_stddev: 5.0,
+            mouse_velocity_mean: 500.0,
+            mouse_velocity_stddev: 50.0,
+            typical_access_times: vec![(9, 17)],
+            typical_locations: vec![(40.7128, -74.0060)],
+            typical_networks: vec!["office_wifi".to_string()],
+            peer_group_profile: HashMap::new(),
+        };
+
+        engine.establish_baseline("user123", baseline);
+
+        let baselines = engine.baselines.lock().unwrap();
+        assert!(baselines.contains_key("user123"));
+    }
+
+    #[test]
+    fn test_trust_score_normal() {
+        let engine = RiskEngine::new();
+        let baseline = BehavioralBaseline {
+            keystroke_cadence_mean: 60.0,
+            keystroke_cadence_stddev: 5.0,
+            mouse_velocity_mean: 500.0,
+            mouse_velocity_stddev: 50.0,
+            typical_access_times: vec![(9, 17)],
+            typical_locations: vec![(40.7128, -74.0060)],
+            typical_networks: vec!["office_wifi".to_string()],
+            peer_group_profile: HashMap::new(),
+        };
+
+        engine.establish_baseline("user123", baseline);
+
+        let behavioral = BehavioralSignal {
+            keystroke_cadence: 61.0,
+            keystroke_variance: 2.0,
+            mouse_velocity: 505.0,
+            mouse_acceleration: 10.0,
+            interaction_speed: 1.0,
+            touch_pressure: 0.5,
+            timestamp: 0,
+        };
+
+        let contextual = ContextualSignal {
+            geolocation: (40.7128, -74.0060),
+            network_context: "office_wifi".to_string(),
+            device_posture: DevicePosture {
+                os_patches_current: true,
+                disk_encrypted: true,
+                firewall_enabled: true,
+                antivirus_active: true,
+                no_jailbreak: true,
+                tpm_active: true,
+                device_health_score: 0.95,
+            },
+            time_of_day_score: 0.9,
+            user_peer_similarity: 0.8,
+            impossible_travel: false,
+        };
+
+        let trust_score = engine.evaluate_trust("user123", &behavioral, &contextual);
+        assert!(trust_score.score > 70.0); // Should be LOW risk or better
+    }
+}

@@ -1,0 +1,504 @@
+// OMNISYSTEM DECENTRALIZED IDENTITY & VERIFIABLE CREDENTIALS
+// DID/VC Architecture with Privacy-Preserving Selective Disclosure
+// Aether Distributed Systems Language Implementation
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+#[derive(Clone, Debug)]
+pub struct DecentralizedIdentifier {
+    pub did: String,                    // Format: did:method:subject
+    pub method: String,                 // "web", "ion", "keri", "key"
+    pub controller: String,             // Entity that controls this DID
+    pub public_key: Vec<u8>,            // Verification public key
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiableCredential {
+    pub id: String,
+    pub issuer_did: String,
+    pub subject_did: String,
+    pub credential_type: Vec<String>,   // ["Employee", "Role", "Clearance"]
+    pub claims: HashMap<String, String>, // Actual credential data
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub proof: CredentialProof,         // Issuer's signature
+    pub revoked: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CredentialProof {
+    pub proof_type: String,             // "BBS+", "Ed25519Signature2018"
+    pub created: u64,
+    pub verification_method: String,    // issuer DID reference
+    pub proof_value: Vec<u8>,           // Signature bytes
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiablePresentation {
+    pub id: String,
+    pub holder_did: String,
+    pub credentials: Vec<VerifiableCredential>,
+    pub proof: PresentationProof,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PresentationProof {
+    pub proof_type: String,
+    pub challenge: String,              // From relying party
+    pub domain: String,                 // Intended domain
+    pub proof_value: Vec<u8>,           // Holder's signature
+}
+
+#[derive(Clone, Debug)]
+pub struct ZeroKnowledgeProof {
+    pub claim: String,                  // "employee AND department=Engineering AND clearance>=3"
+    pub proof_value: Vec<u8>,           // ZKP proof bytes
+    pub commitment: Vec<u8>,            // Commitment to hidden values
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustRegistry {
+    pub name: String,
+    pub authorized_issuers: Vec<String>, // DIDs of authorized credential issuers
+    pub credential_schemas: HashMap<String, CredentialSchema>,
+    pub revocation_authorities: Vec<String>,
+    pub last_updated: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct CredentialSchema {
+    pub schema_id: String,
+    pub name: String,
+    pub version: String,
+    pub properties: HashMap<String, SchemaProperty>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaProperty {
+    pub property_type: String,          // "string", "number", "boolean"
+    pub required: bool,
+    pub description: String,
+}
+
+pub struct DecentralizedIdentityManager {
+    // DID registry - maps DID strings to DID documents
+    did_registry: Arc<RwLock<HashMap<String, DecentralizedIdentifier>>>,
+
+    // VC holder wallet - maps user ID to their credentials
+    credential_wallets: Arc<RwLock<HashMap<String, Vec<VerifiableCredential>>>>,
+
+    // Trust registry
+    trust_registry: Arc<RwLock<TrustRegistry>>,
+
+    // Revocation list for credentials
+    revoked_credentials: Arc<RwLock<Vec<String>>>, // VC IDs that are revoked
+
+    // Audit ledger
+    audit_ledger: Arc<RwLock<Vec<AuditEntry>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    pub timestamp: u64,
+    pub action: String,
+    pub entity_id: String,
+    pub details: String,
+    pub proof: Vec<u8>,                 // Cryptographic hash for immutability
+}
+
+impl DecentralizedIdentityManager {
+    pub fn new() -> Self {
+        DecentralizedIdentityManager {
+            did_registry: Arc::new(RwLock::new(HashMap::new())),
+            credential_wallets: Arc::new(RwLock::new(HashMap::new())),
+            trust_registry: Arc::new(RwLock::new(TrustRegistry {
+                name: "Omnisystem Enterprise Trust Registry".to_string(),
+                authorized_issuers: Vec::new(),
+                credential_schemas: HashMap::new(),
+                revocation_authorities: Vec::new(),
+                last_updated: Self::current_timestamp(),
+            })),
+            revoked_credentials: Arc::new(RwLock::new(Vec::new())),
+            audit_ledger: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Generate a new Decentralized Identifier for an entity
+    pub fn generate_did(&self, method: &str, subject: &str) -> Result<DecentralizedIdentifier, String> {
+        if !["web", "ion", "keri", "key"].contains(&method) {
+            return Err("Unsupported DID method".to_string());
+        }
+
+        let did_string = format!("did:{}:{}", method, subject);
+
+        let mut public_key = vec![0u8; 32];
+        // In production, generate actual Ed25519/ECDSA public key
+        for i in 0..32 {
+            public_key[i] = (subject.as_bytes()[i % subject.len()] ^ i as u8);
+        }
+
+        let did_doc = DecentralizedIdentifier {
+            did: did_string.clone(),
+            method: method.to_string(),
+            controller: subject.to_string(),
+            public_key,
+            created_at: Self::current_timestamp(),
+            updated_at: Self::current_timestamp(),
+            active: true,
+        };
+
+        // Register in DID registry
+        let mut registry = self.did_registry.write().unwrap();
+        registry.insert(did_string.clone(), did_doc.clone());
+
+        // Log to audit ledger
+        self.log_audit_entry(
+            "DID_GENERATED".to_string(),
+            did_string.clone(),
+            format!("Generated DID using {} method", method),
+        );
+
+        Ok(did_doc)
+    }
+
+    /// Resolve a DID document from the registry
+    pub fn resolve_did(&self, did: &str) -> Result<DecentralizedIdentifier, String> {
+        let registry = self.did_registry.read().unwrap();
+        registry
+            .get(did)
+            .cloned()
+            .ok_or_else(|| format!("DID not found: {}", did))
+    }
+
+    /// Issue a Verifiable Credential from an issuer to a subject
+    pub fn issue_credential(
+        &self,
+        issuer_did: &str,
+        subject_did: &str,
+        credential_type: Vec<String>,
+        claims: HashMap<String, String>,
+        expires_in_days: u64,
+    ) -> Result<VerifiableCredential, String> {
+        // Verify issuer is authorized
+        let trust_registry = self.trust_registry.read().unwrap();
+        if !trust_registry.authorized_issuers.contains(&issuer_did.to_string()) {
+            return Err("Issuer not authorized in trust registry".to_string());
+        }
+        drop(trust_registry);
+
+        // Verify issuer DID exists
+        self.resolve_did(issuer_did)?;
+        self.resolve_did(subject_did)?;
+
+        let now = Self::current_timestamp();
+        let vc_id = format!("vc:{}:{}:{}", issuer_did, subject_did, now);
+
+        // Create credential proof (BBS+ signature in production)
+        let proof = CredentialProof {
+            proof_type: "BBS+Signature".to_string(),
+            created: now,
+            verification_method: format!("{}#key-1", issuer_did),
+            proof_value: vec![0u8; 96], // 96-byte BBS+ signature
+        };
+
+        let credential = VerifiableCredential {
+            id: vc_id.clone(),
+            issuer_did: issuer_did.to_string(),
+            subject_did: subject_did.to_string(),
+            credential_type,
+            claims,
+            issued_at: now,
+            expires_at: now + (expires_in_days * 86400),
+            proof,
+            revoked: false,
+        };
+
+        // Add to subject's wallet
+        let mut wallets = self.credential_wallets.write().unwrap();
+        wallets
+            .entry(subject_did.to_string())
+            .or_insert_with(Vec::new)
+            .push(credential.clone());
+
+        // Log to audit ledger
+        self.log_audit_entry(
+            "VC_ISSUED".to_string(),
+            vc_id,
+            format!("Credential issued to {} by {}", subject_did, issuer_did),
+        );
+
+        Ok(credential)
+    }
+
+    /// Create a Verifiable Presentation (holder presents credentials)
+    pub fn create_presentation(
+        &self,
+        holder_did: &str,
+        credential_ids: Vec<String>,
+        challenge: &str,
+        domain: &str,
+    ) -> Result<VerifiablePresentation, String> {
+        // Retrieve credentials from holder's wallet
+        let wallets = self.credential_wallets.read().unwrap();
+        let wallet = wallets
+            .get(holder_did)
+            .ok_or_else(|| "No credentials in wallet".to_string())?;
+
+        let credentials: Result<Vec<_>, _> = credential_ids
+            .iter()
+            .map(|id| {
+                wallet
+                    .iter()
+                    .find(|vc| vc.id == *id)
+                    .cloned()
+                    .ok_or_else(|| format!("Credential not found: {}", id))
+            })
+            .collect();
+
+        let credentials = credentials?;
+        drop(wallets);
+
+        // Create presentation proof (holder signs the presentation)
+        let now = Self::current_timestamp();
+        let vp_id = format!("vp:{}:{}", holder_did, now);
+
+        let proof = PresentationProof {
+            proof_type: "Ed25519Signature2018".to_string(),
+            challenge: challenge.to_string(),
+            domain: domain.to_string(),
+            proof_value: vec![0u8; 64], // 64-byte Ed25519 signature
+        };
+
+        let presentation = VerifiablePresentation {
+            id: vp_id.clone(),
+            holder_did: holder_did.to_string(),
+            credentials,
+            proof,
+            created_at: now,
+        };
+
+        self.log_audit_entry(
+            "VP_CREATED".to_string(),
+            vp_id,
+            format!("Presentation created by holder {}", holder_did),
+        );
+
+        Ok(presentation)
+    }
+
+    /// Create a Zero-Knowledge Proof for selective disclosure
+    /// Example: Prove "is employee AND department=Engineering AND clearance>=3"
+    /// Without revealing actual employee ID, department, or clearance level
+    pub fn create_zero_knowledge_proof(
+        &self,
+        holder_did: &str,
+        claim: &str,
+        credentials: &[VerifiableCredential],
+    ) -> Result<ZeroKnowledgeProof, String> {
+        // Validate credentials belong to holder and are not revoked
+        for vc in credentials {
+            if vc.subject_did != holder_did {
+                return Err("Credential does not belong to holder".to_string());
+            }
+            let revoked = self.revoked_credentials.read().unwrap();
+            if revoked.contains(&vc.id) {
+                return Err(format!("Credential is revoked: {}", vc.id));
+            }
+        }
+
+        let now = Self::current_timestamp();
+
+        // Create ZKP (in production, use zk-SNARK or zk-STARK library)
+        // For demo: simplified commitment structure
+        let mut commitment = Vec::new();
+        for vc in credentials {
+            commitment.extend_from_slice(&vc.proof.proof_value[0..16]);
+        }
+
+        let zkp = ZeroKnowledgeProof {
+            claim: claim.to_string(),
+            proof_value: vec![0u8; 128], // Simplified ZKP representation
+            commitment,
+            created_at: now,
+        };
+
+        self.log_audit_entry(
+            "ZKP_CREATED".to_string(),
+            claim.to_string(),
+            format!("ZKP created by {}", holder_did),
+        );
+
+        Ok(zkp)
+    }
+
+    /// Verify a Verifiable Presentation
+    pub fn verify_presentation(
+        &self,
+        presentation: &VerifiablePresentation,
+    ) -> Result<bool, String> {
+        // Verify all credentials in presentation are valid
+        for vc in &presentation.credentials {
+            // Check if revoked
+            let revoked = self.revoked_credentials.read().unwrap();
+            if revoked.contains(&vc.id) {
+                return Ok(false);
+            }
+
+            // Check if not expired
+            let now = Self::current_timestamp();
+            if vc.expires_at < now {
+                return Ok(false);
+            }
+
+            // Verify issuer is authorized
+            let trust_registry = self.trust_registry.read().unwrap();
+            if !trust_registry.authorized_issuers.contains(&vc.issuer_did) {
+                return Ok(false);
+            }
+        }
+
+        // In production, cryptographically verify the presentation signature
+        Ok(true)
+    }
+
+    /// Revoke a credential (issuer action)
+    pub fn revoke_credential(&self, credential_id: &str) -> Result<(), String> {
+        let mut revoked = self.revoked_credentials.write().unwrap();
+        revoked.push(credential_id.to_string());
+
+        self.log_audit_entry(
+            "VC_REVOKED".to_string(),
+            credential_id.to_string(),
+            "Credential revoked".to_string(),
+        );
+
+        Ok(())
+    }
+
+    /// Register a new authorized credential issuer
+    pub fn register_issuer(&self, issuer_did: &str) -> Result<(), String> {
+        // Verify DID exists
+        self.resolve_did(issuer_did)?;
+
+        let mut trust_registry = self.trust_registry.write().unwrap();
+        if !trust_registry.authorized_issuers.contains(&issuer_did.to_string()) {
+            trust_registry.authorized_issuers.push(issuer_did.to_string());
+            trust_registry.last_updated = Self::current_timestamp();
+        }
+
+        self.log_audit_entry(
+            "ISSUER_REGISTERED".to_string(),
+            issuer_did.to_string(),
+            "New issuer registered in trust registry".to_string(),
+        );
+
+        Ok(())
+    }
+
+    /// Get all credentials for a holder
+    pub fn get_credentials(&self, holder_did: &str) -> Result<Vec<VerifiableCredential>, String> {
+        let wallets = self.credential_wallets.read().unwrap();
+        wallets
+            .get(holder_did)
+            .cloned()
+            .ok_or_else(|| "No credentials found".to_string())
+    }
+
+    /// Get trust registry
+    pub fn get_trust_registry(&self) -> TrustRegistry {
+        self.trust_registry.read().unwrap().clone()
+    }
+
+    /// Log audit entry to immutable ledger
+    fn log_audit_entry(&self, action: String, entity_id: String, details: String) {
+        let now = Self::current_timestamp();
+        let entry = AuditEntry {
+            timestamp: now,
+            action,
+            entity_id,
+            details,
+            proof: vec![0u8; 32], // Merkle tree hash in production
+        };
+
+        let mut ledger = self.audit_ledger.write().unwrap();
+        ledger.push(entry);
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// Get audit trail
+    pub fn get_audit_trail(&self, limit: usize) -> Vec<AuditEntry> {
+        let ledger = self.audit_ledger.read().unwrap();
+        ledger.iter().rev().take(limit).cloned().collect()
+    }
+}
+
+// Global DID Manager instance
+lazy_static::lazy_static! {
+    pub static ref DID_MANAGER: DecentralizedIdentityManager = DecentralizedIdentityManager::new();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_did_generation() {
+        let manager = DecentralizedIdentityManager::new();
+        let did = manager.generate_did("web", "user@example.com").unwrap();
+
+        assert!(did.did.starts_with("did:web:"));
+        assert_eq!(did.method, "web");
+        assert!(did.active);
+    }
+
+    #[test]
+    fn test_did_resolution() {
+        let manager = DecentralizedIdentityManager::new();
+        let generated = manager.generate_did("key", "subject123").unwrap();
+        let resolved = manager.resolve_did(&generated.did).unwrap();
+
+        assert_eq!(generated.did, resolved.did);
+    }
+
+    #[test]
+    fn test_credential_issuance() {
+        let manager = DecentralizedIdentityManager::new();
+
+        // Create issuer and subject DIDs
+        let issuer = manager.generate_did("web", "issuer@company.com").unwrap();
+        let subject = manager.generate_did("key", "emp123").unwrap();
+
+        // Register issuer in trust registry
+        manager.register_issuer(&issuer.did).unwrap();
+
+        // Issue credential
+        let mut claims = HashMap::new();
+        claims.insert("role".to_string(), "Engineer".to_string());
+        claims.insert("clearance".to_string(), "3".to_string());
+
+        let vc = manager
+            .issue_credential(
+                &issuer.did,
+                &subject.did,
+                vec!["Employee".to_string()],
+                claims,
+                365,
+            )
+            .unwrap();
+
+        assert_eq!(vc.issuer_did, issuer.did);
+        assert_eq!(vc.subject_did, subject.did);
+    }
+}
