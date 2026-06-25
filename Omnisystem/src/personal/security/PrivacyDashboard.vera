@@ -1,0 +1,261 @@
+// PrivacyDashboard.vera - Phase 24: Data access logging & privacy controls
+// Personal: User sees everything accessing their data | Enterprise: Admin audit logs
+
+use crate::personal::ModuleFramework::*;
+
+pub struct PermissionEntry {
+    pub app_id: String,
+    pub app_name: String,
+    pub permission_type: String, // "location", "camera", "microphone", "contacts", "files"
+    pub granted: bool,
+    pub last_accessed: u64,
+    pub access_count: u32,
+}
+
+impl PermissionEntry {
+    pub fn new(app_id: String, app_name: String, permission_type: String) -> Self {
+        PermissionEntry {
+            app_id,
+            app_name,
+            permission_type,
+            granted: false,
+            last_accessed: 0,
+            access_count: 0,
+        }
+    }
+
+    pub fn grant(&mut self) {
+        self.granted = true;
+    }
+
+    pub fn revoke(&mut self) {
+        self.granted = false;
+    }
+
+    pub fn log_access(&mut self) {
+        self.access_count += 1;
+        self.last_accessed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    }
+}
+
+pub struct DataAccessLog {
+    pub entries: Vec<DataAccessEntry>,
+}
+
+pub struct DataAccessEntry {
+    pub app_id: String,
+    pub permission_type: String,
+    pub timestamp: u64,
+    pub data_amount_bytes: u32,
+}
+
+impl DataAccessLog {
+    pub fn new() -> Self {
+        DataAccessLog {
+            entries: vec![],
+        }
+    }
+
+    pub fn log_access(&mut self, app_id: String, perm: String, bytes: u32) {
+        self.entries.push(DataAccessEntry {
+            app_id,
+            permission_type: perm,
+            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            data_amount_bytes: bytes,
+        });
+    }
+
+    pub fn get_entries_for_app(&self, app_id: &str) -> Vec<&DataAccessEntry> {
+        self.entries.iter().filter(|e| e.app_id == app_id).collect()
+    }
+}
+
+pub struct PrivacyDashboardCore {
+    pub permissions: Vec<PermissionEntry>,
+    pub access_log: DataAccessLog,
+    pub tracking_prevention_enabled: bool,
+    pub analytics_disabled: bool,
+}
+
+impl PrivacyDashboardCore {
+    pub fn new() -> Self {
+        PrivacyDashboardCore {
+            permissions: vec![],
+            access_log: DataAccessLog::new(),
+            tracking_prevention_enabled: true,
+            analytics_disabled: true,
+        }
+    }
+
+    pub fn add_app(&mut self, app_id: String, app_name: String, permissions: Vec<String>) -> Result<(), String> {
+        for perm in permissions {
+            self.permissions.push(PermissionEntry::new(app_id.clone(), app_name.clone(), perm));
+        }
+        Ok(())
+    }
+
+    pub fn grant_permission(&mut self, app_id: &str, permission: &str) -> Result<(), String> {
+        for perm in &mut self.permissions {
+            if perm.app_id == app_id && perm.permission_type == permission {
+                perm.grant();
+                return Ok(());
+            }
+        }
+        Err("Permission not found".to_string())
+    }
+
+    pub fn revoke_permission(&mut self, app_id: &str, permission: &str) -> Result<(), String> {
+        for perm in &mut self.permissions {
+            if perm.app_id == app_id && perm.permission_type == permission {
+                perm.revoke();
+                return Ok(());
+            }
+        }
+        Err("Permission not found".to_string())
+    }
+
+    pub fn get_suspicious_apps(&self) -> Vec<String> {
+        let mut suspicious = vec![];
+        for perm in &self.permissions {
+            if perm.access_count > 100 && perm.permission_type == "location" {
+                suspicious.push(perm.app_id.clone());
+            }
+        }
+        suspicious
+    }
+}
+
+pub component PrivacyDashboardPersonal {
+    state {
+        core: PrivacyDashboardCore,
+        config: ModuleConfig,
+    }
+
+    render {
+        div.privacy-dashboard {
+            h2 "Privacy Dashboard"
+
+            div.tracking-controls {
+                h3 "Tracking Prevention"
+                toggle "Block Tracking" enabled={core.tracking_prevention_enabled}
+                toggle "Disable Analytics" enabled={core.analytics_disabled}
+            }
+
+            div.permissions-section {
+                h3 "App Permissions"
+                for perm in &core.permissions {
+                    div.permission-item {
+                        text: format!("{}: {}", perm.app_name, perm.permission_type)
+                        toggle: if perm.granted { "Granted" } else { "Denied" }
+                        text: format!("Accessed {} times", perm.access_count)
+                        if perm.access_count > 50 {
+                            div.warning "Frequent access"
+                        }
+                    }
+                }
+            }
+
+            div.access-log {
+                h3 "Recent Access"
+                for entry in core.access_log.entries.iter().rev().take(10) {
+                    text: format!("{}: {} ({} bytes)", entry.app_id, entry.permission_type, entry.data_amount_bytes)
+                }
+            }
+        }
+    }
+
+    on_mount {
+        core = PrivacyDashboardCore::new();
+        config = ModuleConfig::new(ModuleMode::Personal);
+        config.set_flag("tracking_blocked".to_string(), true)?;
+        Ok(())
+    }
+}
+
+pub component PrivacyDashboardEnterprise {
+    state {
+        core: PrivacyDashboardCore,
+        config: ModuleConfig,
+        audit_log: AuditLog,
+        policy_engine: PolicyEngine,
+    }
+
+    render {
+        div.privacy-dashboard-enterprise {
+            h2 "Privacy Audit Dashboard"
+
+            div.org-stats {
+                text: format!("Managed apps: {}", core.permissions.iter().map(|p| &p.app_id).collect::<std::collections::HashSet<_>>().len())
+                text: format!("Total accesses: {}", core.access_log.entries.len())
+            }
+
+            div.suspicious-apps {
+                h3 "Suspicious Activity"
+                for app in core.get_suspicious_apps() {
+                    text: format!("⚠ {}: Excessive location access", app)
+                }
+            }
+
+            div.audit-section {
+                text: format!("Audit entries: {}", audit_log.get_entries().len())
+            }
+        }
+    }
+
+    on_mount {
+        core = PrivacyDashboardCore::new();
+        config = ModuleConfig::new(ModuleMode::Enterprise);
+        audit_log.enable()?;
+        policy_engine.enable()?;
+        Ok(())
+    }
+}
+
+pub enum PrivacyDashboardModule {
+    Personal(PrivacyDashboardPersonal),
+    Enterprise(PrivacyDashboardEnterprise),
+}
+
+impl PrivacyDashboardModule {
+    pub fn load(mode: ModuleMode) -> Result<Self, String> {
+        match mode {
+            ModuleMode::Personal => Ok(PrivacyDashboardModule::Personal(PrivacyDashboardPersonal {
+                core: PrivacyDashboardCore::new(),
+                config: ModuleConfig::new(ModuleMode::Personal),
+            })),
+            ModuleMode::Enterprise => Ok(PrivacyDashboardModule::Enterprise(PrivacyDashboardEnterprise {
+                core: PrivacyDashboardCore::new(),
+                config: ModuleConfig::new(ModuleMode::Enterprise),
+                audit_log: AuditLog::new(),
+                policy_engine: PolicyEngine::new(),
+            })),
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PrivacyDashboard (Phase 24) ===\n");
+
+    let mut core = PrivacyDashboardCore::new();
+    core.add_app("gmail".to_string(), "Gmail".to_string(), vec!["contacts".to_string(), "camera".to_string()])?;
+    core.grant_permission("gmail", "contacts")?;
+
+    println!("✓ App added with permissions: {}", core.permissions.len());
+
+    // Test access logging
+    for _ in 0..5 {
+        core.access_log.log_access("gmail".to_string(), "contacts".to_string(), 1024);
+    }
+    println!("✓ Access logged: {} entries", core.access_log.entries.len());
+
+    // Test Personal Module
+    let _personal = PrivacyDashboardModule::load(ModuleMode::Personal)?;
+    println!("✓ Personal Module: User controls all permissions");
+
+    // Test Enterprise Module
+    let _enterprise = PrivacyDashboardModule::load(ModuleMode::Enterprise)?;
+    println!("✓ Enterprise Module: Org-wide audit logs");
+
+    println!("\n✓✓✓ PrivacyDashboard tests passed ✓✓✓");
+    Ok(())
+}

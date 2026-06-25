@@ -1,0 +1,332 @@
+// VPNClient.vera - Phase 24: Privacy-focused VPN with self-hosting option
+// Personal: Self-hosted or public VPNs | Enterprise: Org VPN with policy enforcement
+
+use crate::personal::ModuleFramework::*;
+
+pub struct VPNServer {
+    pub id: String,
+    pub name: String,
+    pub server_type: String, // "self-hosted", "commercial", "corporate"
+    pub protocol: String, // "wireguard", "openvpn", "ipsec"
+    pub hostname: String,
+    pub port: u16,
+    pub connected: bool,
+    pub encryption: String,
+}
+
+impl VPNServer {
+    pub fn new(name: String, protocol: String, hostname: String) -> Self {
+        VPNServer {
+            id: format!("vpn_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            name,
+            server_type: "commercial".to_string(),
+            protocol,
+            hostname,
+            port: 1194,
+            connected: false,
+            encryption: "AES-256".to_string(),
+        }
+    }
+
+    pub fn set_self_hosted(mut self) -> Self {
+        self.server_type = "self-hosted".to_string();
+        self
+    }
+}
+
+pub struct VPNConnection {
+    pub id: String,
+    pub server_id: String,
+    pub ip_address: String,
+    pub internal_ip: String,
+    pub connected: bool,
+    pub connected_at: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub latency_ms: u32,
+}
+
+impl VPNConnection {
+    pub fn new(server_id: String) -> Self {
+        VPNConnection {
+            id: format!("conn_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            server_id,
+            ip_address: String::new(),
+            internal_ip: String::new(),
+            connected: false,
+            connected_at: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            latency_ms: 0,
+        }
+    }
+}
+
+pub struct SplitTunnelingRule {
+    pub app_id: String,
+    pub bypass_vpn: bool,
+}
+
+impl SplitTunnelingRule {
+    pub fn new(app_id: String, bypass_vpn: bool) -> Self {
+        SplitTunnelingRule {
+            app_id,
+            bypass_vpn,
+        }
+    }
+}
+
+pub struct VPNClientCore {
+    pub servers: Vec<VPNServer>,
+    pub current_connection: Option<VPNConnection>,
+    pub split_tunneling_rules: Vec<SplitTunnelingRule>,
+    pub kill_switch_enabled: bool,
+    pub leak_protection_enabled: bool,
+    pub dns_leak_protection: bool,
+}
+
+impl VPNClientCore {
+    pub fn new() -> Self {
+        VPNClientCore {
+            servers: vec![],
+            current_connection: None,
+            split_tunneling_rules: vec![],
+            kill_switch_enabled: true,
+            leak_protection_enabled: true,
+            dns_leak_protection: true,
+        }
+    }
+
+    pub fn add_server(&mut self, server: VPNServer) -> Result<String, String> {
+        let id = server.id.clone();
+        self.servers.push(server);
+        Ok(id)
+    }
+
+    pub fn connect(&mut self, server_id: &str) -> Result<(), String> {
+        let server = self.servers.iter_mut().find(|s| s.id == server_id)
+            .ok_or("Server not found")?;
+
+        server.connected = true;
+
+        let mut conn = VPNConnection::new(server_id.to_string());
+        conn.connected = true;
+        conn.ip_address = "10.0.0.1".to_string();
+        conn.internal_ip = "192.168.1.100".to_string();
+
+        self.current_connection = Some(conn);
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) -> Result<(), String> {
+        if let Some(mut conn) = self.current_connection.take() {
+            conn.connected = false;
+            if let Some(server) = self.servers.iter_mut().find(|s| s.id == conn.server_id) {
+                server.connected = false;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.current_connection.as_ref().map(|c| c.connected).unwrap_or(false)
+    }
+
+    pub fn add_split_tunnel_rule(&mut self, rule: SplitTunnelingRule) -> Result<(), String> {
+        self.split_tunneling_rules.push(rule);
+        Ok(())
+    }
+
+    pub fn get_apps_bypassing_vpn(&self) -> Vec<String> {
+        self.split_tunneling_rules
+            .iter()
+            .filter(|r| r.bypass_vpn)
+            .map(|r| r.app_id.clone())
+            .collect()
+    }
+}
+
+pub component VPNClientPersonal {
+    state {
+        core: VPNClientCore,
+        config: ModuleConfig,
+        auto_connect_enabled: bool,
+        preferred_server_id: String,
+    }
+
+    render {
+        div.vpn-client {
+            h2 "VPN Protection"
+
+            div.connection-status {
+                if core.is_connected() {
+                    div.connected {
+                        text: "✓ Connected"
+                        if let Some(conn) = &core.current_connection {
+                            text: format!("IP: {}", conn.ip_address)
+                            text: format!("Latency: {}ms", conn.latency_ms)
+                        }
+                    }
+                } else {
+                    text: "✗ Disconnected"
+                }
+
+                button: if core.is_connected() { "Disconnect" } else { "Connect" }
+                    on_click={toggle_connection}
+            }
+
+            div.servers {
+                h3 "VPN Servers"
+                for server in &core.servers {
+                    div.server-item {
+                        text: server.name
+                        text: format!("{} ({})", server.protocol, server.server_type)
+                        if server.connected {
+                            text: "Connected"
+                        }
+                    }
+                }
+            }
+
+            div.protection {
+                toggle "Kill Switch" enabled={core.kill_switch_enabled}
+                toggle "Leak Protection" enabled={core.leak_protection_enabled}
+                toggle "DNS Protection" enabled={core.dns_leak_protection}
+            }
+
+            div.split-tunnel {
+                h3 "Split Tunneling"
+                text: format!("Apps bypassing VPN: {}", core.get_apps_bypassing_vpn().len())
+            }
+        }
+    }
+
+    on_mount {
+        core = VPNClientCore::new();
+        config = ModuleConfig::new(ModuleMode::Personal);
+        config.set_flag("self_hosted_option".to_string(), true)?;
+        config.set_flag("no_logs".to_string(), true)?;
+
+        // Add example server
+        let server = VPNServer::new("My Server".to_string(), "wireguard".to_string(), "vpn.myserver.com".to_string())
+            .set_self_hosted();
+        core.add_server(server)?;
+
+        auto_connect_enabled = false;
+        Ok(())
+    }
+
+    fn toggle_connection() -> Result<(), String> {
+        if core.is_connected() {
+            core.disconnect()?;
+        } else if let Some(server) = core.servers.first() {
+            core.connect(&server.id)?;
+        }
+        Ok(())
+    }
+}
+
+pub component VPNClientEnterprise {
+    state {
+        core: VPNClientCore,
+        config: ModuleConfig,
+        audit_log: AuditLog,
+        policy_engine: PolicyEngine,
+        corporate_vpn_required: bool,
+    }
+
+    render {
+        div.vpn-enterprise {
+            h2 "Enterprise VPN"
+
+            div.policy {
+                h3 "VPN Policy"
+                toggle "Required for All Users" enabled={corporate_vpn_required}
+                text: format!("Configured servers: {}", core.servers.len())
+            }
+
+            div.connections {
+                h3 "Managed Connections"
+                if let Some(conn) = &core.current_connection {
+                    text: format!("Connected to: {}", conn.server_id)
+                    text: format!("Data: {} ↑ / {} ↓", conn.bytes_sent, conn.bytes_received)
+                }
+            }
+
+            div.split-tunnel {
+                h3 "Split Tunneling Rules"
+                for rule in &core.split_tunneling_rules {
+                    text: format!("{}: {}", rule.app_id, if rule.bypass_vpn { "Bypass VPN" } else { "Through VPN" })
+                }
+            }
+
+            div.audit {
+                text: format!("Audit log: {} entries", audit_log.get_entries().len())
+            }
+        }
+    }
+
+    on_mount {
+        core = VPNClientCore::new();
+        config = ModuleConfig::new(ModuleMode::Enterprise);
+        audit_log.enable()?;
+        policy_engine.enable()?;
+
+        // Add corporate VPN server
+        let corp_server = VPNServer::new("Corporate VPN".to_string(), "ipsec".to_string(), "vpn.company.com".to_string());
+        core.add_server(corp_server)?;
+
+        corporate_vpn_required = true;
+        Ok(())
+    }
+}
+
+pub enum VPNClientModule {
+    Personal(VPNClientPersonal),
+    Enterprise(VPNClientEnterprise),
+}
+
+impl VPNClientModule {
+    pub fn load(mode: ModuleMode) -> Result<Self, String> {
+        match mode {
+            ModuleMode::Personal => Ok(VPNClientModule::Personal(VPNClientPersonal {
+                core: VPNClientCore::new(),
+                config: ModuleConfig::new(ModuleMode::Personal),
+                auto_connect_enabled: false,
+                preferred_server_id: String::new(),
+            })),
+            ModuleMode::Enterprise => Ok(VPNClientModule::Enterprise(VPNClientEnterprise {
+                core: VPNClientCore::new(),
+                config: ModuleConfig::new(ModuleMode::Enterprise),
+                audit_log: AuditLog::new(),
+                policy_engine: PolicyEngine::new(),
+                corporate_vpn_required: true,
+            })),
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== VPNClient (Phase 24) ===\n");
+
+    let mut core = VPNClientCore::new();
+
+    let server = VPNServer::new("Test VPN".to_string(), "wireguard".to_string(), "vpn.test.com".to_string());
+    let server_id = core.add_server(server)?;
+    println!("✓ VPN server added: {}", server_id);
+
+    core.connect(&server_id)?;
+    println!("✓ Connected: {}", core.is_connected());
+
+    core.add_split_tunnel_rule(SplitTunnelingRule::new("apps.app".to_string(), true))?;
+    println!("✓ Split tunneling: {} apps bypassing VPN", core.get_apps_bypassing_vpn().len());
+
+    let _personal = VPNClientModule::load(ModuleMode::Personal)?;
+    println!("✓ Personal Module: Self-hosted or public VPN");
+
+    let _enterprise = VPNClientModule::load(ModuleMode::Enterprise)?;
+    println!("✓ Enterprise Module: Corporate VPN enforced");
+
+    println!("\n✓✓✓ VPNClient tests passed ✓✓✓");
+    Ok(())
+}

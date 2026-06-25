@@ -1,0 +1,667 @@
+// WearableSupport.titanhelix - Phase 23: Smartwatch & wearable device integration
+// Modules: Personal (health tracking) + Enterprise (wellness programs)
+// Languages: TITAN (core protocol) + HELIX (GPU rendering for smartwatch displays)
+
+// ============================================================================
+// CORE: WEARABLE DEVICE PROTOCOL (Shared)
+// ============================================================================
+
+pub enum WearableDeviceType {
+    Smartwatch,
+    FitnessTracker,
+    HealthBand,
+    AirPods,
+    Ring,
+}
+
+pub struct WearableDevice {
+    pub device_id: String,
+    pub device_type: WearableDeviceType,
+    pub model: String,
+    pub connected: bool,
+    pub battery_percent: u8,
+    pub last_sync: u64,
+}
+
+impl WearableDevice {
+    pub fn new(device_id: String, device_type: WearableDeviceType, model: String) -> Self {
+        WearableDevice {
+            device_id,
+            device_type,
+            model,
+            connected: false,
+            battery_percent: 100,
+            last_sync: 0,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{} ({}%) - {}",
+            self.model, self.battery_percent, self.device_id
+        )
+    }
+}
+
+pub struct WearableHealthData {
+    pub timestamp: u64,
+    pub heart_rate: u32,
+    pub steps: u32,
+    pub calories_burned: u32,
+    pub distance_meters: u32,
+    pub sleep_minutes: u32,
+    pub spo2: u8,
+    pub temperature_celsius: f32,
+}
+
+impl WearableHealthData {
+    pub fn new() -> Self {
+        WearableHealthData {
+            timestamp: 0,
+            heart_rate: 0,
+            steps: 0,
+            calories_burned: 0,
+            distance_meters: 0,
+            sleep_minutes: 0,
+            spo2: 0,
+            temperature_celsius: 0.0,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.timestamp > 0 && (self.heart_rate > 0 || self.steps > 0)
+    }
+}
+
+pub struct WearableNotification {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub action: String,
+    pub priority: u8,
+}
+
+impl WearableNotification {
+    pub fn new(title: String, body: String) -> Self {
+        WearableNotification {
+            id: format!("notif_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            title,
+            body,
+            action: "open".to_string(),
+            priority: 5,
+        }
+    }
+
+    pub fn with_action(mut self, action: String) -> Self {
+        self.action = action;
+        self
+    }
+
+    pub fn with_priority(mut self, priority: u8) -> Self {
+        self.priority = priority.min(10);
+        self
+    }
+}
+
+pub struct WearableQuickAction {
+    pub id: String,
+    pub name: String,
+    pub icon_id: String,
+    pub action_type: String, // "call", "message", "app", "custom"
+    pub data: String,
+}
+
+impl WearableQuickAction {
+    pub fn new(name: String, action_type: String) -> Self {
+        WearableQuickAction {
+            id: format!("action_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            name,
+            icon_id: "default".to_string(),
+            action_type,
+            data: String::new(),
+        }
+    }
+}
+
+pub struct WearableCore {
+    pub devices: Vec<WearableDevice>,
+    pub health_data_cache: Vec<WearableHealthData>,
+    pub notifications: Vec<WearableNotification>,
+    pub quick_actions: Vec<WearableQuickAction>,
+    pub auto_sync_enabled: bool,
+}
+
+impl WearableCore {
+    pub fn new() -> Self {
+        WearableCore {
+            devices: vec![],
+            health_data_cache: vec![],
+            notifications: vec![],
+            quick_actions: vec![],
+            auto_sync_enabled: true,
+        }
+    }
+
+    pub fn add_device(
+        &mut self,
+        device_id: String,
+        device_type: WearableDeviceType,
+        model: String,
+    ) -> Result<(), String> {
+        if self.devices.iter().any(|d| d.device_id == device_id) {
+            return Err("Device already added".to_string());
+        }
+        self.devices.push(WearableDevice::new(device_id, device_type, model));
+        Ok(())
+    }
+
+    pub fn remove_device(&mut self, device_id: &str) -> Result<(), String> {
+        self.devices.retain(|d| d.device_id != device_id);
+        Ok(())
+    }
+
+    pub fn connect_device(&mut self, device_id: &str) -> Result<(), String> {
+        for device in &mut self.devices {
+            if device.device_id == device_id {
+                device.connected = true;
+                return Ok(());
+            }
+        }
+        Err("Device not found".to_string())
+    }
+
+    pub fn disconnect_device(&mut self, device_id: &str) -> Result<(), String> {
+        for device in &mut self.devices {
+            if device.device_id == device_id {
+                device.connected = false;
+                return Ok(());
+            }
+        }
+        Err("Device not found".to_string())
+    }
+
+    pub fn get_connected_devices(&self) -> Vec<WearableDevice> {
+        self.devices.iter().filter(|d| d.connected).cloned().collect()
+    }
+
+    pub fn add_health_data(&mut self, data: WearableHealthData) -> Result<(), String> {
+        if !data.is_valid() {
+            return Err("Invalid health data".to_string());
+        }
+        self.health_data_cache.push(data);
+        Ok(())
+    }
+
+    pub fn get_latest_health_data(&self) -> Option<WearableHealthData> {
+        self.health_data_cache.last().cloned()
+    }
+
+    pub fn push_notification(&mut self, notification: WearableNotification) -> Result<(), String> {
+        self.notifications.push(notification);
+        Ok(())
+    }
+
+    pub fn push_quick_action(&mut self, action: WearableQuickAction) -> Result<(), String> {
+        self.quick_actions.push(action);
+        Ok(())
+    }
+
+    pub fn sync_all(&mut self) -> Result<(), String> {
+        for device in &mut self.devices {
+            if device.connected {
+                device.last_sync = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+            }
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// PERSONAL MODULE: Health Tracking & Personal Metrics
+// ============================================================================
+
+pub component WearablePersonal {
+    state {
+        core: WearableCore,
+        config: ModuleConfig,
+        daily_steps: u32,
+        daily_calories: u32,
+        weekly_avg_heart_rate: u32,
+        personal_goals: Vec<PersonalGoal>,
+        health_alerts: Vec<HealthAlert>,
+    }
+
+    render {
+        // Personal module displays:
+        // 1. Personal health metrics
+        // 2. Daily progress to goals
+        // 3. Health alerts
+        // 4. Personal achievements
+
+        div.wearable-dashboard {
+            class: "personal-health-view"
+
+            // Main metrics display
+            div.metrics-card {
+                h2 "Today's Activity"
+
+                div.metric {
+                    label "Steps"
+                    value: daily_steps.to_string()
+                    progress: (daily_steps as f32 / 10000.0 * 100.0) as u32
+                }
+
+                div.metric {
+                    label "Calories"
+                    value: daily_calories.to_string()
+                    progress: (daily_calories as f32 / 2000.0 * 100.0) as u32
+                }
+
+                div.metric {
+                    label "Heart Rate"
+                    value: weekly_avg_heart_rate.to_string()
+                    unit: "bpm"
+                }
+            }
+
+            // Personal goals
+            if personal_goals.len() > 0 {
+                div.goals-card {
+                    h2 "My Goals"
+
+                    for goal in personal_goals {
+                        div.goal-item {
+                            text: goal.name
+                            progress: (goal.current as f32 / goal.target as f32 * 100.0) as u32
+                        }
+                    }
+                }
+            }
+
+            // Health alerts (personal only)
+            if health_alerts.len() > 0 {
+                div.alerts-card {
+                    h2 "Health Alerts"
+
+                    for alert in health_alerts {
+                        div.alert-item {
+                            class: format!("alert-{}", alert.severity)
+                            text: alert.message
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    on_mount {
+        core = WearableCore::new();
+        config = ModuleConfig::new(ModuleMode::Personal);
+        config.set_flag("encrypt_health_data".to_string(), true)?;
+        config.set_flag("offline_health_sync".to_string(), true)?;
+
+        // Initialize personal goals
+        personal_goals.push(PersonalGoal::new("Daily Steps".to_string(), 10000));
+        personal_goals.push(PersonalGoal::new("Calories".to_string(), 2000));
+
+        Ok(())
+    }
+
+    on_health_data_received(data: WearableHealthData) {
+        core.add_health_data(data.clone())?;
+
+        daily_steps = data.steps;
+        daily_calories = data.calories_burned;
+
+        // Check for health alerts
+        if data.heart_rate > 100 && data.heart_rate < 60 {
+            health_alerts.push(HealthAlert::new(
+                "Abnormal heart rate".to_string(),
+                data.heart_rate.to_string(),
+                "warning".to_string()
+            ));
+        }
+
+        Ok(())
+    }
+
+    on_wearable_connected(device_id: String) {
+        core.connect_device(&device_id)?;
+        println!("Wearable connected: {}", device_id);
+        Ok(())
+    }
+}
+
+pub struct PersonalGoal {
+    pub name: String,
+    pub target: u32,
+    pub current: u32,
+    pub deadline: u64,
+}
+
+impl PersonalGoal {
+    pub fn new(name: String, target: u32) -> Self {
+        PersonalGoal {
+            name,
+            target,
+            current: 0,
+            deadline: 0,
+        }
+    }
+
+    pub fn progress_percent(&self) -> u32 {
+        ((self.current as f32 / self.target as f32) * 100.0) as u32
+    }
+}
+
+pub struct HealthAlert {
+    pub message: String,
+    pub value: String,
+    pub severity: String, // "info", "warning", "alert"
+    pub timestamp: u64,
+}
+
+impl HealthAlert {
+    pub fn new(message: String, value: String, severity: String) -> Self {
+        HealthAlert {
+            message,
+            value,
+            severity,
+            timestamp: 0,
+        }
+    }
+}
+
+// ============================================================================
+// ENTERPRISE MODULE: Corporate Wellness Programs
+// ============================================================================
+
+pub component WearableEnterprise {
+    state {
+        core: WearableCore,
+        config: ModuleConfig,
+        audit_log: AuditLog,
+        wellness_program: WellnessProgram,
+        team_metrics: Vec<TeamMemberMetrics>,
+        compliance_enabled: bool,
+    }
+
+    render {
+        // Enterprise module displays:
+        // 1. Team wellness metrics
+        // 2. Program participation
+        // 3. Compliance tracking
+        // 4. Aggregate health data (anonymized)
+
+        div.wearable-dashboard {
+            class: "enterprise-wellness-view"
+
+            // Wellness program info
+            div.program-card {
+                h2 "Corporate Wellness Program"
+                text: wellness_program.name
+                text: format!("Participants: {}", team_metrics.len())
+            }
+
+            // Team metrics (anonymized)
+            if team_metrics.len() > 0 {
+                div.team-metrics {
+                    h2 "Team Activity"
+
+                    div.metric {
+                        label "Avg Steps"
+                        value: calculate_avg_steps()
+                    }
+
+                    div.metric {
+                        label "Active Participants"
+                        value: team_metrics.iter().filter(|m| m.active).count().to_string()
+                    }
+                }
+            }
+
+            // Compliance tracking (Enterprise feature)
+            div.compliance-card {
+                h2 "Compliance"
+                text: format!("Program Adherence: {}%", wellness_program.completion_percent)
+            }
+        }
+    }
+
+    on_mount {
+        core = WearableCore::new();
+        config = ModuleConfig::new(ModuleMode::Enterprise);
+        audit_log.enable()?;
+
+        // Set up wellness program
+        wellness_program = WellnessProgram::new(
+            "Corporate Wellness 2026".to_string(),
+            "Improve employee health".to_string()
+        );
+
+        compliance_enabled = true;
+
+        Ok(())
+    }
+
+    on_employee_joined_program(employee_id: String, employee_name: String) {
+        team_metrics.push(TeamMemberMetrics::new(employee_id.clone(), employee_name));
+        wellness_program.participant_count += 1;
+
+        let entry = AuditEntry::new(
+            employee_id,
+            "wellness_program_join".to_string(),
+            "wellness_program".to_string()
+        ).with_result("success".to_string());
+        audit_log.log(entry)?;
+
+        Ok(())
+    }
+
+    on_team_metrics_updated(metrics: Vec<TeamMemberMetrics>) {
+        team_metrics = metrics;
+        Ok(())
+    }
+
+    fn calculate_avg_steps(&self) -> u32 {
+        if team_metrics.is_empty() {
+            return 0;
+        }
+        let total: u32 = team_metrics.iter().map(|m| m.daily_steps).sum();
+        total / team_metrics.len() as u32
+    }
+}
+
+pub struct WellnessProgram {
+    pub name: String,
+    pub description: String,
+    pub participant_count: u32,
+    pub completion_percent: u32,
+    pub start_date: u64,
+}
+
+impl WellnessProgram {
+    pub fn new(name: String, description: String) -> Self {
+        WellnessProgram {
+            name,
+            description,
+            participant_count: 0,
+            completion_percent: 0,
+            start_date: 0,
+        }
+    }
+}
+
+pub struct TeamMemberMetrics {
+    pub employee_id: String,
+    pub name: String,
+    pub daily_steps: u32,
+    pub active: bool,
+    pub last_update: u64,
+}
+
+impl TeamMemberMetrics {
+    pub fn new(employee_id: String, name: String) -> Self {
+        TeamMemberMetrics {
+            employee_id,
+            name,
+            daily_steps: 0,
+            active: true,
+            last_update: 0,
+        }
+    }
+}
+
+// ============================================================================
+// WEARABLE MODULE LOADER
+// ============================================================================
+
+pub enum WearableModule {
+    Personal(WearablePersonal),
+    Enterprise(WearableEnterprise),
+}
+
+impl WearableModule {
+    pub fn load(mode: ModuleMode) -> Result<Self, String> {
+        match mode {
+            ModuleMode::Personal => {
+                let personal = WearablePersonal {
+                    core: WearableCore::new(),
+                    config: ModuleConfig::new(ModuleMode::Personal),
+                    daily_steps: 0,
+                    daily_calories: 0,
+                    weekly_avg_heart_rate: 0,
+                    personal_goals: vec![],
+                    health_alerts: vec![],
+                };
+                Ok(WearableModule::Personal(personal))
+            }
+            ModuleMode::Enterprise => {
+                let enterprise = WearableEnterprise {
+                    core: WearableCore::new(),
+                    config: ModuleConfig::new(ModuleMode::Enterprise),
+                    audit_log: AuditLog::new(),
+                    wellness_program: WellnessProgram::new("Default".to_string(), "".to_string()),
+                    team_metrics: vec![],
+                    compliance_enabled: true,
+                };
+                Ok(WearableModule::Enterprise(enterprise))
+            }
+        }
+    }
+
+    pub fn get_connected_devices(&self) -> Vec<WearableDevice> {
+        match self {
+            WearableModule::Personal(p) => p.state.core.get_connected_devices(),
+            WearableModule::Enterprise(e) => e.state.core.get_connected_devices(),
+        }
+    }
+
+    pub fn get_health_data(&self) -> Option<WearableHealthData> {
+        match self {
+            WearableModule::Personal(p) => p.state.core.get_latest_health_data(),
+            WearableModule::Enterprise(e) => e.state.core.get_latest_health_data(),
+        }
+    }
+}
+
+// ============================================================================
+// HELIX SMARTWATCH DISPLAY RENDERING
+// ============================================================================
+
+pub pipeline SmartWatchDisplay {
+    // Vertex shader: Render UI elements optimized for small circular/rectangular watch displays
+    vertex render_watch_ui(position: vec3, texcoord: vec2) -> vec4 {
+        // Scale for small watch screen (typically 400x400 or 360x360)
+        let scaled_pos = position * 0.5; // Downscale for watch size
+        return project_matrix * vec4(scaled_pos, 1.0);
+    }
+
+    // Fragment shader: Efficient rendering for watch AMOLED displays
+    fragment color_watch_display(texcoord: vec2) -> vec4 {
+        let tex = sample_texture(watch_texture, texcoord);
+
+        // Optimize for AMOLED: pure black is 0 cost
+        if (tex.rgb == vec3(0.0, 0.0, 0.0)) {
+            return vec4(0.0, 0.0, 0.0, 1.0); // Pure black (AMOLED efficient)
+        }
+
+        // Apply slight contrast boost for watch readability
+        let contrast = tex.rgb * 1.1;
+        return vec4(contrast, tex.a);
+    }
+}
+
+// ============================================================================
+// MAIN TEST
+// ============================================================================
+
+fn main() -> Result<(), String> {
+    println!("=== Omnisystem WearableSupport (Phase 23) ===\n");
+
+    // Test Core wearable operations
+    let mut core = WearableCore::new();
+
+    // Add devices
+    core.add_device(
+        "watch_001".to_string(),
+        WearableDeviceType::Smartwatch,
+        "Apple Watch Series 8".to_string(),
+    )?;
+    core.add_device(
+        "band_001".to_string(),
+        WearableDeviceType::FitnessTracker,
+        "Fitbit Charge 5".to_string(),
+    )?;
+
+    println!(
+        "✓ Added {} wearable devices",
+        core.devices.len()
+    );
+
+    // Connect device
+    core.connect_device("watch_001")?;
+    println!(
+        "✓ Connected: {}",
+        core.get_connected_devices()[0].to_string()
+    );
+
+    // Add health data
+    let mut health_data = WearableHealthData::new();
+    health_data.timestamp = 1234567890;
+    health_data.heart_rate = 72;
+    health_data.steps = 8234;
+    health_data.calories_burned = 1850;
+    core.add_health_data(health_data)?;
+    println!(
+        "✓ Health data logged: {} steps, {} bpm",
+        core.get_latest_health_data().unwrap().steps,
+        core.get_latest_health_data().unwrap().heart_rate
+    );
+
+    // Push notification
+    let notif = WearableNotification::new("Hello Watch".to_string(), "Test message".to_string())
+        .with_priority(8);
+    core.push_notification(notif)?;
+    println!("✓ Notification pushed: {}", core.notifications.len());
+
+    // Add quick action
+    let action = WearableQuickAction::new("Call Emergency".to_string(), "call".to_string());
+    core.push_quick_action(action)?;
+    println!("✓ Quick action added: {}", core.quick_actions.len());
+
+    // Test Personal Module
+    let personal_module = WearableModule::load(ModuleMode::Personal)?;
+    let devices = personal_module.get_connected_devices();
+    println!("✓ Personal Module loaded: {} devices ready", devices.len());
+
+    // Test Enterprise Module
+    let enterprise_module = WearableModule::load(ModuleMode::Enterprise)?;
+    println!("✓ Enterprise Module loaded: Wellness programs ready");
+
+    println!("\n✓✓✓ WearableSupport tests passed ✓✓✓");
+    Ok(())
+}

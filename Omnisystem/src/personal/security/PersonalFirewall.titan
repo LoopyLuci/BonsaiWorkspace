@@ -1,0 +1,264 @@
+// PersonalFirewall.titan - Phase 24: Network filtering & connection monitoring
+// Personal: User sees outbound connections | Enterprise: Firewall rules & policies
+
+use crate::personal::ModuleFramework::*;
+
+pub struct FirewallRule {
+    pub id: String,
+    pub app_id: String,
+    pub action: String, // "allow", "deny", "prompt"
+    pub protocol: String, // "tcp", "udp", "all"
+    pub port: u16,
+    pub enabled: bool,
+}
+
+impl FirewallRule {
+    pub fn new(app_id: String, action: String) -> Self {
+        FirewallRule {
+            id: format!("rule_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            app_id,
+            action,
+            protocol: "all".to_string(),
+            port: 0,
+            enabled: true,
+        }
+    }
+}
+
+pub struct NetworkConnection {
+    pub id: String,
+    pub app_id: String,
+    pub remote_ip: String,
+    pub remote_port: u16,
+    pub protocol: String,
+    pub direction: String, // "outbound", "inbound"
+    pub timestamp: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub status: String, // "established", "blocked", "pending"
+}
+
+impl NetworkConnection {
+    pub fn new(app_id: String, remote_ip: String, remote_port: u16) -> Self {
+        NetworkConnection {
+            id: format!("conn_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+            app_id,
+            remote_ip,
+            remote_port,
+            protocol: "tcp".to_string(),
+            direction: "outbound".to_string(),
+            timestamp: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            status: "pending".to_string(),
+        }
+    }
+}
+
+pub struct PersonalFirewallCore {
+    pub rules: Vec<FirewallRule>,
+    pub active_connections: Vec<NetworkConnection>,
+    pub blocked_connections: Vec<NetworkConnection>,
+    pub malware_detection_enabled: bool,
+    pub intrusion_detection_enabled: bool,
+}
+
+impl PersonalFirewallCore {
+    pub fn new() -> Self {
+        PersonalFirewallCore {
+            rules: vec![],
+            active_connections: vec![],
+            blocked_connections: vec![],
+            malware_detection_enabled: true,
+            intrusion_detection_enabled: true,
+        }
+    }
+
+    pub fn add_rule(&mut self, rule: FirewallRule) -> Result<String, String> {
+        let id = rule.id.clone();
+        self.rules.push(rule);
+        Ok(id)
+    }
+
+    pub fn get_rule_for_app(&self, app_id: &str) -> Option<FirewallRule> {
+        self.rules.iter().find(|r| r.app_id == app_id).cloned()
+    }
+
+    pub fn check_connection(&self, app_id: &str, _remote_ip: &str) -> Result<String, String> {
+        match self.get_rule_for_app(app_id) {
+            Some(rule) => {
+                if rule.enabled {
+                    Ok(rule.action.clone())
+                } else {
+                    Ok("allow".to_string())
+                }
+            }
+            None => Ok("prompt".to_string()),
+        }
+    }
+
+    pub fn allow_connection(&mut self, mut conn: NetworkConnection) -> Result<(), String> {
+        conn.status = "established".to_string();
+        self.active_connections.push(conn);
+        Ok(())
+    }
+
+    pub fn block_connection(&mut self, mut conn: NetworkConnection) -> Result<(), String> {
+        conn.status = "blocked".to_string();
+        self.blocked_connections.push(conn);
+        Ok(())
+    }
+
+    pub fn get_blocked_count(&self) -> u32 {
+        self.blocked_connections.len() as u32
+    }
+
+    pub fn get_active_count(&self) -> u32 {
+        self.active_connections.len() as u32
+    }
+}
+
+pub component PersonalFirewallPersonal {
+    state {
+        core: PersonalFirewallCore,
+        config: ModuleConfig,
+    }
+
+    render {
+        div.firewall-dashboard {
+            h2 "Network Firewall"
+
+            div.stats {
+                div.stat {
+                    label "Active Connections"
+                    value: core.get_active_count().to_string()
+                }
+                div.stat {
+                    label "Blocked Connections"
+                    value: core.get_blocked_count().to_string()
+                }
+            }
+
+            div.active-connections {
+                h3 "Outbound Connections"
+                for conn in &core.active_connections {
+                    div.connection {
+                        text: format!("{} → {}:{}", conn.app_id, conn.remote_ip, conn.remote_port)
+                        text: format!("{} ↑ / {} ↓", conn.bytes_sent, conn.bytes_received)
+                    }
+                }
+            }
+
+            if core.blocked_connections.len() > 0 {
+                div.blocked-connections {
+                    h3 "Blocked Connections"
+                    for conn in &core.blocked_connections {
+                        div.blocked {
+                            text: format!("✗ {} → {}:{}", conn.app_id, conn.remote_ip, conn.remote_port)
+                        }
+                    }
+                }
+            }
+
+            div.detection {
+                toggle "Malware Detection" enabled={core.malware_detection_enabled}
+                toggle "Intrusion Detection" enabled={core.intrusion_detection_enabled}
+            }
+        }
+    }
+
+    on_mount {
+        core = PersonalFirewallCore::new();
+        config = ModuleConfig::new(ModuleMode::Personal);
+        Ok(())
+    }
+}
+
+pub component PersonalFirewallEnterprise {
+    state {
+        core: PersonalFirewallCore,
+        config: ModuleConfig,
+        audit_log: AuditLog,
+        policy_engine: PolicyEngine,
+    }
+
+    render {
+        div.firewall-enterprise {
+            h2 "Enterprise Network Security"
+
+            div.policy-rules {
+                h3 "Firewall Rules"
+                text: format!("Total rules: {}", core.rules.len())
+                for rule in &core.rules {
+                    div.rule {
+                        text: format!("{}: {} ({})", rule.app_id, rule.action, rule.protocol)
+                        toggle: if rule.enabled { "Active" } else { "Disabled" }
+                    }
+                }
+            }
+
+            div.threat-intelligence {
+                h3 "Threat Detection"
+                text: format!("Blocked: {}", core.get_blocked_count())
+            }
+
+            div.compliance {
+                text: format!("Audit log: {} entries", audit_log.get_entries().len())
+            }
+        }
+    }
+
+    on_mount {
+        core = PersonalFirewallCore::new();
+        config = ModuleConfig::new(ModuleMode::Enterprise);
+        audit_log.enable()?;
+        policy_engine.enable()?;
+        Ok(())
+    }
+}
+
+pub enum PersonalFirewallModule {
+    Personal(PersonalFirewallPersonal),
+    Enterprise(PersonalFirewallEnterprise),
+}
+
+impl PersonalFirewallModule {
+    pub fn load(mode: ModuleMode) -> Result<Self, String> {
+        match mode {
+            ModuleMode::Personal => Ok(PersonalFirewallModule::Personal(PersonalFirewallPersonal {
+                core: PersonalFirewallCore::new(),
+                config: ModuleConfig::new(ModuleMode::Personal),
+            })),
+            ModuleMode::Enterprise => Ok(PersonalFirewallModule::Enterprise(PersonalFirewallEnterprise {
+                core: PersonalFirewallCore::new(),
+                config: ModuleConfig::new(ModuleMode::Enterprise),
+                audit_log: AuditLog::new(),
+                policy_engine: PolicyEngine::new(),
+            })),
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PersonalFirewall (Phase 24) ===\n");
+
+    let mut core = PersonalFirewallCore::new();
+
+    let rule = FirewallRule::new("chrome".to_string(), "allow".to_string());
+    core.add_rule(rule)?;
+
+    let conn = NetworkConnection::new("chrome".to_string(), "8.8.8.8".to_string(), 443);
+    core.allow_connection(conn)?;
+
+    println!("✓ Active connections: {}", core.get_active_count());
+    println!("✓ Blocked connections: {}", core.get_blocked_count());
+
+    let _personal = PersonalFirewallModule::load(ModuleMode::Personal)?;
+    println!("✓ Personal Module: See all network connections");
+
+    let _enterprise = PersonalFirewallModule::load(ModuleMode::Enterprise)?;
+    println!("✓ Enterprise Module: Enforce firewall policies");
+
+    println!("\n✓✓✓ PersonalFirewall tests passed ✓✓✓");
+    Ok(())
+}

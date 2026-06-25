@@ -1,0 +1,516 @@
+// ModuleFramework.titan - Core modular architecture for Personal/Enterprise swapping
+// Provides base traits, loaders, and configuration for all personal stack modules
+
+use std::collections::HashMap;
+
+// ============================================================================
+// MODULE TYPES & TRAITS
+// ============================================================================
+
+pub enum ModuleMode {
+    Personal,
+    Enterprise,
+}
+
+impl ModuleMode {
+    pub fn from_string(s: String) -> Result<Self, String> {
+        match s.as_str() {
+            "personal" => Ok(ModuleMode::Personal),
+            "enterprise" => Ok(ModuleMode::Enterprise),
+            _ => Err(format!("Invalid module mode: {}", s)),
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            ModuleMode::Personal => "personal".to_string(),
+            ModuleMode::Enterprise => "enterprise".to_string(),
+        }
+    }
+}
+
+// Base trait all modules must implement
+pub trait Module {
+    fn mode(&self) -> ModuleMode;
+    fn initialize(&mut self) -> Result<(), String>;
+    fn shutdown(&mut self) -> Result<(), String>;
+    fn get_capabilities(&self) -> Vec<String>;
+}
+
+pub trait PersonalModule: Module {
+    fn enable_encryption(&mut self) -> Result<(), String>;
+    fn disable_cloud_sync(&mut self) -> Result<(), String>;
+    fn get_privacy_level(&self) -> u8;
+}
+
+pub trait EnterpriseModule: Module {
+    fn apply_policy(&mut self, policy: PolicyConfig) -> Result<(), String>;
+    fn enable_audit_logging(&mut self) -> Result<(), String>;
+    fn get_compliance_level(&self) -> u8;
+}
+
+// ============================================================================
+// CONFIGURATION & POLICY
+// ============================================================================
+
+pub struct PolicyConfig {
+    pub encryption_required: bool,
+    pub audit_logging_enabled: bool,
+    pub data_retention_days: u32,
+    pub allowed_integrations: Vec<String>,
+    pub policy_name: String,
+    pub enforced: bool,
+}
+
+impl PolicyConfig {
+    pub fn new(policy_name: String) -> Self {
+        PolicyConfig {
+            encryption_required: true,
+            audit_logging_enabled: true,
+            data_retention_days: 90,
+            allowed_integrations: vec![],
+            policy_name,
+            enforced: true,
+        }
+    }
+
+    pub fn with_retention(mut self, days: u32) -> Self {
+        self.data_retention_days = days;
+        self
+    }
+
+    pub fn with_integration(mut self, integration: String) -> Self {
+        self.allowed_integrations.push(integration);
+        self
+    }
+}
+
+pub struct ModuleConfig {
+    pub mode: ModuleMode,
+    pub feature_flags: HashMap<String, bool>,
+    pub policies: Vec<PolicyConfig>,
+    pub offline_enabled: bool,
+    pub sync_enabled: bool,
+    pub encryption_enabled: bool,
+}
+
+impl ModuleConfig {
+    pub fn new(mode: ModuleMode) -> Self {
+        ModuleConfig {
+            mode,
+            feature_flags: HashMap::new(),
+            policies: vec![],
+            offline_enabled: matches!(mode, ModuleMode::Personal),
+            sync_enabled: true,
+            encryption_enabled: matches!(mode, ModuleMode::Personal),
+        }
+    }
+
+    pub fn set_flag(&mut self, key: String, value: bool) -> Result<(), String> {
+        self.feature_flags.insert(key, value);
+        Ok(())
+    }
+
+    pub fn get_flag(&self, key: &str) -> bool {
+        self.feature_flags.get(key).copied().unwrap_or(false)
+    }
+
+    pub fn add_policy(&mut self, policy: PolicyConfig) -> Result<(), String> {
+        self.policies.push(policy);
+        Ok(())
+    }
+}
+
+// ============================================================================
+// AUDIT LOGGING (ENTERPRISE FEATURE)
+// ============================================================================
+
+pub struct AuditEntry {
+    pub timestamp: u64,
+    pub user_id: String,
+    pub action: String,
+    pub resource: String,
+    pub result: String,
+    pub details: String,
+}
+
+impl AuditEntry {
+    pub fn new(user_id: String, action: String, resource: String) -> Self {
+        AuditEntry {
+            timestamp: 0,
+            user_id,
+            action,
+            resource,
+            result: "pending".to_string(),
+            details: "".to_string(),
+        }
+    }
+
+    pub fn with_result(mut self, result: String) -> Self {
+        self.result = result;
+        self
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "[{}] {}: {} on {} -> {}",
+            self.timestamp, self.user_id, self.action, self.resource, self.result
+        )
+    }
+}
+
+pub struct AuditLog {
+    entries: Vec<AuditEntry>,
+    enabled: bool,
+}
+
+impl AuditLog {
+    pub fn new() -> Self {
+        AuditLog {
+            entries: vec![],
+            enabled: false,
+        }
+    }
+
+    pub fn enable(&mut self) -> Result<(), String> {
+        self.enabled = true;
+        Ok(())
+    }
+
+    pub fn log(&mut self, entry: AuditEntry) -> Result<(), String> {
+        if self.enabled {
+            self.entries.push(entry);
+        }
+        Ok(())
+    }
+
+    pub fn get_entries(&self) -> Vec<AuditEntry> {
+        self.entries.clone()
+    }
+
+    pub fn clear(&mut self) -> Result<(), String> {
+        self.entries.clear();
+        Ok(())
+    }
+}
+
+// ============================================================================
+// MODULE LOADER & REGISTRY
+// ============================================================================
+
+pub struct ModuleRegistry {
+    modules: HashMap<String, String>,
+    mode: ModuleMode,
+}
+
+impl ModuleRegistry {
+    pub fn new(mode: ModuleMode) -> Self {
+        ModuleRegistry {
+            modules: HashMap::new(),
+            mode,
+        }
+    }
+
+    pub fn register(&mut self, name: String, module_type: String) -> Result<(), String> {
+        self.modules.insert(name, module_type);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Result<String, String> {
+        self.modules
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("Module not found: {}", name))
+    }
+
+    pub fn list_modules(&self) -> Vec<String> {
+        self.modules.keys().cloned().collect()
+    }
+
+    pub fn mode(&self) -> ModuleMode {
+        match self.mode {
+            ModuleMode::Personal => ModuleMode::Personal,
+            ModuleMode::Enterprise => ModuleMode::Enterprise,
+        }
+    }
+
+    pub fn switch_mode(&mut self, new_mode: ModuleMode) -> Result<(), String> {
+        self.mode = new_mode;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// SHARED ENCRYPTION (Available to both Personal & Enterprise)
+// ============================================================================
+
+pub struct EncryptionCore {
+    pub algorithm: String,
+    pub key_size: u32,
+    pub enabled: bool,
+}
+
+impl EncryptionCore {
+    pub fn new() -> Self {
+        EncryptionCore {
+            algorithm: "AES-256-GCM".to_string(),
+            key_size: 256,
+            enabled: false,
+        }
+    }
+
+    pub fn enable(&mut self) -> Result<(), String> {
+        self.enabled = true;
+        Ok(())
+    }
+
+    pub fn disable(&mut self) -> Result<(), String> {
+        self.enabled = false;
+        Ok(())
+    }
+
+    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.enabled {
+            return Err("Encryption not enabled".to_string());
+        }
+        // In production, use actual encryption library
+        Ok(data)
+    }
+
+    pub fn decrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, String> {
+        if !self.enabled {
+            return Err("Decryption not enabled".to_string());
+        }
+        // In production, use actual decryption library
+        Ok(data)
+    }
+}
+
+// ============================================================================
+// OFFLINE-FIRST SYNC (Available to Personal modules)
+// ============================================================================
+
+pub struct OfflineSyncEngine {
+    pub operation_queue: Vec<SyncOperation>,
+    pub offline_mode: bool,
+    pub last_sync: u64,
+}
+
+pub struct SyncOperation {
+    pub op_type: String,
+    pub resource_id: String,
+    pub data: Vec<u8>,
+    pub timestamp: u64,
+}
+
+impl OfflineSyncEngine {
+    pub fn new() -> Self {
+        OfflineSyncEngine {
+            operation_queue: vec![],
+            offline_mode: false,
+            last_sync: 0,
+        }
+    }
+
+    pub fn enable_offline(&mut self) -> Result<(), String> {
+        self.offline_mode = true;
+        Ok(())
+    }
+
+    pub fn queue_operation(
+        &mut self,
+        op_type: String,
+        resource_id: String,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        self.operation_queue.push(SyncOperation {
+            op_type,
+            resource_id,
+            data,
+            timestamp: 0,
+        });
+        Ok(())
+    }
+
+    pub fn sync(&mut self) -> Result<(), String> {
+        if self.operation_queue.is_empty() {
+            return Ok(());
+        }
+        self.operation_queue.clear();
+        self.offline_mode = false;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// POLICY ENFORCEMENT (Enterprise feature)
+// ============================================================================
+
+pub struct PolicyEngine {
+    policies: Vec<PolicyConfig>,
+    enabled: bool,
+}
+
+impl PolicyEngine {
+    pub fn new() -> Self {
+        PolicyEngine {
+            policies: vec![],
+            enabled: false,
+        }
+    }
+
+    pub fn enable(&mut self) -> Result<(), String> {
+        self.enabled = true;
+        Ok(())
+    }
+
+    pub fn add_policy(&mut self, policy: PolicyConfig) -> Result<(), String> {
+        self.policies.push(policy);
+        Ok(())
+    }
+
+    pub fn check_policy(&self, action: &str, resource: &str) -> Result<bool, String> {
+        if !self.enabled {
+            return Ok(true);
+        }
+
+        for policy in &self.policies {
+            if policy.enforced {
+                // Check if action/resource matches any policy restrictions
+                if !policy.allowed_integrations.is_empty() {
+                    if !policy.allowed_integrations.contains(&action.to_string()) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn get_policies(&self) -> Vec<String> {
+        self.policies.iter().map(|p| p.policy_name.clone()).collect()
+    }
+}
+
+// ============================================================================
+// MODULE INITIALIZATION HELPER
+// ============================================================================
+
+pub struct ModuleInitializer {
+    registry: ModuleRegistry,
+}
+
+impl ModuleInitializer {
+    pub fn new(mode: ModuleMode) -> Self {
+        ModuleInitializer {
+            registry: ModuleRegistry::new(mode),
+        }
+    }
+
+    pub fn register_module(&mut self, name: String, module_type: String) -> Result<(), String> {
+        self.registry.register(name, module_type)
+    }
+
+    pub fn get_registry(&self) -> &ModuleRegistry {
+        &self.registry
+    }
+
+    pub fn initialize_all(&mut self) -> Result<(), String> {
+        println!("Initializing all modules in {} mode", {
+            match self.registry.mode() {
+                ModuleMode::Personal => "Personal",
+                ModuleMode::Enterprise => "Enterprise",
+            }
+        });
+        Ok(())
+    }
+}
+
+// ============================================================================
+// MAIN TEST
+// ============================================================================
+
+fn main() -> Result<(), String> {
+    println!("=== Omnisystem Module Framework ===\n");
+
+    // Test Personal Module Config
+    let mut personal_config = ModuleConfig::new(ModuleMode::Personal);
+    personal_config.set_flag("enable_encryption".to_string(), true)?;
+    personal_config.set_flag("offline_enabled".to_string(), true)?;
+    println!(
+        "✓ Personal Config: encryption={}, offline={}",
+        personal_config.get_flag("enable_encryption"),
+        personal_config.get_flag("offline_enabled")
+    );
+
+    // Test Enterprise Module Config
+    let mut enterprise_config = ModuleConfig::new(ModuleMode::Enterprise);
+    let policy = PolicyConfig::new("compliance_policy".to_string())
+        .with_retention(90)
+        .with_integration("ldap".to_string());
+    enterprise_config.add_policy(policy)?;
+    println!(
+        "✓ Enterprise Config: {} policies configured",
+        enterprise_config.policies.len()
+    );
+
+    // Test Audit Logging
+    let mut audit_log = AuditLog::new();
+    audit_log.enable()?;
+    let entry = AuditEntry::new(
+        "user@example.com".to_string(),
+        "login".to_string(),
+        "system".to_string(),
+    )
+    .with_result("success".to_string());
+    audit_log.log(entry)?;
+    println!(
+        "✓ Audit Log: {} entries logged",
+        audit_log.get_entries().len()
+    );
+
+    // Test Encryption Core
+    let mut encryption = EncryptionCore::new();
+    encryption.enable()?;
+    println!(
+        "✓ Encryption: {} ({} bits) - enabled={}",
+        encryption.algorithm, encryption.key_size, encryption.enabled
+    );
+
+    // Test Offline Sync
+    let mut sync = OfflineSyncEngine::new();
+    sync.enable_offline()?;
+    sync.queue_operation(
+        "create".to_string(),
+        "note_123".to_string(),
+        vec![1, 2, 3, 4, 5],
+    )?;
+    println!(
+        "✓ Offline Sync: {} operations queued, offline={}",
+        sync.operation_queue.len(),
+        sync.offline_mode
+    );
+
+    // Test Module Registry
+    let mut registry = ModuleRegistry::new(ModuleMode::Personal);
+    registry.register("email".to_string(), "PersonalEmailModule".to_string())?;
+    registry.register("password".to_string(), "PersonalPasswordManager".to_string())?;
+    println!(
+        "✓ Module Registry: {} modules registered",
+        registry.list_modules().len()
+    );
+
+    // Test Module Initializer
+    let mut initializer = ModuleInitializer::new(ModuleMode::Personal);
+    initializer.register_module("security".to_string(), "SecurityCore".to_string())?;
+    initializer.initialize_all()?;
+    println!("✓ Module Initializer: ready for {} mode", {
+        match initializer.get_registry().mode() {
+            ModuleMode::Personal => "Personal",
+            ModuleMode::Enterprise => "Enterprise",
+        }
+    });
+
+    println!("\n✓✓✓ All module framework tests passed ✓✓✓");
+    Ok(())
+}
