@@ -1,0 +1,397 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM FEATURE FLAGS SYSTEM - DYNAMIC FEATURE CONTROL
+// User-targeting, percentage rollouts, kill switches, A/B testing, multivariate testing
+// Language: TITAN (Systems Programming)
+// Phase 1: Production Safety Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// FEATURE FLAG TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TargetingRule {
+    Percentage(u32),              // 0-100
+    UserID(u64),                 // Specific user
+    UserSegment,                 // Segment (beta, premium, etc.)
+    TimeRange,                   // Time-based
+    GeoLocation,                 // Geographic
+    BetaGroup,                   // Beta testers
+    Admin,                       // Admin users
+}
+
+#[derive(Clone, Debug)]
+pub struct FeatureFlag {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub kill_switch: bool,
+    pub percentage: u32,                    // 0-100% of users
+    pub targeting_rules: Vec<TargetingRule>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub evaluations: u32,
+    pub variations_enabled: Vec<String>,   // A/B test variations
+}
+
+impl FeatureFlag {
+    pub fn new(id: String, name: String) -> Self {
+        let now = current_timestamp();
+        FeatureFlag {
+            id,
+            name,
+            enabled: false,
+            kill_switch: false,
+            percentage: 0,
+            targeting_rules: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            evaluations: 0,
+            variations_enabled: vec!["control".to_string()],
+        }
+    }
+
+    pub fn enable(&mut self) {
+        self.enabled = true;
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn disable(&mut self) {
+        self.enabled = false;
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn activate_kill_switch(&mut self) {
+        self.kill_switch = true;
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn deactivate_kill_switch(&mut self) {
+        self.kill_switch = false;
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn set_percentage(&mut self, percentage: u32) {
+        self.percentage = percentage.min(100);
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn add_targeting_rule(&mut self, rule: TargetingRule) {
+        self.targeting_rules.push(rule);
+        self.updated_at = current_timestamp();
+    }
+
+    pub fn add_variation(&mut self, variation: String) {
+        if !self.variations_enabled.contains(&variation) {
+            self.variations_enabled.push(variation);
+            self.updated_at = current_timestamp();
+        }
+    }
+
+    pub fn evaluate(&mut self, user_id: u64, user_segment: &str, is_admin: bool) -> bool {
+        self.evaluations += 1;
+
+        // Kill switch is absolute
+        if self.kill_switch {
+            return false;
+        }
+
+        // Feature must be enabled
+        if !self.enabled {
+            return false;
+        }
+
+        // Check admin override
+        if is_admin && self.targeting_rules.contains(&TargetingRule::Admin) {
+            return true;
+        }
+
+        // Check targeting rules
+        for rule in &self.targeting_rules {
+            match rule {
+                TargetingRule::Percentage(pct) => {
+                    if (user_id % 100) < (*pct as u64) {
+                        return true;
+                    }
+                },
+                TargetingRule::UserID(id) => {
+                    if user_id == *id {
+                        return true;
+                    }
+                },
+                TargetingRule::UserSegment => {
+                    if user_segment == "beta" || user_segment == "premium" {
+                        return true;
+                    }
+                },
+                TargetingRule::BetaGroup => {
+                    if user_segment == "beta" {
+                        return true;
+                    }
+                },
+                TargetingRule::Admin => {
+                    if is_admin {
+                        return true;
+                    }
+                },
+                _ => {},
+            }
+        }
+
+        // Default: use percentage
+        (user_id % 100) < (self.percentage as u64)
+    }
+
+    pub fn get_variation(&self, user_id: u64) -> String {
+        if self.variations_enabled.len() <= 1 {
+            return "control".to_string();
+        }
+
+        let variation_index = (user_id as usize) % self.variations_enabled.len();
+        self.variations_enabled[variation_index].clone()
+    }
+}
+
+pub struct FeatureFlagsSystem {
+    flags: HashMap<String, FeatureFlag>,
+    flag_evaluations: HashMap<String, u32>,
+    flag_enabled_counts: HashMap<String, u32>,
+    session_start: Instant,
+    audit_log: Vec<(u64, String)>,
+}
+
+impl FeatureFlagsSystem {
+    pub fn new() -> Self {
+        FeatureFlagsSystem {
+            flags: HashMap::new(),
+            flag_evaluations: HashMap::new(),
+            flag_enabled_counts: HashMap::new(),
+            session_start: Instant::now(),
+            audit_log: Vec::new(),
+        }
+    }
+
+    pub fn create_flag(&mut self, id: String, name: String) -> Result<(), String> {
+        if self.flags.contains_key(&id) {
+            return Err(format!("Flag {} already exists", id));
+        }
+
+        let flag = FeatureFlag::new(id.clone(), name.clone());
+        self.flags.insert(id.clone(), flag);
+        self.flag_evaluations.insert(id.clone(), 0);
+        self.flag_enabled_counts.insert(id.clone(), 0);
+
+        self.log_event(format!("Created flag: {}", name));
+        println!("✓ Flag created: {}", id);
+
+        Ok(())
+    }
+
+    pub fn enable_flag(&mut self, id: &str) -> Result<(), String> {
+        if let Some(flag) = self.flags.get_mut(id) {
+            flag.enable();
+            self.log_event(format!("Enabled flag: {}", id));
+            println!("✓ Flag {} enabled", id);
+            Ok(())
+        } else {
+            Err(format!("Flag {} not found", id))
+        }
+    }
+
+    pub fn disable_flag(&mut self, id: &str) -> Result<(), String> {
+        if let Some(flag) = self.flags.get_mut(id) {
+            flag.disable();
+            self.log_event(format!("Disabled flag: {}", id));
+            println!("✓ Flag {} disabled", id);
+            Ok(())
+        } else {
+            Err(format!("Flag {} not found", id))
+        }
+    }
+
+    pub fn activate_kill_switch(&mut self, id: &str) -> Result<(), String> {
+        if let Some(flag) = self.flags.get_mut(id) {
+            flag.activate_kill_switch();
+            self.log_event(format!("Kill switch activated: {}", id));
+            println!("🔴 Kill switch activated for {}", id);
+            Ok(())
+        } else {
+            Err(format!("Flag {} not found", id))
+        }
+    }
+
+    pub fn set_rollout_percentage(&mut self, id: &str, percentage: u32) -> Result<(), String> {
+        if let Some(flag) = self.flags.get_mut(id) {
+            flag.set_percentage(percentage);
+            self.log_event(format!("Set {} rollout to {}%", id, percentage));
+            println!("✓ {} rollout set to {}%", id, percentage);
+            Ok(())
+        } else {
+            Err(format!("Flag {} not found", id))
+        }
+    }
+
+    pub fn target_segment(&mut self, id: &str, segment: &str) -> Result<(), String> {
+        if let Some(flag) = self.flags.get_mut(id) {
+            if segment == "beta" {
+                flag.add_targeting_rule(TargetingRule::BetaGroup);
+                self.log_event(format!("Targeted {} to beta users", id));
+                println!("✓ {} now targeted to beta users", id);
+            }
+            Ok(())
+        } else {
+            Err(format!("Flag {} not found", id))
+        }
+    }
+
+    pub fn evaluate_flag(&mut self, flag_id: &str, user_id: u64, user_segment: &str, is_admin: bool) -> Result<bool, String> {
+        if let Some(mut flag) = self.flags.remove(flag_id) {
+            let result = flag.evaluate(user_id, user_segment, is_admin);
+
+            *self.flag_evaluations.entry(flag_id.to_string()).or_insert(0) += 1;
+            if result {
+                *self.flag_enabled_counts.entry(flag_id.to_string()).or_insert(0) += 1;
+            }
+
+            self.flags.insert(flag_id.to_string(), flag);
+
+            Ok(result)
+        } else {
+            Err(format!("Flag {} not found", flag_id))
+        }
+    }
+
+    pub fn get_variation(&self, flag_id: &str, user_id: u64) -> Result<String, String> {
+        if let Some(flag) = self.flags.get(flag_id) {
+            Ok(flag.get_variation(user_id))
+        } else {
+            Err(format!("Flag {} not found", flag_id))
+        }
+    }
+
+    pub fn get_flag_stats(&self, flag_id: &str) -> Result<(u32, u32, f64), String> {
+        if let Some(_) = self.flags.get(flag_id) {
+            let evals = *self.flag_evaluations.get(flag_id).unwrap_or(&0);
+            let enabled = *self.flag_enabled_counts.get(flag_id).unwrap_or(&0);
+            let percentage = if evals > 0 {
+                (enabled as f64 / evals as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            Ok((evals, enabled, percentage))
+        } else {
+            Err(format!("Flag {} not found", flag_id))
+        }
+    }
+
+    fn log_event(&mut self, event: String) {
+        self.audit_log.push((current_timestamp(), event));
+    }
+
+    pub fn print_flags_status(&self) {
+        println!("\n╔════ FEATURE FLAGS STATUS ════╗");
+        println!("║ Total flags: {}", self.flags.len());
+
+        for (id, flag) in &self.flags {
+            let status = if flag.kill_switch {
+                "🔴 KILL SWITCH"
+            } else if flag.enabled {
+                "🟢 ENABLED"
+            } else {
+                "⚫ DISABLED"
+            };
+
+            let (evals, enabled, pct) = self.get_flag_stats(id).unwrap_or((0, 0, 0.0));
+
+            println!("║");
+            println!("║ {} - {}", id, flag.name);
+            println!("║   Status: {}", status);
+            println!("║   Rollout: {}%", flag.percentage);
+            println!("║   Evaluations: {} ({:.1}% enabled)", evals, pct);
+        }
+
+        println!("╚══════════════════════════════╝\n");
+    }
+
+    pub fn print_audit_log(&self) {
+        println!("\n╔════ AUDIT LOG ════╗");
+        for (timestamp, event) in self.audit_log.iter().take(20) {
+            println!("║ [{}] {}", timestamp, event);
+        }
+
+        if self.audit_log.len() > 20 {
+            println!("║ ... and {} more events", self.audit_log.len() - 20);
+        }
+
+        println!("╚═══════════════════╝\n");
+    }
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM FEATURE FLAGS SYSTEM v1.0                   ║");
+    println!("║        User Targeting | A/B Testing | Kill Switches           ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut flags = FeatureFlagsSystem::new();
+
+    // Create flags
+    flags.create_flag("dark_mode".to_string(), "Dark Mode Toggle".to_string()).ok();
+    flags.create_flag("new_dashboard".to_string(), "New Dashboard UI".to_string()).ok();
+    flags.create_flag("advanced_analytics".to_string(), "Advanced Analytics".to_string()).ok();
+
+    // Configure flags
+    flags.enable_flag("dark_mode").ok();
+    flags.set_rollout_percentage("dark_mode", 100).ok();
+
+    flags.enable_flag("new_dashboard").ok();
+    flags.set_rollout_percentage("new_dashboard", 25).ok();  // 25% rollout
+
+    flags.enable_flag("advanced_analytics").ok();
+    flags.target_segment("advanced_analytics", "beta").ok();
+
+    // Evaluate flags for different users
+    println!("Evaluating flags for users...\n");
+
+    for user_id in 1..=10 {
+        let is_beta = user_id <= 3;
+        let is_admin = user_id == 1;
+
+        let dark_mode = flags.evaluate_flag("dark_mode", user_id, if is_beta { "beta" } else { "regular" }, is_admin).ok();
+        let new_dash = flags.evaluate_flag("new_dashboard", user_id, if is_beta { "beta" } else { "regular" }, is_admin).ok();
+        let analytics = flags.evaluate_flag("advanced_analytics", user_id, if is_beta { "beta" } else { "regular" }, is_admin).ok();
+
+        println!("User {}: dark_mode={}, new_dashboard={}, advanced_analytics={}",
+                 user_id,
+                 dark_mode.unwrap_or(false),
+                 new_dash.unwrap_or(false),
+                 analytics.unwrap_or(false));
+    }
+
+    println!();
+
+    // Print status
+    flags.print_flags_status();
+
+    // Simulate kill switch
+    println!("Simulating emergency: activating kill switch for new_dashboard...");
+    flags.activate_kill_switch("new_dashboard").ok();
+
+    flags.print_flags_status();
+
+    // Print audit log
+    flags.print_audit_log();
+
+    println!("✓ Feature flags system operational");
+}

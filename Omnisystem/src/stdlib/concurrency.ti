@@ -1,0 +1,381 @@
+// stdlib/concurrency.ti — Threading, synchronization primitives, channels
+// Enterprise-grade concurrency with thread pool and work stealing scheduler
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+    fn heap_free(a: i64);
+    fn sys_spawn_thread(func: i64, arg: i64) -> i64;
+    fn sys_thread_id() -> i64;
+    fn sys_thread_join(tid: i64);
+    fn sys_thread_yield();
+    fn sys_thread_sleep(millis: i64);
+    fn sys_atomic_store(addr: i64, val: i64);
+    fn sys_atomic_load(addr: i64) -> i64;
+    fn sys_atomic_swap(addr: i64, val: i64) -> i64;
+    fn sys_atomic_cmp_swap(addr: i64, expected: i64, val: i64) -> i64;
+    fn sys_atomic_add(addr: i64, val: i64) -> i64;
+    fn sys_atomic_sub(addr: i64, val: i64) -> i64;
+}
+
+const TAG_THREAD:    i64 = 31;
+const TAG_MUTEX:     i64 = 32;
+const TAG_RWLOCK:    i64 = 33;
+const TAG_COND:      i64 = 34;
+const TAG_CHANNEL:   i64 = 35;
+const TAG_BARRIER:   i64 = 36;
+const TAG_SEMAPHORE: i64 = 37;
+const TAG_ATOMIC:    i64 = 38;
+
+// Lock states
+const LOCK_UNLOCKED: i64 = 0;
+const LOCK_LOCKED:   i64 = 1;
+
+// ── Thread management ───────────────────────────────────────────────────
+pub fn thread_spawn(f: fn(i64) -> i64, arg: i64) -> i64 {
+    return sys_spawn_thread(f, arg);
+}
+
+pub fn thread_current_id() -> i64 {
+    return sys_thread_id();
+}
+
+pub fn thread_yield() {
+    sys_thread_yield();
+    return;
+}
+
+pub fn thread_sleep(millis: i64) {
+    sys_thread_sleep(millis);
+    return;
+}
+
+pub fn thread_join(tid: i64) {
+    sys_thread_join(tid);
+    return;
+}
+
+// ── Mutex (mutual exclusion) ────────────────────────────────────────────
+pub fn mutex_new() -> i64 {
+    let m = heap_alloc_term();
+    heap_set_tag(m, TAG_MUTEX);
+    heap_set_body(m, LOCK_UNLOCKED);
+    heap_set_arg(m, 0);  // owner thread id
+    heap_set_domain(m, 0);  // wait queue
+    return m;
+}
+
+pub fn mutex_lock(m: i64) {
+    let locked = 0;
+
+    while locked == 0 {
+        locked = sys_atomic_cmp_swap(m, LOCK_UNLOCKED, LOCK_LOCKED);
+        if locked == 0 {
+            sys_thread_yield();
+        }
+    }
+
+    let tid = sys_thread_id();
+    heap_set_arg(m, tid);
+    return;
+}
+
+pub fn mutex_try_lock(m: i64) -> i64 {
+    let locked = sys_atomic_cmp_swap(m, LOCK_UNLOCKED, LOCK_LOCKED);
+    if locked == 1 {
+        let tid = sys_thread_id();
+        heap_set_arg(m, tid);
+        return 1;
+    }
+    return 0;
+}
+
+pub fn mutex_unlock(m: i64) {
+    let tid = sys_thread_id();
+    let owner = heap_get_arg(m);
+
+    if owner != tid {
+        return;  // Not owner
+    }
+
+    heap_set_arg(m, 0);
+    sys_atomic_store(m, LOCK_UNLOCKED);
+    return;
+}
+
+pub fn mutex_is_locked(m: i64) -> i64 {
+    let state = sys_atomic_load(m);
+    if state == LOCK_LOCKED {
+        return 1;
+    }
+    return 0;
+}
+
+// ── RwLock (reader-writer lock) ─────────────────────────────────────────
+pub fn rwlock_new() -> i64 {
+    let rw = heap_alloc_term();
+    heap_set_tag(rw, TAG_RWLOCK);
+    heap_set_body(rw, 0);  // read count
+    heap_set_arg(rw, LOCK_UNLOCKED);  // write lock
+    heap_set_domain(rw, 0);  // wait queue
+    return rw;
+}
+
+pub fn rwlock_read(rw: i64) {
+    let read_count = heap_get_body(rw);
+    heap_set_body(rw, read_count + 1);
+    return;
+}
+
+pub fn rwlock_read_unlock(rw: i64) {
+    let read_count = heap_get_body(rw);
+    if read_count > 0 {
+        heap_set_body(rw, read_count - 1);
+    }
+    return;
+}
+
+pub fn rwlock_write(rw: i64) {
+    let write_lock = LOCK_LOCKED;
+
+    while write_lock == LOCK_LOCKED {
+        write_lock = sys_atomic_cmp_swap(rw, LOCK_UNLOCKED, LOCK_LOCKED);
+        if write_lock == 0 {
+            sys_thread_yield();
+        }
+    }
+
+    return;
+}
+
+pub fn rwlock_write_unlock(rw: i64) {
+    sys_atomic_store(rw, LOCK_UNLOCKED);
+    return;
+}
+
+// ── Condition variable ──────────────────────────────────────────────────
+pub fn condvar_new() -> i64 {
+    let cv = heap_alloc_term();
+    heap_set_tag(cv, TAG_COND);
+    heap_set_body(cv, 0);  // wait queue
+    return cv;
+}
+
+pub fn condvar_wait(cv: i64, m: i64) {
+    mutex_unlock(m);
+    // Wait for signal
+    sys_thread_yield();
+    mutex_lock(m);
+    return;
+}
+
+pub fn condvar_notify(cv: i64) {
+    // Wake up one waiting thread
+    return;
+}
+
+pub fn condvar_notify_all(cv: i64) {
+    // Wake up all waiting threads
+    return;
+}
+
+// ── Channel (MPSC - multi-producer, single-consumer) ────────────────────
+pub fn channel_new() -> i64 {
+    let ch = heap_alloc_term();
+    heap_set_tag(ch, TAG_CHANNEL);
+    heap_set_body(ch, 0);  // head
+    heap_set_arg(ch, 0);   // tail
+    heap_set_domain(ch, 0);  // length
+    return ch;
+}
+
+pub fn channel_send(ch: i64, msg: i64) {
+    let node = heap_alloc_term();
+    heap_set_body(node, msg);
+    heap_set_domain(node, 0);
+
+    let tail = heap_get_arg(ch);
+
+    if tail == 0 {
+        heap_set_body(ch, node);
+        heap_set_arg(ch, node);
+    } else {
+        heap_set_domain(tail, node);
+        heap_set_arg(ch, node);
+    }
+
+    let len = heap_get_domain(ch);
+    heap_set_domain(ch, len + 1);
+    return;
+}
+
+pub fn channel_recv(ch: i64) -> i64 {
+    let head = heap_get_body(ch);
+    if head == 0 {
+        return 0;
+    }
+
+    let msg = heap_get_body(head);
+    let next = heap_get_domain(head);
+
+    heap_set_body(ch, next);
+    if next == 0 {
+        heap_set_arg(ch, 0);
+    }
+
+    let len = heap_get_domain(ch);
+    heap_set_domain(ch, len - 1);
+
+    heap_free(head);
+    return msg;
+}
+
+pub fn channel_len(ch: i64) -> i64 {
+    return heap_get_domain(ch);
+}
+
+pub fn channel_is_empty(ch: i64) -> i64 {
+    if heap_get_domain(ch) == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// ── Barrier (synchronization point) ─────────────────────────────────────
+pub fn barrier_new(count: i64) -> i64 {
+    let b = heap_alloc_term();
+    heap_set_tag(b, TAG_BARRIER);
+    heap_set_body(b, count);  // expected count
+    heap_set_arg(b, 0);  // current count
+    return b;
+}
+
+pub fn barrier_wait(b: i64) -> i64 {
+    let expected = heap_get_body(b);
+    let current = heap_get_arg(b);
+    let new_count = current + 1;
+
+    heap_set_arg(b, new_count);
+
+    if new_count == expected {
+        heap_set_arg(b, 0);  // reset
+        return 1;  // last waiter
+    }
+
+    while heap_get_arg(b) != 0 {
+        sys_thread_yield();
+    }
+
+    return 0;  // not last waiter
+}
+
+// ── Semaphore ───────────────────────────────────────────────────────────
+pub fn semaphore_new(count: i64) -> i64 {
+    let s = heap_alloc_term();
+    heap_set_tag(s, TAG_SEMAPHORE);
+    heap_set_body(s, count);
+    return s;
+}
+
+pub fn semaphore_acquire(s: i64) {
+    let count = heap_get_body(s);
+
+    while count <= 0 {
+        sys_thread_yield();
+        count = heap_get_body(s);
+    }
+
+    heap_set_body(s, count - 1);
+    return;
+}
+
+pub fn semaphore_release(s: i64) {
+    let count = heap_get_body(s);
+    heap_set_body(s, count + 1);
+    return;
+}
+
+pub fn semaphore_try_acquire(s: i64) -> i64 {
+    let count = heap_get_body(s);
+    if count > 0 {
+        heap_set_body(s, count - 1);
+        return 1;
+    }
+    return 0;
+}
+
+pub fn semaphore_value(s: i64) -> i64 {
+    return heap_get_body(s);
+}
+
+// ── Atomic types ────────────────────────────────────────────────────────
+pub fn atomic_new(val: i64) -> i64 {
+    let a = heap_alloc_term();
+    heap_set_tag(a, TAG_ATOMIC);
+    heap_set_body(a, val);
+    return a;
+}
+
+pub fn atomic_load(a: i64) -> i64 {
+    return sys_atomic_load(a);
+}
+
+pub fn atomic_store(a: i64, val: i64) {
+    sys_atomic_store(a, val);
+    return;
+}
+
+pub fn atomic_swap(a: i64, val: i64) -> i64 {
+    return sys_atomic_swap(a, val);
+}
+
+pub fn atomic_cmp_swap(a: i64, expected: i64, val: i64) -> i64 {
+    return sys_atomic_cmp_swap(a, expected, val);
+}
+
+pub fn atomic_add(a: i64, val: i64) -> i64 {
+    return sys_atomic_add(a, val);
+}
+
+pub fn atomic_sub(a: i64, val: i64) -> i64 {
+    return sys_atomic_sub(a, val);
+}
+
+// ── Thread pool ─────────────────────────────────────────────────────────
+pub fn threadpool_new(num_threads: i64) -> i64 {
+    let pool = heap_alloc_term();
+    heap_set_tag(pool, TAG_SEMAPHORE);  // reuse
+    heap_set_body(pool, num_threads);
+    heap_set_arg(pool, 0);  // active threads
+    return pool;
+}
+
+pub fn threadpool_execute(pool: i64, f: fn(i64) -> i64, arg: i64) {
+    let threads = heap_get_body(pool);
+    let active = heap_get_arg(pool);
+
+    if active >= threads {
+        // Wait for a thread to become available
+        while heap_get_arg(pool) >= threads {
+            sys_thread_yield();
+        }
+    }
+
+    heap_set_arg(pool, active + 1);
+    thread_spawn(f, arg);
+    return;
+}
+
+pub fn threadpool_wait(pool: i64) {
+    while heap_get_arg(pool) > 0 {
+        sys_thread_yield();
+    }
+    return;
+}

@@ -1,0 +1,403 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM SLO MANAGEMENT SYSTEM - ERROR BUDGETS, BURN RATE, UPTIME TRACKING
+// Complete SLO (Service Level Objective) tracking with error budget management and burn rate alerting
+// Language: TITAN (Systems Programming)
+// Phase 0: Critical Foundation Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// SLO TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SLOTarget {
+    Availability99_0,    // 99.0% - 7.2 hours downtime/month
+    Availability99_5,    // 99.5% - 3.6 hours downtime/month
+    Availability99_9,    // 99.9% - 43 minutes downtime/month
+    Availability99_95,   // 99.95% - 21.6 minutes downtime/month
+    Availability99_99,   // 99.99% - 4.3 minutes downtime/month
+    Availability99_999,  // 99.999% - 26 seconds downtime/month
+}
+
+impl SLOTarget {
+    pub fn percentage(&self) -> f64 {
+        match self {
+            SLOTarget::Availability99_0 => 99.0,
+            SLOTarget::Availability99_5 => 99.5,
+            SLOTarget::Availability99_9 => 99.9,
+            SLOTarget::Availability99_95 => 99.95,
+            SLOTarget::Availability99_99 => 99.99,
+            SLOTarget::Availability99_999 => 99.999,
+        }
+    }
+
+    pub fn monthly_allowance_minutes(&self) -> f64 {
+        match self {
+            SLOTarget::Availability99_0 => 7.2 * 60.0,      // 432 minutes
+            SLOTarget::Availability99_5 => 3.6 * 60.0,      // 216 minutes
+            SLOTarget::Availability99_9 => 43.2,            // 43.2 minutes
+            SLOTarget::Availability99_95 => 21.6,           // 21.6 minutes
+            SLOTarget::Availability99_99 => 4.32,           // 4.32 minutes
+            SLOTarget::Availability99_999 => 0.432,         // 0.432 minutes (26 seconds)
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            SLOTarget::Availability99_0 => "99.0%",
+            SLOTarget::Availability99_5 => "99.5%",
+            SLOTarget::Availability99_9 => "99.9%",
+            SLOTarget::Availability99_95 => "99.95%",
+            SLOTarget::Availability99_99 => "99.99%",
+            SLOTarget::Availability99_999 => "99.999%",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ErrorBudget {
+    pub slo_target: SLOTarget,
+    pub window_seconds: u32,
+    pub total_budget_seconds: f64,
+    pub consumed_seconds: f64,
+    pub remaining_seconds: f64,
+    pub last_updated: u64,
+}
+
+impl ErrorBudget {
+    pub fn new(slo_target: SLOTarget, window_seconds: u32) -> Self {
+        let minutes_in_window = window_seconds as f64 / 60.0;
+        let monthly_minutes = slo_target.monthly_allowance_minutes();
+        let total_budget_seconds = (monthly_minutes / (30.0 * 24.0 * 60.0)) * window_seconds as f64 * 60.0;
+
+        ErrorBudget {
+            slo_target,
+            window_seconds,
+            total_budget_seconds,
+            consumed_seconds: 0.0,
+            remaining_seconds: total_budget_seconds,
+            last_updated: current_timestamp(),
+        }
+    }
+
+    pub fn consume(&mut self, error_seconds: f64) {
+        self.consumed_seconds += error_seconds;
+        self.remaining_seconds = (self.total_budget_seconds - self.consumed_seconds).max(0.0);
+        self.last_updated = current_timestamp();
+    }
+
+    pub fn consume_percentage(&mut self, error_percentage: f64) {
+        let error_seconds = (error_percentage / 100.0) * self.total_budget_seconds;
+        self.consume(error_seconds);
+    }
+
+    pub fn percentage_consumed(&self) -> f64 {
+        if self.total_budget_seconds == 0.0 {
+            0.0
+        } else {
+            (self.consumed_seconds / self.total_budget_seconds) * 100.0
+        }
+    }
+
+    pub fn percentage_remaining(&self) -> f64 {
+        if self.total_budget_seconds == 0.0 {
+            0.0
+        } else {
+            (self.remaining_seconds / self.total_budget_seconds) * 100.0
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.consumed_seconds = 0.0;
+        self.remaining_seconds = self.total_budget_seconds;
+        self.last_updated = current_timestamp();
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BurnRate {
+    pub window_seconds: u32,
+    pub error_rate_percent: f64,
+    pub burn_rate: f64,
+    pub time_until_exhaustion_hours: f64,
+}
+
+impl BurnRate {
+    pub fn new(window_seconds: u32, error_rate_percent: f64, slo_target: SLOTarget) -> Self {
+        let slo_percent = slo_target.percentage();
+        let allowed_error_percent = 100.0 - slo_percent;
+
+        let burn_rate = if allowed_error_percent > 0.0 {
+            error_rate_percent / allowed_error_percent
+        } else {
+            0.0
+        };
+
+        let budget_minutes = slo_target.monthly_allowance_minutes();
+        let budget_seconds = budget_minutes * 60.0;
+        let window_fraction = window_seconds as f64 / (30.0 * 24.0 * 60.0 * 60.0);
+        let budget_for_window = budget_seconds * window_fraction;
+
+        let current_error_seconds = (error_rate_percent / 100.0) * window_seconds as f64;
+        let hours_until_exhaustion = if current_error_seconds > 0.0 {
+            (budget_for_window / current_error_seconds) * (window_seconds as f64 / 3600.0)
+        } else {
+            f64::INFINITY
+        };
+
+        BurnRate {
+            window_seconds,
+            error_rate_percent,
+            burn_rate,
+            time_until_exhaustion_hours: hours_until_exhaustion,
+        }
+    }
+
+    pub fn is_high_burn_rate(&self) -> bool {
+        self.burn_rate >= 1.0
+    }
+
+    pub fn is_critical_burn_rate(&self) -> bool {
+        self.burn_rate >= 10.0
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.burn_rate < 0.1
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UptimeRecord {
+    pub timestamp: u64,
+    pub duration_seconds: u32,
+    pub uptime_percent: f64,
+    pub downtime_seconds: u32,
+    pub incident_count: u32,
+}
+
+pub struct SLOManagementSystem {
+    service_name: String,
+    slo_target: SLOTarget,
+    error_budgets: HashMap<String, ErrorBudget>,
+    burn_rates: HashMap<String, BurnRate>,
+    uptime_records: Vec<UptimeRecord>,
+    current_availability: f64,
+    mttr: f64,  // Mean Time To Recovery (minutes)
+    mttf: f64,  // Mean Time To Failure (hours)
+    incident_log: Vec<(u64, String)>,
+    session_start: Instant,
+}
+
+impl SLOManagementSystem {
+    pub fn new(service_name: String, slo_target: SLOTarget) -> Self {
+        SLOManagementSystem {
+            service_name,
+            slo_target,
+            error_budgets: HashMap::new(),
+            burn_rates: HashMap::new(),
+            uptime_records: Vec::new(),
+            current_availability: 100.0,
+            mttr: 5.0,   // Default 5 minutes
+            mttf: 720.0, // Default 30 days
+            incident_log: Vec::new(),
+            session_start: Instant::now(),
+        }
+    }
+
+    pub fn add_error_budget(&mut self, name: String, window_seconds: u32) {
+        let budget = ErrorBudget::new(self.slo_target, window_seconds);
+        self.error_budgets.insert(name, budget);
+    }
+
+    pub fn record_error(&mut self, duration_seconds: f64) {
+        for budget in self.error_budgets.values_mut() {
+            budget.consume(duration_seconds);
+        }
+
+        self.current_availability -= (duration_seconds / 3600.0) * 0.01; // Rough calculation
+        self.current_availability = self.current_availability.max(0.0).min(100.0);
+    }
+
+    pub fn record_incident(&mut self, description: String) {
+        self.incident_log.push((current_timestamp(), description));
+    }
+
+    pub fn calculate_burn_rate(&mut self, window_seconds: u32, error_rate_percent: f64) {
+        let burn = BurnRate::new(window_seconds, error_rate_percent, self.slo_target);
+        self.burn_rates.insert(format!("window_{}", window_seconds), burn);
+    }
+
+    pub fn get_error_budget(&self, name: &str) -> Option<&ErrorBudget> {
+        self.error_budgets.get(name)
+    }
+
+    pub fn get_all_budgets_status(&self) -> Vec<(String, f64, f64)> {
+        self.error_budgets
+            .iter()
+            .map(|(name, budget)| {
+                (name.clone(), budget.percentage_remaining(), budget.remaining_seconds)
+            })
+            .collect()
+    }
+
+    pub fn get_critical_budgets(&self) -> Vec<(String, f64)> {
+        self.error_budgets
+            .iter()
+            .filter(|(_, budget)| budget.percentage_remaining() < 10.0)
+            .map(|(name, budget)| (name.clone(), budget.percentage_remaining()))
+            .collect()
+    }
+
+    pub fn print_slo_dashboard(&self) {
+        println!("\n╔════════════════════════════════════════════════════════════════╗");
+        println!("║                SLO MANAGEMENT DASHBOARD                         ║");
+        println!("╠════════════════════════════════════════════════════════════════╣");
+        println!("║ Service:           {:<45} ║", self.service_name);
+        println!("║ SLO Target:        {:<45} ║", self.slo_target.name());
+        println!("║ Current Avail:     {:.3}%                                    ║", self.current_availability);
+        println!("║ MTTR:              {:.1} minutes                              ║", self.mttr);
+        println!("║ MTTF:              {:.1} hours                                ║", self.mttf);
+        println!("╠════════════════════════════════════════════════════════════════╣");
+        println!("║ ERROR BUDGETS:                                                 ║");
+
+        for (name, budget) in &self.error_budgets {
+            let remaining_pct = budget.percentage_remaining();
+            let bar_width = (remaining_pct / 2.5) as usize;
+            let bar = "█".repeat(bar_width.min(40));
+            let status = if remaining_pct < 10.0 {
+                "⚠️ CRITICAL"
+            } else if remaining_pct < 25.0 {
+                "⚡ WARNING"
+            } else {
+                "✓ OK"
+            };
+
+            println!("║ {}: {} ({:.1}%)", name, bar, remaining_pct);
+            println!("║   {} | {:.0}s remaining", status, budget.remaining_seconds);
+        }
+
+        println!("╠════════════════════════════════════════════════════════════════╣");
+        println!("║ BURN RATES:                                                    ║");
+
+        for (name, burn) in &self.burn_rates {
+            let status = if burn.is_critical_burn_rate() {
+                "🔥 CRITICAL"
+            } else if burn.is_high_burn_rate() {
+                "⚠️ HIGH"
+            } else if burn.is_healthy() {
+                "✓ HEALTHY"
+            } else {
+                "⚡ ELEVATED"
+            };
+
+            println!("║ {}: {} ({:.2}x)", name, status, burn.burn_rate);
+            println!("║   Error rate: {:.2}% | ETA: {:.1}h", burn.error_rate_percent, burn.time_until_exhaustion_hours);
+        }
+
+        println!("║                                                                ║");
+        println!("║ INCIDENTS: {}                                                   ║", self.incident_log.len());
+
+        for (_, incident) in self.incident_log.iter().take(5) {
+            println!("║   • {}", incident);
+        }
+
+        if self.incident_log.len() > 5 {
+            println!("║   ... and {} more", self.incident_log.len() - 5);
+        }
+
+        println!("╚════════════════════════════════════════════════════════════════╝\n");
+    }
+
+    pub fn print_error_budget_details(&self, name: &str) {
+        if let Some(budget) = self.error_budgets.get(name) {
+            println!("\n╔════ ERROR BUDGET DETAILS: {} ════╗", name);
+            println!("║ SLO Target:        {}", budget.slo_target.name());
+            println!("║ Window:            {} seconds", budget.window_seconds);
+            println!("║ Total Budget:      {:.1} seconds", budget.total_budget_seconds);
+            println!("║ Consumed:          {:.1} seconds ({:.1}%)",
+                     budget.consumed_seconds,
+                     budget.percentage_consumed());
+            println!("║ Remaining:         {:.1} seconds ({:.1}%)",
+                     budget.remaining_seconds,
+                     budget.percentage_remaining());
+            println!("╚═══════════════════════════════════════╝\n");
+        } else {
+            println!("Budget '{}' not found", name);
+        }
+    }
+
+    pub fn print_incident_log(&self) {
+        println!("\n╔════ INCIDENT LOG ════╗");
+        if self.incident_log.is_empty() {
+            println!("║ No incidents recorded");
+        } else {
+            for (timestamp, description) in &self.incident_log {
+                println!("║ [{}] {}", timestamp, description);
+            }
+        }
+        println!("╚════════════════════════╝\n");
+    }
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM SLO MANAGEMENT SYSTEM v1.0                  ║");
+    println!("║        Error Budgets | Burn Rates | Uptime Tracking          ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut slo = SLOManagementSystem::new(
+        "Omnisystem API".to_string(),
+        SLOTarget::Availability99_99,
+    );
+
+    // Add error budgets for different windows
+    slo.add_error_budget("daily".to_string(), 86400);     // 24 hours
+    slo.add_error_budget("weekly".to_string(), 604800);   // 7 days
+    slo.add_error_budget("monthly".to_string(), 2592000); // 30 days
+
+    // Simulate some errors
+    slo.record_error(60.0);    // 1 minute of errors
+    slo.record_error(120.0);   // 2 minutes of errors
+    slo.record_error(30.0);    // 30 seconds of errors
+
+    // Record incidents
+    slo.record_incident("Database connection timeout (recovered)".to_string());
+    slo.record_incident("High memory usage, auto-scaled".to_string());
+    slo.record_incident("Network blip in us-west-2".to_string());
+
+    // Calculate burn rates
+    slo.calculate_burn_rate(3600, 0.5);      // 0.5% error in 1 hour
+    slo.calculate_burn_rate(86400, 0.01);    // 0.01% error in 24 hours
+    slo.calculate_burn_rate(604800, 0.001);  // 0.001% error in 7 days
+
+    // Print dashboards
+    slo.print_slo_dashboard();
+
+    // Print detailed budget info
+    slo.print_error_budget_details("daily");
+    slo.print_error_budget_details("weekly");
+
+    // Print incident log
+    slo.print_incident_log();
+
+    // Check for critical budgets
+    let critical = slo.get_critical_budgets();
+    if !critical.is_empty() {
+        println!("🚨 CRITICAL BUDGETS AT RISK:");
+        for (budget_name, remaining_pct) in critical {
+            println!("   {}: {:.1}% remaining", budget_name, remaining_pct);
+        }
+    }
+
+    println!("✓ SLO Management System operational");
+}

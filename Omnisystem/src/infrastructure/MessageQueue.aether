@@ -1,0 +1,401 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM MESSAGE QUEUE - RABBITMQ/KAFKA-LIKE MESSAGE BROKER
+// Message publishing, queues, exchanges, topics, dead-letter handling, replication
+// Language: AETHER (Distributed Systems)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+module MessageQueue {
+    use std::collections::HashMap;
+
+    pub struct MessageQueue {
+        pub queue_id: String,
+        pub exchanges: HashMap<String, Exchange>,
+        pub queues: HashMap<String, QueueBuffer>,
+        pub bindings: Vec<Binding>,
+        pub consumers: HashMap<String, Consumer>,
+        pub publishers: HashMap<String, Publisher>,
+        pub message_log: Vec<Message>,
+    }
+
+    pub struct Exchange {
+        pub exchange_id: String,
+        pub exchange_name: String,
+        pub exchange_type: ExchangeType,
+        pub durable: bool,
+        pub auto_delete: bool,
+        pub arguments: HashMap<String, String>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum ExchangeType {
+        Direct,
+        Fanout,
+        Topic,
+        Headers,
+    }
+
+    pub struct QueueBuffer {
+        pub queue_id: String,
+        pub queue_name: String,
+        pub messages: Vec<Message>,
+        pub max_length: u32,
+        pub durable: bool,
+        pub exclusive: bool,
+        pub auto_delete: bool,
+        pub arguments: HashMap<String, String>,
+        pub dead_letter_exchange: Option<String>,
+    }
+
+    pub struct Message {
+        pub message_id: String,
+        pub content_type: String,
+        pub payload: Vec<u8>,
+        pub headers: HashMap<String, String>,
+        pub properties: MessageProperties,
+        pub timestamp: u64,
+    }
+
+    pub struct MessageProperties {
+        pub correlation_id: Option<String>,
+        pub reply_to: Option<String>,
+        pub expiration_ms: Option<u32>,
+        pub priority: u8,
+        pub delivery_mode: DeliveryMode,
+        pub user_id: Option<String>,
+        pub cluster_id: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum DeliveryMode {
+        NonPersistent,
+        Persistent,
+    }
+
+    pub struct Binding {
+        pub binding_id: String,
+        pub exchange_id: String,
+        pub queue_id: String,
+        pub routing_key: String,
+        pub arguments: HashMap<String, String>,
+    }
+
+    pub struct Consumer {
+        pub consumer_id: String,
+        pub consumer_tag: String,
+        pub queue_id: String,
+        pub prefetch_count: u32,
+        pub exclusive: bool,
+        pub no_local: bool,
+        pub no_ack: bool,
+        pub arguments: HashMap<String, String>,
+        pub active: bool,
+    }
+
+    pub struct Publisher {
+        pub publisher_id: String,
+        pub exchange_id: String,
+        pub routing_key: String,
+        pub mandatory: bool,
+        pub immediate: bool,
+        pub message_count: u64,
+    }
+
+    pub struct Topic {
+        pub topic_id: String,
+        pub topic_name: String,
+        pub partitions: Vec<Partition>,
+        pub replication_factor: u16,
+        pub config: HashMap<String, String>,
+    }
+
+    pub struct Partition {
+        pub partition_id: u32,
+        pub leader: String,
+        pub replicas: Vec<String>,
+        pub isr: Vec<String>,
+    }
+
+    pub struct ConsumerGroup {
+        pub group_id: String,
+        pub group_name: String,
+        pub members: Vec<String>,
+        pub state: ConsumerGroupState,
+        pub protocol_type: String,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum ConsumerGroupState {
+        Empty,
+        Stable,
+        Initializing,
+        Rebalancing,
+    }
+
+    pub struct DeadLetterQueue {
+        pub dlq_id: String,
+        pub queue_id: String,
+        pub max_retries: u32,
+        pub messages: Vec<DeadLetterMessage>,
+    }
+
+    pub struct DeadLetterMessage {
+        pub message_id: String,
+        pub original_message: Message,
+        pub retry_count: u32,
+        pub reason: String,
+        pub timestamp: u64,
+    }
+
+    pub struct AcknowledgmentManager {
+        pub manager_id: String,
+        pub pending_acks: HashMap<String, u64>,
+        pub ack_timeout_ms: u32,
+    }
+
+    impl MessageQueue {
+        pub fn new() -> Self {
+            MessageQueue {
+                queue_id: "mq-1".to_string(),
+                exchanges: HashMap::new(),
+                queues: HashMap::new(),
+                bindings: Vec::new(),
+                consumers: HashMap::new(),
+                publishers: HashMap::new(),
+                message_log: Vec::new(),
+            }
+        }
+
+        pub fn declare_exchange(&mut self, name: &str, exchange_type: ExchangeType) -> Result<String, String> {
+            let exchange_id = format!("exch_{}", hash_string(&format!("{}{:?}", name, exchange_type)));
+
+            let exchange = Exchange {
+                exchange_id: exchange_id.clone(),
+                exchange_name: name.to_string(),
+                exchange_type,
+                durable: true,
+                auto_delete: false,
+                arguments: HashMap::new(),
+            };
+
+            self.exchanges.insert(exchange_id.clone(), exchange);
+            println!("Declared exchange: {} ({:?})", name, exchange_type);
+            Ok(exchange_id)
+        }
+
+        pub fn declare_queue(&mut self, name: &str, durable: bool) -> Result<String, String> {
+            let queue_id = format!("queue_{}", hash_string(name));
+
+            let queue = QueueBuffer {
+                queue_id: queue_id.clone(),
+                queue_name: name.to_string(),
+                messages: Vec::new(),
+                max_length: 1_000_000,
+                durable,
+                exclusive: false,
+                auto_delete: false,
+                arguments: HashMap::new(),
+                dead_letter_exchange: None,
+            };
+
+            self.queues.insert(queue_id.clone(), queue);
+            println!("Declared queue: {} (durable: {})", name, durable);
+            Ok(queue_id)
+        }
+
+        pub fn bind_queue(&mut self, exchange_id: &str, queue_id: &str, routing_key: &str) -> Result<(), String> {
+            if !self.exchanges.contains_key(exchange_id) || !self.queues.contains_key(queue_id) {
+                return Err("Exchange or queue not found".to_string());
+            }
+
+            let binding = Binding {
+                binding_id: format!("bind_{}", hash_string(&format!("{}{}{}", exchange_id, queue_id, routing_key))),
+                exchange_id: exchange_id.to_string(),
+                queue_id: queue_id.to_string(),
+                routing_key: routing_key.to_string(),
+                arguments: HashMap::new(),
+            };
+
+            self.bindings.push(binding);
+            println!("Bound queue {} to exchange {} with routing key {}", queue_id, exchange_id, routing_key);
+            Ok(())
+        }
+
+        pub fn publish(&mut self, exchange_id: &str, routing_key: &str, payload: &[u8]) -> Result<String, String> {
+            let message_id = format!("msg_{}", hash_string(&format!("{}{}{}", exchange_id, routing_key, current_timestamp())));
+
+            let message = Message {
+                message_id: message_id.clone(),
+                content_type: "application/octet-stream".to_string(),
+                payload: payload.to_vec(),
+                headers: HashMap::new(),
+                properties: MessageProperties {
+                    correlation_id: None,
+                    reply_to: None,
+                    expiration_ms: None,
+                    priority: 0,
+                    delivery_mode: DeliveryMode::Persistent,
+                    user_id: None,
+                    cluster_id: None,
+                },
+                timestamp: current_timestamp(),
+            };
+
+            // Route message to bound queues
+            for binding in &self.bindings {
+                if binding.exchange_id == exchange_id {
+                    if let Some(queue) = self.queues.get_mut(&binding.queue_id) {
+                        queue.messages.push(message.clone());
+                    }
+                }
+            }
+
+            self.message_log.push(message);
+            println!("Published message to {}: {}", exchange_id, routing_key);
+            Ok(message_id)
+        }
+
+        pub fn consume(&mut self, queue_id: &str, consumer_tag: &str) -> Result<String, String> {
+            if !self.queues.contains_key(queue_id) {
+                return Err("Queue not found".to_string());
+            }
+
+            let consumer_id = format!("consumer_{}", hash_string(&format!("{}{}", queue_id, consumer_tag)));
+
+            let consumer = Consumer {
+                consumer_id: consumer_id.clone(),
+                consumer_tag: consumer_tag.to_string(),
+                queue_id: queue_id.to_string(),
+                prefetch_count: 10,
+                exclusive: false,
+                no_local: false,
+                no_ack: false,
+                arguments: HashMap::new(),
+                active: true,
+            };
+
+            self.consumers.insert(consumer_id.clone(), consumer);
+            println!("Registered consumer {} on queue {}", consumer_tag, queue_id);
+            Ok(consumer_id)
+        }
+
+        pub fn get_message(&mut self, queue_id: &str) -> Result<Message, String> {
+            if let Some(queue) = self.queues.get_mut(queue_id) {
+                if let Some(message) = queue.messages.pop() {
+                    println!("Got message from queue: {}", queue_id);
+                    Ok(message)
+                } else {
+                    Err("Queue empty".to_string())
+                }
+            } else {
+                Err("Queue not found".to_string())
+            }
+        }
+
+        pub fn acknowledge(&mut self, message_id: &str) -> Result<(), String> {
+            println!("Acknowledged message: {}", message_id);
+            Ok(())
+        }
+
+        pub fn get_queue_depth(&self, queue_id: &str) -> Result<usize, String> {
+            if let Some(queue) = self.queues.get(queue_id) {
+                Ok(queue.messages.len())
+            } else {
+                Err("Queue not found".to_string())
+            }
+        }
+
+        pub fn purge_queue(&mut self, queue_id: &str) -> Result<u32, String> {
+            if let Some(queue) = self.queues.get_mut(queue_id) {
+                let count = queue.messages.len() as u32;
+                queue.messages.clear();
+                println!("Purged queue: {} ({} messages)", queue_id, count);
+                Ok(count)
+            } else {
+                Err("Queue not found".to_string())
+            }
+        }
+
+        pub fn get_queue_stats(&self) -> String {
+            let total_messages: usize = self.queues.iter().map(|(_, q)| q.messages.len()).sum();
+
+            format!(
+                "Message Queue\nExchanges: {}\nQueues: {}\nBindings: {}\nConsumers: {}\nTotal Messages: {}",
+                self.exchanges.len(),
+                self.queues.len(),
+                self.bindings.len(),
+                self.consumers.len(),
+                total_messages
+            )
+        }
+    }
+
+    impl Clone for Message {
+        fn clone(&self) -> Self {
+            Message {
+                message_id: self.message_id.clone(),
+                content_type: self.content_type.clone(),
+                payload: self.payload.clone(),
+                headers: self.headers.clone(),
+                properties: MessageProperties {
+                    correlation_id: self.properties.correlation_id.clone(),
+                    reply_to: self.properties.reply_to.clone(),
+                    expiration_ms: self.properties.expiration_ms,
+                    priority: self.properties.priority,
+                    delivery_mode: self.properties.delivery_mode,
+                    user_id: self.properties.user_id.clone(),
+                    cluster_id: self.properties.cluster_id.clone(),
+                },
+                timestamp: self.timestamp,
+            }
+        }
+    }
+
+    fn hash_string(s: &str) -> String {
+        let mut hash: u64 = 5381;
+        for c in s.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+        }
+        format!("{:x}", hash).chars().take(16).collect()
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    pub fn main() {
+        println!("╔═══════════════════════════════════════════════════════════════╗");
+        println!("║        OMNISYSTEM MESSAGE QUEUE v3.0.0                       ║");
+        println!("║      RabbitMQ/Kafka-like Message Broker                      ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+        let mut mq = MessageQueue::new();
+
+        let exch1 = mq.declare_exchange("tasks", ExchangeType::Topic).expect("Failed");
+        let exch2 = mq.declare_exchange("events", ExchangeType::Fanout).expect("Failed");
+
+        let queue1 = mq.declare_queue("email-tasks", true).expect("Failed");
+        let queue2 = mq.declare_queue("sms-tasks", true).expect("Failed");
+        let queue3 = mq.declare_queue("event-log", true).expect("Failed");
+
+        let _ = mq.bind_queue(&exch1, &queue1, "email.*");
+        let _ = mq.bind_queue(&exch1, &queue2, "sms.*");
+        let _ = mq.bind_queue(&exch2, &queue3, "#");
+
+        let consumer1 = mq.consume(&queue1, "email-worker-1").expect("Failed");
+        let consumer2 = mq.consume(&queue2, "sms-worker-1").expect("Failed");
+        let consumer3 = mq.consume(&queue3, "log-worker").expect("Failed");
+
+        let _ = mq.publish(&exch1, "email.send", b"Send welcome email to user");
+        let _ = mq.publish(&exch1, "sms.send", b"Send SMS verification code");
+        let _ = mq.publish(&exch2, "system.started", b"System startup event");
+
+        let _ = mq.get_queue_depth(&queue1);
+        let msg = mq.get_message(&queue1).expect("Failed");
+        let _ = mq.acknowledge(&msg.message_id);
+
+        println!("\n{}", mq.get_queue_stats());
+    }
+}

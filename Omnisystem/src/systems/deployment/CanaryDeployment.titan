@@ -1,0 +1,351 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM CANARY DEPLOYMENT SYSTEM - SAFE PRODUCTION ROLLOUTS
+// Traffic splitting, automatic rollback, metrics-based promotion for zero-downtime deployments
+// Language: TITAN (Systems Programming)
+// Phase 1: Production Safety Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, Duration};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// CANARY TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeploymentStage {
+    Planning,
+    TrafficSplit5,
+    TrafficSplit10,
+    TrafficSplit25,
+    TrafficSplit50,
+    TrafficSplit100,
+    Completed,
+    RolledBack,
+}
+
+impl DeploymentStage {
+    pub fn traffic_percentage(&self) -> u8 {
+        match self {
+            DeploymentStage::Planning => 0,
+            DeploymentStage::TrafficSplit5 => 5,
+            DeploymentStage::TrafficSplit10 => 10,
+            DeploymentStage::TrafficSplit25 => 25,
+            DeploymentStage::TrafficSplit50 => 50,
+            DeploymentStage::TrafficSplit100 => 100,
+            DeploymentStage::Completed => 100,
+            DeploymentStage::RolledBack => 0,
+        }
+    }
+
+    pub fn next_stage(&self) -> DeploymentStage {
+        match self {
+            DeploymentStage::Planning => DeploymentStage::TrafficSplit5,
+            DeploymentStage::TrafficSplit5 => DeploymentStage::TrafficSplit10,
+            DeploymentStage::TrafficSplit10 => DeploymentStage::TrafficSplit25,
+            DeploymentStage::TrafficSplit25 => DeploymentStage::TrafficSplit50,
+            DeploymentStage::TrafficSplit50 => DeploymentStage::TrafficSplit100,
+            DeploymentStage::TrafficSplit100 => DeploymentStage::Completed,
+            _ => *self,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RolloutMetrics {
+    pub error_rate_percent: f64,
+    pub latency_p99_ms: f64,
+    pub success_rate_percent: f64,
+    pub requests_processed: u32,
+    pub errors: u32,
+}
+
+impl RolloutMetrics {
+    pub fn new() -> Self {
+        RolloutMetrics {
+            error_rate_percent: 0.0,
+            latency_p99_ms: 0.0,
+            success_rate_percent: 100.0,
+            requests_processed: 0,
+            errors: 0,
+        }
+    }
+
+    pub fn update(&mut self, success: bool, latency_ms: f64) {
+        self.requests_processed += 1;
+        if !success {
+            self.errors += 1;
+        }
+
+        self.error_rate_percent = (self.errors as f64 / self.requests_processed as f64) * 100.0;
+        self.success_rate_percent = 100.0 - self.error_rate_percent;
+        self.latency_p99_ms = latency_ms;
+    }
+
+    pub fn is_healthy(&self, error_threshold: f64, latency_threshold: f64) -> bool {
+        self.error_rate_percent <= error_threshold && self.latency_p99_ms <= latency_threshold
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RollbackTrigger {
+    pub error_threshold_percent: f64,
+    pub latency_threshold_ms: f64,
+    pub consecutive_errors: u32,
+    pub duration_minutes: u32,
+}
+
+impl RollbackTrigger {
+    pub fn new() -> Self {
+        RollbackTrigger {
+            error_threshold_percent: 5.0,      // 5% errors trigger rollback
+            latency_threshold_ms: 500.0,       // 500ms p99 latency triggers rollback
+            consecutive_errors: 10,            // 10 consecutive errors trigger immediate rollback
+            duration_minutes: 5,               // Minimum 5 minutes before promotion
+        }
+    }
+
+    pub fn should_rollback(&self, metrics: &RolloutMetrics, consecutive_errors: u32) -> bool {
+        if consecutive_errors >= self.consecutive_errors {
+            return true;
+        }
+
+        if metrics.error_rate_percent > self.error_threshold_percent {
+            return true;
+        }
+
+        if metrics.latency_p99_ms > self.latency_threshold_ms {
+            return true;
+        }
+
+        false
+    }
+}
+
+pub struct CanaryRelease {
+    pub version: String,
+    pub previous_version: String,
+    pub current_stage: DeploymentStage,
+    pub start_time: Instant,
+    pub stage_start_time: Instant,
+    pub canary_metrics: RolloutMetrics,
+    pub stable_metrics: RolloutMetrics,
+    pub rollback_trigger: RollbackTrigger,
+    pub consecutive_errors: u32,
+    pub promotion_history: Vec<(DeploymentStage, u64)>,
+}
+
+impl CanaryRelease {
+    pub fn new(version: String, previous_version: String) -> Self {
+        CanaryRelease {
+            version,
+            previous_version,
+            current_stage: DeploymentStage::Planning,
+            start_time: Instant::now(),
+            stage_start_time: Instant::now(),
+            canary_metrics: RolloutMetrics::new(),
+            stable_metrics: RolloutMetrics::new(),
+            rollback_trigger: RollbackTrigger::new(),
+            consecutive_errors: 0,
+            promotion_history: Vec::new(),
+        }
+    }
+
+    pub fn start_rollout(&mut self) -> Result<(), String> {
+        if self.current_stage != DeploymentStage::Planning {
+            return Err("Rollout already started".to_string());
+        }
+
+        self.current_stage = DeploymentStage::TrafficSplit5;
+        self.stage_start_time = Instant::now();
+        println!("✓ Canary rollout started for version {}", self.version);
+        println!("  Traffic split: 5% canary, 95% stable");
+
+        Ok(())
+    }
+
+    pub fn record_canary_request(&mut self, success: bool, latency_ms: f64) {
+        self.canary_metrics.update(success, latency_ms);
+
+        if !success {
+            self.consecutive_errors += 1;
+        } else {
+            self.consecutive_errors = 0;
+        }
+
+        // Check for automatic rollback
+        if self.rollback_trigger.should_rollback(&self.canary_metrics, self.consecutive_errors) {
+            let _ = self.automatic_rollback();
+        }
+    }
+
+    pub fn record_stable_request(&mut self, success: bool, latency_ms: f64) {
+        self.stable_metrics.update(success, latency_ms);
+    }
+
+    pub fn promote_to_next_stage(&mut self) -> Result<(), String> {
+        let stage_duration = self.stage_start_time.elapsed();
+
+        // Check duration requirement
+        if stage_duration.as_secs() < (self.rollback_trigger.duration_minutes as u64 * 60) {
+            return Err(format!(
+                "Stage duration too short ({:.0}s, need {}s)",
+                stage_duration.as_secs(),
+                self.rollback_trigger.duration_minutes * 60
+            ));
+        }
+
+        // Check metrics
+        if !self.canary_metrics.is_healthy(
+            self.rollback_trigger.error_threshold_percent,
+            self.rollback_trigger.latency_threshold_ms,
+        ) {
+            return Err("Canary metrics unhealthy for promotion".to_string());
+        }
+
+        self.current_stage = self.current_stage.next_stage();
+        self.stage_start_time = Instant::now();
+
+        println!("✓ Promoted to stage: {}% traffic to {}",
+                 self.current_stage.traffic_percentage(),
+                 self.version);
+
+        self.promotion_history.push((self.current_stage, self.start_time.elapsed().as_secs()));
+
+        if self.current_stage == DeploymentStage::Completed {
+            println!("✓ Canary deployment completed successfully");
+        }
+
+        Ok(())
+    }
+
+    pub fn automatic_rollback(&mut self) -> Result<(), String> {
+        if self.current_stage == DeploymentStage::Planning || self.current_stage == DeploymentStage::RolledBack {
+            return Err("Cannot rollback from this stage".to_string());
+        }
+
+        println!("⚠️ Automatic rollback triggered!");
+        println!("   Error rate: {:.2}%", self.canary_metrics.error_rate_percent);
+        println!("   Consecutive errors: {}", self.consecutive_errors);
+        println!("   Reverting to version {}", self.previous_version);
+
+        self.current_stage = DeploymentStage::RolledBack;
+
+        Ok(())
+    }
+
+    pub fn manual_rollback(&mut self, reason: String) -> Result<(), String> {
+        println!("⚠️ Manual rollback initiated: {}", reason);
+        println!("   Reverting to version {}", self.previous_version);
+
+        self.current_stage = DeploymentStage::RolledBack;
+
+        Ok(())
+    }
+
+    pub fn get_traffic_split(&self) -> (u8, u8) {
+        let canary_percent = self.current_stage.traffic_percentage();
+        let stable_percent = 100 - canary_percent;
+        (canary_percent as u8, stable_percent as u8)
+    }
+
+    pub fn print_deployment_status(&self) {
+        println!("\n╔════ CANARY DEPLOYMENT STATUS ════╗");
+        println!("║ Version:           {} → {}", self.previous_version, self.version);
+        println!("║ Stage:             {:?}", self.current_stage);
+
+        let (canary, stable) = self.get_traffic_split();
+        println!("║ Traffic Split:     {}% canary, {}% stable", canary, stable);
+
+        let duration = self.start_time.elapsed().as_secs();
+        println!("║ Duration:          {}m {}s", duration / 60, duration % 60);
+
+        println!("║ ");
+        println!("║ CANARY METRICS:");
+        println!("║   Requests:        {}", self.canary_metrics.requests_processed);
+        println!("║   Error Rate:      {:.2}%", self.canary_metrics.error_rate_percent);
+        println!("║   Success Rate:    {:.2}%", self.canary_metrics.success_rate_percent);
+        println!("║   Latency (p99):   {:.1}ms", self.canary_metrics.latency_p99_ms);
+
+        println!("║ ");
+        println!("║ STABLE METRICS:");
+        println!("║   Requests:        {}", self.stable_metrics.requests_processed);
+        println!("║   Error Rate:      {:.2}%", self.stable_metrics.error_rate_percent);
+        println!("║   Latency (p99):   {:.1}ms", self.stable_metrics.latency_p99_ms);
+
+        println!("╚═══════════════════════════════════╝\n");
+    }
+
+    pub fn print_rollout_plan(&self) {
+        println!("\n╔════ ROLLOUT PLAN ════╗");
+        println!("║ Stage 1: 5% traffic  (5 minutes)");
+        println!("║ Stage 2: 10% traffic (5 minutes)");
+        println!("║ Stage 3: 25% traffic (5 minutes)");
+        println!("║ Stage 4: 50% traffic (5 minutes)");
+        println!("║ Stage 5: 100% traffic (5 minutes)");
+        println!("║ Stage 6: Complete");
+        println!("║");
+        println!("║ Rollback triggers:");
+        println!("║   • Error rate > {:.1}%", self.rollback_trigger.error_threshold_percent);
+        println!("║   • Latency (p99) > {:.0}ms", self.rollback_trigger.latency_threshold_ms);
+        println!("║   • {} consecutive errors", self.rollback_trigger.consecutive_errors);
+        println!("╚═════════════════════╝\n");
+    }
+
+    pub fn print_promotion_history(&self) {
+        println!("\n╔════ PROMOTION HISTORY ════╗");
+        if self.promotion_history.is_empty() {
+            println!("║ No promotions yet");
+        } else {
+            for (stage, elapsed_seconds) in &self.promotion_history {
+                println!("║ [{:2}s] Promoted to {:?}", elapsed_seconds, stage);
+            }
+        }
+        println!("╚═══════════════════════════╝\n");
+    }
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM CANARY DEPLOYMENT SYSTEM v1.0               ║");
+    println!("║        Traffic Splitting | Automatic Rollback                ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut canary = CanaryRelease::new(
+        "1.2.0".to_string(),
+        "1.1.0".to_string(),
+    );
+
+    canary.print_rollout_plan();
+
+    // Start rollout
+    canary.start_rollout().expect("Failed to start");
+
+    // Simulate canary traffic
+    println!("Simulating canary requests...");
+    for i in 0..50 {
+        let success = if i % 10 == 0 { false } else { true };
+        let latency = if success { 50.0 + (i as f64) } else { 500.0 };
+        canary.record_canary_request(success, latency);
+    }
+
+    // Simulate stable traffic
+    println!("Simulating stable traffic...");
+    for i in 0..500 {
+        let success = if i % 100 == 0 { false } else { true };
+        let latency = 45.0 + (i as f64 % 30.0);
+        canary.record_stable_request(success, latency);
+    }
+
+    canary.print_deployment_status();
+
+    // Try promotion
+    match canary.promote_to_next_stage() {
+        Ok(_) => println!("✓ Promoted to next stage"),
+        Err(e) => println!("✗ Cannot promote: {}", e),
+    }
+
+    canary.print_promotion_history();
+
+    println!("✓ Canary deployment system operational");
+}

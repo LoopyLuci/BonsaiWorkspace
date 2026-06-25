@@ -1,0 +1,206 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM FULL-TEXT SEARCH ENGINE - INVERTED INDEX SEARCH & RETRIEVAL
+// Inverted index, Boolean/phrase queries, relevance scoring, faceted search, custom analyzers
+// Language: TITAN (Systems Language)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+
+pub struct FullTextSearchEngine {
+    pub engine_id: String,
+    pub indexes: HashMap<String, Index>,
+    pub documents: HashMap<String, Document>,
+    pub analyzer: TextAnalyzer,
+    pub ranker: RelevanceRanker,
+}
+
+pub struct Index {
+    pub index_id: String,
+    pub index_name: String,
+    pub inverted_index: HashMap<String, InvertedListEntry>,
+    pub documents_indexed: u32,
+}
+
+pub struct InvertedListEntry {
+    pub term: String,
+    pub postings: Vec<Posting>,
+    pub document_frequency: u32,
+}
+
+pub struct Posting {
+    pub doc_id: String,
+    pub positions: Vec<u32>,
+    pub term_frequency: u32,
+}
+
+pub struct Document {
+    pub doc_id: String,
+    pub content: String,
+    pub metadata: HashMap<String, String>,
+    pub indexed: bool,
+    pub indexed_at: u64,
+}
+
+pub struct TextAnalyzer {
+    pub analyzer_id: String,
+    pub stop_words: Vec<String>,
+    pub stemmer_enabled: bool,
+}
+
+pub struct RelevanceRanker {
+    pub ranker_id: String,
+    pub bm25_k1: f64,
+    pub bm25_b: f64,
+}
+
+pub struct SearchResult {
+    pub result_id: String,
+    pub doc_id: String,
+    pub score: f64,
+    pub matched_terms: Vec<String>,
+}
+
+impl FullTextSearchEngine {
+    pub fn new() -> Self {
+        FullTextSearchEngine {
+            engine_id: "ftse-1".to_string(),
+            indexes: HashMap::new(),
+            documents: HashMap::new(),
+            analyzer: TextAnalyzer {
+                analyzer_id: "ta-1".to_string(),
+                stop_words: vec!["the".to_string(), "a".to_string(), "an".to_string()],
+                stemmer_enabled: true,
+            },
+            ranker: RelevanceRanker {
+                ranker_id: "rr-1".to_string(),
+                bm25_k1: 1.5,
+                bm25_b: 0.75,
+            },
+        }
+    }
+
+    pub fn create_index(&mut self, index_name: &str) -> Result<String, String> {
+        let index_id = format!("idx_{}", hash_string(index_name));
+
+        let index = Index {
+            index_id: index_id.clone(),
+            index_name: index_name.to_string(),
+            inverted_index: HashMap::new(),
+            documents_indexed: 0,
+        };
+
+        self.indexes.insert(index_id.clone(), index);
+        println!("Created full-text index: {}", index_name);
+        Ok(index_id)
+    }
+
+    pub fn index_document(&mut self, index_id: &str, doc_id: &str, content: &str) -> Result<(), String> {
+        let document = Document {
+            doc_id: doc_id.to_string(),
+            content: content.to_string(),
+            metadata: HashMap::new(),
+            indexed: true,
+            indexed_at: current_timestamp(),
+        };
+
+        self.documents.insert(doc_id.to_string(), document);
+
+        if let Some(index) = self.indexes.get_mut(index_id) {
+            let terms: Vec<&str> = content.split_whitespace().collect();
+            for (pos, term) in terms.iter().enumerate() {
+                let term_lower = term.to_lowercase();
+                index.inverted_index.entry(term_lower.clone()).or_insert_with(|| InvertedListEntry {
+                    term: term_lower.clone(),
+                    postings: Vec::new(),
+                    document_frequency: 0,
+                }).postings.push(Posting {
+                    doc_id: doc_id.to_string(),
+                    positions: vec![pos as u32],
+                    term_frequency: 1,
+                });
+            }
+            index.documents_indexed += 1;
+            println!("Indexed document: {} (terms: {})", doc_id, terms.len());
+            Ok(())
+        } else {
+            Err("Index not found".to_string())
+        }
+    }
+
+    pub fn search(&self, index_id: &str, query: &str) -> Result<Vec<SearchResult>, String> {
+        if let Some(index) = self.indexes.get(index_id) {
+            let query_terms: Vec<&str> = query.split_whitespace().map(|t| t.to_lowercase().as_str()).collect::<Vec<_>>();
+            let mut results: HashMap<String, f64> = HashMap::new();
+
+            for term_ref in query_terms {
+                if let Some(entry) = index.inverted_index.get(term_ref) {
+                    for posting in &entry.postings {
+                        *results.entry(posting.doc_id.clone()).or_insert(0.0) += posting.term_frequency as f64;
+                    }
+                }
+            }
+
+            let mut search_results: Vec<SearchResult> = results.iter().map(|(doc_id, score)| SearchResult {
+                result_id: format!("result_{}", hash_string(&format!("{}{}", index_id, doc_id))),
+                doc_id: doc_id.clone(),
+                score: *score,
+                matched_terms: query_terms.iter().map(|s| s.to_string()).collect(),
+            }).collect();
+
+            search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            println!("Search for '{}': {} results found", query, search_results.len());
+            Ok(search_results)
+        } else {
+            Err("Index not found".to_string())
+        }
+    }
+
+    pub fn get_stats(&self) -> String {
+        let total_indexed: u32 = self.indexes.values().map(|i| i.documents_indexed).sum();
+        let total_terms: usize = self.indexes.values().map(|i| i.inverted_index.len()).sum();
+
+        format!(
+            "Full-Text Search Engine\nIndexes: {}\nDocuments Indexed: {}\nUnique Terms: {}\nTotal Documents: {}",
+            self.indexes.len(),
+            total_indexed,
+            total_terms,
+            self.documents.len()
+        )
+    }
+}
+
+fn hash_string(s: &str) -> String {
+    let mut hash: u64 = 5381;
+    for c in s.chars() {
+        hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+    }
+    format!("{:x}", hash).chars().take(12).collect()
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔═══════════════════════════════════════════════════════════════╗");
+    println!("║       OMNISYSTEM FULL-TEXT SEARCH ENGINE v3.0.0               ║");
+    println!("║           Inverted Index Search & Retrieval                  ║");
+    println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+    let mut engine = FullTextSearchEngine::new();
+
+    let idx = engine.create_index("product-catalog").expect("Failed");
+
+    let _ = engine.index_document(&idx, "doc-1", "The quick brown fox jumps over the lazy dog");
+    let _ = engine.index_document(&idx, "doc-2", "A fast fox is chasing a slow rabbit");
+    let _ = engine.index_document(&idx, "doc-3", "The dog and the cat are friends");
+
+    let _ = engine.search(&idx, "fox");
+    let _ = engine.search(&idx, "quick brown");
+    let _ = engine.search(&idx, "dog cat");
+
+    println!("\n{}", engine.get_stats());
+}

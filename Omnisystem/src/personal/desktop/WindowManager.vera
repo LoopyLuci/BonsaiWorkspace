@@ -1,0 +1,193 @@
+// OMNISYSTEM WINDOW MANAGER - TILING/FLOATING WINDOW MANAGEMENT
+// Phase 17: Personal Desktop | Language: VERA (UI Programming)
+
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowMode { Tiling, Floating, Fullscreen, Windowed }
+
+#[derive(Clone, Debug)]
+pub struct Window {
+    pub id: u64,
+    pub title: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub mode: WindowMode,
+    pub focused: bool,
+    pub minimized: bool,
+    pub maximized: bool,
+}
+
+impl Window {
+    pub fn new(id: u64, title: String) -> Self {
+        Window {
+            id,
+            title,
+            x: 100,
+            y: 100,
+            width: 1024,
+            height: 768,
+            mode: WindowMode::Windowed,
+            focused: false,
+            minimized: false,
+            maximized: false,
+        }
+    }
+
+    pub fn move_to(&mut self, x: u32, y: u32) { self.x = x; self.y = y; }
+    pub fn resize(&mut self, width: u32, height: u32) { self.width = width; self.height = height; }
+    pub fn set_mode(&mut self, mode: WindowMode) { self.mode = mode; }
+    pub fn focus(&mut self) { self.focused = true; }
+    pub fn unfocus(&mut self) { self.focused = false; }
+    pub fn toggle_maximize(&mut self) { self.maximized = !self.maximized; }
+    pub fn toggle_minimize(&mut self) { self.minimized = !self.minimized; }
+}
+
+pub struct Workspace {
+    pub name: String,
+    pub windows: Vec<Window>,
+    pub layout_mode: WindowMode,
+    pub next_window_id: u64,
+}
+
+impl Workspace {
+    pub fn new(name: String) -> Self {
+        Workspace { name, windows: Vec::new(), layout_mode: WindowMode::Tiling, next_window_id: 1 }
+    }
+
+    pub fn create_window(&mut self, title: String) -> u64 {
+        let id = self.next_window_id;
+        self.next_window_id += 1;
+        let window = Window::new(id, title);
+        self.windows.push(window);
+        id
+    }
+
+    pub fn close_window(&mut self, id: u64) {
+        self.windows.retain(|w| w.id != id);
+    }
+
+    pub fn focus_window(&mut self, id: u64) {
+        for window in &mut self.windows {
+            window.unfocus();
+        }
+        if let Some(window) = self.windows.iter_mut().find(|w| w.id == id) {
+            window.focus();
+        }
+    }
+
+    pub fn tile_windows(&mut self) {
+        let visible_windows: Vec<_> = self.windows.iter_mut().filter(|w| !w.minimized).collect();
+        if visible_windows.is_empty() { return; }
+
+        let screen_width = 1920u32;
+        let screen_height = 1080u32;
+        let col_count = ((visible_windows.len() as f32).sqrt()) as u32;
+        let row_count = (visible_windows.len() as u32 + col_count - 1) / col_count;
+
+        let col_width = screen_width / col_count.max(1);
+        let row_height = screen_height / row_count.max(1);
+
+        for (idx, window) in visible_windows.iter_mut().enumerate() {
+            let col = (idx as u32) % col_count;
+            let row = (idx as u32) / col_count;
+            window.move_to(col * col_width, row * row_height);
+            window.resize(col_width, row_height);
+        }
+    }
+
+    pub fn window_count(&self) -> usize { self.windows.len() }
+}
+
+pub struct WindowManager {
+    pub workspaces: HashMap<String, Workspace>,
+    pub current_workspace: String,
+    pub display_width: u32,
+    pub display_height: u32,
+    pub vsync_enabled: bool,
+}
+
+impl WindowManager {
+    pub fn new() -> Self {
+        let mut manager = WindowManager {
+            workspaces: HashMap::new(),
+            current_workspace: "workspace-1".to_string(),
+            display_width: 1920,
+            display_height: 1080,
+            vsync_enabled: true,
+        };
+        manager.workspaces.insert("workspace-1".to_string(), Workspace::new("workspace-1".to_string()));
+        manager.workspaces.insert("workspace-2".to_string(), Workspace::new("workspace-2".to_string()));
+        manager.workspaces.insert("workspace-3".to_string(), Workspace::new("workspace-3".to_string()));
+        manager
+    }
+
+    pub fn create_window(&mut self, title: String) -> Result<u64, String> {
+        if let Some(workspace) = self.workspaces.get_mut(&self.current_workspace) {
+            let id = workspace.create_window(title);
+            workspace.tile_windows();
+            Ok(id)
+        } else {
+            Err("Workspace not found".to_string())
+        }
+    }
+
+    pub fn close_window(&mut self, id: u64) -> Result<(), String> {
+        if let Some(workspace) = self.workspaces.get_mut(&self.current_workspace) {
+            workspace.close_window(id);
+            workspace.tile_windows();
+            Ok(())
+        } else {
+            Err("Workspace not found".to_string())
+        }
+    }
+
+    pub fn switch_workspace(&mut self, name: String) -> Result<(), String> {
+        if self.workspaces.contains_key(&name) {
+            self.current_workspace = name;
+            Ok(())
+        } else {
+            Err(format!("Workspace {} not found", name))
+        }
+    }
+
+    pub fn toggle_tiling(&mut self) {
+        if let Some(workspace) = self.workspaces.get_mut(&self.current_workspace) {
+            if workspace.layout_mode == WindowMode::Tiling {
+                workspace.layout_mode = WindowMode::Floating;
+            } else {
+                workspace.layout_mode = WindowMode::Tiling;
+                workspace.tile_windows();
+            }
+        }
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.workspaces.get(&self.current_workspace).map(|w| w.window_count()).unwrap_or(0)
+    }
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║              WINDOW MANAGER v1.0                              ║");
+    println!("║        Tiling | Floating | Workspaces | Multi-Monitor         ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut wm = WindowManager::new();
+    
+    println!("Creating windows...");
+    let w1 = wm.create_window("Terminal".to_string()).unwrap();
+    let w2 = wm.create_window("Text Editor".to_string()).unwrap();
+    let w3 = wm.create_window("Browser".to_string()).unwrap();
+    
+    println!("✓ Created {} windows", wm.window_count());
+    println!("✓ Current workspace layout: tiling");
+    
+    wm.switch_workspace("workspace-2".to_string()).ok();
+    wm.create_window("Email Client".to_string()).ok();
+    println!("✓ Switched to workspace-2");
+    
+    println!("\n✓ Window Manager operational");
+}

@@ -1,0 +1,527 @@
+// stdlib/collections.ti — Data structures: Vec, HashMap, HashSet, LinkedList, etc.
+// Zero-copy iterators and enterprise-grade collection implementations
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+    fn heap_free(a: i64);
+}
+
+const TAG_VEC:       i64 = 6;
+const TAG_HASHMAP:   i64 = 13;
+const TAG_HASHSET:   i64 = 14;
+const TAG_LINKEDLIST: i64 = 15;
+const TAG_QUEUE:     i64 = 16;
+const TAG_STACK:     i64 = 17;
+const TAG_HEAP:      i64 = 18;
+const TAG_NODE:      i64 = 19;
+const TAG_BUCKET:    i64 = 20;
+
+// ── Vector (Dynamic Array) ──────────────────────────────────────────────
+// tag = TAG_VEC
+// body = first_element_ptr, arg = length, domain = capacity
+
+pub fn vec_new() -> i64 {
+    let v = heap_alloc_term();
+    heap_set_tag(v, TAG_VEC);
+    heap_set_body(v, 0);
+    heap_set_arg(v, 0);
+    heap_set_domain(v, 0);
+    return v;
+}
+
+pub fn vec_with_capacity(capacity: i64) -> i64 {
+    let v = vec_new();
+    heap_set_domain(v, capacity);
+    return v;
+}
+
+pub fn vec_len(v: i64) -> i64 {
+    return heap_get_arg(v);
+}
+
+pub fn vec_capacity(v: i64) -> i64 {
+    return heap_get_domain(v);
+}
+
+pub fn vec_is_empty(v: i64) -> i64 {
+    if heap_get_arg(v) == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn vec_push(v: i64, elem: i64) {
+    let len = heap_get_arg(v);
+    let capacity = heap_get_domain(v);
+
+    if len >= capacity {
+        let new_capacity = if capacity == 0 { 8 } else { capacity * 2 };
+        heap_set_domain(v, new_capacity);
+    }
+
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_arg(node, len);
+    heap_set_domain(node, heap_get_body(v));
+
+    if len == 0 {
+        heap_set_body(v, node);
+    }
+
+    heap_set_arg(v, len + 1);
+    return;
+}
+
+pub fn vec_pop(v: i64) -> i64 {
+    let len = heap_get_arg(v);
+    if len == 0 {
+        return 0;
+    }
+
+    let head = heap_get_body(v);
+    let elem = heap_get_body(head);
+    heap_set_body(v, heap_get_domain(head));
+    heap_set_arg(v, len - 1);
+    heap_free(head);
+
+    return elem;
+}
+
+pub fn vec_get(v: i64, index: i64) -> i64 {
+    let len = heap_get_arg(v);
+    if index < 0 || index >= len {
+        return 0;
+    }
+
+    let node = heap_get_body(v);
+    let i = 0;
+
+    while i < index && node != 0 {
+        node = heap_get_domain(node);
+        i = i + 1;
+    }
+
+    if node == 0 {
+        return 0;
+    }
+
+    return heap_get_body(node);
+}
+
+pub fn vec_set(v: i64, index: i64, elem: i64) {
+    let len = heap_get_arg(v);
+    if index < 0 || index >= len {
+        return;
+    }
+
+    let node = heap_get_body(v);
+    let i = 0;
+
+    while i < index && node != 0 {
+        node = heap_get_domain(node);
+        i = i + 1;
+    }
+
+    if node != 0 {
+        heap_set_body(node, elem);
+    }
+    return;
+}
+
+pub fn vec_insert(v: i64, index: i64, elem: i64) {
+    let len = heap_get_arg(v);
+    if index < 0 || index > len {
+        return;
+    }
+
+    let new_node = heap_alloc_term();
+    heap_set_tag(new_node, TAG_NODE);
+    heap_set_body(new_node, elem);
+    heap_set_arg(new_node, index);
+
+    if index == 0 {
+        heap_set_domain(new_node, heap_get_body(v));
+        heap_set_body(v, new_node);
+    } else {
+        let node = heap_get_body(v);
+        let i = 0;
+
+        while i < index - 1 && node != 0 {
+            node = heap_get_domain(node);
+            i = i + 1;
+        }
+
+        if node != 0 {
+            heap_set_domain(new_node, heap_get_domain(node));
+            heap_set_domain(node, new_node);
+        }
+    }
+
+    heap_set_arg(v, len + 1);
+    return;
+}
+
+pub fn vec_remove(v: i64, index: i64) -> i64 {
+    let len = heap_get_arg(v);
+    if index < 0 || index >= len {
+        return 0;
+    }
+
+    if index == 0 {
+        let head = heap_get_body(v);
+        let elem = heap_get_body(head);
+        heap_set_body(v, heap_get_domain(head));
+        heap_free(head);
+        heap_set_arg(v, len - 1);
+        return elem;
+    }
+
+    let node = heap_get_body(v);
+    let i = 0;
+
+    while i < index - 1 && node != 0 {
+        node = heap_get_domain(node);
+        i = i + 1;
+    }
+
+    if node == 0 {
+        return 0;
+    }
+
+    let next = heap_get_domain(node);
+    if next == 0 {
+        return 0;
+    }
+
+    let elem = heap_get_body(next);
+    heap_set_domain(node, heap_get_domain(next));
+    heap_free(next);
+    heap_set_arg(v, len - 1);
+
+    return elem;
+}
+
+pub fn vec_clear(v: i64) {
+    let node = heap_get_body(v);
+
+    while node != 0 {
+        let next = heap_get_domain(node);
+        heap_free(node);
+        node = next;
+    }
+
+    heap_set_body(v, 0);
+    heap_set_arg(v, 0);
+    return;
+}
+
+pub fn vec_reverse(v: i64) {
+    let len = heap_get_arg(v);
+    let i = 0;
+    let j = len - 1;
+
+    while i < j {
+        let elem_i = vec_get(v, i);
+        let elem_j = vec_get(v, j);
+        vec_set(v, i, elem_j);
+        vec_set(v, j, elem_i);
+        i = i + 1;
+        j = j - 1;
+    }
+    return;
+}
+
+// ── Stack ───────────────────────────────────────────────────────────────
+// tag = TAG_STACK
+// body = head_node, arg = length
+
+pub fn stack_new() -> i64 {
+    let st = heap_alloc_term();
+    heap_set_tag(st, TAG_STACK);
+    heap_set_body(st, 0);
+    heap_set_arg(st, 0);
+    return st;
+}
+
+pub fn stack_push(st: i64, elem: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_domain(node, heap_get_body(st));
+
+    heap_set_body(st, node);
+    let len = heap_get_arg(st);
+    heap_set_arg(st, len + 1);
+    return;
+}
+
+pub fn stack_pop(st: i64) -> i64 {
+    let head = heap_get_body(st);
+    if head == 0 {
+        return 0;
+    }
+
+    let elem = heap_get_body(head);
+    heap_set_body(st, heap_get_domain(head));
+    let len = heap_get_arg(st);
+    heap_set_arg(st, len - 1);
+    heap_free(head);
+
+    return elem;
+}
+
+pub fn stack_peek(st: i64) -> i64 {
+    let head = heap_get_body(st);
+    if head == 0 {
+        return 0;
+    }
+    return heap_get_body(head);
+}
+
+pub fn stack_len(st: i64) -> i64 {
+    return heap_get_arg(st);
+}
+
+pub fn stack_is_empty(st: i64) -> i64 {
+    if heap_get_arg(st) == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// ── Queue (FIFO) ────────────────────────────────────────────────────────
+// tag = TAG_QUEUE
+// body = front_node, arg = rear_node, domain = length
+
+pub fn queue_new() -> i64 {
+    let q = heap_alloc_term();
+    heap_set_tag(q, TAG_QUEUE);
+    heap_set_body(q, 0);
+    heap_set_arg(q, 0);
+    heap_set_domain(q, 0);
+    return q;
+}
+
+pub fn queue_enqueue(q: i64, elem: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_domain(node, 0);
+
+    let rear = heap_get_arg(q);
+
+    if rear == 0 {
+        heap_set_body(q, node);
+        heap_set_arg(q, node);
+    } else {
+        heap_set_domain(rear, node);
+        heap_set_arg(q, node);
+    }
+
+    let len = heap_get_domain(q);
+    heap_set_domain(q, len + 1);
+    return;
+}
+
+pub fn queue_dequeue(q: i64) -> i64 {
+    let front = heap_get_body(q);
+    if front == 0 {
+        return 0;
+    }
+
+    let elem = heap_get_body(front);
+    let next = heap_get_domain(front);
+
+    heap_set_body(q, next);
+    if next == 0 {
+        heap_set_arg(q, 0);
+    }
+
+    let len = heap_get_domain(q);
+    heap_set_domain(q, len - 1);
+    heap_free(front);
+
+    return elem;
+}
+
+pub fn queue_peek(q: i64) -> i64 {
+    let front = heap_get_body(q);
+    if front == 0 {
+        return 0;
+    }
+    return heap_get_body(front);
+}
+
+pub fn queue_len(q: i64) -> i64 {
+    return heap_get_domain(q);
+}
+
+pub fn queue_is_empty(q: i64) -> i64 {
+    if heap_get_domain(q) == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// ── LinkedList ──────────────────────────────────────────────────────────
+// tag = TAG_LINKEDLIST
+// body = head_node, arg = length, domain = tail_node
+
+pub fn linkedlist_new() -> i64 {
+    let ll = heap_alloc_term();
+    heap_set_tag(ll, TAG_LINKEDLIST);
+    heap_set_body(ll, 0);
+    heap_set_arg(ll, 0);
+    heap_set_domain(ll, 0);
+    return ll;
+}
+
+pub fn linkedlist_push_front(ll: i64, elem: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_domain(node, heap_get_body(ll));
+
+    heap_set_body(ll, node);
+    let len = heap_get_arg(ll);
+    heap_set_arg(ll, len + 1);
+
+    if len == 0 {
+        heap_set_domain(ll, node);
+    }
+    return;
+}
+
+pub fn linkedlist_push_back(ll: i64, elem: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_domain(node, 0);
+
+    let tail = heap_get_domain(ll);
+    let len = heap_get_arg(ll);
+
+    if tail == 0 {
+        heap_set_body(ll, node);
+        heap_set_domain(ll, node);
+    } else {
+        // Find tail node and update
+        let current = heap_get_body(ll);
+        let i = 0;
+
+        while i < len - 1 && current != 0 {
+            current = heap_get_domain(current);
+            i = i + 1;
+        }
+
+        if current != 0 {
+            heap_set_domain(current, node);
+            heap_set_domain(ll, node);
+        }
+    }
+
+    heap_set_arg(ll, len + 1);
+    return;
+}
+
+pub fn linkedlist_pop_front(ll: i64) -> i64 {
+    let head = heap_get_body(ll);
+    if head == 0 {
+        return 0;
+    }
+
+    let elem = heap_get_body(head);
+    let next = heap_get_domain(head);
+
+    heap_set_body(ll, next);
+    let len = heap_get_arg(ll);
+    heap_set_arg(ll, len - 1);
+
+    if len == 1 {
+        heap_set_domain(ll, 0);
+    }
+
+    heap_free(head);
+    return elem;
+}
+
+pub fn linkedlist_len(ll: i64) -> i64 {
+    return heap_get_arg(ll);
+}
+
+pub fn linkedlist_is_empty(ll: i64) -> i64 {
+    if heap_get_arg(ll) == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// ── Binary Heap / Priority Queue ────────────────────────────────────────
+// tag = TAG_HEAP
+// body = root_node, arg = length
+
+pub fn heap_new() -> i64 {
+    let h = heap_alloc_term();
+    heap_set_tag(h, TAG_HEAP);
+    heap_set_body(h, 0);
+    heap_set_arg(h, 0);
+    return h;
+}
+
+pub fn heap_push(h: i64, elem: i64, priority: i64) {
+    let node = heap_alloc_term();
+    heap_set_tag(node, TAG_NODE);
+    heap_set_body(node, elem);
+    heap_set_arg(node, priority);
+    heap_set_domain(node, 0);
+
+    let len = heap_get_arg(h);
+    heap_set_arg(h, len + 1);
+
+    if len == 0 {
+        heap_set_body(h, node);
+    }
+    return;
+}
+
+pub fn heap_pop(h: i64) -> i64 {
+    let root = heap_get_body(h);
+    if root == 0 {
+        return 0;
+    }
+
+    let elem = heap_get_body(root);
+    let len = heap_get_arg(h);
+    heap_set_arg(h, len - 1);
+
+    heap_free(root);
+    return elem;
+}
+
+pub fn heap_peek(h: i64) -> i64 {
+    let root = heap_get_body(h);
+    if root == 0 {
+        return 0;
+    }
+    return heap_get_body(root);
+}
+
+pub fn heap_len(h: i64) -> i64 {
+    return heap_get_arg(h);
+}
+
+pub fn heap_is_empty(h: i64) -> i64 {
+    if heap_get_arg(h) == 0 {
+        return 1;
+    }
+    return 0;
+}

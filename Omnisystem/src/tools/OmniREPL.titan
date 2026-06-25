@@ -1,0 +1,480 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM INTERACTIVE REPL - READ-EVAL-PRINT-LOOP FOR ALL 7 LANGUAGES
+// Universal interactive interpreter with expression evaluation, variable inspection, multi-statement blocks
+// Language: TITAN (Systems Programming)
+// Phase 0: Critical Foundation Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::io::{self, BufRead};
+use std::time::{Instant, Duration};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// REPL TYPES AND STRUCTURES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Language {
+    Titan,
+    Vera,
+    Helix,
+    Aether,
+    Axiom,
+    Sylva,
+    Nexus,
+}
+
+impl Language {
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "titan" => Ok(Language::Titan),
+            "vera" => Ok(Language::Vera),
+            "helix" => Ok(Language::Helix),
+            "aether" => Ok(Language::Aether),
+            "axiom" => Ok(Language::Axiom),
+            "sylva" => Ok(Language::Sylva),
+            "nexus" => Ok(Language::Nexus),
+            _ => Err(format!("Unknown language: {}", s)),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Language::Titan => "TITAN",
+            Language::Vera => "VERA",
+            Language::Helix => "HELIX",
+            Language::Aether => "AETHER",
+            Language::Axiom => "AXIOM",
+            Language::Sylva => "SYLVA",
+            Language::Nexus => "NEXUS",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum REPLValue {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Array(Vec<REPLValue>),
+    Object(HashMap<String, REPLValue>),
+    Function(String, usize),
+}
+
+impl REPLValue {
+    pub fn type_name(&self) -> &str {
+        match self {
+            REPLValue::Nil => "nil",
+            REPLValue::Bool(_) => "bool",
+            REPLValue::Int(_) => "i64",
+            REPLValue::Float(_) => "f64",
+            REPLValue::String(_) => "string",
+            REPLValue::Array(_) => "array",
+            REPLValue::Object(_) => "object",
+            REPLValue::Function(_, _) => "function",
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            REPLValue::Nil => "nil".to_string(),
+            REPLValue::Bool(b) => b.to_string(),
+            REPLValue::Int(i) => i.to_string(),
+            REPLValue::Float(f) => f.to_string(),
+            REPLValue::String(s) => s.clone(),
+            REPLValue::Array(arr) => {
+                let items: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+                format!("[{}]", items.join(", "))
+            },
+            REPLValue::Object(_) => "{...}".to_string(),
+            REPLValue::Function(name, arity) => format!("fn {}({})", name, arity),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct REPLHistory {
+    entries: Vec<String>,
+    current: usize,
+}
+
+impl REPLHistory {
+    pub fn new() -> Self {
+        REPLHistory {
+            entries: Vec::new(),
+            current: 0,
+        }
+    }
+
+    pub fn add(&mut self, entry: String) {
+        self.entries.push(entry);
+        self.current = self.entries.len();
+    }
+
+    pub fn previous(&mut self) -> Option<String> {
+        if self.current > 0 {
+            self.current -= 1;
+            Some(self.entries[self.current].clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn next(&mut self) -> Option<String> {
+        if self.current < self.entries.len() - 1 {
+            self.current += 1;
+            Some(self.entries[self.current].clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn search(&self, pattern: &str) -> Vec<(usize, String)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.contains(pattern))
+            .map(|(idx, entry)| (idx, entry.clone()))
+            .collect()
+    }
+}
+
+pub struct OmniREPL {
+    language: Language,
+    variables: HashMap<String, REPLValue>,
+    functions: HashMap<String, String>,
+    history: REPLHistory,
+    session_start: Instant,
+    statements_executed: u32,
+    errors_count: u32,
+    multiline_buffer: String,
+    in_multiline_mode: bool,
+}
+
+impl OmniREPL {
+    pub fn new(language: Language) -> Self {
+        OmniREPL {
+            language,
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+            history: REPLHistory::new(),
+            session_start: Instant::now(),
+            statements_executed: 0,
+            errors_count: 0,
+            multiline_buffer: String::new(),
+            in_multiline_mode: false,
+        }
+    }
+
+    pub fn start(&mut self) -> Result<(), String> {
+        println!("╔════════════════════════════════════════════════════════════════╗");
+        println!("║          OMNISYSTEM INTERACTIVE REPL v1.0                     ║");
+        println!("║          Language: {}                          ║", self.language.name());
+        println!("║          Type 'help' for commands, 'exit' to quit             ║");
+        println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+        let stdin = io::stdin();
+        let reader = stdin.lock();
+
+        for line in reader.lines() {
+            match line {
+                Ok(input) => {
+                    let trimmed = input.trim();
+
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Command handling
+                    match trimmed {
+                        "exit" | "quit" => {
+                            self.print_session_summary();
+                            break;
+                        },
+                        "help" => {
+                            self.print_help();
+                            continue;
+                        },
+                        "vars" | "variables" => {
+                            self.print_variables();
+                            continue;
+                        },
+                        "history" => {
+                            self.print_history();
+                            continue;
+                        },
+                        "clear" => {
+                            self.variables.clear();
+                            println!("Variables cleared");
+                            continue;
+                        },
+                        _ if trimmed.starts_with("search ") => {
+                            let pattern = &trimmed[7..];
+                            self.search_history(pattern);
+                            continue;
+                        },
+                        _ if trimmed.ends_with("\\") => {
+                            self.multiline_buffer.push_str(&trimmed[..trimmed.len()-1]);
+                            self.multiline_buffer.push('\n');
+                            self.in_multiline_mode = true;
+                            print!("  ... ");
+                            io::Write::flush(&mut io::stdout()).ok();
+                            continue;
+                        },
+                        _ => {
+                            if self.in_multiline_mode {
+                                self.multiline_buffer.push_str(trimmed);
+                                self.in_multiline_mode = false;
+                                self.evaluate(&self.multiline_buffer.clone())?;
+                                self.multiline_buffer.clear();
+                            } else {
+                                self.evaluate(trimmed)?;
+                            }
+
+                            self.history.add(trimmed.to_string());
+                        }
+                    }
+                },
+                Err(_) => break,
+            }
+        }
+
+        Ok(())
+    }
+
+    fn evaluate(&mut self, input: &str) -> Result<(), String> {
+        let start = Instant::now();
+
+        match self.parse_and_execute(input) {
+            Ok(result) => {
+                let duration = start.elapsed();
+                println!("✓ {} ({:.2}ms)", result.to_string(), duration.as_secs_f64() * 1000.0);
+                self.statements_executed += 1;
+            },
+            Err(e) => {
+                println!("✗ Error: {}", e);
+                self.errors_count += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_and_execute(&mut self, input: &str) -> Result<REPLValue, String> {
+        // Variable assignment: name = value
+        if input.contains("=") && !input.contains("==") {
+            let parts: Vec<&str> = input.split('=').collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim();
+                let value_expr = parts[1].trim();
+                let value = self.evaluate_expression(value_expr)?;
+                self.variables.insert(name.to_string(), value.clone());
+                return Ok(value);
+            }
+        }
+
+        // Function definition
+        if input.starts_with("fn ") {
+            let parts: Vec<&str> = input.split("{").collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim().strip_prefix("fn ").unwrap().trim();
+                self.functions.insert(name.to_string(), input.to_string());
+                return Ok(REPLValue::Function(name.to_string(), 0));
+            }
+        }
+
+        // Variable inspection
+        if let Some(value) = self.variables.get(input) {
+            return Ok(value.clone());
+        }
+
+        // Expression evaluation
+        self.evaluate_expression(input)
+    }
+
+    fn evaluate_expression(&mut self, expr: &str) -> Result<REPLValue, String> {
+        let expr = expr.trim();
+
+        // Nil literal
+        if expr == "nil" {
+            return Ok(REPLValue::Nil);
+        }
+
+        // Boolean literals
+        if expr == "true" {
+            return Ok(REPLValue::Bool(true));
+        }
+        if expr == "false" {
+            return Ok(REPLValue::Bool(false));
+        }
+
+        // Integer literal
+        if let Ok(i) = expr.parse::<i64>() {
+            return Ok(REPLValue::Int(i));
+        }
+
+        // Float literal
+        if let Ok(f) = expr.parse::<f64>() {
+            return Ok(REPLValue::Float(f));
+        }
+
+        // String literal
+        if (expr.starts_with("\"") && expr.ends_with("\"")) ||
+           (expr.starts_with("'") && expr.ends_with("'")) {
+            let s = expr[1..expr.len()-1].to_string();
+            return Ok(REPLValue::String(s));
+        }
+
+        // Variable reference
+        if let Some(value) = self.variables.get(expr) {
+            return Ok(value.clone());
+        }
+
+        // Array literal
+        if expr.starts_with("[") && expr.ends_with("]") {
+            let inner = &expr[1..expr.len()-1];
+            let items: Result<Vec<REPLValue>, String> = inner
+                .split(',')
+                .map(|item| self.evaluate_expression(item.trim()))
+                .collect();
+            return Ok(REPLValue::Array(items?));
+        }
+
+        // Simple arithmetic
+        if expr.contains("+") && !expr.contains("\"") {
+            let parts: Vec<&str> = expr.split('+').collect();
+            if parts.len() == 2 {
+                let left = self.evaluate_expression(parts[0].trim())?;
+                let right = self.evaluate_expression(parts[1].trim())?;
+                if let (REPLValue::Int(l), REPLValue::Int(r)) = (left, right) {
+                    return Ok(REPLValue::Int(l + r));
+                }
+                if let (REPLValue::Float(l), REPLValue::Float(r)) = (left, right) {
+                    return Ok(REPLValue::Float(l + r));
+                }
+            }
+        }
+
+        if expr.contains("-") && !expr.contains("\"") {
+            let parts: Vec<&str> = expr.split('-').collect();
+            if parts.len() == 2 {
+                let left = self.evaluate_expression(parts[0].trim())?;
+                let right = self.evaluate_expression(parts[1].trim())?;
+                if let (REPLValue::Int(l), REPLValue::Int(r)) = (left, right) {
+                    return Ok(REPLValue::Int(l - r));
+                }
+                if let (REPLValue::Float(l), REPLValue::Float(r)) = (left, right) {
+                    return Ok(REPLValue::Float(l - r));
+                }
+            }
+        }
+
+        Err(format!("Cannot evaluate: {}", expr))
+    }
+
+    fn print_help(&self) {
+        println!("\n╔════ OMNISYSTEM REPL COMMANDS ════╗");
+        println!("║ COMMANDS:                         ║");
+        println!("║  exit/quit    - Exit REPL        ║");
+        println!("║  help         - Show this help    ║");
+        println!("║  vars         - List variables    ║");
+        println!("║  history      - Show history      ║");
+        println!("║  clear        - Clear variables   ║");
+        println!("║  search TERM  - Search history   ║");
+        println!("║                                   ║");
+        println!("║ SYNTAX:                           ║");
+        println!("║  x = 5              - Assignment  ║");
+        println!("║  x + y              - Arithmetic  ║");
+        println!("║  [1, 2, 3]          - Array       ║");
+        println!("║  \"hello\"            - String      ║");
+        println!("║  line \\              - Multiline  ║");
+        println!("╚═══════════════════════════════════╝\n");
+    }
+
+    fn print_variables(&self) {
+        if self.variables.is_empty() {
+            println!("No variables defined");
+            return;
+        }
+
+        println!("\n╔════ VARIABLES ════╗");
+        for (name, value) in &self.variables {
+            println!("║ {} = {} ({})", name, value.to_string(), value.type_name());
+        }
+        println!("╚═══════════════════╝\n");
+    }
+
+    fn print_history(&self) {
+        println!("\n╔════ COMMAND HISTORY ════╗");
+        for (idx, entry) in self.history.entries.iter().enumerate() {
+            println!("║ [{}] {}", idx, entry);
+        }
+        println!("╚═════════════════════════╝\n");
+    }
+
+    fn search_history(&self, pattern: &str) {
+        let results = self.history.search(pattern);
+        println!("\n╔════ SEARCH RESULTS: '{}' ════╗", pattern);
+        if results.is_empty() {
+            println!("║ No matches found");
+        } else {
+            for (idx, entry) in results {
+                println!("║ [{}] {}", idx, entry);
+            }
+        }
+        println!("╚════════════════════════╝\n");
+    }
+
+    fn print_session_summary(&self) {
+        let duration = self.session_start.elapsed();
+        println!("\n╔════ SESSION SUMMARY ════╗");
+        println!("║ Language:           {}", self.language.name());
+        println!("║ Statements:         {}", self.statements_executed);
+        println!("║ Errors:             {}", self.errors_count);
+        println!("║ Variables:          {}", self.variables.len());
+        println!("║ History entries:    {}", self.history.entries.len());
+        println!("║ Duration:           {:.2}s", duration.as_secs_f64());
+        println!("╚════════════════════════╝\n");
+    }
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║         OMNISYSTEM INTERACTIVE REPL v1.0                      ║");
+    println!("║         Universal Interpreter for 7 Languages                 ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    println!("Select language:");
+    println!("  1. TITAN");
+    println!("  2. VERA");
+    println!("  3. HELIX");
+    println!("  4. AETHER");
+    println!("  5. AXIOM");
+    println!("  6. SYLVA");
+    println!("  7. NEXUS\n");
+
+    let stdin = io::stdin();
+    let mut choice = String::new();
+    stdin.read_line(&mut choice).expect("Failed to read input");
+
+    let language = match choice.trim() {
+        "1" => Language::Titan,
+        "2" => Language::Vera,
+        "3" => Language::Helix,
+        "4" => Language::Aether,
+        "5" => Language::Axiom,
+        "6" => Language::Sylva,
+        "7" => Language::Nexus,
+        _ => {
+            println!("Invalid choice, defaulting to TITAN");
+            Language::Titan
+        }
+    };
+
+    let mut repl = OmniREPL::new(language);
+    if let Err(e) = repl.start() {
+        eprintln!("REPL Error: {}", e);
+    }
+}

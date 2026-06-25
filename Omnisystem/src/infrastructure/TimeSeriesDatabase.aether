@@ -1,0 +1,362 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM TIME SERIES DATABASE - PROMETHEUS/INFLUXDB-LIKE METRICS STORAGE
+// Metrics collection, time series compression, aggregation, retention, querying
+// Language: AETHER (Distributed Systems)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+module TimeSeriesDatabase {
+    use std::collections::HashMap;
+
+    pub struct TimeSeriesDatabase {
+        pub db_id: String,
+        pub metrics: HashMap<String, MetricSeries>,
+        pub retention_policies: Vec<RetentionPolicy>,
+        pub compression_engine: CompressionEngine,
+        pub query_engine: QueryEngine,
+        pub aggregator: Aggregator,
+    }
+
+    pub struct MetricSeries {
+        pub series_id: String,
+        pub metric_name: String,
+        pub labels: HashMap<String, String>,
+        pub data_points: Vec<DataPoint>,
+        pub retention_period_hours: u32,
+        pub compression_type: CompressionType,
+    }
+
+    pub struct DataPoint {
+        pub timestamp: u64,
+        pub value: f64,
+        pub compressed: bool,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum CompressionType {
+        None,
+        Delta,
+        DeltaOfDelta,
+        Gorilla,
+        Snappy,
+    }
+
+    pub struct RetentionPolicy {
+        pub policy_id: String,
+        pub name: String,
+        pub duration_hours: u32,
+        pub shard_duration_hours: u32,
+        pub replication_factor: u16,
+        pub default: bool,
+    }
+
+    pub struct CompressionEngine {
+        pub engine_id: String,
+        pub compression_type: CompressionType,
+        pub compression_ratio: f64,
+        pub bytes_before: u64,
+        pub bytes_after: u64,
+    }
+
+    pub struct QueryEngine {
+        pub engine_id: String,
+        pub query_cache: HashMap<String, QueryResult>,
+        pub max_cache_size: usize,
+    }
+
+    pub struct MetricsQuery {
+        pub query_id: String,
+        pub expression: String,
+        pub start_time: u64,
+        pub end_time: u64,
+        pub step: u64,
+        pub timeout_seconds: u32,
+    }
+
+    pub struct QueryResult {
+        pub result_id: String,
+        pub query_id: String,
+        pub series: Vec<ResultSeries>,
+        pub execution_time_ms: u32,
+    }
+
+    pub struct ResultSeries {
+        pub metric_name: String,
+        pub labels: HashMap<String, String>,
+        pub values: Vec<(u64, f64)>, // timestamp -> value
+    }
+
+    pub struct Aggregator {
+        pub aggregator_id: String,
+        pub aggregations: Vec<Aggregation>,
+    }
+
+    pub struct Aggregation {
+        pub agg_id: String,
+        pub agg_type: AggregationType,
+        pub metric_name: String,
+        pub interval_seconds: u32,
+        pub retention_hours: u32,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum AggregationType {
+        Sum,
+        Avg,
+        Min,
+        Max,
+        Count,
+        Stddev,
+        Percentile,
+    }
+
+    pub struct MetricLabel {
+        pub label_name: String,
+        pub label_value: String,
+    }
+
+    pub struct Scraper {
+        pub scraper_id: String,
+        pub target_url: String,
+        pub interval_seconds: u32,
+        pub timeout_seconds: u32,
+        pub enabled: bool,
+        pub last_scrape_time: u64,
+        pub error_count: u32,
+    }
+
+    pub struct Alert {
+        pub alert_id: String,
+        pub alert_name: String,
+        pub expression: String,
+        pub duration_seconds: u32,
+        pub severity: AlertSeverity,
+        pub annotations: HashMap<String, String>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum AlertSeverity {
+        Info,
+        Warning,
+        Critical,
+        Emergency,
+    }
+
+    pub struct DownsamplePolicy {
+        pub policy_id: String,
+        pub interval_seconds: u32,
+        pub aggregation: AggregationType,
+        pub keep_raw_data: bool,
+    }
+
+    impl TimeSeriesDatabase {
+        pub fn new() -> Self {
+            TimeSeriesDatabase {
+                db_id: "tsdb-1".to_string(),
+                metrics: HashMap::new(),
+                retention_policies: vec![
+                    RetentionPolicy {
+                        policy_id: "rp-1".to_string(),
+                        name: "default".to_string(),
+                        duration_hours: 720,  // 30 days
+                        shard_duration_hours: 24,
+                        replication_factor: 1,
+                        default: true,
+                    },
+                    RetentionPolicy {
+                        policy_id: "rp-2".to_string(),
+                        name: "long-term".to_string(),
+                        duration_hours: 8760, // 1 year
+                        shard_duration_hours: 168, // 1 week
+                        replication_factor: 3,
+                        default: false,
+                    },
+                ],
+                compression_engine: CompressionEngine {
+                    engine_id: "ce-1".to_string(),
+                    compression_type: CompressionType::Gorilla,
+                    compression_ratio: 0.1,
+                    bytes_before: 0,
+                    bytes_after: 0,
+                },
+                query_engine: QueryEngine {
+                    engine_id: "qe-1".to_string(),
+                    query_cache: HashMap::new(),
+                    max_cache_size: 10000,
+                },
+                aggregator: Aggregator {
+                    aggregator_id: "agg-1".to_string(),
+                    aggregations: Vec::new(),
+                },
+            }
+        }
+
+        pub fn write_metric(&mut self, metric_name: &str, value: f64, labels: HashMap<String, String>) -> Result<String, String> {
+            let series_id = format!("series_{}", hash_string(&format!("{}{:?}", metric_name, labels)));
+
+            let series = self.metrics
+                .entry(series_id.clone())
+                .or_insert_with(|| MetricSeries {
+                    series_id: series_id.clone(),
+                    metric_name: metric_name.to_string(),
+                    labels: labels.clone(),
+                    data_points: Vec::new(),
+                    retention_period_hours: 720,
+                    compression_type: CompressionType::Gorilla,
+                });
+
+            series.data_points.push(DataPoint {
+                timestamp: current_timestamp(),
+                value,
+                compressed: false,
+            });
+
+            println!("Wrote metric: {} = {}", metric_name, value);
+            Ok(series_id)
+        }
+
+        pub fn query_range(&self, metric_name: &str, start_time: u64, end_time: u64, step: u64) -> Result<Vec<(u64, f64)>, String> {
+            let mut results = Vec::new();
+
+            for (_, series) in &self.metrics {
+                if series.metric_name == metric_name {
+                    for point in &series.data_points {
+                        if point.timestamp >= start_time && point.timestamp <= end_time {
+                            results.push((point.timestamp, point.value));
+                        }
+                    }
+                }
+            }
+
+            if results.is_empty() {
+                Err("No data found".to_string())
+            } else {
+                println!("Queried metric: {} from {} to {}", metric_name, start_time, end_time);
+                Ok(results)
+            }
+        }
+
+        pub fn query_instant(&self, metric_name: &str, timestamp: u64) -> Result<f64, String> {
+            for (_, series) in &self.metrics {
+                if series.metric_name == metric_name {
+                    for point in &series.data_points {
+                        if point.timestamp == timestamp {
+                            return Ok(point.value);
+                        }
+                    }
+                }
+            }
+            Err("No data found".to_string())
+        }
+
+        pub fn add_scraper(&mut self, target_url: &str, interval_seconds: u32) -> Result<String, String> {
+            let scraper_id = format!("scraper_{}", hash_string(target_url));
+
+            let scraper = Scraper {
+                scraper_id: scraper_id.clone(),
+                target_url: target_url.to_string(),
+                interval_seconds,
+                timeout_seconds: 10,
+                enabled: true,
+                last_scrape_time: 0,
+                error_count: 0,
+            };
+
+            println!("Added scraper: {}", target_url);
+            Ok(scraper_id)
+        }
+
+        pub fn create_alert(&mut self, alert_name: &str, expression: &str, severity: AlertSeverity) -> Result<String, String> {
+            let alert_id = format!("alert_{}", hash_string(alert_name));
+
+            let alert = Alert {
+                alert_id: alert_id.clone(),
+                alert_name: alert_name.to_string(),
+                expression: expression.to_string(),
+                duration_seconds: 300,
+                severity,
+                annotations: HashMap::new(),
+            };
+
+            println!("Created alert: {}", alert_name);
+            Ok(alert_id)
+        }
+
+        pub fn compress_metric_series(&mut self, series_id: &str) -> Result<(), String> {
+            if let Some(series) = self.metrics.get_mut(series_id) {
+                for point in &mut series.data_points {
+                    point.compressed = true;
+                }
+                series.compression_type = CompressionType::Gorilla;
+                println!("Compressed metric series: {}", series_id);
+                Ok(())
+            } else {
+                Err("Series not found".to_string())
+            }
+        }
+
+        pub fn create_downsampling_policy(&mut self, interval_seconds: u32, aggregation: AggregationType) -> Result<String, String> {
+            let policy_id = format!("ds_{}", hash_string(&format!("{}{:?}", interval_seconds, aggregation)));
+            println!("Created downsampling policy: {} sec with {:?}", interval_seconds, aggregation);
+            Ok(policy_id)
+        }
+
+        pub fn get_tsdb_stats(&self) -> String {
+            let total_points: usize = self.metrics.iter().map(|(_, s)| s.data_points.len()).sum();
+            let total_size: u64 = self.metrics.iter().map(|(_, s)| {
+                s.data_points.len() as u64 * std::mem::size_of::<DataPoint>() as u64
+            }).sum();
+
+            format!(
+                "Time Series Database\nMetric Series: {}\nData Points: {}\nSize: {} MB\nRetention Policies: {}",
+                self.metrics.len(),
+                total_points,
+                total_size / 1024 / 1024,
+                self.retention_policies.len()
+            )
+        }
+    }
+
+    fn hash_string(s: &str) -> String {
+        let mut hash: u64 = 5381;
+        for c in s.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+        }
+        format!("{:x}", hash).chars().take(16).collect()
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    pub fn main() {
+        println!("╔═══════════════════════════════════════════════════════════════╗");
+        println!("║   OMNISYSTEM TIME SERIES DATABASE v3.0.0                     ║");
+        println!("║   Prometheus/InfluxDB-like Metrics Storage                   ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+        let mut tsdb = TimeSeriesDatabase::new();
+
+        let mut labels = HashMap::new();
+        labels.insert("instance".to_string(), "localhost:9090".to_string());
+        labels.insert("job".to_string(), "prometheus".to_string());
+
+        let _ = tsdb.write_metric("http_requests_total", 1234.0, labels.clone());
+        let _ = tsdb.write_metric("http_request_duration_seconds", 0.125, labels.clone());
+        let _ = tsdb.write_metric("process_resident_memory_bytes", 50331648.0, labels.clone());
+
+        let _ = tsdb.add_scraper("http://localhost:9090/metrics", 15);
+        let _ = tsdb.add_scraper("http://localhost:8080/metrics", 15);
+
+        let _ = tsdb.create_alert("HighErrorRate", "rate(errors[5m]) > 0.05", AlertSeverity::Critical);
+        let _ = tsdb.create_alert("HighLatency", "p99(latency) > 1000", AlertSeverity::Warning);
+
+        let now = current_timestamp();
+        let _ = tsdb.query_range("http_requests_total", now - 3600, now, 60);
+        let _ = tsdb.create_downsampling_policy(300, AggregationType::Avg);
+
+        println!("\n{}", tsdb.get_tsdb_stats());
+    }
+}

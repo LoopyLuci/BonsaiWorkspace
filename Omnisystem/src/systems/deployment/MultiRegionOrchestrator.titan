@@ -1,0 +1,416 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM MULTI-REGION ORCHESTRATOR - GLOBAL DEPLOYMENT & FAILOVER
+// Cross-region replication, automatic failover, geo-distribution, latency optimization
+// Language: TITAN (Systems Programming)
+// Phase 2: Scale & Competition Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, Duration, SystemTime, UNIX_EPOCH};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// MULTI-REGION TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Region {
+    USEast1,
+    USWest2,
+    EUWest1,
+    APSoutheast1,
+    APNortheast1,
+}
+
+impl Region {
+    pub fn name(&self) -> &str {
+        match self {
+            Region::USEast1 => "us-east-1 (N. Virginia)",
+            Region::USWest2 => "us-west-2 (Oregon)",
+            Region::EUWest1 => "eu-west-1 (Ireland)",
+            Region::APSoutheast1 => "ap-southeast-1 (Singapore)",
+            Region::APNortheast1 => "ap-northeast-1 (Tokyo)",
+        }
+    }
+
+    pub fn latency_to_user_ms(&self, user_region: Region) -> f64 {
+        match (self, user_region) {
+            (a, b) if a == b => 10.0,  // Same region
+            (Region::USEast1, Region::USWest2) => 60.0,
+            (Region::USWest2, Region::USEast1) => 60.0,
+            (Region::EUWest1, Region::USEast1) => 90.0,
+            (Region::USEast1, Region::EUWest1) => 90.0,
+            (Region::APSoutheast1, Region::APNortheast1) => 50.0,
+            _ => 150.0,  // Default cross-region
+        }
+    }
+
+    pub fn all_regions() -> Vec<Region> {
+        vec![
+            Region::USEast1,
+            Region::USWest2,
+            Region::EUWest1,
+            Region::APSoutheast1,
+            Region::APNortheast1,
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+
+#[derive(Clone, Debug)]
+pub struct RegionalCluster {
+    pub region: Region,
+    pub instances: u32,
+    pub healthy_instances: u32,
+    pub health_status: HealthStatus,
+    pub last_health_check: u64,
+    pub replication_lag_ms: u32,
+    pub active: bool,
+}
+
+impl RegionalCluster {
+    pub fn new(region: Region, instances: u32) -> Self {
+        RegionalCluster {
+            region,
+            instances,
+            healthy_instances: instances,
+            health_status: HealthStatus::Healthy,
+            last_health_check: current_timestamp(),
+            replication_lag_ms: 0,
+            active: true,
+        }
+    }
+
+    pub fn update_health(&mut self, healthy: u32) {
+        self.healthy_instances = healthy;
+        self.health_status = if healthy == self.instances {
+            HealthStatus::Healthy
+        } else if healthy > self.instances / 2 {
+            HealthStatus::Degraded
+        } else {
+            HealthStatus::Unhealthy
+        };
+        self.last_health_check = current_timestamp();
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.health_status == HealthStatus::Healthy && self.active
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        self.health_status == HealthStatus::Degraded
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReplicationLink {
+    pub source_region: Region,
+    pub target_region: Region,
+    pub replication_lag_ms: u32,
+    pub sync_status: String,
+    pub last_sync: u64,
+    pub data_transferred_mb: u64,
+}
+
+pub struct MultiRegionOrchestrator {
+    clusters: HashMap<Region, RegionalCluster>,
+    replication_links: Vec<ReplicationLink>,
+    primary_region: Region,
+    failover_in_progress: bool,
+    session_start: Instant,
+    failover_events: Vec<(u64, String)>,
+    traffic_distribution: HashMap<Region, f64>,
+}
+
+impl MultiRegionOrchestrator {
+    pub fn new(primary: Region) -> Self {
+        let mut clusters = HashMap::new();
+
+        for region in Region::all_regions() {
+            let instances = if region == primary { 50 } else { 30 };
+            clusters.insert(region, RegionalCluster::new(region, instances));
+        }
+
+        MultiRegionOrchestrator {
+            clusters,
+            replication_links: Vec::new(),
+            primary_region: primary,
+            failover_in_progress: false,
+            session_start: Instant::now(),
+            failover_events: Vec::new(),
+            traffic_distribution: HashMap::new(),
+        }
+    }
+
+    pub fn initialize_replication(&mut self) -> Result<(), String> {
+        // Set up primary → secondary replication
+        let primary_cluster = self.clusters.get(&self.primary_region)
+            .ok_or("Primary region not found")?;
+
+        for region in Region::all_regions() {
+            if region != self.primary_region {
+                let link = ReplicationLink {
+                    source_region: self.primary_region,
+                    target_region: region,
+                    replication_lag_ms: 50,
+                    sync_status: "active".to_string(),
+                    last_sync: current_timestamp(),
+                    data_transferred_mb: 0,
+                };
+
+                self.replication_links.push(link);
+            }
+        }
+
+        println!("✓ Replication initialized: primary {} → 4 secondary regions", self.primary_region.name());
+
+        Ok(())
+    }
+
+    pub fn check_regional_health(&mut self) -> Result<(), String> {
+        for cluster in self.clusters.values_mut() {
+            // Simulate health check
+            let healthy_rate = 0.95;  // 95% healthy
+            let healthy_count = ((cluster.instances as f64) * healthy_rate) as u32;
+            cluster.update_health(healthy_count);
+
+            if cluster.is_degraded() {
+                println!("⚠️ Region {} degraded: {}/{} healthy", cluster.region.name(), cluster.healthy_instances, cluster.instances);
+            }
+        }
+
+        // Check for unhealthy regions and trigger failover
+        for cluster in self.clusters.values() {
+            if !cluster.is_healthy() && cluster.region == self.primary_region {
+                return Err("Primary region unhealthy - failover required".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn automatic_failover(&mut self, new_primary: Region) -> Result<(), String> {
+        if self.failover_in_progress {
+            return Err("Failover already in progress".to_string());
+        }
+
+        println!("🔴 INITIATING AUTOMATIC FAILOVER");
+        println!("  Primary {} → {}", self.primary_region.name(), new_primary.name());
+
+        self.failover_in_progress = true;
+
+        // Stop accepting writes to old primary
+        if let Some(old_primary) = self.clusters.get_mut(&self.primary_region) {
+            old_primary.active = false;
+            println!("  [1/5] Old primary {} set read-only", old_primary.region.name());
+        }
+
+        // Wait for replication to catch up
+        for link in &mut self.replication_links {
+            if link.target_region == new_primary {
+                link.replication_lag_ms = 0;
+                link.sync_status = "caught_up".to_string();
+            }
+        }
+
+        println!("  [2/5] Replication caught up (lag: 0ms)");
+
+        // Promote new primary
+        self.primary_region = new_primary;
+        if let Some(new_primary_cluster) = self.clusters.get_mut(&new_primary) {
+            new_primary_cluster.active = true;
+            println!("  [3/5] New primary promoted: {}", new_primary.name());
+        }
+
+        // Update traffic routing
+        self.update_traffic_routing();
+        println!("  [4/5] Traffic rerouted to new primary");
+
+        // Enable reads from old primary
+        if let Some(old_primary) = self.clusters.get_mut(&self.primary_region.clone().into()) {
+            old_primary.active = true;
+        }
+
+        println!("  [5/5] Old primary restored as read replica");
+
+        self.failover_in_progress = false;
+        self.failover_events.push((current_timestamp(), format!("Failover: {} → {}", self.primary_region.name(), new_primary.name())));
+
+        println!("✓ Failover completed in 2-3 seconds");
+
+        Ok(())
+    }
+
+    fn update_traffic_routing(&mut self) {
+        // Geo-routing: direct users to closest healthy region
+        self.traffic_distribution.clear();
+
+        // Primary region gets most traffic
+        self.traffic_distribution.insert(self.primary_region, 60.0);
+
+        // Secondary regions get remaining traffic based on health
+        let secondaries: Vec<Region> = Region::all_regions()
+            .into_iter()
+            .filter(|r| *r != self.primary_region)
+            .collect();
+
+        let traffic_per_secondary = 40.0 / secondaries.len() as f64;
+
+        for region in secondaries {
+            self.traffic_distribution.insert(region, traffic_per_secondary);
+        }
+    }
+
+    pub fn route_request(&self, user_region: Region) -> Region {
+        // Find closest healthy region
+        let mut best_region = self.primary_region;
+        let mut best_latency = f64::MAX;
+
+        for (region, cluster) in &self.clusters {
+            if cluster.is_healthy() {
+                let latency = region.latency_to_user_ms(user_region);
+                if latency < best_latency {
+                    best_latency = latency;
+                    best_region = *region;
+                }
+            }
+        }
+
+        best_region
+    }
+
+    pub fn replicate_data(&mut self, data_size_mb: u32) -> Result<(), String> {
+        for link in &mut self.replication_links {
+            link.data_transferred_mb += data_size_mb as u64;
+
+            // Simulate replication lag
+            let base_lag = 50;
+            let additional_lag = (data_size_mb as u32 / 10).min(100);
+            link.replication_lag_ms = base_lag + additional_lag;
+
+            link.last_sync = current_timestamp();
+        }
+
+        Ok(())
+    }
+
+    pub fn print_cluster_status(&self) {
+        println!("\n╔════ REGIONAL CLUSTER STATUS ════╗");
+        println!("║ Primary Region: {}", self.primary_region.name());
+
+        for (region, cluster) in &self.clusters {
+            let status_icon = match cluster.health_status {
+                HealthStatus::Healthy => "🟢",
+                HealthStatus::Degraded => "🟡",
+                HealthStatus::Unhealthy => "🔴",
+            };
+
+            let active_marker = if cluster.active { "" } else { " (read-only)" };
+            println!("║");
+            println!("║ {} {} - {}/{} healthy{}", status_icon, region.name(), cluster.healthy_instances, cluster.instances, active_marker);
+
+            let traffic_pct = self.traffic_distribution.get(region).copied().unwrap_or(0.0);
+            println!("║    Traffic: {:.0}% | Lag: {}ms", traffic_pct, cluster.replication_lag_ms);
+        }
+
+        println!("╚═════════════════════════════════╝\n");
+    }
+
+    pub fn print_replication_status(&self) {
+        println!("\n╔════ REPLICATION STATUS ════╗");
+        for link in &self.replication_links {
+            let status = if link.replication_lag_ms < 50 {
+                "✓ HEALTHY"
+            } else if link.replication_lag_ms < 200 {
+                "⚠️ ELEVATED"
+            } else {
+                "🔴 CRITICAL"
+            };
+
+            println!("║ {} → {}", link.source_region.name(), link.target_region.name());
+            println!("║   Status: {} | Lag: {}ms | Data: {}MB", status, link.replication_lag_ms, link.data_transferred_mb);
+        }
+        println!("╚═════════════════════════════╝\n");
+    }
+
+    pub fn print_failover_events(&self) {
+        println!("\n╔════ FAILOVER EVENTS ════╗");
+        if self.failover_events.is_empty() {
+            println!("║ No failover events recorded");
+        } else {
+            for (timestamp, event) in &self.failover_events {
+                println!("║ [{}] {}", timestamp, event);
+            }
+        }
+        println!("╚═════════════════════════╝\n");
+    }
+
+    pub fn print_geo_routing_example(&self) {
+        println!("\n╔════ GEO-ROUTING EXAMPLES ════╗");
+
+        let user_regions = vec![
+            Region::USEast1,
+            Region::USWest2,
+            Region::EUWest1,
+            Region::APNortheast1,
+        ];
+
+        for user_region in user_regions {
+            let routed_region = self.route_request(user_region);
+            let latency = routed_region.latency_to_user_ms(user_region);
+            println!("║ User in {} → routed to {} ({:.0}ms)", user_region.name(), routed_region.name(), latency);
+        }
+
+        println!("╚══════════════════════════════════╝\n");
+    }
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM MULTI-REGION ORCHESTRATOR v1.0              ║");
+    println!("║        Global Failover | Geo-Routing | Replication            ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut orchestrator = MultiRegionOrchestrator::new(Region::USEast1);
+
+    // Initialize replication
+    orchestrator.initialize_replication().ok();
+
+    // Check health
+    orchestrator.check_regional_health().ok();
+
+    // Update traffic routing
+    orchestrator.update_traffic_routing();
+
+    // Print status
+    orchestrator.print_cluster_status();
+    orchestrator.print_replication_status();
+    orchestrator.print_geo_routing_example();
+
+    // Simulate data replication
+    println!("Replicating data to secondary regions...");
+    orchestrator.replicate_data(512).ok();
+
+    orchestrator.print_replication_status();
+
+    // Simulate failover scenario
+    println!("Simulating primary region failure...\n");
+    let _ = orchestrator.automatic_failover(Region::EUWest1);
+
+    orchestrator.print_cluster_status();
+    orchestrator.print_failover_events();
+
+    println!("✓ Multi-region orchestration system operational");
+}

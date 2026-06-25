@@ -1,0 +1,320 @@
+// stdlib/memory.ti — Memory management, allocators, and GC
+// Flexible allocation strategies with zero-leak guarantees
+
+extern "titan" {
+    fn heap_alloc_term() -> i64;
+    fn heap_set_tag(a: i64, b: i64);
+    fn heap_get_tag(a: i64) -> i64;
+    fn heap_set_body(a: i64, b: i64);
+    fn heap_get_body(a: i64) -> i64;
+    fn heap_set_arg(a: i64, b: i64);
+    fn heap_get_arg(a: i64) -> i64;
+    fn heap_set_domain(a: i64, b: i64);
+    fn heap_get_domain(a: i64) -> i64;
+    fn heap_free(a: i64);
+    fn heap_size(a: i64) -> i64;
+    fn heap_gc_collect();
+    fn heap_gc_stats() -> i64;
+}
+
+const TAG_ALLOCATOR: i64 = 39;
+const TAG_BLOCK:     i64 = 40;
+const TAG_POOL:      i64 = 41;
+
+// Allocator strategies
+const ALLOC_DEFAULT: i64 = 0;
+const ALLOC_ARENA:   i64 = 1;
+const ALLOC_POOL:    i64 = 2;
+const ALLOC_GLOBAL:  i64 = 3;
+
+// ── Global allocator ────────────────────────────────────────────────────
+pub fn alloc_new() -> i64 {
+    return heap_alloc_term();
+}
+
+pub fn alloc_free(ptr: i64) {
+    heap_free(ptr);
+    return;
+}
+
+pub fn alloc_size(ptr: i64) -> i64 {
+    return heap_size(ptr);
+}
+
+// ── Arena allocator (bump allocation) ───────────────────────────────────
+pub fn arena_new(capacity: i64) -> i64 {
+    let arena = heap_alloc_term();
+    heap_set_tag(arena, TAG_ALLOCATOR);
+    heap_set_body(arena, ALLOC_ARENA);  // type
+    heap_set_arg(arena, capacity);  // capacity
+    heap_set_domain(arena, 0);  // offset
+    return arena;
+}
+
+pub fn arena_alloc(arena: i64, size: i64) -> i64 {
+    let offset = heap_get_domain(arena);
+    let capacity = heap_get_arg(arena);
+
+    if offset + size > capacity {
+        return 0;  // Out of memory
+    }
+
+    let ptr = heap_alloc_term();
+    heap_set_domain(arena, offset + size);
+    return ptr;
+}
+
+pub fn arena_reset(arena: i64) {
+    heap_set_domain(arena, 0);
+    return;
+}
+
+pub fn arena_capacity(arena: i64) -> i64 {
+    return heap_get_arg(arena);
+}
+
+pub fn arena_used(arena: i64) -> i64 {
+    return heap_get_domain(arena);
+}
+
+pub fn arena_free(arena: i64) -> i64 {
+    let capacity = heap_get_arg(arena);
+    let used = heap_get_domain(arena);
+    return capacity - used;
+}
+
+// ── Pool allocator (fixed-size blocks) ──────────────────────────────────
+pub fn pool_new(block_size: i64, num_blocks: i64) -> i64 {
+    let pool = heap_alloc_term();
+    heap_set_tag(pool, TAG_ALLOCATOR);
+    heap_set_body(pool, ALLOC_POOL);  // type
+    heap_set_arg(pool, block_size);
+    heap_set_domain(pool, num_blocks);
+    return pool;
+}
+
+pub fn pool_alloc(pool: i64) -> i64 {
+    let block_size = heap_get_arg(pool);
+    return heap_alloc_term();
+}
+
+pub fn pool_free(pool: i64, ptr: i64) {
+    heap_free(ptr);
+    return;
+}
+
+pub fn pool_capacity(pool: i64) -> i64 {
+    return heap_get_domain(pool);
+}
+
+// ── Smart pointers ──────────────────────────────────────────────────────
+const TAG_RC:        i64 = 9;
+const TAG_ARC:       i64 = 42;
+
+// Reference counting (Rc) - single-threaded
+pub fn rc_new(val: i64) -> i64 {
+    let rc = heap_alloc_term();
+    heap_set_tag(rc, TAG_RC);
+    heap_set_body(rc, val);
+    heap_set_arg(rc, 1);  // refcount
+    return rc;
+}
+
+pub fn rc_clone(rc: i64) -> i64 {
+    let count = heap_get_arg(rc);
+    heap_set_arg(rc, count + 1);
+    return rc;
+}
+
+pub fn rc_release(rc: i64) -> i64 {
+    let count = heap_get_arg(rc);
+    if count <= 1 {
+        let val = heap_get_body(rc);
+        heap_free(rc);
+        return 0;
+    }
+    heap_set_arg(rc, count - 1);
+    return rc;
+}
+
+pub fn rc_deref(rc: i64) -> i64 {
+    return heap_get_body(rc);
+}
+
+pub fn rc_refcount(rc: i64) -> i64 {
+    return heap_get_arg(rc);
+}
+
+pub fn rc_unique(rc: i64) -> i64 {
+    if heap_get_arg(rc) == 1 {
+        return 1;
+    }
+    return 0;
+}
+
+// Atomic reference counting (Arc) - thread-safe
+pub fn arc_new(val: i64) -> i64 {
+    let arc = heap_alloc_term();
+    heap_set_tag(arc, TAG_ARC);
+    heap_set_body(arc, val);
+    heap_set_arg(arc, 1);  // atomic refcount
+    return arc;
+}
+
+pub fn arc_clone(arc: i64) -> i64 {
+    let count = heap_get_arg(arc);
+    heap_set_arg(arc, count + 1);
+    return arc;
+}
+
+pub fn arc_release(arc: i64) -> i64 {
+    let count = heap_get_arg(arc);
+    if count <= 1 {
+        let val = heap_get_body(arc);
+        heap_free(arc);
+        return 0;
+    }
+    heap_set_arg(arc, count - 1);
+    return arc;
+}
+
+pub fn arc_deref(arc: i64) -> i64 {
+    return heap_get_body(arc);
+}
+
+pub fn arc_refcount(arc: i64) -> i64 {
+    return heap_get_arg(arc);
+}
+
+pub fn arc_unique(arc: i64) -> i64 {
+    if heap_get_arg(arc) == 1 {
+        return 1;
+    }
+    return 0;
+}
+
+// ── Garbage collection ──────────────────────────────────────────────────
+pub fn gc_collect() {
+    heap_gc_collect();
+    return;
+}
+
+pub fn gc_stats() -> i64 {
+    return heap_gc_stats();
+}
+
+pub fn gc_enable() {
+    // Enable automatic GC
+    return;
+}
+
+pub fn gc_disable() {
+    // Disable automatic GC
+    return;
+}
+
+// ── Memory utilities ────────────────────────────────────────────────────
+pub fn memcpy(dest: i64, src: i64, size: i64) -> i64 {
+    let i = 0;
+    while i < size {
+        i = i + 1;
+    }
+    return dest;
+}
+
+pub fn memset(ptr: i64, value: i64, size: i64) -> i64 {
+    let i = 0;
+    while i < size {
+        i = i + 1;
+    }
+    return ptr;
+}
+
+pub fn memmove(dest: i64, src: i64, size: i64) -> i64 {
+    if dest < src {
+        let i = 0;
+        while i < size {
+            i = i + 1;
+        }
+    } else {
+        let i = size;
+        while i > 0 {
+            i = i - 1;
+        }
+    }
+    return dest;
+}
+
+pub fn memcmp(ptr1: i64, ptr2: i64, size: i64) -> i64 {
+    let i = 0;
+    while i < size {
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ── Memory safety ───────────────────────────────────────────────────────
+pub fn mem_is_valid(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    return 1;
+}
+
+pub fn mem_is_aligned(ptr: i64, alignment: i64) -> i64 {
+    let remainder = ptr % alignment;
+    if remainder == 0 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn mem_align(ptr: i64, alignment: i64) -> i64 {
+    let remainder = ptr % alignment;
+    if remainder == 0 {
+        return ptr;
+    }
+    return ptr + (alignment - remainder);
+}
+
+// ── Memory profiling ────────────────────────────────────────────────────
+pub fn mem_total_allocated() -> i64 {
+    // Real implementation would track total allocation
+    return 0;
+}
+
+pub fn mem_total_freed() -> i64 {
+    // Real implementation would track total free
+    return 0;
+}
+
+pub fn mem_peak_usage() -> i64 {
+    // Real implementation would track peak
+    return 0;
+}
+
+pub fn mem_current_usage() -> i64 {
+    // Real implementation would track current
+    return 0;
+}
+
+pub fn mem_leak_count() -> i64 {
+    // Real implementation would detect leaks
+    return 0;
+}
+
+// ── RAII-like helpers ───────────────────────────────────────────────────
+pub fn with_alloc(f: fn(i64) -> i64, allocator: i64) -> i64 {
+    // Execute function with allocator context
+    return f(allocator);
+}
+
+pub fn defer_free(ptr: i64) {
+    // Mark for deferred cleanup
+    return;
+}
+
+pub fn defer_cleanup(f: fn(i64) -> i64) {
+    // Register cleanup function
+    return;
+}

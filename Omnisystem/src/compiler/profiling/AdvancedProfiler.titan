@@ -1,0 +1,449 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM ADVANCED PROFILER - FLAME GRAPHS, MEMORY PROFILING, CONCURRENCY ANALYSIS
+// CPU profiling with time-based sampling, memory leak detection, lock contention analysis
+// Language: TITAN (Systems Programming)
+// Phase 0: Critical Foundation Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, Duration};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// PROFILER TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct StackFrame {
+    pub function: String,
+    pub file: String,
+    pub line: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct CPUSample {
+    pub timestamp: u64,
+    pub stack: Vec<StackFrame>,
+    pub duration_us: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct FlamegraphNode {
+    pub function: String,
+    pub file: String,
+    pub total_samples: u64,
+    pub self_samples: u64,
+    pub children: HashMap<String, Box<FlamegraphNode>>,
+    pub depth: usize,
+}
+
+impl FlamegraphNode {
+    pub fn new(function: String, file: String) -> Self {
+        FlamegraphNode {
+            function,
+            file,
+            total_samples: 0,
+            self_samples: 0,
+            children: HashMap::new(),
+            depth: 0,
+        }
+    }
+
+    pub fn add_sample(&mut self) {
+        self.total_samples += 1;
+        self.self_samples += 1;
+    }
+
+    pub fn get_percentage(&self, total_samples: u64) -> f64 {
+        if total_samples == 0 {
+            0.0
+        } else {
+            (self.total_samples as f64 / total_samples as f64) * 100.0
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryAllocation {
+    pub address: u64,
+    pub size: usize,
+    pub allocated_at: u64,
+    pub freed_at: Option<u64>,
+    pub allocator: String,
+    pub stack_trace: Vec<StackFrame>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemorySnapshot {
+    pub timestamp: u64,
+    pub total_allocated: u64,
+    pub total_freed: u64,
+    pub active_allocations: u64,
+    pub peak_memory: u64,
+    pub allocations_by_site: HashMap<String, u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LockContention {
+    pub lock_name: String,
+    pub acquisitions: u64,
+    pub total_wait_time_us: u64,
+    pub max_wait_time_us: u64,
+    pub avg_wait_time_us: u64,
+    pub contention_count: u64,
+}
+
+pub struct AdvancedProfiler {
+    cpu_samples: Vec<CPUSample>,
+    flamegraph_root: FlamegraphNode,
+    memory_allocations: HashMap<u64, MemoryAllocation>,
+    memory_snapshots: Vec<MemorySnapshot>,
+    lock_contentions: HashMap<String, LockContention>,
+    start_time: Instant,
+    current_memory: u64,
+    peak_memory: u64,
+    total_allocated: u64,
+    total_freed: u64,
+    sampling_interval_us: u64,
+    is_profiling: bool,
+}
+
+impl AdvancedProfiler {
+    pub fn new(sampling_interval_us: u64) -> Self {
+        AdvancedProfiler {
+            cpu_samples: Vec::new(),
+            flamegraph_root: FlamegraphNode::new("root".to_string(), "root".to_string()),
+            memory_allocations: HashMap::new(),
+            memory_snapshots: Vec::new(),
+            lock_contentions: HashMap::new(),
+            start_time: Instant::now(),
+            current_memory: 0,
+            peak_memory: 0,
+            total_allocated: 0,
+            total_freed: 0,
+            sampling_interval_us,
+            is_profiling: false,
+        }
+    }
+
+    pub fn start_profiling(&mut self) -> Result<(), String> {
+        self.is_profiling = true;
+        println!("✓ CPU profiling started (sampling every {} µs)", self.sampling_interval_us);
+        Ok(())
+    }
+
+    pub fn stop_profiling(&mut self) -> Result<(), String> {
+        self.is_profiling = false;
+        println!("✓ CPU profiling stopped");
+        Ok(())
+    }
+
+    pub fn record_sample(&mut self, stack: Vec<StackFrame>) -> Result<(), String> {
+        if !self.is_profiling {
+            return Err("Profiler not running".to_string());
+        }
+
+        let sample = CPUSample {
+            timestamp: self.start_time.elapsed().as_micros() as u64,
+            stack: stack.clone(),
+            duration_us: self.sampling_interval_us,
+        };
+
+        // Add to flat list
+        self.cpu_samples.push(sample);
+
+        // Add to flamegraph
+        self.add_to_flamegraph(&stack);
+
+        Ok(())
+    }
+
+    fn add_to_flamegraph(&mut self, stack: &[StackFrame]) {
+        let mut current = &mut self.flamegraph_root;
+
+        for (depth, frame) in stack.iter().enumerate() {
+            let key = format!("{}@{}", frame.function, frame.line);
+
+            if !current.children.contains_key(&key) {
+                let mut new_node = FlamegraphNode::new(frame.function.clone(), frame.file.clone());
+                new_node.depth = depth;
+                current.children.insert(key.clone(), Box::new(new_node));
+            }
+
+            if let Some(child) = current.children.get_mut(&key) {
+                child.total_samples += 1;
+                current = child;
+            }
+        }
+
+        current.self_samples += 1;
+    }
+
+    pub fn record_allocation(&mut self, address: u64, size: usize, stack_trace: Vec<StackFrame>) -> Result<(), String> {
+        let allocation = MemoryAllocation {
+            address,
+            size,
+            allocated_at: self.start_time.elapsed().as_micros() as u64,
+            freed_at: None,
+            allocator: "system".to_string(),
+            stack_trace,
+        };
+
+        self.total_allocated += size as u64;
+        self.current_memory += size as u64;
+
+        if self.current_memory > self.peak_memory {
+            self.peak_memory = self.current_memory;
+        }
+
+        self.memory_allocations.insert(address, allocation);
+
+        Ok(())
+    }
+
+    pub fn record_deallocation(&mut self, address: u64) -> Result<(), String> {
+        if let Some(allocation) = self.memory_allocations.get_mut(&address) {
+            allocation.freed_at = Some(self.start_time.elapsed().as_micros() as u64);
+            self.current_memory = self.current_memory.saturating_sub(allocation.size as u64);
+            self.total_freed += allocation.size as u64;
+            Ok(())
+        } else {
+            Err(format!("Allocation {} not found", address))
+        }
+    }
+
+    pub fn record_lock_acquisition(&mut self, lock_name: String, wait_time_us: u64) -> Result<(), String> {
+        let contention = self.lock_contentions
+            .entry(lock_name.clone())
+            .or_insert(LockContention {
+                lock_name: lock_name.clone(),
+                acquisitions: 0,
+                total_wait_time_us: 0,
+                max_wait_time_us: 0,
+                avg_wait_time_us: 0,
+                contention_count: 0,
+            });
+
+        contention.acquisitions += 1;
+        contention.total_wait_time_us += wait_time_us;
+
+        if wait_time_us > contention.max_wait_time_us {
+            contention.max_wait_time_us = wait_time_us;
+        }
+
+        if wait_time_us > 100 {
+            contention.contention_count += 1;
+        }
+
+        contention.avg_wait_time_us = contention.total_wait_time_us / contention.acquisitions;
+
+        Ok(())
+    }
+
+    pub fn snapshot_memory(&mut self) {
+        let snapshot = MemorySnapshot {
+            timestamp: self.start_time.elapsed().as_micros() as u64,
+            total_allocated: self.total_allocated,
+            total_freed: self.total_freed,
+            active_allocations: self.memory_allocations.len() as u64,
+            peak_memory: self.peak_memory,
+            allocations_by_site: self.get_allocation_sites(),
+        };
+
+        self.memory_snapshots.push(snapshot);
+    }
+
+    fn get_allocation_sites(&self) -> HashMap<String, u64> {
+        let mut sites: HashMap<String, u64> = HashMap::new();
+
+        for allocation in self.memory_allocations.values() {
+            if allocation.freed_at.is_none() {
+                let site = if let Some(frame) = allocation.stack_trace.first() {
+                    format!("{}:{}", frame.function, frame.line)
+                } else {
+                    "unknown".to_string()
+                };
+
+                *sites.entry(site).or_insert(0) += allocation.size as u64;
+            }
+        }
+
+        sites
+    }
+
+    pub fn find_memory_leaks(&self) -> Vec<(String, u64)> {
+        let mut leaks = Vec::new();
+
+        for allocation in self.memory_allocations.values() {
+            if allocation.freed_at.is_none() {
+                let site = if let Some(frame) = allocation.stack_trace.first() {
+                    format!("{}:{}", frame.function, frame.line)
+                } else {
+                    "unknown".to_string()
+                };
+
+                let entry = leaks.iter_mut().find(|(s, _)| s == &site);
+                if let Some((_, size)) = entry {
+                    *size += allocation.size as u64;
+                } else {
+                    leaks.push((site, allocation.size as u64));
+                }
+            }
+        }
+
+        leaks.sort_by(|a, b| b.1.cmp(&a.1));
+        leaks
+    }
+
+    pub fn get_hotspots(&self, top_n: usize) -> Vec<(String, u64, f64)> {
+        let mut hotspots = Vec::new();
+        let total_samples = self.cpu_samples.len() as u64;
+
+        fn collect_hotspots(
+            node: &FlamegraphNode,
+            hotspots: &mut Vec<(String, u64, f64)>,
+            total_samples: u64,
+        ) {
+            if node.self_samples > 0 {
+                let percentage = node.get_percentage(total_samples);
+                hotspots.push((
+                    format!("{}@{}:{}", node.function, node.file, node.depth),
+                    node.self_samples,
+                    percentage,
+                ));
+            }
+
+            for child in node.children.values() {
+                collect_hotspots(child, hotspots, total_samples);
+            }
+        }
+
+        collect_hotspots(&self.flamegraph_root, &mut hotspots, total_samples);
+        hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+        hotspots.truncate(top_n);
+        hotspots
+    }
+
+    pub fn print_flamegraph(&self) {
+        println!("\n╔════ FLAMEGRAPH HOTSPOTS ════╗");
+        let hotspots = self.get_hotspots(20);
+
+        for (i, (func, samples, percent)) in hotspots.iter().enumerate() {
+            let bar_width = (*percent as usize).min(40);
+            let bar = "█".repeat(bar_width);
+            println!("{:2}. {:40} {} ({:.1}%)", i + 1, func, bar, percent);
+        }
+
+        println!("╚════════════════════════════════╝\n");
+    }
+
+    pub fn print_memory_report(&self) {
+        println!("\n╔════ MEMORY PROFILING REPORT ════╗");
+        println!("║ Total Allocated:    {} KB", self.total_allocated / 1024);
+        println!("║ Total Freed:        {} KB", self.total_freed / 1024);
+        println!("║ Current Usage:      {} KB", self.current_memory / 1024);
+        println!("║ Peak Usage:         {} KB", self.peak_memory / 1024);
+        println!("║ Active Allocations: {}", self.memory_allocations.len());
+        println!("╚══════════════════════════════════╝\n");
+
+        let leaks = self.find_memory_leaks();
+        if !leaks.is_empty() {
+            println!("╔════ POTENTIAL MEMORY LEAKS ════╗");
+            for (site, size) in leaks.iter().take(10) {
+                println!("║ {} KB at {}", size / 1024, site);
+            }
+            println!("╚════════════════════════════════╝\n");
+        }
+    }
+
+    pub fn print_lock_contention(&self) {
+        if self.lock_contentions.is_empty() {
+            println!("No lock contention detected");
+            return;
+        }
+
+        println!("\n╔════ LOCK CONTENTION ANALYSIS ════╗");
+        for (_, contention) in &self.lock_contentions {
+            println!("║ Lock: {}", contention.lock_name);
+            println!("║   Acquisitions:   {}", contention.acquisitions);
+            println!("║   Total Wait:     {} µs", contention.total_wait_time_us);
+            println!("║   Max Wait:       {} µs", contention.max_wait_time_us);
+            println!("║   Avg Wait:       {} µs", contention.avg_wait_time_us);
+            println!("║   Contention:     {}", contention.contention_count);
+        }
+        println!("╚═══════════════════════════════════╝\n");
+    }
+
+    pub fn print_summary(&self) {
+        let duration = self.start_time.elapsed();
+        println!("\n╔════ PROFILING SUMMARY ════╗");
+        println!("║ Duration:     {:.2}s", duration.as_secs_f64());
+        println!("║ Samples:      {}", self.cpu_samples.len());
+        println!("║ Memory peaks: {}", self.memory_snapshots.len());
+        println!("║ Locks:        {}", self.lock_contentions.len());
+        println!("╚══════════════════════════╝\n");
+    }
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM ADVANCED PROFILER v1.0                      ║");
+    println!("║        CPU | Memory | Locks | Flame Graphs                   ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut profiler = AdvancedProfiler::new(1000); // 1ms sampling
+
+    profiler.start_profiling().expect("Failed to start");
+
+    // Simulate CPU samples
+    for _ in 0..100 {
+        let stack = vec![
+            StackFrame {
+                function: "main".to_string(),
+                file: "program.titan".to_string(),
+                line: 10,
+            },
+            StackFrame {
+                function: "compute".to_string(),
+                file: "math.titan".to_string(),
+                line: 42,
+            },
+            StackFrame {
+                function: "inner_loop".to_string(),
+                file: "math.titan".to_string(),
+                line: 50,
+            },
+        ];
+
+        let _ = profiler.record_sample(stack);
+    }
+
+    // Simulate memory allocations
+    for i in 0..10 {
+        let stack = vec![
+            StackFrame {
+                function: "allocate".to_string(),
+                file: "memory.titan".to_string(),
+                line: 20,
+            },
+        ];
+
+        let _ = profiler.record_allocation(1000 + i * 100, 4096, stack);
+    }
+
+    profiler.snapshot_memory();
+
+    // Simulate lock contention
+    let _ = profiler.record_lock_acquisition("mutex_a".to_string(), 50);
+    let _ = profiler.record_lock_acquisition("mutex_a".to_string(), 120);
+    let _ = profiler.record_lock_acquisition("mutex_b".to_string(), 30);
+
+    profiler.stop_profiling().expect("Failed to stop");
+
+    // Print reports
+    profiler.print_flamegraph();
+    profiler.print_memory_report();
+    profiler.print_lock_contention();
+    profiler.print_summary();
+
+    println!("✓ Profiling complete");
+}

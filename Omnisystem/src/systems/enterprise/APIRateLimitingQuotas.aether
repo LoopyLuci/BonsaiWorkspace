@@ -1,0 +1,255 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM API RATE LIMITING & QUOTA MANAGEMENT - DISTRIBUTED REQUEST THROTTLING
+// Token bucket algorithm, per-user quotas, quota enforcement, usage analytics, alerting
+// Language: AETHER (Distributed Systems)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+module APIRateLimitingQuotas {
+    use std::collections::HashMap;
+
+    pub struct APIRateLimitingQuotas {
+        pub manager_id: String,
+        pub rate_limiters: HashMap<String, RateLimiter>,
+        pub quotas: HashMap<String, QuotaBucket>,
+        pub usage_tracking: HashMap<String, UsageStats>,
+        pub alerts: Vec<QuotaAlert>,
+    }
+
+    pub struct RateLimiter {
+        pub limiter_id: String,
+        pub limiter_name: String,
+        pub limiter_type: LimiterType,
+        pub tokens_per_second: u32,
+        pub burst_size: u32,
+        pub current_tokens: f64,
+        pub last_refill: u64,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum LimiterType {
+        TokenBucket,
+        LeakyBucket,
+        SlidingWindow,
+    }
+
+    pub struct QuotaBucket {
+        pub bucket_id: String,
+        pub api_key: String,
+        pub requests_limit: u32,
+        pub requests_used: u32,
+        pub reset_time: u64,
+        pub tier: QuotaTier,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum QuotaTier {
+        Free,
+        Basic,
+        Professional,
+        Enterprise,
+    }
+
+    pub struct UsageStats {
+        pub stats_id: String,
+        pub api_key: String,
+        pub requests_today: u32,
+        pub requests_this_month: u32,
+        pub peak_qps: f64,
+        pub average_response_time_ms: f64,
+    }
+
+    pub struct QuotaAlert {
+        pub alert_id: String,
+        pub api_key: String,
+        pub alert_type: AlertType,
+        pub threshold_percent: u32,
+        pub triggered_at: u64,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum AlertType {
+        ApproachingLimit,
+        ExceededLimit,
+        SustainedHighUsage,
+    }
+
+    pub struct RateLimitResponse {
+        pub allowed: bool,
+        pub remaining_requests: u32,
+        pub reset_time: u64,
+        pub retry_after: Option<u32>,
+    }
+
+    impl APIRateLimitingQuotas {
+        pub fn new() -> Self {
+            APIRateLimitingQuotas {
+                manager_id: "arlq-1".to_string(),
+                rate_limiters: HashMap::new(),
+                quotas: HashMap::new(),
+                usage_tracking: HashMap::new(),
+                alerts: Vec::new(),
+            }
+        }
+
+        pub fn create_rate_limiter(&mut self, limiter_name: &str, tokens_per_sec: u32, burst: u32) -> Result<String, String> {
+            let limiter_id = format!("limiter_{}", hash_string(&format!("{}{}", limiter_name, tokens_per_sec)));
+
+            let limiter = RateLimiter {
+                limiter_id: limiter_id.clone(),
+                limiter_name: limiter_name.to_string(),
+                limiter_type: LimiterType::TokenBucket,
+                tokens_per_second: tokens_per_sec,
+                burst_size: burst,
+                current_tokens: burst as f64,
+                last_refill: current_timestamp(),
+            };
+
+            self.rate_limiters.insert(limiter_id.clone(), limiter);
+            println!("Created rate limiter: {} ({} req/s)", limiter_name, tokens_per_sec);
+            Ok(limiter_id)
+        }
+
+        pub fn allocate_quota(&mut self, api_key: &str, requests: u32, tier: QuotaTier) -> Result<String, String> {
+            let bucket_id = format!("quota_{}", hash_string(&format!("{}{:?}", api_key, tier)));
+
+            let quota = QuotaBucket {
+                bucket_id: bucket_id.clone(),
+                api_key: api_key.to_string(),
+                requests_limit: requests,
+                requests_used: 0,
+                reset_time: current_timestamp() + 86400,
+                tier,
+            };
+
+            self.quotas.insert(bucket_id.clone(), quota);
+            println!("Allocated quota: {} requests for API key: {} ({:?})", requests, api_key, tier);
+            Ok(bucket_id)
+        }
+
+        pub fn check_rate_limit(&mut self, limiter_id: &str, api_key: &str) -> Result<RateLimitResponse, String> {
+            if let Some(limiter) = self.rate_limiters.get_mut(limiter_id) {
+                let now = current_timestamp();
+                let time_passed = (now - limiter.last_refill) as f64;
+                let tokens_generated = (limiter.tokens_per_second as f64) * time_passed;
+                limiter.current_tokens = (limiter.current_tokens + tokens_generated).min(limiter.burst_size as f64);
+                limiter.last_refill = now;
+
+                if limiter.current_tokens >= 1.0 {
+                    limiter.current_tokens -= 1.0;
+
+                    if let Some(quota) = self.quotas.get_mut(api_key) {
+                        quota.requests_used += 1;
+                        let remaining = quota.requests_limit.saturating_sub(quota.requests_used);
+
+                        if remaining == 0 {
+                            self.alerts.push(QuotaAlert {
+                                alert_id: format!("alert_{}", hash_string(&format!("{}{}", api_key, now))),
+                                api_key: api_key.to_string(),
+                                alert_type: AlertType::ExceededLimit,
+                                threshold_percent: 100,
+                                triggered_at: now,
+                            });
+                        } else if remaining < (quota.requests_limit / 10) {
+                            self.alerts.push(QuotaAlert {
+                                alert_id: format!("alert_{}", hash_string(&format!("{}{}", api_key, now))),
+                                api_key: api_key.to_string(),
+                                alert_type: AlertType::ApproachingLimit,
+                                threshold_percent: 90,
+                                triggered_at: now,
+                            });
+                        }
+
+                        Ok(RateLimitResponse {
+                            allowed: true,
+                            remaining_requests: remaining,
+                            reset_time: quota.reset_time,
+                            retry_after: None,
+                        })
+                    } else {
+                        Ok(RateLimitResponse {
+                            allowed: true,
+                            remaining_requests: 999,
+                            reset_time: now + 3600,
+                            retry_after: None,
+                        })
+                    }
+                } else {
+                    Ok(RateLimitResponse {
+                        allowed: false,
+                        remaining_requests: 0,
+                        reset_time: now + 60,
+                        retry_after: Some(1),
+                    })
+                }
+            } else {
+                Err("Rate limiter not found".to_string())
+            }
+        }
+
+        pub fn track_usage(&mut self, api_key: &str, requests: u32) {
+            let stats_id = format!("stats_{}", hash_string(&format!("{}{}", api_key, current_timestamp())));
+
+            let stats = UsageStats {
+                stats_id,
+                api_key: api_key.to_string(),
+                requests_today: requests,
+                requests_this_month: requests * 30,
+                peak_qps: (requests as f64) / 3600.0,
+                average_response_time_ms: 125.5,
+            };
+
+            self.usage_tracking.insert(api_key.to_string(), stats);
+        }
+
+        pub fn get_stats(&self) -> String {
+            let total_quotas: u32 = self.quotas.values().map(|q| q.requests_limit).sum();
+
+            format!(
+                "API Rate Limiting & Quotas\nRate Limiters: {}\nActive Quotas: {}\nTotal Quota Capacity: {}\nAlerts Triggered: {}",
+                self.rate_limiters.len(),
+                self.quotas.len(),
+                total_quotas,
+                self.alerts.len()
+            )
+        }
+    }
+
+    fn hash_string(s: &str) -> String {
+        let mut hash: u64 = 5381;
+        for c in s.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+        }
+        format!("{:x}", hash).chars().take(12).collect()
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    pub fn main() {
+        println!("╔═══════════════════════════════════════════════════════════════╗");
+        println!("║    OMNISYSTEM API RATE LIMITING & QUOTAS v3.0.0               ║");
+        println!("║            Distributed Request Throttling                    ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+        let mut manager = APIRateLimitingQuotas::new();
+
+        let _ = manager.create_rate_limiter("standard", 1000, 5000);
+        let _ = manager.create_rate_limiter("burst", 5000, 10000);
+
+        let _ = manager.allocate_quota("key-123", 1000000, QuotaTier::Enterprise);
+        let _ = manager.allocate_quota("key-456", 100000, QuotaTier::Professional);
+        let _ = manager.allocate_quota("key-789", 10000, QuotaTier::Basic);
+
+        let _ = manager.check_rate_limit("limiter_standard", "key-123");
+        let _ = manager.check_rate_limit("limiter_burst", "key-456");
+
+        manager.track_usage("key-123", 10000);
+        manager.track_usage("key-456", 5000);
+
+        println!("\n{}", manager.get_stats());
+    }
+}

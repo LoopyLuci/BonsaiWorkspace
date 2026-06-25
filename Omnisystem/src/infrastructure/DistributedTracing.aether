@@ -1,0 +1,406 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM DISTRIBUTED TRACING - JAEGER-LIKE MICROSERVICE TRACING
+// Trace collection, span aggregation, sampling, trace search, performance analysis
+// Language: AETHER (Distributed Systems)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+module DistributedTracing {
+    use std::collections::HashMap;
+
+    pub struct DistributedTracing {
+        pub tracing_id: String,
+        pub traces: HashMap<String, Trace>,
+        pub spans: HashMap<String, Span>,
+        pub services: HashMap<String, ServiceMetadata>,
+        pub sampler: TraceSampler,
+        pub storage: TraceStorage,
+    }
+
+    pub struct Trace {
+        pub trace_id: String,
+        pub spans: Vec<String>, // span IDs
+        pub start_time: u64,
+        pub end_time: u64,
+        pub duration_microseconds: u64,
+        pub service_count: u32,
+        pub error_count: u32,
+    }
+
+    pub struct Span {
+        pub span_id: String,
+        pub trace_id: String,
+        pub parent_span_id: Option<String>,
+        pub operation_name: String,
+        pub service_name: String,
+        pub start_time: u64,
+        pub end_time: u64,
+        pub duration_microseconds: u64,
+        pub tags: HashMap<String, String>,
+        pub logs: Vec<LogEntry>,
+        pub status: SpanStatus,
+        pub references: Vec<Reference>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum SpanStatus {
+        Active,
+        Success,
+        Error,
+        Warning,
+    }
+
+    pub struct Reference {
+        pub reference_type: ReferenceType,
+        pub trace_id: String,
+        pub span_id: String,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum ReferenceType {
+        ChildOf,
+        FollowsFrom,
+    }
+
+    pub struct LogEntry {
+        pub timestamp: u64,
+        pub fields: HashMap<String, String>,
+    }
+
+    pub struct ServiceMetadata {
+        pub service_id: String,
+        pub service_name: String,
+        pub span_count: u64,
+        pub error_count: u64,
+        pub latency_percentiles: LatencyPercentiles,
+    }
+
+    pub struct LatencyPercentiles {
+        pub p50_microseconds: u64,
+        pub p90_microseconds: u64,
+        pub p99_microseconds: u64,
+        pub max_microseconds: u64,
+    }
+
+    pub struct TraceSampler {
+        pub sampler_id: String,
+        pub sampler_type: SamplerType,
+        pub sample_rate: f64,
+        pub rate_limit_per_second: u32,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum SamplerType {
+        Const,
+        Probabilistic,
+        RateLimiting,
+        Remote,
+    }
+
+    pub struct TraceStorage {
+        pub storage_id: String,
+        pub backend_type: StorageBackend,
+        pub max_traces: usize,
+        pub retention_hours: u32,
+        pub index: TraceIndex,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub enum StorageBackend {
+        InMemory,
+        Cassandra,
+        Elasticsearch,
+        Badger,
+    }
+
+    pub struct TraceIndex {
+        pub index_id: String,
+        pub by_service: HashMap<String, Vec<String>>, // service -> trace IDs
+        pub by_operation: HashMap<String, Vec<String>>, // operation -> trace IDs
+        pub by_tag: HashMap<String, Vec<String>>, // tag -> trace IDs
+    }
+
+    pub struct SpanMetrics {
+        pub span_id: String,
+        pub operation_name: String,
+        pub service_name: String,
+        pub call_count: u64,
+        pub error_count: u64,
+        pub latency_microseconds: u64,
+    }
+
+    pub struct DependencyGraph {
+        pub graph_id: String,
+        pub services: Vec<String>,
+        pub dependencies: Vec<Dependency>,
+    }
+
+    pub struct Dependency {
+        pub parent_service: String,
+        pub child_service: String,
+        pub call_count: u64,
+        pub error_rate: f64,
+        pub latency_p99: u64,
+    }
+
+    pub struct TraceQuery {
+        pub query_id: String,
+        pub service_name: String,
+        pub operation_name: Option<String>,
+        pub min_duration_microseconds: Option<u64>,
+        pub max_duration_microseconds: Option<u64>,
+        pub tags: Vec<(String, String)>,
+        pub start_time: u64,
+        pub end_time: u64,
+        pub limit: u32,
+    }
+
+    pub struct QueryResult {
+        pub result_id: String,
+        pub traces: Vec<Trace>,
+        pub execution_time_ms: u32,
+    }
+
+    impl DistributedTracing {
+        pub fn new() -> Self {
+            DistributedTracing {
+                tracing_id: "dt-1".to_string(),
+                traces: HashMap::new(),
+                spans: HashMap::new(),
+                services: HashMap::new(),
+                sampler: TraceSampler {
+                    sampler_id: "sampler-1".to_string(),
+                    sampler_type: SamplerType::Probabilistic,
+                    sample_rate: 0.1,
+                    rate_limit_per_second: 10,
+                },
+                storage: TraceStorage {
+                    storage_id: "storage-1".to_string(),
+                    backend_type: StorageBackend::InMemory,
+                    max_traces: 100000,
+                    retention_hours: 72,
+                    index: TraceIndex {
+                        index_id: "index-1".to_string(),
+                        by_service: HashMap::new(),
+                        by_operation: HashMap::new(),
+                        by_tag: HashMap::new(),
+                    },
+                },
+            }
+        }
+
+        pub fn start_span(&mut self, trace_id: &str, operation_name: &str, service_name: &str) -> Result<String, String> {
+            let span_id = format!("span_{}", hash_string(&format!("{}{}{}", trace_id, operation_name, current_timestamp())));
+
+            let span = Span {
+                span_id: span_id.clone(),
+                trace_id: trace_id.to_string(),
+                parent_span_id: None,
+                operation_name: operation_name.to_string(),
+                service_name: service_name.to_string(),
+                start_time: current_timestamp() * 1_000_000,
+                end_time: 0,
+                duration_microseconds: 0,
+                tags: HashMap::new(),
+                logs: Vec::new(),
+                status: SpanStatus::Active,
+                references: Vec::new(),
+            };
+
+            self.spans.insert(span_id.clone(), span);
+
+            // Register service
+            self.services
+                .entry(service_name.to_string())
+                .or_insert_with(|| ServiceMetadata {
+                    service_id: format!("svc_{}", hash_string(service_name)),
+                    service_name: service_name.to_string(),
+                    span_count: 0,
+                    error_count: 0,
+                    latency_percentiles: LatencyPercentiles {
+                        p50_microseconds: 0,
+                        p90_microseconds: 0,
+                        p99_microseconds: 0,
+                        max_microseconds: 0,
+                    },
+                });
+
+            println!("Started span: {} ({}:{})", span_id, service_name, operation_name);
+            Ok(span_id)
+        }
+
+        pub fn finish_span(&mut self, span_id: &str) -> Result<(), String> {
+            if let Some(span) = self.spans.get_mut(span_id) {
+                let now = current_timestamp() * 1_000_000;
+                span.end_time = now;
+                span.duration_microseconds = now - span.start_time;
+                span.status = SpanStatus::Success;
+
+                // Update service metrics
+                if let Some(service) = self.services.get_mut(&span.service_name) {
+                    service.span_count += 1;
+                }
+
+                println!("Finished span: {} ({}μs)", span_id, span.duration_microseconds);
+                Ok(())
+            } else {
+                Err("Span not found".to_string())
+            }
+        }
+
+        pub fn set_span_tag(&mut self, span_id: &str, key: &str, value: &str) -> Result<(), String> {
+            if let Some(span) = self.spans.get_mut(span_id) {
+                span.tags.insert(key.to_string(), value.to_string());
+                Ok(())
+            } else {
+                Err("Span not found".to_string())
+            }
+        }
+
+        pub fn log_span_event(&mut self, span_id: &str, event: HashMap<String, String>) -> Result<(), String> {
+            if let Some(span) = self.spans.get_mut(span_id) {
+                span.logs.push(LogEntry {
+                    timestamp: current_timestamp(),
+                    fields: event,
+                });
+                Ok(())
+            } else {
+                Err("Span not found".to_string())
+            }
+        }
+
+        pub fn create_trace(&mut self, trace_id: &str) -> Result<(), String> {
+            let trace = Trace {
+                trace_id: trace_id.to_string(),
+                spans: Vec::new(),
+                start_time: current_timestamp(),
+                end_time: 0,
+                duration_microseconds: 0,
+                service_count: 0,
+                error_count: 0,
+            };
+
+            self.traces.insert(trace_id.to_string(), trace);
+            println!("Created trace: {}", trace_id);
+            Ok(())
+        }
+
+        pub fn query_traces(&self, service_name: &str, operation_name: Option<&str>) -> Result<Vec<Trace>, String> {
+            let mut results = Vec::new();
+
+            for (_, trace) in &self.traces {
+                let mut found = false;
+                for span_id in &trace.spans {
+                    if let Some(span) = self.spans.get(span_id) {
+                        if span.service_name == service_name {
+                            if let Some(op) = operation_name {
+                                if span.operation_name == op {
+                                    found = true;
+                                    break;
+                                }
+                            } else {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if found {
+                    results.push(trace.clone());
+                }
+            }
+
+            println!("Queried traces: {} (service: {})", results.len(), service_name);
+            Ok(results)
+        }
+
+        pub fn get_service_graph(&self) -> Result<DependencyGraph, String> {
+            let mut services = Vec::new();
+            let mut dependencies = Vec::new();
+
+            for (service_name, _) in &self.services {
+                services.push(service_name.clone());
+            }
+
+            println!("Generated service dependency graph with {} services", services.len());
+            Ok(DependencyGraph {
+                graph_id: format!("graph_{}", hash_string("dependencies")),
+                services,
+                dependencies,
+            })
+        }
+
+        pub fn get_tracing_stats(&self) -> String {
+            let total_spans: u64 = self.services.iter().map(|(_, s)| s.span_count).sum();
+
+            format!(
+                "Distributed Tracing\nTraces: {}\nServices: {}\nTotal Spans: {}\nSampler Rate: {:.1}%",
+                self.traces.len(),
+                self.services.len(),
+                total_spans,
+                self.sampler.sample_rate * 100.0
+            )
+        }
+    }
+
+    impl Clone for Trace {
+        fn clone(&self) -> Self {
+            Trace {
+                trace_id: self.trace_id.clone(),
+                spans: self.spans.clone(),
+                start_time: self.start_time,
+                end_time: self.end_time,
+                duration_microseconds: self.duration_microseconds,
+                service_count: self.service_count,
+                error_count: self.error_count,
+            }
+        }
+    }
+
+    fn hash_string(s: &str) -> String {
+        let mut hash: u64 = 5381;
+        for c in s.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+        }
+        format!("{:x}", hash).chars().take(16).collect()
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    pub fn main() {
+        println!("╔═══════════════════════════════════════════════════════════════╗");
+        println!("║    OMNISYSTEM DISTRIBUTED TRACING v3.0.0                     ║");
+        println!("║      Jaeger-like Microservice Tracing                         ║");
+        println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+        let mut dt = DistributedTracing::new();
+
+        let trace_id = "trace-abc123";
+        let _ = dt.create_trace(trace_id);
+
+        let span1 = dt.start_span(trace_id, "http_request", "api-gateway").expect("Failed");
+        let _ = dt.set_span_tag(&span1, "http.method", "POST");
+        let _ = dt.set_span_tag(&span1, "http.url", "/api/users");
+        let _ = dt.set_span_tag(&span1, "span.kind", "server");
+
+        let span2 = dt.start_span(trace_id, "database_query", "user-service").expect("Failed");
+        let _ = dt.set_span_tag(&span2, "db.system", "postgresql");
+        let _ = dt.set_span_tag(&span2, "db.statement", "SELECT * FROM users");
+
+        let span3 = dt.start_span(trace_id, "cache_lookup", "cache-service").expect("Failed");
+        let _ = dt.set_span_tag(&span3, "cache.hit", "false");
+
+        let _ = dt.finish_span(&span3);
+        let _ = dt.finish_span(&span2);
+        let _ = dt.finish_span(&span1);
+
+        let _ = dt.query_traces("api-gateway", Some("http_request"));
+        let _ = dt.get_service_graph();
+
+        println!("\n{}", dt.get_tracing_stats());
+    }
+}

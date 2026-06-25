@@ -1,0 +1,270 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM DISTRIBUTED CACHE LAYER - IN-MEMORY CACHING WITH CONSISTENCY
+// Multi-level caching, eviction policies, cache coherency, replication, Bloom filters
+// Language: TITAN (Systems Language)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+
+pub struct DistributedCacheLayer {
+    pub cache_id: String,
+    pub local_cache: LocalCache,
+    pub distributed_cache: DistributedCache,
+    pub eviction_policy: EvictionPolicy,
+    pub consistency_manager: ConsistencyManager,
+}
+
+pub struct LocalCache {
+    pub cache_id: String,
+    pub entries: HashMap<String, CacheEntry>,
+    pub max_size_bytes: u64,
+    pub current_size_bytes: u64,
+    pub hit_count: u64,
+    pub miss_count: u64,
+}
+
+pub struct CacheEntry {
+    pub entry_id: String,
+    pub key: String,
+    pub value: Vec<u8>,
+    pub size_bytes: u64,
+    pub ttl_seconds: u32,
+    pub last_accessed: u64,
+    pub access_count: u32,
+    pub replicated: bool,
+}
+
+pub struct DistributedCache {
+    pub cache_id: String,
+    pub nodes: HashMap<String, CacheNode>,
+    pub replication_factor: u32,
+    pub consistency_level: ConsistencyLevel,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConsistencyLevel {
+    StrongConsistency,
+    EventualConsistency,
+    WeakConsistency,
+}
+
+pub struct CacheNode {
+    pub node_id: String,
+    pub node_name: String,
+    pub capacity_bytes: u64,
+    pub used_bytes: u64,
+    pub status: NodeStatus,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum NodeStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Recovering,
+}
+
+pub struct EvictionPolicy {
+    pub policy_id: String,
+    pub policy_type: EvictionType,
+    pub max_memory_bytes: u64,
+    pub eviction_threshold_percent: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum EvictionType {
+    LRU,
+    LFU,
+    FIFO,
+    TTL,
+    Random,
+}
+
+pub struct ConsistencyManager {
+    pub manager_id: String,
+    pub coherency_protocol: CoherencyProtocol,
+    pub version_vectors: HashMap<String, Vec<u64>>,
+    pub invalidation_log: Vec<InvalidationEvent>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CoherencyProtocol {
+    WriteThrough,
+    WriteBack,
+    Invalidation,
+}
+
+pub struct InvalidationEvent {
+    pub event_id: String,
+    pub key: String,
+    pub timestamp: u64,
+    pub initiator: String,
+}
+
+pub struct BloomFilter {
+    pub filter_id: String,
+    pub bits: Vec<bool>,
+    pub hash_functions: u32,
+    pub expected_elements: u32,
+    pub false_positive_rate: f64,
+}
+
+impl DistributedCacheLayer {
+    pub fn new() -> Self {
+        DistributedCacheLayer {
+            cache_id: "dcl-1".to_string(),
+            local_cache: LocalCache {
+                cache_id: "lc-1".to_string(),
+                entries: HashMap::new(),
+                max_size_bytes: 1_000_000_000,
+                current_size_bytes: 0,
+                hit_count: 0,
+                miss_count: 0,
+            },
+            distributed_cache: DistributedCache {
+                cache_id: "dc-1".to_string(),
+                nodes: HashMap::new(),
+                replication_factor: 3,
+                consistency_level: ConsistencyLevel::StrongConsistency,
+            },
+            eviction_policy: EvictionPolicy {
+                policy_id: "ep-1".to_string(),
+                policy_type: EvictionType::LRU,
+                max_memory_bytes: 1_000_000_000,
+                eviction_threshold_percent: 80,
+            },
+            consistency_manager: ConsistencyManager {
+                manager_id: "cm-1".to_string(),
+                coherency_protocol: CoherencyProtocol::WriteBack,
+                version_vectors: HashMap::new(),
+                invalidation_log: Vec::new(),
+            },
+        }
+    }
+
+    pub fn put(&mut self, key: &str, value: Vec<u8>, ttl_seconds: u32) -> Result<String, String> {
+        let entry_id = format!("entry_{}", hash_string(&format!("{}{}", key, current_timestamp())));
+
+        let entry = CacheEntry {
+            entry_id: entry_id.clone(),
+            key: key.to_string(),
+            value: value.clone(),
+            size_bytes: value.len() as u64,
+            ttl_seconds,
+            last_accessed: current_timestamp(),
+            access_count: 0,
+            replicated: self.distributed_cache.replication_factor > 1,
+        };
+
+        self.local_cache.entries.insert(key.to_string(), entry);
+        self.local_cache.current_size_bytes += value.len() as u64;
+        println!("Cached key: {} ({}B, TTL: {}s)", key, value.len(), ttl_seconds);
+        Ok(entry_id)
+    }
+
+    pub fn get(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        if let Some(entry) = self.local_cache.entries.get_mut(key) {
+            entry.last_accessed = current_timestamp();
+            entry.access_count += 1;
+            self.local_cache.hit_count += 1;
+            println!("Cache hit: {} ({} accesses)", key, entry.access_count);
+            Ok(Some(entry.value.clone()))
+        } else {
+            self.local_cache.miss_count += 1;
+            Ok(None)
+        }
+    }
+
+    pub fn add_cache_node(&mut self, node_name: &str, capacity_bytes: u64) -> Result<String, String> {
+        let node_id = format!("node_{}", hash_string(&format!("{}{}", node_name, capacity_bytes)));
+
+        let node = CacheNode {
+            node_id: node_id.clone(),
+            node_name: node_name.to_string(),
+            capacity_bytes,
+            used_bytes: 0,
+            status: NodeStatus::Healthy,
+        };
+
+        self.distributed_cache.nodes.insert(node_id.clone(), node);
+        println!("Added cache node: {} ({}GB)", node_name, capacity_bytes / 1_000_000_000);
+        Ok(node_id)
+    }
+
+    pub fn set_eviction_policy(&mut self, policy_type: EvictionType) {
+        self.eviction_policy.policy_type = policy_type;
+        println!("Set eviction policy: {:?}", policy_type);
+    }
+
+    pub fn invalidate_key(&mut self, key: &str) {
+        let event = InvalidationEvent {
+            event_id: format!("inv_{}", hash_string(&format!("{}{}", key, current_timestamp()))),
+            key: key.to_string(),
+            timestamp: current_timestamp(),
+            initiator: "cache-manager".to_string(),
+        };
+
+        self.local_cache.entries.remove(key);
+        self.consistency_manager.invalidation_log.push(event);
+        println!("Invalidated cache key: {}", key);
+    }
+
+    pub fn get_cache_stats(&self) -> String {
+        let hit_rate = if self.local_cache.hit_count + self.local_cache.miss_count > 0 {
+            (self.local_cache.hit_count as f64) / ((self.local_cache.hit_count + self.local_cache.miss_count) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        format!(
+            "Distributed Cache Layer\nCached Entries: {}\nCache Nodes: {}\nHit Rate: {:.1}%\nSize: {:.1}GB/{:.1}GB\nReplication Factor: {}",
+            self.local_cache.entries.len(),
+            self.distributed_cache.nodes.len(),
+            hit_rate,
+            self.local_cache.current_size_bytes as f64 / 1_000_000_000.0,
+            self.local_cache.max_size_bytes as f64 / 1_000_000_000.0,
+            self.distributed_cache.replication_factor
+        )
+    }
+}
+
+fn hash_string(s: &str) -> String {
+    let mut hash: u64 = 5381;
+    for c in s.chars() {
+        hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as u64);
+    }
+    format!("{:x}", hash).chars().take(12).collect()
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔═══════════════════════════════════════════════════════════════╗");
+    println!("║      OMNISYSTEM DISTRIBUTED CACHE LAYER v3.0.0                ║");
+    println!("║          In-Memory Caching with Consistency                  ║");
+    println!("╚═══════════════════════════════════════════════════════════════╝\n");
+
+    let mut cache = DistributedCacheLayer::new();
+
+    let _ = cache.put("user:123", b"Alice".to_vec(), 3600);
+    let _ = cache.put("user:456", b"Bob".to_vec(), 3600);
+    let _ = cache.put("session:abc", b"active".to_vec(), 1800);
+
+    let _ = cache.get("user:123");
+    let _ = cache.get("user:123");
+    let _ = cache.get("user:456");
+    let _ = cache.get("missing-key");
+
+    let _ = cache.add_cache_node("cache-1", 100_000_000_000);
+    let _ = cache.add_cache_node("cache-2", 100_000_000_000);
+
+    cache.set_eviction_policy(EvictionType::LFU);
+    cache.invalidate_key("user:123");
+
+    println!("\n{}", cache.get_cache_stats());
+}

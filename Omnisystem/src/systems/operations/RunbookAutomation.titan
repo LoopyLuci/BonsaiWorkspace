@@ -1,0 +1,416 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM RUNBOOK AUTOMATION - INCIDENT RESPONSE AUTOMATION
+// Executable runbooks, alert-to-action routing, auto-remediation, incident coordination
+// Language: TITAN (Systems Programming)
+// Phase 1: Production Safety Layer
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// RUNBOOK TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ActionType {
+    ScaleUp,
+    ScaleDown,
+    RestartService,
+    DrainConnections,
+    ClearCache,
+    KillProcess,
+    RollbackDeployment,
+    CircuitBreaker,
+    EnableDebugLogging,
+    SendAlert,
+    CreateIncident,
+    NotifyTeam,
+}
+
+impl ActionType {
+    pub fn name(&self) -> &str {
+        match self {
+            ActionType::ScaleUp => "Scale Up",
+            ActionType::ScaleDown => "Scale Down",
+            ActionType::RestartService => "Restart Service",
+            ActionType::DrainConnections => "Drain Connections",
+            ActionType::ClearCache => "Clear Cache",
+            ActionType::KillProcess => "Kill Process",
+            ActionType::RollbackDeployment => "Rollback",
+            ActionType::CircuitBreaker => "Circuit Breaker",
+            ActionType::EnableDebugLogging => "Enable Debug Logging",
+            ActionType::SendAlert => "Send Alert",
+            ActionType::CreateIncident => "Create Incident",
+            ActionType::NotifyTeam => "Notify Team",
+        }
+    }
+
+    pub fn severity(&self) -> u8 {
+        match self {
+            ActionType::SendAlert => 1,
+            ActionType::NotifyTeam => 2,
+            ActionType::EnableDebugLogging => 3,
+            ActionType::ClearCache => 4,
+            ActionType::CircuitBreaker => 5,
+            ActionType::DrainConnections => 6,
+            ActionType::ScaleUp => 4,
+            ActionType::ScaleDown => 3,
+            ActionType::RestartService => 7,
+            ActionType::KillProcess => 8,
+            ActionType::RollbackDeployment => 9,
+            ActionType::CreateIncident => 2,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RunbookAction {
+    pub id: u32,
+    pub action_type: ActionType,
+    pub target: String,
+    pub parameters: HashMap<String, String>,
+    pub retry_count: u32,
+    pub timeout_seconds: u32,
+    pub manual_approval_required: bool,
+}
+
+impl RunbookAction {
+    pub fn new(id: u32, action_type: ActionType, target: String) -> Self {
+        RunbookAction {
+            id,
+            action_type,
+            target,
+            parameters: HashMap::new(),
+            retry_count: 3,
+            timeout_seconds: 300,
+            manual_approval_required: action_type.severity() >= 7,
+        }
+    }
+
+    pub fn with_param(mut self, key: String, value: String) -> Self {
+        self.parameters.insert(key, value);
+        self
+    }
+
+    pub fn with_timeout(mut self, seconds: u32) -> Self {
+        self.timeout_seconds = seconds;
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Runbook {
+    pub id: String,
+    pub name: String,
+    pub trigger_condition: String,  // e.g., "cpu > 80"
+    pub actions: Vec<RunbookAction>,
+    pub enabled: bool,
+    pub execution_count: u32,
+    pub last_execution: Option<u64>,
+    pub success_rate: f64,
+}
+
+impl Runbook {
+    pub fn new(id: String, name: String, trigger: String) -> Self {
+        Runbook {
+            id,
+            name,
+            trigger_condition: trigger,
+            actions: Vec::new(),
+            enabled: true,
+            execution_count: 0,
+            last_execution: None,
+            success_rate: 100.0,
+        }
+    }
+
+    pub fn add_action(&mut self, action: RunbookAction) {
+        self.actions.push(action);
+    }
+
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RunbookExecution {
+    pub runbook_id: String,
+    pub execution_id: String,
+    pub triggered_at: u64,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
+    pub status: String,
+    pub actions_executed: u32,
+    pub actions_failed: u32,
+    pub manual_interventions: u32,
+    pub incident_id: Option<String>,
+}
+
+pub struct RunbookAutomationSystem {
+    runbooks: HashMap<String, Runbook>,
+    executions: Vec<RunbookExecution>,
+    incident_log: Vec<(u64, String)>,
+    auto_remediation_count: u32,
+    manual_intervention_count: u32,
+    total_time_saved_seconds: u64,
+    session_start: Instant,
+}
+
+impl RunbookAutomationSystem {
+    pub fn new() -> Self {
+        RunbookAutomationSystem {
+            runbooks: HashMap::new(),
+            executions: Vec::new(),
+            incident_log: Vec::new(),
+            auto_remediation_count: 0,
+            manual_intervention_count: 0,
+            total_time_saved_seconds: 0,
+            session_start: Instant::now(),
+        }
+    }
+
+    pub fn create_runbook(&mut self, id: String, name: String, trigger: String) -> Result<(), String> {
+        if self.runbooks.contains_key(&id) {
+            return Err(format!("Runbook {} already exists", id));
+        }
+
+        let runbook = Runbook::new(id.clone(), name.clone(), trigger);
+        self.runbooks.insert(id.clone(), runbook);
+        println!("✓ Runbook created: {}", name);
+
+        Ok(())
+    }
+
+    pub fn add_action_to_runbook(&mut self, runbook_id: &str, action: RunbookAction) -> Result<(), String> {
+        if let Some(runbook) = self.runbooks.get_mut(runbook_id) {
+            runbook.add_action(action);
+            Ok(())
+        } else {
+            Err(format!("Runbook {} not found", runbook_id))
+        }
+    }
+
+    pub fn execute_runbook(&mut self, runbook_id: &str) -> Result<String, String> {
+        if let Some(runbook) = self.runbooks.get_mut(runbook_id) {
+            if !runbook.enabled {
+                return Err("Runbook is disabled".to_string());
+            }
+
+            let execution_id = format!("exec_{}", self.executions.len());
+            let now = current_timestamp();
+
+            let mut execution = RunbookExecution {
+                runbook_id: runbook_id.to_string(),
+                execution_id: execution_id.clone(),
+                triggered_at: now,
+                started_at: now,
+                completed_at: None,
+                status: "running".to_string(),
+                actions_executed: 0,
+                actions_failed: 0,
+                manual_interventions: 0,
+                incident_id: None,
+            };
+
+            println!("✓ Executing runbook: {}", runbook.name);
+            println!("  Trigger condition: {}", runbook.trigger_condition);
+            println!("  Actions to run: {}", runbook.actions.len());
+
+            let mut actions_failed = 0;
+            let mut manual_interventions = 0;
+
+            for action in &runbook.actions {
+                if action.manual_approval_required {
+                    println!("  ⏸ [ACTION {}] {} - REQUIRES MANUAL APPROVAL", action.id, action.action_type.name());
+                    manual_interventions += 1;
+                    self.manual_intervention_count += 1;
+                } else {
+                    let result = self.execute_action(action);
+                    match result {
+                        Ok(_) => {
+                            println!("  ✓ [ACTION {}] {} on {} - SUCCESS", action.id, action.action_type.name(), action.target);
+                            execution.actions_executed += 1;
+                        },
+                        Err(e) => {
+                            println!("  ✗ [ACTION {}] {} on {} - FAILED: {}", action.id, action.action_type.name(), action.target, e);
+                            actions_failed += 1;
+                        }
+                    }
+                }
+            }
+
+            execution.actions_failed = actions_failed;
+            execution.manual_interventions = manual_interventions;
+            execution.completed_at = Some(current_timestamp());
+            execution.status = if actions_failed == 0 { "succeeded".to_string() } else { "partial_success".to_string() };
+
+            runbook.execution_count += 1;
+            runbook.last_execution = Some(current_timestamp());
+            if actions_failed == 0 {
+                self.auto_remediation_count += 1;
+            }
+
+            self.executions.push(execution);
+
+            Ok(execution_id)
+        } else {
+            Err(format!("Runbook {} not found", runbook_id))
+        }
+    }
+
+    fn execute_action(&self, action: &RunbookAction) -> Result<(), String> {
+        // Simulate action execution
+        match action.action_type {
+            ActionType::ScaleUp => {
+                // Simulate scaling up
+                Ok(())
+            },
+            ActionType::RestartService => {
+                // Simulate service restart
+                Ok(())
+            },
+            ActionType::ClearCache => {
+                // Simulate cache clearing
+                Ok(())
+            },
+            ActionType::CircuitBreaker => {
+                // Simulate circuit breaker activation
+                Ok(())
+            },
+            _ => Ok(()),
+        }
+    }
+
+    pub fn trigger_alert_runbook(&mut self, alert_name: &str) -> Result<(), String> {
+        // Map alert to runbook
+        let runbook_id = match alert_name {
+            "high_cpu" => "scale_up",
+            "high_memory" => "clear_cache",
+            "service_unhealthy" => "restart_service",
+            "db_slow" => "kill_slow_queries",
+            _ => return Err(format!("No runbook for alert: {}", alert_name)),
+        };
+
+        self.execute_runbook(runbook_id)?;
+        self.incident_log.push((current_timestamp(), format!("Auto-remediated: {}", alert_name)));
+
+        Ok(())
+    }
+
+    pub fn print_runbook_list(&self) {
+        println!("\n╔════ RUNBOOKS ════╗");
+        for (id, runbook) in &self.runbooks {
+            let status = if runbook.enabled { "✓" } else { "✗" };
+            println!("║ {} [{}] {}", status, id, runbook.name);
+            println!("║   Trigger: {}", runbook.trigger_condition);
+            println!("║   Executions: {} | Success rate: {:.0}%", runbook.execution_count, runbook.success_rate);
+        }
+        println!("╚═════════════════╝\n");
+    }
+
+    pub fn print_execution_history(&self) {
+        println!("\n╔════ EXECUTION HISTORY ════╗");
+        for exec in self.executions.iter().rev().take(10) {
+            let duration = exec.completed_at.unwrap_or(current_timestamp()) - exec.started_at;
+            println!("║ [{}] {} - {} ({}s)", exec.execution_id, exec.runbook_id, exec.status, duration);
+            println!("║   Actions: {} OK, {} failed, {} manual", exec.actions_executed, exec.actions_failed, exec.manual_interventions);
+        }
+        println!("╚═══════════════════════════╝\n");
+    }
+
+    pub fn print_automation_stats(&self) {
+        println!("\n╔════ AUTOMATION STATISTICS ════╗");
+        println!("║ Total Runbook Executions:  {}", self.executions.len());
+        println!("║ Auto-Remediations:         {}", self.auto_remediation_count);
+        println!("║ Manual Interventions:      {}", self.manual_intervention_count);
+        println!("║ Success Rate:              {:.0}%",
+                 if self.executions.len() > 0 {
+                     (self.auto_remediation_count as f64 / self.executions.len() as f64) * 100.0
+                 } else {
+                     0.0
+                 });
+        println!("║ Estimated Time Saved:      ~{} minutes", self.auto_remediation_count * 5);
+        println!("╚═══════════════════════════════╝\n");
+    }
+
+    pub fn print_incident_log(&self) {
+        println!("\n╔════ INCIDENT LOG ════╗");
+        for (timestamp, event) in self.incident_log.iter().rev().take(10) {
+            println!("║ [{}] {}", timestamp, event);
+        }
+        println!("╚═════════════════════╝\n");
+    }
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM RUNBOOK AUTOMATION v1.0                     ║");
+    println!("║        Alert-to-Action | Auto-Remediation | Incident Mgmt    ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut automation = RunbookAutomationSystem::new();
+
+    // Create runbooks
+    automation.create_runbook(
+        "scale_up".to_string(),
+        "High CPU - Auto Scale Up".to_string(),
+        "cpu > 80%".to_string(),
+    ).ok();
+
+    automation.create_runbook(
+        "clear_cache".to_string(),
+        "High Memory - Clear Cache".to_string(),
+        "memory > 75%".to_string(),
+    ).ok();
+
+    automation.create_runbook(
+        "restart_service".to_string(),
+        "Service Unhealthy - Restart".to_string(),
+        "service_health_check_failed".to_string(),
+    ).ok();
+
+    // Add actions to runbooks
+    let scale_action = RunbookAction::new(1, ActionType::ScaleUp, "api_servers".to_string())
+        .with_param("instances".to_string(), "2".to_string());
+    automation.add_action_to_runbook("scale_up", scale_action).ok();
+
+    let cache_action = RunbookAction::new(2, ActionType::ClearCache, "redis_cache".to_string());
+    automation.add_action_to_runbook("clear_cache", cache_action).ok();
+
+    let notify_action = RunbookAction::new(3, ActionType::NotifyTeam, "ops_team".to_string());
+    automation.add_action_to_runbook("clear_cache", notify_action).ok();
+
+    let restart_action = RunbookAction::new(4, ActionType::RestartService, "api_service".to_string());
+    automation.add_action_to_runbook("restart_service", restart_action).ok();
+
+    // Print runbook list
+    automation.print_runbook_list();
+
+    // Simulate alerts and trigger runbooks
+    println!("Simulating alerts and auto-remediation...\n");
+
+    automation.trigger_alert_runbook("high_cpu").ok();
+    automation.trigger_alert_runbook("high_memory").ok();
+    automation.trigger_alert_runbook("service_unhealthy").ok();
+
+    // Print results
+    automation.print_execution_history();
+    automation.print_automation_stats();
+    automation.print_incident_log();
+
+    println!("✓ Runbook automation system operational");
+    println!("✓ {} incidents auto-remediated today", automation.auto_remediation_count);
+}

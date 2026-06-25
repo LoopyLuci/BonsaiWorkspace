@@ -1,0 +1,413 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM API VERSIONING - BACKWARDS COMPATIBILITY MANAGEMENT
+// Semantic versioning, deprecation tracking, migration paths, version support matrix
+// Language: TITAN (Systems Programming)
+// Phase 2: Scale & Competition Layer (Final System)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// VERSIONING TYPES
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl Version {
+    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Version { major, minor, patch }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("v{}.{}.{}", self.major, self.minor, self.patch)
+    }
+
+    pub fn is_breaking_change(&self, other: &Version) -> bool {
+        self.major != other.major
+    }
+
+    pub fn is_backward_compatible(&self, other: &Version) -> bool {
+        !self.is_breaking_change(other) && self >= other
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeprecationStatus {
+    Active,
+    Deprecated,
+    Sunset,
+    Removed,
+}
+
+impl DeprecationStatus {
+    pub fn name(&self) -> &str {
+        match self {
+            DeprecationStatus::Active => "active",
+            DeprecationStatus::Deprecated => "deprecated",
+            DeprecationStatus::Sunset => "sunset",
+            DeprecationStatus::Removed => "removed",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct APIEndpoint {
+    pub path: String,
+    pub method: String,
+    pub api_version: Version,
+    pub status: DeprecationStatus,
+    pub sunset_date: Option<u64>,
+    pub migration_guide: Option<String>,
+    pub next_version: Option<Version>,
+}
+
+impl APIEndpoint {
+    pub fn new(path: String, method: String, version: Version) -> Self {
+        APIEndpoint {
+            path,
+            method,
+            api_version: version,
+            status: DeprecationStatus::Active,
+            sunset_date: None,
+            migration_guide: None,
+            next_version: None,
+        }
+    }
+
+    pub fn deprecate(mut self, next_version: Version, sunset_date: u64, guide: String) -> Self {
+        self.status = DeprecationStatus::Deprecated;
+        self.next_version = Some(next_version);
+        self.sunset_date = Some(sunset_date);
+        self.migration_guide = Some(guide);
+        self
+    }
+
+    pub fn is_deprecated(&self) -> bool {
+        self.status == DeprecationStatus::Deprecated
+    }
+
+    pub fn is_sunset(&self) -> bool {
+        if let Some(sunset) = self.sunset_date {
+            current_timestamp() >= sunset
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VersionSupportMatrix {
+    pub version: Version,
+    pub release_date: u64,
+    pub support_until: u64,
+    pub endpoints: HashMap<String, APIEndpoint>,
+    pub breaking_changes: Vec<String>,
+    pub new_features: Vec<String>,
+}
+
+impl VersionSupportMatrix {
+    pub fn new(version: Version, release_date: u64, support_years: u32) -> Self {
+        let support_until = release_date + (support_years as u64 * 365 * 24 * 3600);
+
+        VersionSupportMatrix {
+            version,
+            release_date,
+            support_until,
+            endpoints: HashMap::new(),
+            breaking_changes: Vec::new(),
+            new_features: Vec::new(),
+        }
+    }
+
+    pub fn add_endpoint(&mut self, endpoint: APIEndpoint) {
+        let key = format!("{} {}", endpoint.method, endpoint.path);
+        self.endpoints.insert(key, endpoint);
+    }
+
+    pub fn add_breaking_change(&mut self, change: String) {
+        self.breaking_changes.push(change);
+    }
+
+    pub fn add_new_feature(&mut self, feature: String) {
+        self.new_features.push(feature);
+    }
+
+    pub fn is_supported(&self) -> bool {
+        current_timestamp() <= self.support_until
+    }
+
+    pub fn days_until_sunset(&self) -> i64 {
+        let now = current_timestamp() as i64;
+        let sunset = self.support_until as i64;
+        (sunset - now) / 86400
+    }
+}
+
+pub struct APIVersioningSystem {
+    pub versions: HashMap<Version, VersionSupportMatrix>,
+    pub current_version: Version,
+    pub minimum_supported_version: Version,
+    pub version_migrations: HashMap<(Version, Version), String>,
+    pub client_usage: HashMap<Version, u32>,
+}
+
+impl APIVersioningSystem {
+    pub fn new(current: Version) -> Self {
+        let mut system = APIVersioningSystem {
+            versions: HashMap::new(),
+            current_version: current,
+            minimum_supported_version: Version::new(current.major, current.minor - 1, 0),
+            version_migrations: HashMap::new(),
+            client_usage: HashMap::new(),
+        };
+
+        // Register current version
+        let now = current_timestamp();
+        let support_matrix = VersionSupportMatrix::new(current, now, 3);
+        system.versions.insert(current, support_matrix);
+        system.client_usage.insert(current, 0);
+
+        system
+    }
+
+    pub fn register_version(&mut self, version: Version) -> Result<(), String> {
+        if self.versions.contains_key(&version) {
+            return Err(format!("Version {} already registered", version.to_string()));
+        }
+
+        let now = current_timestamp();
+        let support_matrix = VersionSupportMatrix::new(version, now, 3);
+        self.versions.insert(version, support_matrix);
+        self.client_usage.insert(version, 0);
+
+        Ok(())
+    }
+
+    pub fn add_endpoint(&mut self, version: Version, endpoint: APIEndpoint) -> Result<(), String> {
+        if let Some(matrix) = self.versions.get_mut(&version) {
+            matrix.add_endpoint(endpoint);
+            Ok(())
+        } else {
+            Err(format!("Version {} not found", version.to_string()))
+        }
+    }
+
+    pub fn deprecate_version(&mut self, old_version: Version, new_version: Version, migration_guide: String) -> Result<(), String> {
+        if let Some(matrix) = self.versions.get_mut(&old_version) {
+            let sunset_date = current_timestamp() + (90 * 24 * 3600);  // 90 days notice
+
+            for endpoint in matrix.endpoints.values_mut() {
+                *endpoint = endpoint.clone().deprecate(new_version, sunset_date, migration_guide.clone());
+            }
+
+            self.version_migrations.insert((old_version, new_version), migration_guide);
+            Ok(())
+        } else {
+            Err(format!("Version {} not found", old_version.to_string()))
+        }
+    }
+
+    pub fn record_client_usage(&mut self, version: Version) -> Result<(), String> {
+        if let Some(count) = self.client_usage.get_mut(&version) {
+            *count += 1;
+            Ok(())
+        } else {
+            Err(format!("Version {} not tracked", version.to_string()))
+        }
+    }
+
+    pub fn check_backwards_compatibility(&self, old_api: &str, new_api: &str) -> Result<bool, String> {
+        // Simplified compatibility check
+        // In production, would do schema comparison
+        Ok(new_api.len() >= old_api.len())
+    }
+
+    pub fn get_migration_path(&self, from: Version, to: Version) -> Option<Vec<Version>> {
+        if from == to {
+            return Some(vec![from]);
+        }
+
+        // Simple linear migration path
+        if from.major == to.major && from.minor <= to.minor {
+            let mut path = vec![];
+            let mut current = from;
+
+            while current < to {
+                path.push(current);
+                if current.minor < to.minor {
+                    current.minor += 1;
+                } else {
+                    break;
+                }
+            }
+            path.push(to);
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    pub fn print_version_matrix(&self) {
+        println!("\n╔════ VERSION SUPPORT MATRIX ════╗");
+
+        let mut versions: Vec<_> = self.versions.keys().collect();
+        versions.sort();
+
+        for version in versions {
+            if let Some(matrix) = self.versions.get(version) {
+                let status = if matrix.is_supported() { "✓ SUPPORTED" } else { "✗ SUNSET" };
+                println!("║ {} - {}", version.to_string(), status);
+                println!("║   Release: {} | Support until: {} days",
+                         matrix.release_date,
+                         matrix.days_until_sunset());
+                println!("║   Endpoints: {} | Breaking changes: {}",
+                         matrix.endpoints.len(),
+                         matrix.breaking_changes.len());
+
+                if !matrix.new_features.is_empty() {
+                    println!("║   New features: {}", matrix.new_features.join(", "));
+                }
+            }
+        }
+
+        println!("╚═════════════════════════════════╝\n");
+    }
+
+    pub fn print_deprecation_notices(&self) {
+        println!("\n╔════ DEPRECATION NOTICES ════╗");
+
+        for (version, matrix) in &self.versions {
+            for (key, endpoint) in &matrix.endpoints {
+                if endpoint.is_deprecated() {
+                    let days_left = if let Some(sunset) = endpoint.sunset_date {
+                        let days = (sunset - current_timestamp()) / 86400;
+                        format!("{} days", days)
+                    } else {
+                        "unknown".to_string()
+                    };
+
+                    println!("║");
+                    println!("║ ⚠️  {} {} - Deprecated", endpoint.method, endpoint.path);
+                    println!("║   API Version: {}", version.to_string());
+
+                    if let Some(next) = endpoint.next_version {
+                        println!("║   Migrate to: {}", next.to_string());
+                    }
+
+                    println!("║   Sunset in: {}", days_left);
+
+                    if let Some(guide) = &endpoint.migration_guide {
+                        println!("║   Guide: {}", guide);
+                    }
+                }
+            }
+        }
+
+        println!("╚════════════════════════════════╝\n");
+    }
+
+    pub fn print_client_usage(&self) {
+        println!("\n╔════ CLIENT VERSION USAGE ════╗");
+
+        let mut usage: Vec<_> = self.client_usage.iter().collect();
+        usage.sort_by_key(|(v, _)| std::cmp::Reverse(**v));
+
+        let total: u32 = usage.iter().map(|(_, count)| count).sum();
+
+        for (version, count) in usage {
+            let percentage = if total > 0 {
+                (*count as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let bar_width = (percentage / 2.5) as usize;
+            let bar = "█".repeat(bar_width.min(40));
+
+            println!("║ {} - {:3} requests {:.1}%", version.to_string(), count, percentage);
+            println!("║   {}", bar);
+        }
+
+        println!("║ Total: {} requests", total);
+        println!("╚═════════════════════════════════╝\n");
+    }
+
+    pub fn print_migration_guide(&self, from: Version, to: Version) {
+        if let Some(path) = self.get_migration_path(from, to) {
+            println!("\n╔════ MIGRATION GUIDE ════╗");
+            println!("║ {} → {}", from.to_string(), to.to_string());
+            println!("║");
+            println!("║ Migration path:");
+
+            for (i, v) in path.iter().enumerate() {
+                if i > 0 {
+                    println!("║   ↓");
+                }
+                println!("║   {}", v.to_string());
+            }
+
+            if let Some(guide) = self.version_migrations.get(&(from, to)) {
+                println!("║");
+                println!("║ Instructions:");
+                println!("║ {}", guide);
+            }
+
+            println!("╚═════════════════════════╝\n");
+        }
+    }
+}
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║        OMNISYSTEM API VERSIONING SYSTEM v1.0                  ║");
+    println!("║        Semantic Versioning | Deprecation Tracking             ║");
+    println!("╚════════════════════════════════════════════════════════════════╝\n");
+
+    let mut system = APIVersioningSystem::new(Version::new(1, 2, 0));
+
+    // Register versions
+    system.register_version(Version::new(1, 0, 0)).ok();
+    system.register_version(Version::new(1, 1, 0)).ok();
+
+    // Add endpoints
+    let v1_2 = Version::new(1, 2, 0);
+    let endpoint = APIEndpoint::new("/api/users".to_string(), "GET".to_string(), v1_2);
+    system.add_endpoint(v1_2, endpoint).ok();
+
+    // Simulate client usage
+    system.record_client_usage(Version::new(1, 0, 0)).ok();
+    system.record_client_usage(Version::new(1, 0, 0)).ok();
+    system.record_client_usage(Version::new(1, 1, 0)).ok();
+    system.record_client_usage(Version::new(1, 2, 0)).ok();
+    system.record_client_usage(Version::new(1, 2, 0)).ok();
+    system.record_client_usage(Version::new(1, 2, 0)).ok();
+
+    // Print reports
+    system.print_version_matrix();
+    system.print_client_usage();
+
+    // Deprecate old version
+    system.deprecate_version(
+        Version::new(1, 0, 0),
+        Version::new(1, 2, 0),
+        "Update API endpoints to v1.2 format".to_string()
+    ).ok();
+
+    system.print_deprecation_notices();
+    system.print_migration_guide(Version::new(1, 0, 0), Version::new(1, 2, 0));
+
+    println!("✓ API versioning system operational");
+}
