@@ -1,0 +1,369 @@
+// MeshNetwork.titan - TIER 2: Peer-to-peer mesh networking for offline-first sync
+// Device discovery, peer communication, mesh routing, bandwidth sharing
+
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+// ============================================================================
+// MESH DEVICE REPRESENTATION
+// ============================================================================
+
+pub struct MeshDevice {
+    pub device_id: String,
+    pub device_name: String,
+    pub device_type: String, // "phone", "laptop", "tablet", "desktop", "watch"
+    pub ipv4_address: String,
+    pub bluetooth_address: String,
+    pub signal_strength: i8, // -100 to 0 dBm
+    pub bandwidth_available_mbps: f32,
+    pub battery_percent: u8,
+    pub is_online: bool,
+    pub last_seen: u64,
+}
+
+impl MeshDevice {
+    pub fn new(
+        device_id: String,
+        device_name: String,
+        device_type: String,
+        ipv4_address: String,
+    ) -> Self {
+        MeshDevice {
+            device_id,
+            device_name,
+            device_type,
+            ipv4_address,
+            bluetooth_address: "00:00:00:00:00:00".to_string(),
+            signal_strength: -50,
+            bandwidth_available_mbps: 50.0,
+            battery_percent: 100,
+            is_online: true,
+            last_seen: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+
+    pub fn is_reachable(&self) -> bool {
+        self.is_online && self.signal_strength > -100
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "{} ({}) - {} - Signal: {} dBm, Battery: {}%, Bandwidth: {} Mbps",
+            self.device_name,
+            self.device_type,
+            self.ipv4_address,
+            self.signal_strength,
+            self.battery_percent,
+            self.bandwidth_available_mbps as u32
+        )
+    }
+}
+
+// ============================================================================
+// MESH ROUTE & PACKET FORWARDING
+// ============================================================================
+
+pub struct MeshRoute {
+    pub destination_id: String,
+    pub next_hop_id: String,
+    pub hop_count: u8,
+    pub bandwidth_mbps: f32,
+    pub latency_ms: u32,
+}
+
+impl MeshRoute {
+    pub fn new(destination_id: String, next_hop_id: String, hop_count: u8) -> Self {
+        MeshRoute {
+            destination_id,
+            next_hop_id,
+            hop_count,
+            bandwidth_mbps: 50.0,
+            latency_ms: 10 * (hop_count as u32),
+        }
+    }
+}
+
+pub struct MeshPacket {
+    pub packet_id: String,
+    pub source_id: String,
+    pub destination_id: String,
+    pub data: Vec<u8>,
+    pub hop_count: u8,
+    pub timestamp: u64,
+}
+
+impl MeshPacket {
+    pub fn new(source_id: String, destination_id: String, data: Vec<u8>) -> Self {
+        MeshPacket {
+            packet_id: format!("pkt_{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()),
+            source_id,
+            destination_id,
+            data,
+            hop_count: 0,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+}
+
+// ============================================================================
+// MESH NETWORK TOPOLOGY
+// ============================================================================
+
+pub struct MeshNetwork {
+    pub devices: HashMap<String, MeshDevice>,
+    pub routes: Vec<MeshRoute>,
+    pub transmitted_packets: Vec<MeshPacket>,
+    pub offline_queue: Vec<MeshPacket>,
+    pub network_status: String,
+}
+
+impl MeshNetwork {
+    pub fn new() -> Self {
+        MeshNetwork {
+            devices: HashMap::new(),
+            routes: vec![],
+            transmitted_packets: vec![],
+            offline_queue: vec![],
+            network_status: "offline".to_string(),
+        }
+    }
+
+    pub fn register_device(&mut self, device: MeshDevice) -> Result<(), String> {
+        if self.devices.contains_key(&device.device_id) {
+            return Err("Device already registered".to_string());
+        }
+
+        self.devices.insert(device.device_id.clone(), device);
+
+        // Update network status
+        self.update_network_status();
+
+        println!("✓ Device registered: {}", self.devices.len());
+        Ok(())
+    }
+
+    pub fn discover_peers(&mut self) -> Result<Vec<String>, String> {
+        let online_devices: Vec<String> = self
+            .devices
+            .values()
+            .filter(|d| d.is_online)
+            .map(|d| d.device_id.clone())
+            .collect();
+
+        println!("✓ Discovered {} peers", online_devices.len());
+        Ok(online_devices)
+    }
+
+    pub fn build_routing_table(&mut self) -> Result<(), String> {
+        self.routes.clear();
+
+        let device_ids: Vec<String> = self.devices.keys().cloned().collect();
+
+        // Build routes between all reachable devices
+        for source_id in &device_ids {
+            for dest_id in &device_ids {
+                if source_id != dest_id {
+                    if let Some(dest) = self.devices.get(dest_id) {
+                        if dest.is_reachable() {
+                            // Direct connection (1 hop)
+                            self.routes
+                                .push(MeshRoute::new(dest_id.clone(), dest_id.clone(), 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("✓ Routing table built: {} routes", self.routes.len());
+        Ok(())
+    }
+
+    pub fn send_packet(&mut self, packet: MeshPacket) -> Result<(), String> {
+        // Check if destination is reachable
+        if let Some(dest_device) = self.devices.get(&packet.destination_id) {
+            if dest_device.is_online {
+                self.transmitted_packets.push(packet);
+                println!("✓ Packet sent successfully");
+                Ok(())
+            } else {
+                // Queue for offline delivery
+                self.offline_queue.push(packet);
+                println!("⚠️  Destination offline. Packet queued.");
+                Ok(())
+            }
+        } else {
+            Err("Destination device not found".to_string())
+        }
+    }
+
+    pub fn deliver_queued_packets(&mut self, device_id: &str) -> Result<u32, String> {
+        let mut delivered = 0;
+
+        let queued_packets: Vec<MeshPacket> = self
+            .offline_queue
+            .drain(..)
+            .filter(|p| {
+                if p.destination_id == device_id {
+                    delivered += 1;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        self.offline_queue = queued_packets;
+
+        println!("✓ Delivered {} queued packets to {}", delivered, device_id);
+        Ok(delivered)
+    }
+
+    pub fn share_bandwidth(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        share_mbps: f32,
+    ) -> Result<(), String> {
+        if let Some(source) = self.devices.get_mut(source_id) {
+            if source.bandwidth_available_mbps >= share_mbps {
+                source.bandwidth_available_mbps -= share_mbps;
+
+                if let Some(target) = self.devices.get_mut(target_id) {
+                    target.bandwidth_available_mbps += share_mbps;
+                    println!(
+                        "✓ Bandwidth shared: {} Mbps from {} to {}",
+                        share_mbps, source_id, target_id
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        Err("Failed to share bandwidth".to_string())
+    }
+
+    pub fn enable_mesh_mode(&mut self) -> Result<(), String> {
+        self.network_status = "mesh_active".to_string();
+        println!("✓ Mesh mode enabled: {} devices in network", self.devices.len());
+        Ok(())
+    }
+
+    pub fn update_network_status(&mut self) {
+        let online_count = self.devices.values().filter(|d| d.is_online).count();
+
+        self.network_status = if online_count > 1 {
+            "mesh_active".to_string()
+        } else if online_count == 1 {
+            "single_device".to_string()
+        } else {
+            "offline".to_string()
+        };
+    }
+
+    pub fn print_topology(&self) {
+        println!("\n╔════════════════════════════════════════════════════╗");
+        println!("║         MESH NETWORK TOPOLOGY                      ║");
+        println!("╚════════════════════════════════════════════════════╝\n");
+
+        println!("📊 NETWORK STATUS: {}", self.network_status);
+        println!("📱 CONNECTED DEVICES: {}\n", self.devices.len());
+
+        for (_, device) in &self.devices {
+            let status = if device.is_online { "🟢" } else { "🔴" };
+            println!("{} {}", status, device.to_string());
+        }
+
+        println!("\n🗺️  ROUTING TABLE: {} routes", self.routes.len());
+        for route in self.routes.iter().take(5) {
+            println!(
+                "  {} → {} ({} hops, {:.1} Mbps, {} ms)",
+                route.destination_id, route.next_hop_id, route.hop_count, route.bandwidth_mbps, route.latency_ms
+            );
+        }
+
+        println!(
+            "\n📤 TRANSMITTED: {} packets",
+            self.transmitted_packets.len()
+        );
+        println!("📥 QUEUED: {} packets (offline)", self.offline_queue.len());
+        println!("\n");
+    }
+}
+
+// ============================================================================
+// MAIN TEST
+// ============================================================================
+
+fn main() -> Result<(), String> {
+    println!("=== MESH NETWORK SYSTEM ===\n");
+
+    let mut mesh = MeshNetwork::new();
+
+    // Register devices
+    println!("--- Registering Devices ---");
+    let laptop = MeshDevice::new(
+        "laptop_001".to_string(),
+        "James Laptop".to_string(),
+        "laptop".to_string(),
+        "10.0.0.1".to_string(),
+    );
+    mesh.register_device(laptop)?;
+
+    let phone = MeshDevice::new(
+        "phone_001".to_string(),
+        "James iPhone".to_string(),
+        "phone".to_string(),
+        "10.0.0.2".to_string(),
+    );
+    mesh.register_device(phone)?;
+
+    let tablet = MeshDevice::new(
+        "tablet_001".to_string(),
+        "James iPad".to_string(),
+        "tablet".to_string(),
+        "10.0.0.3".to_string(),
+    );
+    mesh.register_device(tablet)?;
+
+    println!();
+
+    // Discover peers
+    println!("--- Discovering Peers ---");
+    let peers = mesh.discover_peers()?;
+    println!("Online peers: {:?}\n", peers);
+
+    // Build routing
+    println!("--- Building Routing Table ---");
+    mesh.build_routing_table()?;
+
+    // Enable mesh
+    println!("\n--- Enabling Mesh Mode ---");
+    mesh.enable_mesh_mode()?;
+
+    // Send packets
+    println!("\n--- Sending Packets ---");
+    let packet = MeshPacket::new(
+        "laptop_001".to_string(),
+        "phone_001".to_string(),
+        vec![72, 101, 108, 108, 111], // "Hello"
+    );
+    mesh.send_packet(packet)?;
+
+    // Share bandwidth
+    println!("\n--- Sharing Bandwidth ---");
+    mesh.share_bandwidth("laptop_001", "phone_001", 10.0)?;
+
+    mesh.print_topology();
+
+    println!("✓✓✓ Mesh Network System operational ✓✓✓");
+    Ok(())
+}
