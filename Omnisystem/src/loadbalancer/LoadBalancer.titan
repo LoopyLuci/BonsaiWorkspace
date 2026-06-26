@@ -1,0 +1,128 @@
+// LoadBalancer.titan - Load balancing and traffic distribution
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub enum LoadBalancingStrategy {
+    RoundRobin,
+    LeastConnections,
+    WeightedRandom,
+    ConsistentHash,
+}
+
+pub struct BackendServer {
+    pub server_id: String,
+    pub address: String,
+    pub port: u16,
+    pub active_connections: u32,
+    pub weight: u32,
+    pub is_healthy: bool,
+}
+
+impl BackendServer {
+    pub fn new(server_id: String, address: String, port: u16) -> Self {
+        BackendServer {
+            server_id,
+            address,
+            port,
+            active_connections: 0,
+            weight: 1,
+            is_healthy: true,
+        }
+    }
+
+    pub fn add_connection(&mut self) {
+        self.active_connections += 1;
+    }
+
+    pub fn remove_connection(&mut self) {
+        if self.active_connections > 0 {
+            self.active_connections -= 1;
+        }
+    }
+}
+
+pub struct LoadBalancer {
+    pub balancer_id: String,
+    pub servers: Vec<BackendServer>,
+    pub strategy: LoadBalancingStrategy,
+    pub current_index: usize,
+    pub total_requests: u32,
+}
+
+impl LoadBalancer {
+    pub fn new(balancer_id: String, strategy: LoadBalancingStrategy) -> Self {
+        LoadBalancer {
+            balancer_id,
+            servers: Vec::new(),
+            strategy,
+            current_index: 0,
+            total_requests: 0,
+        }
+    }
+
+    pub fn add_server(&mut self, server: BackendServer) {
+        self.servers.push(server);
+    }
+
+    pub fn select_server(&mut self) -> Option<&mut BackendServer> {
+        if self.servers.is_empty() {
+            return None;
+        }
+
+        self.total_requests += 1;
+
+        match self.strategy {
+            LoadBalancingStrategy::RoundRobin => {
+                let idx = self.current_index % self.servers.len();
+                self.current_index = (self.current_index + 1) % self.servers.len();
+                Some(&mut self.servers[idx])
+            }
+            LoadBalancingStrategy::LeastConnections => {
+                let mut min_idx = 0;
+                let mut min_conn = self.servers[0].active_connections;
+
+                for (i, server) in self.servers.iter().enumerate() {
+                    if server.is_healthy && server.active_connections < min_conn {
+                        min_idx = i;
+                        min_conn = server.active_connections;
+                    }
+                }
+
+                Some(&mut self.servers[min_idx])
+            }
+            LoadBalancingStrategy::WeightedRandom => {
+                let total_weight: u32 = self.servers.iter().map(|s| s.weight).sum();
+                let random_val = (self.total_requests % total_weight) as u32;
+                let mut cumulative = 0;
+
+                for server in self.servers.iter_mut() {
+                    cumulative += server.weight;
+                    if random_val < cumulative {
+                        return Some(server);
+                    }
+                }
+
+                Some(&mut self.servers[0])
+            }
+            LoadBalancingStrategy::ConsistentHash => {
+                let idx = (self.total_requests as usize) % self.servers.len();
+                Some(&mut self.servers[idx])
+            }
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 61: LOAD BALANCER ===\n");
+    let mut lb = LoadBalancer::new("lb_001".to_string(), LoadBalancingStrategy::RoundRobin);
+    lb.add_server(BackendServer::new("srv_1".to_string(), "127.0.0.1".to_string(), 8001));
+    lb.add_server(BackendServer::new("srv_2".to_string(), "127.0.0.1".to_string(), 8002));
+
+    if let Some(srv) = lb.select_server() {
+        srv.add_connection();
+        println!("✓ Request routed to {}", srv.server_id);
+    }
+
+    println!("✓✓✓ Load Balancer operational ✓✓✓");
+    Ok(())
+}

@@ -1,0 +1,108 @@
+// ResourceQuotaManager.titan - Resource quota and rate limiting
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub struct ResourceQuota {
+    pub quota_id: String,
+    pub resource_type: String,
+    pub limit: u64,
+    pub usage: u64,
+    pub reset_at: u64,
+}
+
+impl ResourceQuota {
+    pub fn new(quota_id: String, resource_type: String, limit: u64) -> Self {
+        ResourceQuota {
+            quota_id,
+            resource_type,
+            limit,
+            usage: 0,
+            reset_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() + 3600,
+        }
+    }
+
+    pub fn can_consume(&self, amount: u64) -> bool {
+        self.usage + amount <= self.limit
+    }
+
+    pub fn consume(&mut self, amount: u64) -> Result<(), String> {
+        if self.can_consume(amount) {
+            self.usage += amount;
+            Ok(())
+        } else {
+            Err(format!(
+                "Quota exceeded: {} + {} > {}",
+                self.usage, amount, self.limit
+            ))
+        }
+    }
+
+    pub fn get_remaining(&self) -> u64 {
+        if self.usage >= self.limit {
+            0
+        } else {
+            self.limit - self.usage
+        }
+    }
+}
+
+pub struct ResourceQuotaManager {
+    pub manager_id: String,
+    pub quotas: HashMap<String, ResourceQuota>,
+}
+
+impl ResourceQuotaManager {
+    pub fn new(manager_id: String) -> Self {
+        ResourceQuotaManager {
+            manager_id,
+            quotas: HashMap::new(),
+        }
+    }
+
+    pub fn create_quota(&mut self, quota: ResourceQuota) {
+        self.quotas.insert(quota.quota_id.clone(), quota);
+    }
+
+    pub fn check_quota(&self, quota_id: &str, amount: u64) -> bool {
+        if let Some(quota) = self.quotas.get(quota_id) {
+            quota.can_consume(amount)
+        } else {
+            false
+        }
+    }
+
+    pub fn consume_quota(&mut self, quota_id: &str, amount: u64) -> Result<(), String> {
+        if let Some(quota) = self.quotas.get_mut(quota_id) {
+            quota.consume(amount)
+        } else {
+            Err(format!("Quota {} not found", quota_id))
+        }
+    }
+
+    pub fn get_usage_summary(&self) -> String {
+        let mut summary = String::new();
+        for (id, quota) in &self.quotas {
+            let pct = (quota.usage as f64 / quota.limit as f64) * 100.0;
+            summary.push_str(&format!(
+                "{}: {}/{} ({}%)\n",
+                id, quota.usage, quota.limit, pct as u32
+            ));
+        }
+        summary
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 64: RESOURCE QUOTA MANAGER ===\n");
+    let mut qm = ResourceQuotaManager::new("qm_001".to_string());
+    let quota = ResourceQuota::new("api_calls".to_string(), "requests".to_string(), 1000);
+    qm.create_quota(quota);
+    qm.consume_quota("api_calls", 100)?;
+    println!("✓ Consumed 100 API calls");
+    println!("✓ Remaining: {}", qm.quotas["api_calls"].get_remaining());
+    println!("✓✓✓ Resource Quota Manager operational ✓✓✓");
+    Ok(())
+}
