@@ -1,0 +1,92 @@
+// Connection Pooling
+// Database/service connection management with health checks
+// System 49
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Connection {
+    id: String,
+    target: String,
+    created_at: i64,
+    last_used: i64,
+    is_healthy: bool
+}
+
+actor ConnectionPool {
+    available: Vec<Connection> = Vec::new(),
+    in_use: HashMap<String, Connection> = HashMap::new(),
+    min_size: i32 = 5,
+    max_size: i32 = 50,
+    idle_timeout: i64 = 300
+
+    message AcquireConnection(target: String) -> Result<String, String> {
+        if available.len() > 0 {
+            let conn = available.remove(0)
+            let conn_id = conn.id.clone()
+            in_use.insert(conn_id.clone(), conn)
+            return Ok(conn_id)
+        }
+
+        if in_use.len() < max_size as usize {
+            let conn = Connection {
+                id: "conn_".to_string() + &SystemTime::now().secs().to_string(),
+                target: target.clone(),
+                created_at: SystemTime::now().secs(),
+                last_used: SystemTime::now().secs(),
+                is_healthy: true
+            }
+            let conn_id = conn.id.clone()
+            in_use.insert(conn_id.clone(), conn)
+            return Ok(conn_id)
+        }
+
+        return Err("Pool exhausted".to_string())
+    }
+
+    message ReleaseConnection(conn_id: String) -> Result<(), String> {
+        match in_use.remove(&conn_id) {
+            Some(mut conn) => {
+                conn.last_used = SystemTime::now().secs()
+                available.push(conn)
+                return Ok(())
+            },
+            None => return Err("Connection not found".to_string())
+        }
+    }
+
+    message HealthCheck() -> Result<i32, String> {
+        let mut healthy = 0
+        for conn in &available {
+            if conn.is_healthy {
+                healthy = healthy + 1
+            }
+        }
+        return Ok(healthy as i32)
+    }
+
+    message GetPoolStats() -> (i32, i32) {
+        return (available.len() as i32, in_use.len() as i32)
+    }
+}
+
+async fn test_connection_pool() -> Result<(), String> {
+    let pool: ActorRef<ConnectionPool> = spawn(ConnectionPool {
+        available: Vec::new(),
+        in_use: HashMap::new(),
+        min_size: 5,
+        max_size: 50,
+        idle_timeout: 300
+    })
+
+    let conn1 = await pool.call(ConnectionPool::AcquireConnection("db.example.com".to_string()))?
+    let conn2 = await pool.call(ConnectionPool::AcquireConnection("db.example.com".to_string()))?
+
+    let (avail, used) = await pool.call(ConnectionPool::GetPoolStats())?
+    println("Pool stats: {} available, {} in use", avail, used)
+
+    await pool.call(ConnectionPool::ReleaseConnection(conn1))?
+    await pool.call(ConnectionPool::ReleaseConnection(conn2))?
+
+    Ok(())
+}

@@ -1,0 +1,170 @@
+// File System
+// Virtual file system with permissions and journaling
+// Replaces: phase 31 file system systems (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+enum FileType {
+    File,
+    Directory,
+    SymLink
+}
+
+struct FileNode {
+    path: String,
+    name: String,
+    file_type: FileType,
+    size: i64,
+    created_at: i64,
+    modified_at: i64,
+    permissions: String,  // "755"
+    owner: String,
+    content: Option<Vec<u8>>
+}
+
+struct FileSystem {
+    root: HashMap<String, FileNode>,
+    journal: Vec<String>,
+    total_size: i64
+}
+
+impl FileSystem {
+    fn new() -> Self {
+        return FileSystem {
+            root: HashMap::new(),
+            journal: Vec::new(),
+            total_size: 0
+        }
+    }
+
+    fn create_file(&mut self, path: String, owner: String) -> Result<(), String> {
+        if self.root.contains_key(&path) {
+            return Err("File already exists".to_string())
+        }
+
+        let file = FileNode {
+            path: path.clone(),
+            name: path.split("/").last().unwrap_or("").to_string(),
+            file_type: FileType::File,
+            size: 0,
+            created_at: SystemTime::now().secs(),
+            modified_at: SystemTime::now().secs(),
+            permissions: "644".to_string(),
+            owner: owner,
+            content: Some(Vec::new())
+        }
+
+        self.root.insert(path.clone(), file)
+        self.journal.push(format!("Created file: {}", path))
+
+        println("FileSystem: Created file '{}'", path)
+        Ok(())
+    }
+
+    fn write_file(&mut self, path: String, data: Vec<u8>) -> Result<(), String> {
+        match self.root.get_mut(&path) {
+            Some(file) => {
+                let data_size = data.len() as i64
+                file.content = Some(data)
+                file.size = data_size
+                file.modified_at = SystemTime::now().secs()
+                self.total_size = self.total_size + data_size
+
+                self.journal.push(format!("Wrote {} bytes to {}", data_size, path))
+
+                println("FileSystem: Written {} bytes to '{}'", data_size, path)
+                Ok(())
+            },
+            None => Err("File not found".to_string())
+        }
+    }
+
+    fn read_file(&self, path: String) -> Result<Vec<u8>, String> {
+        match self.root.get(&path) {
+            Some(file) => {
+                match &file.content {
+                    Some(data) => Ok(data.clone()),
+                    None => Err("File has no content".to_string())
+                }
+            },
+            None => Err("File not found".to_string())
+        }
+    }
+
+    fn delete_file(&mut self, path: String) -> Result<(), String> {
+        match self.root.remove(&path) {
+            Some(file) => {
+                self.total_size = self.total_size - file.size
+                self.journal.push(format!("Deleted file: {}", path))
+
+                println("FileSystem: Deleted file '{}'", path)
+                Ok(())
+            },
+            None => Err("File not found".to_string())
+        }
+    }
+
+    fn create_directory(&mut self, path: String, owner: String) -> Result<(), String> {
+        if self.root.contains_key(&path) {
+            return Err("Directory already exists".to_string())
+        }
+
+        let dir = FileNode {
+            path: path.clone(),
+            name: path.split("/").last().unwrap_or("").to_string(),
+            file_type: FileType::Directory,
+            size: 0,
+            created_at: SystemTime::now().secs(),
+            modified_at: SystemTime::now().secs(),
+            permissions: "755".to_string(),
+            owner: owner,
+            content: None
+        }
+
+        self.root.insert(path.clone(), dir)
+        self.journal.push(format!("Created directory: {}", path))
+
+        println("FileSystem: Created directory '{}'", path)
+        Ok(())
+    }
+
+    fn list_directory(&self, path: String) -> Vec<String> {
+        let mut results = Vec::new()
+
+        for (file_path, _) in self.root.iter() {
+            if file_path.starts_with(&path) && file_path != &path {
+                results.push(file_path.clone())
+            }
+        }
+
+        return results
+    }
+
+    fn get_file_count(&self) -> i32 {
+        return self.root.len() as i32
+    }
+
+    fn get_total_size(&self) -> i64 {
+        return self.total_size
+    }
+}
+
+fn test_filesystem() -> Result<(), String> {
+    let mut fs = FileSystem::new()
+
+    fs.create_directory("/home".to_string(), "root".to_string())?
+    fs.create_file("/home/file1.txt".to_string(), "user1".to_string())?
+
+    fs.write_file("/home/file1.txt".to_string(), b"Hello, Omnisystem!".to_vec())?
+
+    let content = fs.read_file("/home/file1.txt".to_string())?
+    println("Read file: {} bytes", content.len())
+
+    let files = fs.list_directory("/home".to_string())
+    println("Files in /home: {}", files.len())
+
+    println("Total files: {}, Total size: {} bytes", fs.get_file_count(), fs.get_total_size())
+
+    Ok(())
+}

@@ -1,0 +1,342 @@
+// Advanced Post-Processing Pipeline
+// HDR tone mapping, bloom, lens effects, color grading
+// Phase 154
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+use omnisystem::sync::{Arc, Mutex}
+
+struct ColorGradeSettings {
+    brightness: f64,
+    contrast: f64,
+    saturation: f64,
+    hue_shift: f64,
+    gamma: f64
+}
+
+struct BloomSettings {
+    intensity: f64,
+    threshold: f64,
+    radius: f64,
+    samples: i32
+}
+
+struct DepthOfFieldSettings {
+    focal_distance: f64,
+    focal_range: f64,
+    aperture: f64,
+    samples: i32
+}
+
+struct LensFlareSettings {
+    intensity: f64,
+    threshold: f64,
+    ghost_count: i32,
+    halo_width: f64
+}
+
+enum ToneMapAlgorithm {
+    ACES,
+    Reinhard,
+    Filmic,
+    Uncharted2
+}
+
+gpu_kernel apply_tone_mapping(input: &[(f64, f64, f64)], algorithm: i32) -> Vec<(f64, f64, f64)> {
+    let mut output: Vec<(f64, f64, f64)> = Vec::new()
+
+    for pixel in input {
+        let mapped = match algorithm {
+            0 => apply_aces(pixel),
+            1 => apply_reinhard(pixel),
+            2 => apply_filmic(pixel),
+            _ => apply_uncharted2(pixel)
+        }
+        output.push(mapped)
+    }
+
+    output
+}
+
+gpu_kernel apply_bloom_filter(input: &[(f64, f64, f64)], threshold: f64, radius: f64) -> Vec<(f64, f64, f64)> {
+    let mut output: Vec<(f64, f64, f64)> = Vec::new()
+
+    for pixel in input {
+        let (r, g, b) = pixel
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+
+        if luminance > threshold {
+            let bloom_intensity = (luminance - threshold) / (1.0 - threshold)
+            output.push((r * bloom_intensity, g * bloom_intensity, b * bloom_intensity))
+        } else {
+            output.push((0.0, 0.0, 0.0))
+        }
+    }
+
+    output
+}
+
+gpu_kernel apply_chromatic_aberration(input: &[(f64, f64, f64)], strength: f64) -> Vec<(f64, f64, f64)> {
+    let mut output: Vec<(f64, f64, f64)> = Vec::new()
+
+    for pixel in input {
+        let (r, g, b) = pixel
+
+        // Simulate chromatic aberration by shifting channels
+        let shift = strength
+        let r_shifted = r * (1.0 + shift * 0.01)
+        let b_shifted = b * (1.0 - shift * 0.01)
+
+        output.push((r_shifted, g, b_shifted))
+    }
+
+    output
+}
+
+gpu_kernel apply_vignette(input: &[(f64, f64, f64)], strength: f64, radius: f64) -> Vec<(f64, f64, f64)> {
+    let mut output: Vec<(f64, f64, f64)> = Vec::new()
+
+    for pixel in input {
+        let (r, g, b) = pixel
+        let vignette_factor = 1.0 - (strength * radius)
+        let clamped = if vignette_factor < 0.0 { 0.0 } else { vignette_factor }
+
+        output.push((r * clamped, g * clamped, b * clamped))
+    }
+
+    output
+}
+
+fn apply_aces(pixel: &(f64, f64, f64)) -> (f64, f64, f64) {
+    let (r, g, b) = pixel
+
+    let a = 2.51
+    let b_coeff = 0.03
+    let c = 2.43
+    let d = 0.59
+    let e = 0.14
+
+    let tone = |x: f64| -> f64 {
+        (x * (a * x + b_coeff)) / (x * (c * x + d) + e)
+    }
+
+    (tone(*r), tone(*g), tone(*b))
+}
+
+fn apply_reinhard(pixel: &(f64, f64, f64)) -> (f64, f64, f64) {
+    let (r, g, b) = pixel
+    let tone = |x: f64| -> f64 {
+        x / (1.0 + x)
+    }
+    (tone(*r), tone(*g), tone(*b))
+}
+
+fn apply_filmic(pixel: &(f64, f64, f64)) -> (f64, f64, f64) {
+    let (r, g, b) = pixel
+
+    let filmic_curve = |x: f64| -> f64 {
+        let x_abs = if *x < 0.0 { 0.0 } else { *x }
+        let numerator = x_abs * (2.43 * x_abs + 0.03)
+        let denominator = x_abs * (2.43 * x_abs + 0.59) + 0.14
+        numerator / denominator
+    }
+
+    (filmic_curve(*r), filmic_curve(*g), filmic_curve(*b))
+}
+
+fn apply_uncharted2(pixel: &(f64, f64, f64)) -> (f64, f64, f64) {
+    let (r, g, b) = pixel
+
+    let uncharted2_tonemap = |x: f64| -> f64 {
+        let a = 0.15
+        let b_coeff = 0.50
+        let c = 0.10
+        let d = 0.20
+        let e = 0.02
+        let f = 0.30
+        let w = 11.2
+
+        ((x * (a * x + c * b_coeff) + d * e) / (x * (a * x + b_coeff) + d * f)) - e / f
+    }
+
+    (uncharted2_tonemap(*r), uncharted2_tonemap(*g), uncharted2_tonemap(*b))
+}
+
+actor PostProcessingPipeline {
+    color_grade: ColorGradeSettings = ColorGradeSettings {
+        brightness: 1.0,
+        contrast: 1.0,
+        saturation: 1.0,
+        hue_shift: 0.0,
+        gamma: 2.2
+    },
+    bloom: BloomSettings = BloomSettings {
+        intensity: 1.0,
+        threshold: 0.8,
+        radius: 1.0,
+        samples: 16
+    },
+    dof: DepthOfFieldSettings = DepthOfFieldSettings {
+        focal_distance: 5.0,
+        focal_range: 2.0,
+        aperture: 2.8,
+        samples: 8
+    },
+    lens_flare: LensFlareSettings = LensFlareSettings {
+        intensity: 0.5,
+        threshold: 0.9,
+        ghost_count: 5,
+        halo_width: 0.1
+    },
+    tone_mapping: ToneMapAlgorithm = ToneMapAlgorithm::ACES,
+    enable_bloom: bool = true,
+    enable_dof: bool = true,
+    enable_chromatic: bool = false,
+    enable_vignette: bool = true
+
+    message SetColorGrade(settings: ColorGradeSettings) -> Result<(), String> {
+        color_grade = settings
+        Ok(())
+    }
+
+    message SetBloomSettings(settings: BloomSettings) -> Result<(), String> {
+        if settings.intensity < 0.0 || settings.threshold < 0.0 {
+            return Err("Invalid bloom settings".to_string())
+        }
+        bloom = settings
+        Ok(())
+    }
+
+    message SetToneMapping(algorithm: String) -> Result<(), String> {
+        tone_mapping = match algorithm.as_str() {
+            "ACES" => ToneMapAlgorithm::ACES,
+            "Reinhard" => ToneMapAlgorithm::Reinhard,
+            "Filmic" => ToneMapAlgorithm::Filmic,
+            "Uncharted2" => ToneMapAlgorithm::Uncharted2,
+            _ => return Err("Unknown tone mapping algorithm".to_string())
+        }
+        Ok(())
+    }
+
+    message ProcessFrame(pixels: Vec<(f64, f64, f64)>) -> Result<Vec<(f64, f64, f64)>, String> {
+        let mut output = pixels.clone()
+
+        // Apply tone mapping
+        let algo_id = match tone_mapping {
+            ToneMapAlgorithm::ACES => 0,
+            ToneMapAlgorithm::Reinhard => 1,
+            ToneMapAlgorithm::Filmic => 2,
+            ToneMapAlgorithm::Uncharted2 => 3
+        }
+        output = apply_tone_mapping(&output, algo_id)
+
+        // Apply bloom
+        if enable_bloom {
+            let bloom_colors = apply_bloom_filter(&output, bloom.threshold, bloom.radius)
+            for i in 0..output.len() {
+                let (r1, g1, b1) = output[i]
+                let (r2, g2, b2) = bloom_colors[i]
+                output[i] = (r1 + r2 * bloom.intensity, g1 + g2 * bloom.intensity, b1 + b2 * bloom.intensity)
+            }
+        }
+
+        // Apply chromatic aberration
+        if enable_chromatic {
+            output = apply_chromatic_aberration(&output, 2.0)
+        }
+
+        // Apply vignette
+        if enable_vignette {
+            output = apply_vignette(&output, 0.3, 0.5)
+        }
+
+        // Apply color grading
+        for i in 0..output.len() {
+            let (r, g, b) = output[i]
+            let r_graded = r.powf(1.0 / color_grade.gamma) * color_grade.brightness * color_grade.contrast
+            let g_graded = g.powf(1.0 / color_grade.gamma) * color_grade.brightness * color_grade.contrast
+            let b_graded = b.powf(1.0 / color_grade.gamma) * color_grade.brightness * color_grade.contrast
+
+            let r_clamped = if r_graded > 1.0 { 1.0 } else { if r_graded < 0.0 { 0.0 } else { r_graded } }
+            let g_clamped = if g_graded > 1.0 { 1.0 } else { if g_graded < 0.0 { 0.0 } else { g_graded } }
+            let b_clamped = if b_graded > 1.0 { 1.0 } else { if b_graded < 0.0 { 0.0 } else { b_graded } }
+
+            output[i] = (r_clamped, g_clamped, b_clamped)
+        }
+
+        Ok(output)
+    }
+
+    message EnableBloom(enabled: bool) -> Result<(), String> {
+        enable_bloom = enabled
+        Ok(())
+    }
+
+    message EnableDepthOfField(enabled: bool) -> Result<(), String> {
+        enable_dof = enabled
+        Ok(())
+    }
+
+    message EnableChromaticAberration(enabled: bool) -> Result<(), String> {
+        enable_chromatic = enabled
+        Ok(())
+    }
+
+    message GetToneMappingAlgorithm() -> String {
+        match tone_mapping {
+            ToneMapAlgorithm::ACES => "ACES".to_string(),
+            ToneMapAlgorithm::Reinhard => "Reinhard".to_string(),
+            ToneMapAlgorithm::Filmic => "Filmic".to_string(),
+            ToneMapAlgorithm::Uncharted2 => "Uncharted2".to_string()
+        }
+    }
+}
+
+async fn test_post_processing() -> Result<(), String> {
+    let pipeline: ActorRef<PostProcessingPipeline> = spawn(PostProcessingPipeline {
+        color_grade: ColorGradeSettings {
+            brightness: 1.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            hue_shift: 0.0,
+            gamma: 2.2
+        },
+        bloom: BloomSettings {
+            intensity: 1.0,
+            threshold: 0.8,
+            radius: 1.0,
+            samples: 16
+        },
+        dof: DepthOfFieldSettings {
+            focal_distance: 5.0,
+            focal_range: 2.0,
+            aperture: 2.8,
+            samples: 8
+        },
+        lens_flare: LensFlareSettings {
+            intensity: 0.5,
+            threshold: 0.9,
+            ghost_count: 5,
+            halo_width: 0.1
+        },
+        tone_mapping: ToneMapAlgorithm::ACES,
+        enable_bloom: true,
+        enable_dof: true,
+        enable_chromatic: false,
+        enable_vignette: true
+    })
+
+    let pixels = vec![
+        (2.0, 2.0, 2.0),
+        (1.5, 1.5, 1.5),
+        (0.5, 0.5, 0.5)
+    ]
+
+    let result = await pipeline.call(PostProcessingPipeline::ProcessFrame(pixels))?
+    println("Post-processing complete: {} pixels processed", result.len())
+
+    await pipeline.call(PostProcessingPipeline::SetToneMapping("Reinhard".to_string()))?
+    let algo = await pipeline.call(PostProcessingPipeline::GetToneMappingAlgorithm())?
+    println("Tone mapping algorithm: {}", algo)
+
+    Ok(())
+}

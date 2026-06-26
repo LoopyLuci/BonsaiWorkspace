@@ -1,0 +1,331 @@
+// Window Manager System
+// Cross-platform window lifecycle and state management
+// Replaces: phase 3 window management (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+use omnisystem::sync::{Mutex, Arc}
+
+enum WindowState {
+    Created,
+    Visible,
+    Hidden,
+    Minimized,
+    Maximized,
+    FullScreen,
+    Closing,
+    Closed
+}
+
+struct WindowConfig {
+    title: String,
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    resizable: bool,
+    decorations: bool,
+    fullscreen: bool
+}
+
+struct WindowMetrics {
+    client_width: i32,
+    client_height: i32,
+    window_width: i32,
+    window_height: i32,
+    dpi_scale: f32,
+    refresh_rate: i32
+}
+
+struct Window {
+    id: i32,
+    handle: *mut void,
+    config: WindowConfig,
+    state: WindowState,
+    metrics: WindowMetrics,
+    created_at: i64,
+    last_rendered_at: i64,
+    is_focused: bool,
+    opacity: f32
+}
+
+impl Window {
+    fn new(id: i32, config: WindowConfig) -> Self {
+        return Window {
+            id: id,
+            handle: std::ptr::null_mut(),
+            config: config.clone(),
+            state: WindowState::Created,
+            metrics: WindowMetrics {
+                client_width: config.width,
+                client_height: config.height,
+                window_width: config.width,
+                window_height: config.height,
+                dpi_scale: 1.0,
+                refresh_rate: 60
+            },
+            created_at: SystemTime::now().secs(),
+            last_rendered_at: 0,
+            is_focused: false,
+            opacity: 1.0
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool) -> Result<(), String> {
+        self.state = if visible {
+            WindowState::Visible
+        } else {
+            WindowState::Hidden
+        }
+        println("Window {} set visible: {}", self.id, visible)
+        Ok(())
+    }
+
+    fn set_size(&mut self, width: i32, height: i32) -> Result<(), String> {
+        if width < 100 || height < 100 {
+            return Err("Window size too small".to_string())
+        }
+
+        self.config.width = width
+        self.config.height = height
+        self.metrics.client_width = width
+        self.metrics.client_height = height
+
+        println("Window {} resized to {}x{}", self.id, width, height)
+        Ok(())
+    }
+
+    fn set_position(&mut self, x: i32, y: i32) -> Result<(), String> {
+        self.config.x = x
+        self.config.y = y
+        println("Window {} moved to ({}, {})", self.id, x, y)
+        Ok(())
+    }
+
+    fn set_title(&mut self, title: String) -> Result<(), String> {
+        self.config.title = title.clone()
+        println("Window {} title changed to: {}", self.id, title)
+        Ok(())
+    }
+
+    fn request_focus(&mut self) -> Result<(), String> {
+        self.is_focused = true
+        println("Window {} requested focus", self.id)
+        Ok(())
+    }
+
+    fn release_focus(&mut self) -> Result<(), String> {
+        self.is_focused = false
+        println("Window {} released focus", self.id)
+        Ok(())
+    }
+
+    fn set_opacity(&mut self, opacity: f32) -> Result<(), String> {
+        if opacity < 0.0 || opacity > 1.0 {
+            return Err("Opacity must be between 0 and 1".to_string())
+        }
+
+        self.opacity = opacity
+        println("Window {} opacity set to {}", self.id, opacity)
+        Ok(())
+    }
+
+    fn toggle_fullscreen(&mut self) -> Result<(), String> {
+        self.config.fullscreen = !self.config.fullscreen
+        self.state = if self.config.fullscreen {
+            WindowState::FullScreen
+        } else {
+            WindowState::Visible
+        }
+        println("Window {} fullscreen: {}", self.id, self.config.fullscreen)
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<(), String> {
+        self.state = WindowState::Closing
+        println("Window {} closing", self.id)
+        Ok(())
+    }
+}
+
+struct WindowManager {
+    windows: HashMap<i32, Window>,
+    next_window_id: i32,
+    focused_window: Option<i32>,
+    monitor_config: Vec<(i32, i32, i32, i32)>  // width, height, x, y per monitor
+}
+
+impl WindowManager {
+    fn new() -> Self {
+        return WindowManager {
+            windows: HashMap::new(),
+            next_window_id: 1,
+            focused_window: None,
+            monitor_config: Vec::new()
+        }
+    }
+
+    fn create_window(&mut self, config: WindowConfig) -> Result<i32, String> {
+        let window_id = self.next_window_id
+        self.next_window_id = self.next_window_id + 1
+
+        let window = Window::new(window_id, config.clone())
+        self.windows.insert(window_id, window)
+
+        println("Window created with ID: {}", window_id)
+        Ok(window_id)
+    }
+
+    fn get_window(&mut self, id: i32) -> Result<&mut Window, String> {
+        match self.windows.get_mut(&id) {
+            Some(window) => Ok(window),
+            None => Err("Window not found".to_string())
+        }
+    }
+
+    fn close_window(&mut self, id: i32) -> Result<(), String> {
+        match self.windows.get_mut(&id) {
+            Some(window) => {
+                window.close()?
+                self.windows.remove(&id)
+
+                if self.focused_window == Some(id) {
+                    self.focused_window = None
+                }
+
+                Ok(())
+            },
+            None => Err("Window not found".to_string())
+        }
+    }
+
+    fn set_focused_window(&mut self, id: i32) -> Result<(), String> {
+        // Unfocus previous
+        if let Some(prev_id) = self.focused_window {
+            if let Some(prev_window) = self.windows.get_mut(&prev_id) {
+                prev_window.release_focus()?
+            }
+        }
+
+        // Focus new
+        match self.windows.get_mut(&id) {
+            Some(window) => {
+                window.request_focus()?
+                self.focused_window = Some(id)
+                Ok(())
+            },
+            None => Err("Window not found".to_string())
+        }
+    }
+
+    fn get_focused_window(&self) -> Option<i32> {
+        return self.focused_window
+    }
+
+    fn get_all_windows(&self) -> Vec<i32> {
+        let mut ids = Vec::new()
+        for (id, _) in self.windows.iter() {
+            ids.push(*id)
+        }
+        ids
+    }
+
+    fn enumerate_monitors(&mut self, monitors: Vec<(i32, i32, i32, i32)>) -> Result<(), String> {
+        self.monitor_config = monitors
+        println("Monitor configuration enumerated: {} monitors", self.monitor_config.len())
+        Ok(())
+    }
+
+    fn get_monitor_bounds(&self, index: i32) -> Result<(i32, i32, i32, i32), String> {
+        if index < 0 || index >= self.monitor_config.len() as i32 {
+            return Err("Monitor index out of bounds".to_string())
+        }
+
+        Ok(self.monitor_config[index as usize])
+    }
+
+    fn position_window_on_monitor(&mut self, window_id: i32, monitor_index: i32) -> Result<(), String> {
+        let (width, height, x, y) = self.get_monitor_bounds(monitor_index)?
+
+        match self.windows.get_mut(&window_id) {
+            Some(window) => {
+                window.set_position(x, y)?
+                window.set_size(width, height)?
+                Ok(())
+            },
+            None => Err("Window not found".to_string())
+        }
+    }
+
+    fn window_count(&self) -> i32 {
+        return self.windows.len() as i32
+    }
+}
+
+// Global window manager
+static mut WINDOW_MANAGER: Option<WindowManager> = None
+
+fn init_window_manager() -> Result<(), String> {
+    unsafe {
+        WINDOW_MANAGER = Some(WindowManager::new())
+    }
+    Ok(())
+}
+
+fn get_window_manager() -> Result<&'static mut WindowManager, String> {
+    unsafe {
+        match &mut WINDOW_MANAGER {
+            Some(mgr) => Ok(mgr),
+            None => Err("Window manager not initialized".to_string())
+        }
+    }
+}
+
+// Test
+fn test_window_manager() -> Result<(), String> {
+    init_window_manager()?
+    let manager = get_window_manager()?
+
+    // Create main window
+    let main_config = WindowConfig {
+        title: "Omnisystem Main".to_string(),
+        width: 1024,
+        height: 768,
+        x: 0,
+        y: 0,
+        resizable: true,
+        decorations: true,
+        fullscreen: false
+    }
+
+    let main_id = manager.create_window(main_config)?
+
+    // Create settings window
+    let settings_config = WindowConfig {
+        title: "Settings".to_string(),
+        width: 400,
+        height: 300,
+        x: 100,
+        y: 100,
+        resizable: false,
+        decorations: true,
+        fullscreen: false
+    }
+
+    let settings_id = manager.create_window(settings_config)?
+
+    // Set main window as focused
+    manager.set_focused_window(main_id)?
+
+    // Test window operations
+    let window = manager.get_window(main_id)?
+    window.set_visible(true)?
+    window.set_opacity(0.95)?
+
+    // Check status
+    println("Total windows: {}", manager.window_count())
+    println("Focused window: {:?}", manager.get_focused_window())
+    println("All windows: {:?}", manager.get_all_windows())
+
+    Ok(())
+}

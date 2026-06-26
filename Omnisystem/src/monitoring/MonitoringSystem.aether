@@ -1,0 +1,315 @@
+// Monitoring System
+// Metrics collection, alerting, and observability
+// Replaces: phase 18 monitoring systems (100% rewrite in AETHER)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Metric {
+    name: String,
+    value: f64,
+    timestamp: i64,
+    tags: HashMap<String, String>
+}
+
+struct Alert {
+    id: String,
+    metric_name: String,
+    condition: String,
+    threshold: f64,
+    severity: String,
+    enabled: bool
+}
+
+struct Histogram {
+    name: String,
+    buckets: Vec<i32>,
+    sum: f64,
+    count: i32
+}
+
+// Metrics collector
+actor MetricsCollector {
+    collector_id: String,
+    metrics: Vec<Metric> = Vec::new(),
+    histograms: HashMap<String, Histogram> = HashMap::new(),
+    metric_count: i64 = 0
+
+    message RecordMetric(
+        name: String,
+        value: f64,
+        tags: HashMap<String, String>
+    ) -> Result<(), String> {
+        let metric = Metric {
+            name: name.clone(),
+            value: value,
+            timestamp: SystemTime::now().secs(),
+            tags: tags
+        }
+
+        metrics.push(metric)
+        metric_count = metric_count + 1
+
+        if metric_count % 100 == 0 {
+            println("MetricsCollector: Collected {} metrics", metric_count)
+        }
+
+        return Ok(())
+    }
+
+    message RecordHistogram(
+        name: String,
+        value: f64,
+        buckets: Vec<i32>
+    ) -> Result<(), String> {
+        if !histograms.contains_key(&name) {
+            histograms.insert(name.clone(), Histogram {
+                name: name.clone(),
+                buckets: buckets.clone(),
+                sum: 0.0,
+                count: 0
+            })
+        }
+
+        match histograms.get_mut(&name) {
+            Some(hist) => {
+                hist.sum = hist.sum + value
+                hist.count = hist.count + 1
+                return Ok(())
+            },
+            None => return Err("Histogram not found".to_string())
+        }
+    }
+
+    message GetMetrics(
+        name: String,
+        limit: i32
+    ) -> Result<Vec<Metric>, String> {
+        let mut result: Vec<Metric> = Vec::new()
+
+        for metric in metrics.iter().rev() {
+            if metric.name == name {
+                result.push(metric.clone())
+                if result.len() >= limit as usize {
+                    break
+                }
+            }
+        }
+
+        return Ok(result)
+    }
+
+    message GetHistogram(name: String) -> Result<Histogram, String> {
+        match histograms.get(&name) {
+            Some(hist) => return Ok(hist.clone()),
+            None => return Err("Histogram not found".to_string())
+        }
+    }
+
+    message ClearMetrics() -> Result<(), String> {
+        metrics.clear()
+        println("MetricsCollector: Cleared all metrics")
+        return Ok(())
+    }
+}
+
+// Alert manager
+actor AlertManager {
+    alerts: HashMap<String, Alert> = HashMap::new(),
+    active_alerts: Vec<String> = Vec::new()
+
+    message RegisterAlert(alert: Alert) -> Result<String, String> {
+        let alert_id = "alert_".to_string() + &SystemTime::now().secs().to_string()
+        alerts.insert(alert_id.clone(), alert)
+        println("AlertManager: Registered alert {}", alert_id)
+        return Ok(alert_id)
+    }
+
+    message CheckAlert(
+        metric_name: String,
+        metric_value: f64
+    ) -> Result<Option<Alert>, String> {
+        for (_, alert) in alerts.iter() {
+            if alert.metric_name == metric_name && alert.enabled {
+                let trigger = match alert.condition.as_str() {
+                    ">" => metric_value > alert.threshold,
+                    "<" => metric_value < alert.threshold,
+                    "==" => (metric_value - alert.threshold).abs() < 0.001,
+                    _ => false
+                }
+
+                if trigger {
+                    println("AlertManager: Alert '{}' triggered! {} {} {}",
+                        alert.metric_name,
+                        metric_value,
+                        alert.condition,
+                        alert.threshold
+                    )
+                    return Ok(Some(alert.clone()))
+                }
+            }
+        }
+
+        return Ok(None)
+    }
+
+    message DisableAlert(alert_id: String) -> Result<(), String> {
+        match alerts.get_mut(&alert_id) {
+            Some(alert) => {
+                alert.enabled = false
+                println("AlertManager: Disabled alert {}", alert_id)
+                return Ok(())
+            },
+            None => return Err("Alert not found".to_string())
+        }
+    }
+
+    message GetAlertCount() -> i32 {
+        return alerts.len() as i32
+    }
+}
+
+// Monitoring dashboard
+actor MonitoringDashboard {
+    dashboard_id: String,
+    collectors: Vec<ActorRef<MetricsCollector>> = Vec::new(),
+    alerts_manager: ActorRef<AlertManager>
+
+    message RegisterCollector(
+        collector: ActorRef<MetricsCollector>
+    ) -> Result<(), String> {
+        collectors.push(collector)
+        println("MonitoringDashboard: Registered metrics collector")
+        return Ok(())
+    }
+
+    message GetSystemStatus() -> Result<(i64, i32), String> {
+        let mut total_metrics: i64 = 0
+
+        for collector in collectors.iter() {
+            // Would aggregate metrics from each collector
+        }
+
+        let alert_count = await alerts_manager.call(AlertManager::GetAlertCount())?
+
+        return Ok((total_metrics, alert_count))
+    }
+
+    message ReportMetric(
+        name: String,
+        value: f64,
+        tags: HashMap<String, String>
+    ) -> Result<(), String> {
+        if collectors.is_empty() {
+            return Err("No collectors registered".to_string())
+        }
+
+        // Send to all collectors
+        for collector in collectors.iter() {
+            await collector.call(MetricsCollector::RecordMetric(
+                name.clone(),
+                value,
+                tags.clone()
+            ))?
+        }
+
+        // Check alerts
+        let _alert = await alerts_manager.call(
+            AlertManager::CheckAlert(name, value)
+        )?
+
+        return Ok(())
+    }
+
+    message GetDashboardMetrics() -> Result<(i64, i32), String> {
+        return self.call(MonitoringDashboard::GetSystemStatus())
+    }
+}
+
+async fn test_monitoring_system() -> Result<(), String> {
+    println("Starting Monitoring System test")
+
+    // Create components
+    let collector: ActorRef<MetricsCollector> = spawn(MetricsCollector {
+        collector_id: "collector-1".to_string(),
+        metrics: Vec::new(),
+        histograms: HashMap::new(),
+        metric_count: 0
+    })
+
+    let alert_mgr: ActorRef<AlertManager> = spawn(AlertManager {
+        alerts: HashMap::new(),
+        active_alerts: Vec::new()
+    })
+
+    let dashboard: ActorRef<MonitoringDashboard> = spawn(MonitoringDashboard {
+        dashboard_id: "dashboard-1".to_string(),
+        collectors: Vec::new(),
+        alerts_manager: alert_mgr.clone()
+    })
+
+    // Register collector
+    await dashboard.call(MonitoringDashboard::RegisterCollector(collector.clone()))?
+
+    // Create alerts
+    let alert1 = Alert {
+        id: "alert-cpu".to_string(),
+        metric_name: "cpu_usage".to_string(),
+        condition: ">".to_string(),
+        threshold: 80.0,
+        severity: "high".to_string(),
+        enabled: true
+    }
+
+    let alert2 = Alert {
+        id: "alert-memory".to_string(),
+        metric_name: "memory_usage".to_string(),
+        condition: ">".to_string(),
+        threshold: 85.0,
+        severity: "high".to_string(),
+        enabled: true
+    }
+
+    await alert_mgr.call(AlertManager::RegisterAlert(alert1))?
+    await alert_mgr.call(AlertManager::RegisterAlert(alert2))?
+
+    // Record metrics
+    let mut tags = HashMap::new()
+    tags.insert("host".to_string(), "server-1".to_string())
+
+    // Normal metrics
+    await dashboard.call(MonitoringDashboard::ReportMetric(
+        "cpu_usage".to_string(),
+        45.0,
+        tags.clone()
+    ))?
+
+    // Alert trigger
+    await dashboard.call(MonitoringDashboard::ReportMetric(
+        "cpu_usage".to_string(),
+        92.0,
+        tags.clone()
+    ))?
+
+    await dashboard.call(MonitoringDashboard::ReportMetric(
+        "memory_usage".to_string(),
+        88.0,
+        tags.clone()
+    ))?
+
+    // Get metrics
+    let metrics = await collector.call(
+        MetricsCollector::GetMetrics("cpu_usage".to_string(), 10)
+    )?
+
+    println("Collected {} CPU metrics", metrics.len())
+
+    let (total, alert_count) = await dashboard.call(
+        MonitoringDashboard::GetDashboardMetrics()
+    )?
+
+    println("Dashboard status: {} metrics, {} alerts", total, alert_count)
+
+    println("Monitoring System test complete")
+    return Ok(())
+}

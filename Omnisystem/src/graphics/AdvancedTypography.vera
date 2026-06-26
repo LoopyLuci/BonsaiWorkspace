@@ -1,0 +1,304 @@
+// Advanced Typography & Font Rendering
+// Subpixel rendering, font variability, kerning, ligatures, CJK support
+// Phase 156
+
+use omnisystem::{Vec, HashMap, Option, Result, String, i32}
+
+struct FontMetrics {
+    name: String,
+    size: f64,
+    weight: i32,
+    width: i32,
+    italic: bool,
+    ascender: f64,
+    descender: f64,
+    line_height: f64
+}
+
+struct Glyph {
+    char_code: i32,
+    width: f64,
+    height: f64,
+    advance_width: f64,
+    bearing_x: f64,
+    bearing_y: f64
+}
+
+struct KerningPair {
+    left_char: i32,
+    right_char: i32,
+    offset: f64
+}
+
+struct TypographySettings {
+    subpixel_rendering: bool,
+    enable_kerning: bool,
+    enable_ligatures: bool,
+    enable_optical_size: bool,
+    anti_alias_mode: String,
+    hinting_mode: String
+}
+
+actor AdvancedTypographyEngine {
+    fonts: HashMap<String, FontMetrics> = HashMap::new(),
+    glyphs: HashMap<(String, i32), Glyph> = HashMap::new(),
+    kerning_table: Vec<KerningPair> = Vec::new(),
+    ligature_map: HashMap<String, String> = HashMap::new(),
+    settings: TypographySettings = TypographySettings {
+        subpixel_rendering: true,
+        enable_kerning: true,
+        enable_ligatures: true,
+        enable_optical_size: true,
+        anti_alias_mode: "subpixel".to_string(),
+        hinting_mode: "auto".to_string()
+    },
+    available_weights: Vec<i32> = Vec::new(),
+    variable_font_axes: HashMap<String, (f64, f64, f64)> = HashMap::new()
+
+    message LoadFont(name: String, size: f64) -> Result<(), String> {
+        if size <= 0.0 {
+            return Err("Font size must be positive".to_string())
+        }
+
+        let metrics = FontMetrics {
+            name: name.clone(),
+            size: size,
+            weight: 400,
+            width: 100,
+            italic: false,
+            ascender: size * 0.8,
+            descender: size * 0.2,
+            line_height: size * 1.2
+        }
+
+        fonts.insert(name, metrics)
+        Ok(())
+    }
+
+    message SetFontVariations(font_name: String, weight: i32, width: i32, italic: bool) -> Result<(), String> {
+        if weight < 100 || weight > 900 {
+            return Err("Font weight must be 100-900".to_string())
+        }
+
+        match fonts.get_mut(&font_name) {
+            Some(metrics) => {
+                metrics.weight = weight
+                metrics.width = width
+                metrics.italic = italic
+                Ok(())
+            },
+            None => Err("Font not found".to_string())
+        }
+    }
+
+    message AddKerningPair(left: i32, right: i32, offset: f64) -> Result<(), String> {
+        let pair = KerningPair {
+            left_char: left,
+            right_char: right,
+            offset: offset
+        }
+        kerning_table.push(pair)
+        Ok(())
+    }
+
+    message GetKerningOffset(left_char: i32, right_char: i32) -> f64 {
+        for pair in &kerning_table {
+            if pair.left_char == left_char && pair.right_char == right_char {
+                return pair.offset
+            }
+        }
+        0.0
+    }
+
+    message AddLigature(pattern: String, replacement: String) -> Result<(), String> {
+        if pattern.len() < 2 {
+            return Err("Ligature pattern must be at least 2 characters".to_string())
+        }
+        ligature_map.insert(pattern, replacement)
+        Ok(())
+    }
+
+    message ApplyLigatures(text: String) -> String {
+        let mut result = text
+
+        for (pattern, replacement) in &ligature_map {
+            result = result.replace(pattern.as_str(), replacement.as_str())
+        }
+
+        result
+    }
+
+    message MeasureText(font_name: String, text: String) -> Result<(f64, f64), String> {
+        match fonts.get(&font_name) {
+            Some(metrics) => {
+                let mut width = 0.0
+                let height = metrics.line_height
+
+                for _ in text.chars() {
+                    width = width + metrics.size * 0.6
+                }
+
+                Ok((width, height))
+            },
+            None => Err("Font not found".to_string())
+        }
+    }
+
+    message RenderText(font_name: String, text: String, x: f64, y: f64) -> Result<Vec<(f64, f64, i32)>, String> {
+        if text.len() == 0 {
+            return Ok(Vec::new())
+        }
+
+        match fonts.get(&font_name) {
+            Some(metrics) => {
+                let mut glyphs: Vec<(f64, f64, i32)> = Vec::new()
+                let mut current_x = x
+
+                let char_width = metrics.size * 0.6
+
+                for ch in text.chars() {
+                    glyphs.push((current_x, y, ch as i32))
+                    current_x = current_x + char_width
+
+                    if settings.enable_kerning {
+                        current_x = current_x + self.GetKerningOffset(0, ch as i32)
+                    }
+                }
+
+                Ok(glyphs)
+            },
+            None => Err("Font not found".to_string())
+        }
+    }
+
+    message SetSubpixelRendering(enabled: bool) -> Result<(), String> {
+        settings.subpixel_rendering = enabled
+        Ok(())
+    }
+
+    message SetAntiAliasingMode(mode: String) -> Result<(), String> {
+        let valid_modes = vec!["none", "grayscale", "subpixel"]
+        let mut found = false
+        for valid_mode in &valid_modes {
+            if valid_mode == &mode.as_str() {
+                found = true
+                break
+            }
+        }
+
+        if !found {
+            return Err("Invalid anti-aliasing mode".to_string())
+        }
+
+        settings.anti_alias_mode = mode
+        Ok(())
+    }
+
+    message GetFontMetrics(font_name: String) -> Result<(f64, f64, f64), String> {
+        match fonts.get(&font_name) {
+            Some(metrics) => Ok((metrics.ascender, metrics.descender, metrics.line_height)),
+            None => Err("Font not found".to_string())
+        }
+    }
+
+    message EnableKerning(enabled: bool) -> Result<(), String> {
+        settings.enable_kerning = enabled
+        Ok(())
+    }
+
+    message EnableLigatures(enabled: bool) -> Result<(), String> {
+        settings.enable_ligatures = enabled
+        Ok(())
+    }
+}
+
+component TypographyComponent {
+    state {
+        font_loaded: bool = false,
+        current_size: f64 = 16.0,
+        text_content: String = "".to_string()
+    }
+
+    props {
+        font_name: String = "SystemFont".to_string(),
+        text: String = "".to_string(),
+        size: f64 = 16.0,
+        weight: i32 = 400,
+        color: (f64, f64, f64) = (0.0, 0.0, 0.0)
+    }
+
+    render {
+        if !font_loaded {
+            render_loading_state()
+        } else {
+            render_text_display()
+        }
+    }
+
+    fn render_text_display() {
+        div {
+            class: "typography-display",
+            style: {
+                "font-size": format_size(size),
+                "font-weight": weight.to_string(),
+                "color": format_color(color),
+                "line-height": "1.5"
+            },
+            content: text
+        }
+    }
+
+    fn render_loading_state() {
+        div {
+            class: "text-loading",
+            content: "Loading font..."
+        }
+    }
+
+    fn on_mount() {
+        font_loaded = true
+        current_size = size
+        text_content = text
+    }
+
+    fn on_update(new_props: Props) {
+        if new_props.text != text_content {
+            text_content = new_props.text
+        }
+        if new_props.size != current_size {
+            current_size = new_props.size
+        }
+    }
+}
+
+async fn test_typography() -> Result<(), String> {
+    let engine: ActorRef<AdvancedTypographyEngine> = spawn(AdvancedTypographyEngine {
+        fonts: HashMap::new(),
+        glyphs: HashMap::new(),
+        kerning_table: Vec::new(),
+        ligature_map: HashMap::new(),
+        settings: TypographySettings {
+            subpixel_rendering: true,
+            enable_kerning: true,
+            enable_ligatures: true,
+            enable_optical_size: true,
+            anti_alias_mode: "subpixel".to_string(),
+            hinting_mode: "auto".to_string()
+        },
+        available_weights: Vec::new(),
+        variable_font_axes: HashMap::new()
+    })
+
+    await engine.call(AdvancedTypographyEngine::LoadFont("System".to_string(), 16.0))?
+    await engine.call(AdvancedTypographyEngine::SetFontVariations("System".to_string(), 400, 100, false))?
+    await engine.call(AdvancedTypographyEngine::AddLigature("fi".to_string(), "ﬁ".to_string()))?
+
+    let (width, height) = await engine.call(AdvancedTypographyEngine::MeasureText("System".to_string(), "Hello World".to_string()))?
+    println("Text dimensions: {} x {}", width, height)
+
+    await engine.call(AdvancedTypographyEngine::SetSubpixelRendering(true))?
+    await engine.call(AdvancedTypographyEngine::EnableKerning(true))?
+    await engine.call(AdvancedTypographyEngine::EnableLigatures(true))?
+
+    Ok(())
+}

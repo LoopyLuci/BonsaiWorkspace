@@ -1,0 +1,358 @@
+// Unified Animation System
+// Keyframe animation, physics-based springs, easing, timeline orchestration
+// Phase 158
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+use omnisystem::sync::{Arc, Mutex}
+
+struct Keyframe {
+    time: f64,
+    value: f64,
+    easing: String
+}
+
+struct AnimationTrack {
+    name: String,
+    keyframes: Vec<Keyframe>,
+    duration: f64,
+    loop_mode: String,
+    current_time: f64,
+    is_playing: bool
+}
+
+struct SpringPhysics {
+    stiffness: f64,
+    damping: f64,
+    mass: f64,
+    velocity: f64
+}
+
+enum EasingType {
+    Linear,
+    EaseInQuad,
+    EaseOutQuad,
+    EaseInOutQuad,
+    EaseInCubic,
+    EaseOutCubic,
+    EaseInOutCubic,
+    EaseInQuart,
+    EaseOutQuart,
+    EaseInOutQuart,
+    EaseInQuint,
+    EaseOutQuint,
+    EaseInOutQuint,
+    EaseInExpo,
+    EaseOutExpo,
+    EaseInOutExpo,
+    EaseInCirc,
+    EaseOutCirc,
+    EaseInOutCirc,
+    Spring,
+    Bounce
+}
+
+fn ease_in_quad(t: f64) -> f64 {
+    t * t
+}
+
+fn ease_out_quad(t: f64) -> f64 {
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+fn ease_in_out_quad(t: f64) -> f64 {
+    if t < 0.5 {
+        2.0 * t * t
+    } else {
+        -1.0 + (4.0 - 2.0 * t) * t
+    }
+}
+
+fn ease_in_cubic(t: f64) -> f64 {
+    t * t * t
+}
+
+fn ease_out_cubic(t: f64) -> f64 {
+    1.0 + (t - 1.0) * (t - 1.0) * (t - 1.0)
+}
+
+fn ease_in_out_cubic(t: f64) -> f64 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powf(3.0) / 2.0
+    }
+}
+
+fn ease_out_bounce(t: f64) -> f64 {
+    let n1 = 7.5625
+    let d1 = 2.75
+
+    if t < 1.0 / d1 {
+        n1 * t * t
+    } else if t < 2.0 / d1 {
+        n1 * (t - 1.5 / d1) * (t - 1.5 / d1) + 0.75
+    } else if t < 2.5 / d1 {
+        n1 * (t - 2.25 / d1) * (t - 2.25 / d1) + 0.9375
+    } else {
+        n1 * (t - 2.625 / d1) * (t - 2.625 / d1) + 0.984375
+    }
+}
+
+fn apply_easing(easing_type: &String, t: f64) -> f64 {
+    match easing_type.as_str() {
+        "linear" => t,
+        "easeInQuad" => ease_in_quad(t),
+        "easeOutQuad" => ease_out_quad(t),
+        "easeInOutQuad" => ease_in_out_quad(t),
+        "easeInCubic" => ease_in_cubic(t),
+        "easeOutCubic" => ease_out_cubic(t),
+        "easeInOutCubic" => ease_in_out_cubic(t),
+        "easeOutBounce" => ease_out_bounce(t),
+        _ => t
+    }
+}
+
+fn interpolate_value(from: f64, to: f64, t: f64, easing: &String) -> f64 {
+    let eased_t = apply_easing(easing, t)
+    from + (to - from) * eased_t
+}
+
+fn interpolate_spring(from: f64, to: f64, spring: &SpringPhysics, delta_time: f64) -> (f64, f64) {
+    let displacement = to - from
+    let force = -spring.stiffness * displacement - spring.damping * spring.velocity
+
+    let acceleration = force / spring.mass
+    let new_velocity = spring.velocity + acceleration * delta_time
+    let new_position = from + new_velocity * delta_time
+
+    (new_position, new_velocity)
+}
+
+actor AnimationEngine {
+    tracks: HashMap<String, AnimationTrack> = HashMap::new(),
+    timelines: HashMap<String, Vec<String>> = HashMap::new(),
+    springs: HashMap<String, SpringPhysics> = HashMap::new(),
+    master_time: f64 = 0.0,
+    is_playing: bool = false,
+    playback_speed: f64 = 1.0,
+    frame_rate: i32 = 60
+
+    message CreateTrack(name: String, duration: f64) -> Result<i32, String> {
+        if duration <= 0.0 {
+            return Err("Duration must be positive".to_string())
+        }
+
+        let track = AnimationTrack {
+            name: name.clone(),
+            keyframes: Vec::new(),
+            duration: duration,
+            loop_mode: "none".to_string(),
+            current_time: 0.0,
+            is_playing: false
+        }
+
+        tracks.insert(name, track)
+        Ok(tracks.len() as i32)
+    }
+
+    message AddKeyframe(track_name: String, time: f64, value: f64, easing: String) -> Result<(), String> {
+        match tracks.get_mut(&track_name) {
+            Some(track) => {
+                if time < 0.0 || time > track.duration {
+                    return Err("Keyframe time out of range".to_string())
+                }
+
+                let keyframe = Keyframe {
+                    time: time,
+                    value: value,
+                    easing: easing
+                }
+
+                track.keyframes.push(keyframe)
+                Ok(())
+            },
+            None => Err("Track not found".to_string())
+        }
+    }
+
+    message CreateSpringAnimation(name: String, stiffness: f64, damping: f64) -> Result<(), String> {
+        if stiffness <= 0.0 || damping < 0.0 {
+            return Err("Invalid spring parameters".to_string())
+        }
+
+        let spring = SpringPhysics {
+            stiffness: stiffness,
+            damping: damping,
+            mass: 1.0,
+            velocity: 0.0
+        }
+
+        springs.insert(name, spring)
+        Ok(())
+    }
+
+    message PlayTrack(track_name: String) -> Result<(), String> {
+        match tracks.get_mut(&track_name) {
+            Some(track) => {
+                track.is_playing = true
+                track.current_time = 0.0
+                Ok(())
+            },
+            None => Err("Track not found".to_string())
+        }
+    }
+
+    message StopTrack(track_name: String) -> Result<(), String> {
+        match tracks.get_mut(&track_name) {
+            Some(track) => {
+                track.is_playing = false
+                Ok(())
+            },
+            None => Err("Track not found".to_string())
+        }
+    }
+
+    message SetLoopMode(track_name: String, mode: String) -> Result<(), String> {
+        let valid_modes = vec!["none", "loop", "pingpong"]
+        let mut is_valid = false
+        for valid_mode in &valid_modes {
+            if valid_mode == &mode.as_str() {
+                is_valid = true
+                break
+            }
+        }
+
+        if !is_valid {
+            return Err("Invalid loop mode".to_string())
+        }
+
+        match tracks.get_mut(&track_name) {
+            Some(track) => {
+                track.loop_mode = mode
+                Ok(())
+            },
+            None => Err("Track not found".to_string())
+        }
+    }
+
+    message Update(delta_time: f64) -> Result<f64, String> {
+        if delta_time <= 0.0 {
+            return Err("Delta time must be positive".to_string())
+        }
+
+        master_time = master_time + delta_time * playback_speed
+
+        let mut current_value = 0.0
+
+        for (_, track) in tracks.iter_mut() {
+            if track.is_playing {
+                track.current_time = track.current_time + delta_time
+
+                if track.current_time >= track.duration {
+                    match track.loop_mode.as_str() {
+                        "loop" => {
+                            track.current_time = track.current_time % track.duration
+                        },
+                        "pingpong" => {
+                            track.current_time = track.duration - (track.current_time % (track.duration * 2.0))
+                        },
+                        _ => {
+                            track.is_playing = false
+                        }
+                    }
+                }
+
+                if track.keyframes.len() >= 2 {
+                    let mut from_frame: Option<&Keyframe> = None
+                    let mut to_frame: Option<&Keyframe> = None
+
+                    for i in 0..track.keyframes.len() - 1 {
+                        let kf1 = &track.keyframes[i]
+                        let kf2 = &track.keyframes[i + 1]
+
+                        if kf1.time <= track.current_time && track.current_time <= kf2.time {
+                            from_frame = Some(kf1)
+                            to_frame = Some(kf2)
+                            break
+                        }
+                    }
+
+                    if let (Some(from), Some(to)) = (from_frame, to_frame) {
+                        let range = to.time - from.time
+                        let position = track.current_time - from.time
+                        let t = position / range
+
+                        current_value = interpolate_value(from.value, to.value, t, &from.easing)
+                    }
+                }
+            }
+        }
+
+        Ok(current_value)
+    }
+
+    message GetTrackValue(track_name: String) -> Result<f64, String> {
+        match tracks.get(&track_name) {
+            Some(track) => {
+                if track.keyframes.len() == 0 {
+                    return Ok(0.0)
+                }
+
+                let mut value = 0.0
+                for i in 0..track.keyframes.len() - 1 {
+                    let kf1 = &track.keyframes[i]
+                    let kf2 = &track.keyframes[i + 1]
+
+                    if kf1.time <= track.current_time && track.current_time <= kf2.time {
+                        let range = kf2.time - kf1.time
+                        let position = track.current_time - kf1.time
+                        let t = if range > 0.0 { position / range } else { 0.0 }
+
+                        value = interpolate_value(kf1.value, kf2.value, t, &kf1.easing)
+                        break
+                    }
+                }
+
+                Ok(value)
+            },
+            None => Err("Track not found".to_string())
+        }
+    }
+
+    message SetPlaybackSpeed(speed: f64) -> Result<(), String> {
+        if speed <= 0.0 {
+            return Err("Playback speed must be positive".to_string())
+        }
+        playback_speed = speed
+        Ok(())
+    }
+}
+
+async fn test_animation_engine() -> Result<(), String> {
+    let engine: ActorRef<AnimationEngine> = spawn(AnimationEngine {
+        tracks: HashMap::new(),
+        timelines: HashMap::new(),
+        springs: HashMap::new(),
+        master_time: 0.0,
+        is_playing: false,
+        playback_speed: 1.0,
+        frame_rate: 60
+    })
+
+    await engine.call(AnimationEngine::CreateTrack("fade".to_string(), 1.0))?
+    await engine.call(AnimationEngine::AddKeyframe("fade".to_string(), 0.0, 0.0, "linear".to_string()))?
+    await engine.call(AnimationEngine::AddKeyframe("fade".to_string(), 0.5, 1.0, "easeInOutQuad".to_string()))?
+    await engine.call(AnimationEngine::AddKeyframe("fade".to_string(), 1.0, 0.0, "linear".to_string()))?
+
+    await engine.call(AnimationEngine::PlayTrack("fade".to_string()))?
+    await engine.call(AnimationEngine::SetLoopMode("fade".to_string(), "loop".to_string()))?
+
+    for _ in 0..60 {
+        let value = await engine.call(AnimationEngine::Update(0.016))?
+    }
+
+    let final_value = await engine.call(AnimationEngine::GetTrackValue("fade".to_string()))?
+    println("Animation complete: final value {}", final_value)
+
+    Ok(())
+}

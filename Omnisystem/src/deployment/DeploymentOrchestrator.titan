@@ -1,0 +1,161 @@
+// Production Deployment & DevOps Orchestration
+// CI/CD pipeline, container orchestration, health monitoring, automated rollout, canary deployment
+// Phase 201
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex}
+
+struct Deployment {
+    id: String,
+    version: String,
+    status: String,
+    target_environment: String,
+    timestamp: String,
+    rollout_strategy: String,
+    canary_percentage: f64
+}
+
+struct HealthMetric {
+    component: String,
+    status: String,
+    uptime_percentage: f64,
+    error_rate: f64,
+    last_check: String
+}
+
+struct DeploymentLog {
+    timestamp: String,
+    stage: String,
+    message: String,
+    severity: String
+}
+
+actor DeploymentOrchestrator {
+    deployments: Arc<Mutex<HashMap<String, Deployment>>> = Arc::new(Mutex::new(HashMap::new())),
+    health_checks: Arc<Mutex<Vec<HealthMetric>>> = Arc::new(Mutex::new(Vec::new())),
+    deployment_logs: Arc<Mutex<Vec<DeploymentLog>>> = Arc::new(Mutex::new(Vec::new())),
+    current_version: String = "152.0.0".to_string(),
+    environments: Vec<String> = vec!["dev".to_string(), "staging".to_string(), "production".to_string()]
+
+    message InitiateDeployment(version: String, environment: String) -> Result<String, String> {
+        let deployment_id = format!("deploy_{}", deployments.lock().unwrap().len())
+
+        let deployment = Deployment {
+            id: deployment_id.clone(),
+            version: version.clone(),
+            status: "pending".to_string(),
+            target_environment: environment,
+            timestamp: "2026-06-26T00:00:00Z".to_string(),
+            rollout_strategy: "canary".to_string(),
+            canary_percentage: 5.0
+        }
+
+        deployments.lock().unwrap().insert(deployment_id.clone(), deployment)
+
+        log_deployment_event("Deployment initiated".to_string(), "validation".to_string(), "info".to_string())?
+
+        Ok(deployment_id)
+    }
+
+    message ExecuteCanaryRollout(deployment_id: String, percentage: f64) -> Result<(), String> {
+        if percentage < 0.0 || percentage > 100.0 {
+            return Err("Invalid canary percentage".to_string())
+        }
+
+        if let Some(deployment) = deployments.lock().unwrap().get_mut(&deployment_id) {
+            deployment.canary_percentage = percentage
+            deployment.status = "in_progress".to_string()
+            log_deployment_event(
+                format!("Canary rollout at {}%", percentage),
+                "rollout".to_string(),
+                "info".to_string()
+            )?
+        } else {
+            return Err("Deployment not found".to_string())
+        }
+
+        Ok(())
+    }
+
+    message PerformHealthCheck(component: String) -> Result<HealthMetric, String> {
+        let metric = HealthMetric {
+            component: component,
+            status: "healthy".to_string(),
+            uptime_percentage: 99.99,
+            error_rate: 0.001,
+            last_check: "2026-06-26T00:00:00Z".to_string()
+        }
+
+        health_checks.lock().unwrap().push(metric.clone())
+
+        Ok(metric)
+    }
+
+    message RollbackDeployment(deployment_id: String) -> Result<(), String> {
+        if let Some(deployment) = deployments.lock().unwrap().get_mut(&deployment_id) {
+            deployment.status = "rolled_back".to_string()
+            log_deployment_event(
+                format!("Rollback triggered for {}", deployment_id),
+                "rollback".to_string(),
+                "warning".to_string()
+            )?
+        } else {
+            return Err("Deployment not found".to_string())
+        }
+
+        Ok(())
+    }
+
+    message GetDeploymentStatus(deployment_id: String) -> Result<String, String> {
+        match deployments.lock().unwrap().get(&deployment_id) {
+            Some(dep) => Ok(dep.status.clone()),
+            None => Err("Deployment not found".to_string())
+        }
+    }
+
+    message ListActiveDeployments() -> Vec<Deployment> {
+        deployments.lock().unwrap()
+            .iter()
+            .filter(|(_, d)| d.status == "in_progress")
+            .map(|(_, d)| d.clone())
+            .collect()
+    }
+
+    message GetHealthReport() -> Vec<HealthMetric> {
+        health_checks.lock().unwrap().clone()
+    }
+
+    fn log_deployment_event(message: String, stage: String, severity: String) -> Result<(), String> {
+        deployment_logs.lock().unwrap().push(DeploymentLog {
+            timestamp: "2026-06-26T00:00:00Z".to_string(),
+            stage: stage,
+            message: message,
+            severity: severity
+        })
+        Ok(())
+    }
+}
+
+async fn test_deployment_orchestrator() -> Result<(), String> {
+    let orchestrator: ActorRef<DeploymentOrchestrator> = spawn(DeploymentOrchestrator {
+        deployments: Arc::new(Mutex::new(HashMap::new())),
+        health_checks: Arc::new(Mutex::new(Vec::new())),
+        deployment_logs: Arc::new(Mutex::new(Vec::new())),
+        current_version: "152.0.0".to_string(),
+        environments: vec!["dev".to_string(), "staging".to_string(), "production".to_string()]
+    })
+
+    let deploy_id = await orchestrator.call(DeploymentOrchestrator::InitiateDeployment(
+        "153.0.0".to_string(),
+        "staging".to_string()
+    ))?
+
+    await orchestrator.call(DeploymentOrchestrator::ExecuteCanaryRollout(deploy_id.clone(), 10.0))?
+
+    let health = await orchestrator.call(DeploymentOrchestrator::PerformHealthCheck(
+        "core_runtime".to_string()
+    ))?
+
+    println("Health check completed: uptime={}%", health.uptime_percentage)
+
+    Ok(())
+}

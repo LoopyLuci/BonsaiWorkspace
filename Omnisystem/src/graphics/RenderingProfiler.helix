@@ -1,0 +1,299 @@
+// Real-Time Rendering Profiler & Debugger
+// GPU frame capture, shader debugging, memory timeline, bottleneck identification
+// Phase 160
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+use omnisystem::sync::{Arc, Mutex}
+
+struct FrameMetrics {
+    frame_number: i32,
+    gpu_time: f64,
+    cpu_time: f64,
+    memory_used: i32,
+    draw_calls: i32,
+    vertices_processed: i32,
+    fragments_processed: i64,
+    shader_time: f64,
+    raster_time: f64
+}
+
+struct ShaderProfile {
+    shader_name: String,
+    execution_time: f64,
+    invocation_count: i32,
+    register_usage: i32,
+    texture_samples: i32
+}
+
+struct MemorySnapshot {
+    timestamp: f64,
+    gpu_memory_used: i32,
+    texture_memory: i32,
+    buffer_memory: i32,
+    cache_misses: i32
+}
+
+struct BottleneckAnalysis {
+    frame_number: i32,
+    bottleneck_type: String,
+    severity: f64,
+    recommendation: String
+}
+
+fn calculate_average_fps(metrics: &Vec<FrameMetrics>, window_size: i32) -> f64 {
+    if metrics.len() < window_size as usize {
+        return 0.0
+    }
+
+    let start_idx = metrics.len() - window_size as usize
+    let mut total_time = 0.0
+
+    for i in start_idx..metrics.len() {
+        total_time = total_time + metrics[i].gpu_time
+    }
+
+    if total_time > 0.0 {
+        (window_size as f64) / total_time
+    } else {
+        0.0
+    }
+}
+
+fn detect_bottleneck(metrics: &FrameMetrics, target_fps: i32) -> Option<BottleneckAnalysis> {
+    let target_frame_time = 1.0 / target_fps as f64
+
+    if metrics.gpu_time > target_frame_time * 0.8 {
+        let cpu_ratio = metrics.cpu_time / metrics.gpu_time
+
+        let (bottleneck_type, recommendation) = if cpu_ratio > 0.8 {
+            ("CPU".to_string(), "Optimize CPU-side operations, reduce draw call overhead".to_string())
+        } else if metrics.shader_time > metrics.gpu_time * 0.7 {
+            ("Shader".to_string(), "Optimize shader complexity, reduce instruction count".to_string())
+        } else if metrics.raster_time > metrics.gpu_time * 0.7 {
+            ("Rasterization".to_string(), "Reduce fragment count, optimize render targets".to_string())
+        } else {
+            ("Memory".to_string(), "Reduce memory bandwidth usage, optimize texture access patterns".to_string())
+        }
+
+        return Some(BottleneckAnalysis {
+            frame_number: metrics.frame_number,
+            bottleneck_type: bottleneck_type,
+            severity: metrics.gpu_time / target_frame_time,
+            recommendation: recommendation
+        })
+    }
+
+    None
+}
+
+actor RenderingProfiler {
+    frame_metrics: Vec<FrameMetrics> = Vec::new(),
+    shader_profiles: HashMap<String, ShaderProfile> = HashMap::new(),
+    memory_timeline: Vec<MemorySnapshot> = Vec::new(),
+    current_frame: i32 = 0,
+    target_fps: i32 = 60,
+    profiling_enabled: bool = false,
+    max_history: i32 = 3600,
+    capture_enabled: bool = false,
+    captured_frames: Vec<FrameMetrics> = Vec::new()
+
+    message StartProfiling() -> Result<(), String> {
+        profiling_enabled = true
+        frame_metrics.clear()
+        current_frame = 0
+        Ok(())
+    }
+
+    message StopProfiling() -> Result<(), String> {
+        profiling_enabled = false
+        Ok(())
+    }
+
+    message RecordFrame(gpu_time: f64, cpu_time: f64, memory_used: i32, draw_calls: i32) -> Result<(), String> {
+        if !profiling_enabled {
+            return Err("Profiling not enabled".to_string())
+        }
+
+        let metrics = FrameMetrics {
+            frame_number: current_frame,
+            gpu_time: gpu_time,
+            cpu_time: cpu_time,
+            memory_used: memory_used,
+            draw_calls: draw_calls,
+            vertices_processed: 0,
+            fragments_processed: 0,
+            shader_time: gpu_time * 0.6,
+            raster_time: gpu_time * 0.4
+        }
+
+        frame_metrics.push(metrics.clone())
+        current_frame = current_frame + 1
+
+        if frame_metrics.len() > max_history as usize {
+            frame_metrics.remove(0)
+        }
+
+        if let Some(bottleneck) = detect_bottleneck(&metrics, target_fps) {
+            println("BOTTLENECK DETECTED: {}", bottleneck.bottleneck_type)
+        }
+
+        Ok(())
+    }
+
+    message ProfileShader(shader_name: String, exec_time: f64, invocations: i32) -> Result<(), String> {
+        let profile = ShaderProfile {
+            shader_name: shader_name.clone(),
+            execution_time: exec_time,
+            invocation_count: invocations,
+            register_usage: 32,
+            texture_samples: 4
+        }
+
+        shader_profiles.insert(shader_name, profile)
+        Ok(())
+    }
+
+    message RecordMemory(gpu_memory: i32, texture_mem: i32, buffer_mem: i32, cache_misses: i32) -> Result<(), String> {
+        let snapshot = MemorySnapshot {
+            timestamp: current_frame as f64,
+            gpu_memory_used: gpu_memory,
+            texture_memory: texture_mem,
+            buffer_memory: buffer_mem,
+            cache_misses: cache_misses
+        }
+
+        memory_timeline.push(snapshot)
+
+        if memory_timeline.len() > max_history as usize {
+            memory_timeline.remove(0)
+        }
+
+        Ok(())
+    }
+
+    message GetAverageFPS() -> Result<f64, String> {
+        if frame_metrics.len() < 60 {
+            return Ok(0.0)
+        }
+
+        let avg_fps = calculate_average_fps(&frame_metrics, 60)
+        Ok(avg_fps)
+    }
+
+    message GetFrameMetrics(frame_num: i32) -> Result<(f64, f64, i32, i32), String> {
+        for metrics in &frame_metrics {
+            if metrics.frame_number == frame_num {
+                return Ok((metrics.gpu_time, metrics.cpu_time, metrics.memory_used, metrics.draw_calls))
+            }
+        }
+        Err("Frame not found".to_string())
+    }
+
+    message GetBottlenecks() -> Result<Vec<(String, f64)>, String> {
+        let mut bottlenecks: Vec<(String, f64)> = Vec::new()
+
+        for metrics in frame_metrics.iter().rev().take(10) {
+            if let Some(analysis) = detect_bottleneck(metrics, target_fps) {
+                bottlenecks.push((analysis.bottleneck_type, analysis.severity))
+            }
+        }
+
+        Ok(bottlenecks)
+    }
+
+    message GetMemoryPeaks() -> Result<(i32, i32, i32), String> {
+        let mut peak_gpu = 0
+        let mut peak_texture = 0
+        let mut peak_buffer = 0
+
+        for snapshot in &memory_timeline {
+            if snapshot.gpu_memory_used > peak_gpu {
+                peak_gpu = snapshot.gpu_memory_used
+            }
+            if snapshot.texture_memory > peak_texture {
+                peak_texture = snapshot.texture_memory
+            }
+            if snapshot.buffer_memory > peak_buffer {
+                peak_buffer = snapshot.buffer_memory
+            }
+        }
+
+        Ok((peak_gpu, peak_texture, peak_buffer))
+    }
+
+    message AnalyzeShaderPerformance() -> Result<Vec<(String, f64)>, String> {
+        let mut results: Vec<(String, f64)> = Vec::new()
+
+        for (shader_name, profile) in &shader_profiles {
+            results.push((shader_name.clone(), profile.execution_time))
+        }
+
+        Ok(results)
+    }
+
+    message SetTargetFPS(fps: i32) -> Result<(), String> {
+        if fps < 1 || fps > 360 {
+            return Err("Target FPS must be 1-360".to_string())
+        }
+        target_fps = fps
+        Ok(())
+    }
+
+    message CaptureFrame() -> Result<(), String> {
+        capture_enabled = true
+        if let Some(latest) = frame_metrics.last() {
+            captured_frames.push(latest.clone())
+        }
+        capture_enabled = false
+        Ok(())
+    }
+
+    message ExportProfileData() -> Result<String, String> {
+        let mut report = "RENDERING PROFILE REPORT\n".to_string()
+        report = report + "========================\n"
+
+        let avg_fps = calculate_average_fps(&frame_metrics, 60)
+        report = report + &format!("Average FPS: {}\n", avg_fps)
+        report = report + &format!("Total Frames: {}\n", frame_metrics.len())
+
+        if let Some(metrics) = frame_metrics.last() {
+            report = report + &format!("Last Frame GPU Time: {} ms\n", metrics.gpu_time)
+            report = report + &format!("Last Frame CPU Time: {} ms\n", metrics.cpu_time)
+            report = report + &format!("Draw Calls: {}\n", metrics.draw_calls)
+        }
+
+        Ok(report)
+    }
+}
+
+async fn test_rendering_profiler() -> Result<(), String> {
+    let profiler: ActorRef<RenderingProfiler> = spawn(RenderingProfiler {
+        frame_metrics: Vec::new(),
+        shader_profiles: HashMap::new(),
+        memory_timeline: Vec::new(),
+        current_frame: 0,
+        target_fps: 60,
+        profiling_enabled: false,
+        max_history: 3600,
+        capture_enabled: false,
+        captured_frames: Vec::new()
+    })
+
+    await profiler.call(RenderingProfiler::StartProfiling())?
+    await profiler.call(RenderingProfiler::SetTargetFPS(60))?
+
+    for i in 0..100 {
+        await profiler.call(RenderingProfiler::RecordFrame(16.0, 8.0, 256 + i * 10, 500 + i * 5))?
+    }
+
+    let avg_fps = await profiler.call(RenderingProfiler::GetAverageFPS())?
+    println("Average FPS: {}", avg_fps)
+
+    let (peak_gpu, peak_tex, peak_buf) = await profiler.call(RenderingProfiler::GetMemoryPeaks())?
+    println("Memory Peaks - GPU: {}, Texture: {}, Buffer: {}", peak_gpu, peak_tex, peak_buf)
+
+    let report = await profiler.call(RenderingProfiler::ExportProfileData())?
+    println("Profiling Report:\n{}", report)
+
+    Ok(())
+}

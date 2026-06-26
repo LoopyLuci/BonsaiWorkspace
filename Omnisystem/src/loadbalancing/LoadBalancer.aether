@@ -1,0 +1,210 @@
+// Load Balancer
+// Request distribution, health checks, and failover
+// Replaces: phase 22 load balancing systems (100% rewrite in AETHER)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct BackendServer {
+    id: String,
+    address: String,
+    port: i32,
+    is_healthy: bool,
+    request_count: i64,
+    error_count: i64,
+    last_check: i64,
+    weight: i32
+}
+
+enum LoadBalancingStrategy {
+    RoundRobin,
+    LeastConnections,
+    WeightedRoundRobin,
+    IPHash,
+    Random
+}
+
+// Load balancer
+actor LoadBalancer {
+    lb_id: String,
+    backends: Vec<BackendServer> = Vec::new(),
+    strategy: LoadBalancingStrategy = LoadBalancingStrategy::RoundRobin,
+    current_index: i32 = 0,
+    total_requests: i64 = 0,
+    health_check_interval: i64 = 30000  // 30 seconds
+
+    message RegisterBackend(
+        id: String,
+        address: String,
+        port: i32,
+        weight: i32
+    ) -> Result<(), String> {
+        let backend = BackendServer {
+            id: id.clone(),
+            address: address.clone(),
+            port: port,
+            is_healthy: true,
+            request_count: 0,
+            error_count: 0,
+            last_check: SystemTime::now().secs(),
+            weight: weight
+        }
+
+        backends.push(backend)
+        println("LoadBalancer: Registered backend {}:{}", address, port)
+        return Ok(())
+    }
+
+    message SelectBackend() -> Result<BackendServer, String> {
+        // Filter healthy backends
+        let healthy: Vec<BackendServer> = backends.iter()
+            .filter(|b| b.is_healthy)
+            .map(|b| b.clone())
+            .collect()
+
+        if healthy.is_empty() {
+            return Err("No healthy backends available".to_string())
+        }
+
+        let selected = match strategy {
+            LoadBalancingStrategy::RoundRobin => {
+                let backend = healthy[current_index as usize % healthy.len()].clone()
+                current_index = (current_index + 1) % healthy.len() as i32
+                backend
+            },
+            LoadBalancingStrategy::LeastConnections => {
+                healthy.iter().min_by_key(|b| b.request_count).cloned().unwrap()
+            },
+            LoadBalancingStrategy::WeightedRoundRobin => {
+                // Simplified weighted selection
+                let total_weight: i32 = healthy.iter().map(|b| b.weight).sum()
+                let mut random_val = (total_requests % total_weight as i64) as i32
+                let mut cumulative = 0
+
+                let mut selected_backend = healthy[0].clone()
+                for backend in healthy.iter() {
+                    cumulative = cumulative + backend.weight
+                    if random_val < cumulative {
+                        selected_backend = backend.clone()
+                        break
+                    }
+                }
+
+                selected_backend
+            },
+            LoadBalancingStrategy::Random => {
+                healthy[(total_requests % healthy.len() as i64) as usize].clone()
+            },
+            _ => healthy[0].clone()
+        }
+
+        total_requests = total_requests + 1
+        return Ok(selected)
+    }
+
+    message HealthCheck() -> Result<(), String> {
+        let now = SystemTime::now().secs()
+
+        for backend in backends.iter_mut() {
+            if now - backend.last_check > health_check_interval {
+                // Simulate health check
+                let is_healthy = true
+
+                backend.is_healthy = is_healthy
+                backend.last_check = now
+
+                println("LoadBalancer: Health check for {}:{} = {}",
+                    backend.address, backend.port, is_healthy)
+            }
+        }
+
+        return Ok(())
+    }
+
+    message ReportSuccess(backend_id: String) -> Result<(), String> {
+        for backend in backends.iter_mut() {
+            if backend.id == backend_id {
+                backend.request_count = backend.request_count + 1
+                println("LoadBalancer: Success reported for {}", backend_id)
+                return Ok(())
+            }
+        }
+
+        Err("Backend not found".to_string())
+    }
+
+    message ReportError(backend_id: String) -> Result<(), String> {
+        for backend in backends.iter_mut() {
+            if backend.id == backend_id {
+                backend.error_count = backend.error_count + 1
+
+                if backend.error_count > 10 {
+                    backend.is_healthy = false
+                    println("LoadBalancer: Marked {} unhealthy (errors: {})",
+                        backend_id, backend.error_count)
+                }
+
+                return Ok(())
+            }
+        }
+
+        Err("Backend not found".to_string())
+    }
+
+    message GetStats() -> Result<(i64, i32), String> {
+        let healthy_count = backends.iter().filter(|b| b.is_healthy).count()
+        return Ok((total_requests, healthy_count as i32))
+    }
+}
+
+async fn test_load_balancer() -> Result<(), String> {
+    println("Starting Load Balancer test")
+
+    let lb: ActorRef<LoadBalancer> = spawn(LoadBalancer {
+        lb_id: "lb-1".to_string(),
+        backends: Vec::new(),
+        strategy: LoadBalancingStrategy::RoundRobin,
+        current_index: 0,
+        total_requests: 0,
+        health_check_interval: 30000
+    })
+
+    // Register backends
+    await lb.call(LoadBalancer::RegisterBackend(
+        "server-1".to_string(),
+        "192.168.1.10".to_string(),
+        8080,
+        1
+    ))?
+
+    await lb.call(LoadBalancer::RegisterBackend(
+        "server-2".to_string(),
+        "192.168.1.11".to_string(),
+        8080,
+        1
+    ))?
+
+    await lb.call(LoadBalancer::RegisterBackend(
+        "server-3".to_string(),
+        "192.168.1.12".to_string(),
+        8080,
+        2
+    ))?
+
+    // Select backends
+    for i in 0..10 {
+        let backend = await lb.call(LoadBalancer::SelectBackend())?
+        println("Request {} routed to {}", i, backend.address)
+
+        await lb.call(LoadBalancer::ReportSuccess(backend.id))?
+    }
+
+    // Health check
+    await lb.call(LoadBalancer::HealthCheck())?
+
+    let (requests, healthy) = await lb.call(LoadBalancer::GetStats())?
+    println("Stats: {} requests, {} healthy backends", requests, healthy)
+
+    println("Load Balancer test complete")
+    return Ok(())
+}

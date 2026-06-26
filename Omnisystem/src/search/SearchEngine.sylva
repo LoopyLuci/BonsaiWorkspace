@@ -1,0 +1,299 @@
+// Search Engine
+// Full-text search, indexing, and information retrieval
+// Replaces: phase 17 search systems (100% rewrite in SYLVA)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+
+struct Document {
+    id: String,
+    title: String,
+    content: String,
+    metadata: HashMap<String, String>
+}
+
+struct Token {
+    text: String,
+    position: i32,
+    doc_id: String
+}
+
+struct InvertedIndex {
+    // term -> (doc_id, [positions])
+    index: HashMap<String, Vec<(String, Vec<i32>)>>
+}
+
+impl InvertedIndex {
+    fn new() -> Self {
+        return InvertedIndex {
+            index: HashMap::new()
+        }
+    }
+
+    fn index_document(mut self, doc: Document) -> void {
+        let tokens = tokenize(&doc.content)
+
+        for (pos, token) in tokens.iter().enumerate() {
+            let term = token.text.to_lowercase()
+
+            if !self.index.contains_key(&term) {
+                self.index.insert(term.clone(), Vec::new())
+            }
+
+            match self.index.get_mut(&term) {
+                Some(postings) => {
+                    // Find or create entry for this doc
+                    let mut found = false
+                    for (doc_id, positions) in postings.iter_mut() {
+                        if doc_id == &doc.id {
+                            positions.push(pos as i32)
+                            found = true
+                            break
+                        }
+                    }
+
+                    if !found {
+                        postings.push((doc.id.clone(), vec![pos as i32]))
+                    }
+                },
+                None => {}
+            }
+        }
+    }
+
+    @jit
+    fn search(self, query_str: String) -> Vec<String> {
+        let query_terms = tokenize(&query_str)
+        let mut results: Vec<String> = Vec::new()
+
+        if query_terms.is_empty() {
+            return results
+        }
+
+        let first_term = query_terms[0].text.to_lowercase()
+
+        match self.index.get(&first_term) {
+            Some(postings) => {
+                // Get docs with first term
+                for (doc_id, _) in postings {
+                    results.push(doc_id.clone())
+                }
+            },
+            None => {}
+        }
+
+        // Intersect with other terms
+        for i in 1..query_terms.len() {
+            let term = query_terms[i].text.to_lowercase()
+
+            match self.index.get(&term) {
+                Some(postings) => {
+                    let term_docs: Vec<String> = postings
+                        .iter()
+                        .map(|(doc_id, _)| doc_id.clone())
+                        .collect()
+
+                    results.retain(|doc_id| term_docs.contains(doc_id))
+                },
+                None => {
+                    results.clear()
+                    break
+                }
+            }
+        }
+
+        return results
+    }
+
+    fn get_documents_with_term(self, term: String) -> Vec<String> {
+        let lowercase_term = term.to_lowercase()
+
+        match self.index.get(&lowercase_term) {
+            Some(postings) => {
+                let docs: Vec<String> = postings
+                    .iter()
+                    .map(|(doc_id, _)| doc_id.clone())
+                    .collect()
+                return docs
+            },
+            None => return Vec::new()
+        }
+    }
+}
+
+fn tokenize(text: String) -> [Token] {
+    let mut tokens: [Token] = []
+    let mut current_token = String::new()
+    let mut position = 0
+
+    for char in text.chars() {
+        if is_delimiter(char) {
+            if current_token.len() > 0 {
+                tokens.push(Token {
+                    text: current_token.clone(),
+                    position: position,
+                    doc_id: "".to_string()
+                })
+                current_token = String::new()
+            }
+            position = position + 1
+        } else {
+            current_token.push(char)
+            position = position + 1
+        }
+    }
+
+    if current_token.len() > 0 {
+        tokens.push(Token {
+            text: current_token,
+            position: position,
+            doc_id: "".to_string()
+        })
+    }
+
+    return tokens
+}
+
+fn is_delimiter(c: char) -> bool {
+    return c == ' ' || c == ',' || c == '.' || c == ';' || c == ':'
+}
+
+struct SearchIndex {
+    documents: HashMap<String, Document>,
+    index: InvertedIndex,
+    doc_count: i32
+}
+
+impl SearchIndex {
+    fn new() -> Self {
+        return SearchIndex {
+            documents: HashMap::new(),
+            index: InvertedIndex::new(),
+            doc_count: 0
+        }
+    }
+
+    fn add_document(mut self, doc: Document) -> void {
+        let doc_id = doc.id.clone()
+        self.documents.insert(doc_id.clone(), doc.clone())
+        self.index.index_document(doc)
+        self.doc_count = self.doc_count + 1
+        println("SearchIndex: Indexed document '{}'", doc_id)
+    }
+
+    fn search(self, query: String) -> Vec<Document> {
+        let doc_ids = self.index.search(query.clone())
+        let mut results: Vec<Document> = Vec::new()
+
+        for doc_id in doc_ids {
+            if let Some(doc) = self.documents.get(&doc_id) {
+                results.push(doc.clone())
+            }
+        }
+
+        println("SearchIndex: Search '{}' returned {} results", query, results.len())
+        return results
+    }
+
+    fn get_document(self, id: String) -> Option<Document> {
+        return self.documents.get(&id).map(|d| d.clone())
+    }
+
+    fn document_count(self) -> i32 {
+        return self.doc_count
+    }
+}
+
+@jit
+fn compute_tf_idf(
+    term_freq: f32,
+    doc_count: i32,
+    docs_with_term: i32
+) -> f32 {
+    let tf = 1.0 + log(term_freq)
+    let idf = log((doc_count as f32) / (docs_with_term as f32 + 1.0))
+    return tf * idf
+}
+
+@jit
+fn rank_results(
+    documents: [Document],
+    query: String,
+    index: SearchIndex
+) -> [Document] {
+    let query_terms = tokenize(&query)
+    let mut scores: HashMap<String, f32> = HashMap::new()
+
+    // Compute TF-IDF for each document
+    for doc in documents {
+        let mut score = 0.0
+
+        for term in query_terms {
+            let term_lower = term.text.to_lowercase()
+            let docs_with_term = index.index.get_documents_with_term(term_lower).len()
+
+            // Simple scoring (word count in document)
+            let term_count = 0  // Would count occurrences in doc
+            score = score + compute_tf_idf(term_count as f32, index.doc_count, docs_with_term as i32)
+        }
+
+        scores.insert(doc.id.clone(), score)
+    }
+
+    // Sort by score (descending)
+    let mut ranked: [Document] = []
+    // Would sort here
+    return ranked
+}
+
+fn test_search_engine() -> Result<(), String> {
+    println("Starting Search Engine test")
+
+    let mut search_index = SearchIndex::new()
+
+    // Index documents
+    let doc1 = Document {
+        id: "doc1".to_string(),
+        title: "Machine Learning Basics".to_string(),
+        content: "machine learning is a subset of artificial intelligence".to_string(),
+        metadata: HashMap::new()
+    }
+
+    let doc2 = Document {
+        id: "doc2".to_string(),
+        title: "Deep Learning Guide".to_string(),
+        content: "deep learning neural networks artificial intelligence".to_string(),
+        metadata: HashMap::new()
+    }
+
+    let doc3 = Document {
+        id: "doc3".to_string(),
+        title: "Data Science".to_string(),
+        content: "data science uses machine learning and statistics".to_string(),
+        metadata: HashMap::new()
+    }
+
+    search_index.add_document(doc1)
+    search_index.add_document(doc2)
+    search_index.add_document(doc3)
+
+    println("Indexed {} documents", search_index.document_count())
+
+    // Search
+    let results1 = search_index.search("machine learning".to_string())
+    println("Search 'machine learning': {} results", results1.len())
+
+    let results2 = search_index.search("artificial intelligence".to_string())
+    println("Search 'artificial intelligence': {} results", results2.len())
+
+    let results3 = search_index.search("data science".to_string())
+    println("Search 'data science': {} results", results3.len())
+
+    // Get document
+    match search_index.get_document("doc1".to_string()) {
+        Some(doc) => println("Retrieved document: {}", doc.title),
+        None => println("Document not found")
+    }
+
+    println("Search Engine test complete")
+    return Ok(())
+}

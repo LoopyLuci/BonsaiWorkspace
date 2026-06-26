@@ -1,0 +1,446 @@
+// Authentication System
+// OAuth, JWT, role-based access control, credential verification
+// Replaces: phase 10+ security systems (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct User {
+    id: String,
+    username: String,
+    email: String,
+    password_hash: String,
+    is_active: bool,
+    roles: Vec<String>,
+    created_at: i64,
+    last_login: Option<i64>
+}
+
+struct Permission {
+    resource: String,
+    action: String,
+    description: String
+}
+
+struct Role {
+    name: String,
+    permissions: Vec<Permission>,
+    created_at: i64
+}
+
+struct Token {
+    id: String,
+    user_id: String,
+    token_type: String,  // bearer, refresh
+    value: String,
+    expires_at: i64,
+    is_valid: bool
+}
+
+struct AuthenticationProvider {
+    users: HashMap<String, User>,
+    roles: HashMap<String, Role>,
+    tokens: HashMap<String, Token>,
+    sessions: HashMap<String, String>  // session_id -> user_id
+}
+
+impl AuthenticationProvider {
+    fn new() -> Self {
+        return AuthenticationProvider {
+            users: HashMap::new(),
+            roles: HashMap::new(),
+            tokens: HashMap::new(),
+            sessions: HashMap::new()
+        }
+    }
+
+    fn hash_password(&self, password: String) -> String {
+        // Simple hash (in real implementation, would use bcrypt/scrypt/Argon2)
+        let mut hash = 0i32
+        for byte in password.bytes() {
+            hash = ((hash << 5) - hash) + (byte as i32)
+        }
+        return hash.to_string()
+    }
+
+    fn verify_password(&self, password: String, hash: String) -> Result<bool, String> {
+        let computed_hash = self.hash_password(password)
+        Ok(computed_hash == hash)
+    }
+
+    fn register_user(
+        &mut self,
+        username: String,
+        email: String,
+        password: String
+    ) -> Result<String, String> {
+        // Validate input
+        if username.len() < 3 {
+            return Err("Username must be at least 3 characters".to_string())
+        }
+
+        if password.len() < 8 {
+            return Err("Password must be at least 8 characters".to_string())
+        }
+
+        // Check if user exists
+        for (_, user) in self.users.iter() {
+            if user.username == username || user.email == email {
+                return Err("User already exists".to_string())
+            }
+        }
+
+        let user_id = "user_".to_string() + &SystemTime::now().secs().to_string()
+        let password_hash = self.hash_password(password)
+
+        let user = User {
+            id: user_id.clone(),
+            username: username.clone(),
+            email: email.clone(),
+            password_hash: password_hash,
+            is_active: true,
+            roles: Vec::new(),
+            created_at: SystemTime::now().secs(),
+            last_login: None
+        }
+
+        self.users.insert(user_id.clone(), user)
+        println("User registered: {}", username)
+        Ok(user_id)
+    }
+
+    fn login(
+        &mut self,
+        username: String,
+        password: String
+    ) -> Result<String, String> {
+        // Find user
+        let mut user_id: Option<String> = None
+
+        for (id, user) in self.users.iter() {
+            if user.username == username && user.is_active {
+                user_id = Some(id.clone())
+                break
+            }
+        }
+
+        match user_id {
+            Some(id) => {
+                // Verify password
+                let user = self.users.get_mut(&id).unwrap()
+                let password_valid = self.verify_password(password, user.password_hash.clone())?
+
+                if !password_valid {
+                    return Err("Invalid password".to_string())
+                }
+
+                // Update last login
+                user.last_login = Some(SystemTime::now().secs())
+
+                // Create token
+                let token_id = "token_".to_string() + &SystemTime::now().secs().to_string()
+                let token = Token {
+                    id: token_id.clone(),
+                    user_id: id.clone(),
+                    token_type: "bearer".to_string(),
+                    value: generate_jwt(&id),
+                    expires_at: SystemTime::now().secs() + 3600,
+                    is_valid: true
+                }
+
+                self.tokens.insert(token_id.clone(), token)
+
+                // Create session
+                let session_id = "session_".to_string() + &SystemTime::now().secs().to_string()
+                self.sessions.insert(session_id.clone(), id)
+
+                println("User logged in: {}", username)
+                Ok(token_id)
+            },
+            None => Err("User not found".to_string())
+        }
+    }
+
+    fn logout(&mut self, token_id: String) -> Result<(), String> {
+        match self.tokens.get_mut(&token_id) {
+            Some(token) => {
+                token.is_valid = false
+                println("User logged out")
+                Ok(())
+            },
+            None => Err("Token not found".to_string())
+        }
+    }
+
+    fn verify_token(&self, token_id: String) -> Result<String, String> {
+        match self.tokens.get(&token_id) {
+            Some(token) => {
+                if !token.is_valid {
+                    return Err("Token is invalid".to_string())
+                }
+
+                let now = SystemTime::now().secs()
+                if now > token.expires_at {
+                    return Err("Token has expired".to_string())
+                }
+
+                Ok(token.user_id.clone())
+            },
+            None => Err("Token not found".to_string())
+        }
+    }
+
+    fn create_role(
+        &mut self,
+        name: String,
+        permissions: Vec<Permission>
+    ) -> Result<(), String> {
+        if self.roles.contains_key(&name) {
+            return Err("Role already exists".to_string())
+        }
+
+        let role = Role {
+            name: name.clone(),
+            permissions: permissions,
+            created_at: SystemTime::now().secs()
+        }
+
+        self.roles.insert(name.clone(), role)
+        println("Role created: {}", name)
+        Ok(())
+    }
+
+    fn assign_role_to_user(
+        &mut self,
+        user_id: String,
+        role_name: String
+    ) -> Result<(), String> {
+        if !self.roles.contains_key(&role_name) {
+            return Err("Role not found".to_string())
+        }
+
+        match self.users.get_mut(&user_id) {
+            Some(user) => {
+                if !user.roles.contains(&role_name) {
+                    user.roles.push(role_name.clone())
+                    println("Role {} assigned to user {}", role_name, user_id)
+                }
+                Ok(())
+            },
+            None => Err("User not found".to_string())
+        }
+    }
+
+    fn has_permission(
+        &self,
+        user_id: String,
+        resource: String,
+        action: String
+    ) -> Result<bool, String> {
+        match self.users.get(&user_id) {
+            Some(user) => {
+                for role_name in user.roles.iter() {
+                    if let Some(role) = self.roles.get(role_name) {
+                        for perm in role.permissions.iter() {
+                            if perm.resource == resource && perm.action == action {
+                                return Ok(true)
+                            }
+                        }
+                    }
+                }
+                Ok(false)
+            },
+            None => Err("User not found".to_string())
+        }
+    }
+
+    fn get_user_info(&self, user_id: String) -> Result<User, String> {
+        match self.users.get(&user_id) {
+            Some(user) => Ok(user.clone()),
+            None => Err("User not found".to_string())
+        }
+    }
+
+    fn deactivate_user(&mut self, user_id: String) -> Result<(), String> {
+        match self.users.get_mut(&user_id) {
+            Some(user) => {
+                user.is_active = false
+                println("User deactivated: {}", user_id)
+                Ok(())
+            },
+            None => Err("User not found".to_string())
+        }
+    }
+
+    fn get_user_count(&self) -> i32 {
+        return self.users.len() as i32
+    }
+
+    fn get_role_count(&self) -> i32 {
+        return self.roles.len() as i32
+    }
+}
+
+// JWT token generation (simplified)
+fn generate_jwt(user_id: &str) -> String {
+    let mut jwt = String::from("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.")
+    jwt.push_str("eyJzdWIiOiI")
+    jwt.push_str(user_id)
+    jwt.push_str("In0.")
+    jwt.push_str("signature_here")
+    return jwt
+}
+
+// OAuth 2.0 provider
+struct OAuthProvider {
+    client_id: String,
+    client_secret: String,
+    authorization_codes: HashMap<String, String>,
+    access_tokens: HashMap<String, String>
+}
+
+impl OAuthProvider {
+    fn new(client_id: String, client_secret: String) -> Self {
+        return OAuthProvider {
+            client_id: client_id,
+            client_secret: client_secret,
+            authorization_codes: HashMap::new(),
+            access_tokens: HashMap::new()
+        }
+    }
+
+    fn create_authorization_code(&mut self, user_id: String) -> String {
+        let code = "code_".to_string() + &SystemTime::now().secs().to_string()
+        self.authorization_codes.insert(code.clone(), user_id)
+        return code
+    }
+
+    fn exchange_code_for_token(
+        &mut self,
+        code: String,
+        client_id: String,
+        client_secret: String
+    ) -> Result<String, String> {
+        if client_id != self.client_id || client_secret != self.client_secret {
+            return Err("Invalid client credentials".to_string())
+        }
+
+        match self.authorization_codes.get(&code) {
+            Some(user_id) => {
+                let token = "access_token_".to_string() + &SystemTime::now().secs().to_string()
+                self.access_tokens.insert(token.clone(), user_id.clone())
+                self.authorization_codes.remove(&code)
+                println("Authorization code exchanged for token")
+                Ok(token)
+            },
+            None => Err("Invalid authorization code".to_string())
+        }
+    }
+
+    fn verify_access_token(&self, token: String) -> Result<String, String> {
+        match self.access_tokens.get(&token) {
+            Some(user_id) => Ok(user_id.clone()),
+            None => Err("Invalid access token".to_string())
+        }
+    }
+}
+
+// Integration test
+fn test_authentication() -> Result<(), String> {
+    let mut auth = AuthenticationProvider::new()
+
+    // Register users
+    let user1_id = auth.register_user(
+        "alice".to_string(),
+        "alice@example.com".to_string(),
+        "secure_password_123".to_string()
+    )?
+
+    let user2_id = auth.register_user(
+        "bob".to_string(),
+        "bob@example.com".to_string(),
+        "another_password_456".to_string()
+    )?
+
+    // Create roles
+    auth.create_role(
+        "admin".to_string(),
+        vec![
+            Permission {
+                resource: "users".to_string(),
+                action: "create".to_string(),
+                description: "Create new users".to_string()
+            },
+            Permission {
+                resource: "users".to_string(),
+                action: "delete".to_string(),
+                description: "Delete users".to_string()
+            }
+        ]
+    )?
+
+    auth.create_role(
+        "user".to_string(),
+        vec![
+            Permission {
+                resource: "profile".to_string(),
+                action: "read".to_string(),
+                description: "Read own profile".to_string()
+            }
+        ]
+    )?
+
+    // Assign roles
+    auth.assign_role_to_user(user1_id.clone(), "admin".to_string())?
+    auth.assign_role_to_user(user2_id.clone(), "user".to_string())?
+
+    // Login
+    let token1 = auth.login("alice".to_string(), "secure_password_123".to_string())?
+    let token2 = auth.login("bob".to_string(), "another_password_456".to_string())?
+
+    // Verify tokens
+    let verified_user1 = auth.verify_token(token1.clone())?
+    println("Token verified for user: {}", verified_user1)
+
+    // Check permissions
+    let can_create_users = auth.has_permission(
+        user1_id.clone(),
+        "users".to_string(),
+        "create".to_string()
+    )?
+    println("Alice can create users: {}", can_create_users)
+
+    let can_delete_users = auth.has_permission(
+        user2_id.clone(),
+        "users".to_string(),
+        "delete".to_string()
+    )?
+    println("Bob can delete users: {}", can_delete_users)
+
+    // Get user info
+    let user1_info = auth.get_user_info(user1_id.clone())?
+    println("User {} roles: {:?}", user1_info.username, user1_info.roles)
+
+    // OAuth
+    let mut oauth = OAuthProvider::new(
+        "omnisystem_client".to_string(),
+        "secret_key_12345".to_string()
+    )
+
+    let auth_code = oauth.create_authorization_code(user1_id.clone())
+    let access_token = oauth.exchange_code_for_token(
+        auth_code,
+        "omnisystem_client".to_string(),
+        "secret_key_12345".to_string()
+    )?
+
+    let oauth_user_id = oauth.verify_access_token(access_token)?
+    println("OAuth verified user: {}", oauth_user_id)
+
+    // Summary
+    println("Authentication test complete")
+    println("Total users: {}", auth.get_user_count())
+    println("Total roles: {}", auth.get_role_count())
+
+    Ok(())
+}

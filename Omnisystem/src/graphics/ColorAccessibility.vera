@@ -1,0 +1,316 @@
+// Color Science & Accessibility Framework
+// Wide color gamut, color blindness support, high contrast modes, haptic feedback
+// Phase 157
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+
+struct Color {
+    red: f64,
+    green: f64,
+    blue: f64,
+    alpha: f64
+}
+
+struct HSLColor {
+    hue: f64,
+    saturation: f64,
+    lightness: f64
+}
+
+struct AccessibilityProfile {
+    name: String,
+    color_blind_type: String,
+    high_contrast: bool,
+    large_text: bool,
+    reduce_motion: bool,
+    audio_descriptions: bool,
+    haptic_feedback: bool,
+    screen_reader: bool
+}
+
+struct ContrastRatio {
+    ratio: f64,
+    wcag_level: String
+}
+
+enum ColorGamut {
+    sRGB,
+    DisplayP3,
+    AdobeRGB,
+    Rec2020
+}
+
+fn rgb_to_hsl(color: &Color) -> HSLColor {
+    let r = color.red
+    let g = color.green
+    let b = color.blue
+
+    let max = if r > g { if r > b { r } else { b } } else { if g > b { g } else { b } }
+    let min = if r < g { if r < b { r } else { b } } else { if g < b { g } else { b } }
+
+    let l = (max + min) / 2.0
+
+    let s = if (max - min).abs() < 0.001 {
+        0.0
+    } else {
+        if l < 0.5 {
+            (max - min) / (max + min)
+        } else {
+            (max - min) / (2.0 - max - min)
+        }
+    }
+
+    let h = if (max - min).abs() < 0.001 {
+        0.0
+    } else if (max - r).abs() < 0.001 {
+        60.0 * (((g - b) / (max - min)) % 6.0)
+    } else if (max - g).abs() < 0.001 {
+        60.0 * (((b - r) / (max - min)) + 2.0)
+    } else {
+        60.0 * (((r - g) / (max - min)) + 4.0)
+    }
+
+    HSLColor {
+        hue: h,
+        saturation: s,
+        lightness: l
+    }
+}
+
+fn hsl_to_rgb(hsl: &HSLColor) -> Color {
+    let h = hsl.hue / 60.0
+    let c = (1.0 - (2.0 * hsl.lightness - 1.0).abs()) * hsl.saturation
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs())
+
+    let (r1, g1, b1) = if h < 1.0 {
+        (c, x, 0.0)
+    } else if h < 2.0 {
+        (x, c, 0.0)
+    } else if h < 3.0 {
+        (0.0, c, x)
+    } else if h < 4.0 {
+        (0.0, x, c)
+    } else if h < 5.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    }
+
+    let m = hsl.lightness - c / 2.0
+
+    Color {
+        red: r1 + m,
+        green: g1 + m,
+        blue: b1 + m,
+        alpha: 1.0
+    }
+}
+
+fn calculate_luminance(color: &Color) -> f64 {
+    let r = if color.red <= 0.03928 { color.red / 12.92 } else { ((color.red + 0.055) / 1.055).powf(2.4) }
+    let g = if color.green <= 0.03928 { color.green / 12.92 } else { ((color.green + 0.055) / 1.055).powf(2.4) }
+    let b = if color.blue <= 0.03928 { color.blue / 12.92 } else { ((color.blue + 0.055) / 1.055).powf(2.4) }
+
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+fn calculate_contrast_ratio(foreground: &Color, background: &Color) -> ContrastRatio {
+    let l1 = calculate_luminance(foreground)
+    let l2 = calculate_luminance(background)
+
+    let lighter = if l1 > l2 { l1 } else { l2 }
+    let darker = if l1 < l2 { l1 } else { l2 }
+
+    let ratio = (lighter + 0.05) / (darker + 0.05)
+
+    let level = if ratio >= 7.0 {
+        "AAA".to_string()
+    } else if ratio >= 4.5 {
+        "AA".to_string()
+    } else if ratio >= 3.0 {
+        "A".to_string()
+    } else {
+        "Fail".to_string()
+    }
+
+    ContrastRatio {
+        ratio: ratio,
+        wcag_level: level
+    }
+}
+
+fn simulate_colorblindness(color: &Color, blind_type: String) -> Color {
+    match blind_type.as_str() {
+        "protanopia" => {
+            Color {
+                red: color.red * 0.567 + color.green * 0.433,
+                green: color.red * 0.558 + color.green * 0.442,
+                blue: color.blue,
+                alpha: color.alpha
+            }
+        },
+        "deuteranopia" => {
+            Color {
+                red: color.red * 0.625 + color.green * 0.375,
+                green: color.red * 0.7 + color.green * 0.3,
+                blue: color.blue,
+                alpha: color.alpha
+            }
+        },
+        "tritanopia" => {
+            Color {
+                red: color.red * 0.95 + color.blue * 0.05,
+                green: color.green,
+                blue: color.red * 0.433 + color.blue * 0.567,
+                alpha: color.alpha
+            }
+        },
+        _ => color.clone()
+    }
+}
+
+actor ColorAccessibilityEngine {
+    active_profile: AccessibilityProfile = AccessibilityProfile {
+        name: "default".to_string(),
+        color_blind_type: "none".to_string(),
+        high_contrast: false,
+        large_text: false,
+        reduce_motion: false,
+        audio_descriptions: false,
+        haptic_feedback: false,
+        screen_reader: false
+    },
+    profiles: HashMap<String, AccessibilityProfile> = HashMap::new(),
+    color_gamut: ColorGamut = ColorGamut::sRGB,
+    verified_palettes: Vec<Vec<Color>> = Vec::new()
+
+    message CreateAccessibilityProfile(name: String, color_blind_type: String, high_contrast: bool) -> Result<(), String> {
+        if name.len() == 0 {
+            return Err("Profile name cannot be empty".to_string())
+        }
+
+        let profile = AccessibilityProfile {
+            name: name.clone(),
+            color_blind_type: color_blind_type,
+            high_contrast: high_contrast,
+            large_text: false,
+            reduce_motion: false,
+            audio_descriptions: false,
+            haptic_feedback: false,
+            screen_reader: false
+        }
+
+        profiles.insert(name, profile)
+        Ok(())
+    }
+
+    message SetActiveProfile(name: String) -> Result<(), String> {
+        match profiles.get(&name) {
+            Some(profile) => {
+                active_profile = profile.clone()
+                Ok(())
+            },
+            None => Err("Profile not found".to_string())
+        }
+    }
+
+    message SetColorGamut(gamut: String) -> Result<(), String> {
+        color_gamut = match gamut.as_str() {
+            "sRGB" => ColorGamut::sRGB,
+            "DisplayP3" => ColorGamut::DisplayP3,
+            "AdobeRGB" => ColorGamut::AdobeRGB,
+            "Rec2020" => ColorGamut::Rec2020,
+            _ => return Err("Unknown color gamut".to_string())
+        }
+        Ok(())
+    }
+
+    message CheckContrast(foreground: Color, background: Color) -> Result<(f64, String), String> {
+        let ratio = calculate_contrast_ratio(&foreground, &background)
+        Ok((ratio.ratio, ratio.wcag_level))
+    }
+
+    message ApplyColorBlindnessSimulation(color: Color) -> Color {
+        simulate_colorblindness(&color, active_profile.color_blind_type.clone())
+    }
+
+    message ApplyHighContrast(color: Color) -> Color {
+        if active_profile.high_contrast {
+            let hsl = rgb_to_hsl(&color)
+            let adjusted = HSLColor {
+                hue: hsl.hue,
+                saturation: hsl.saturation * 1.5,
+                lightness: if hsl.lightness > 0.5 { 0.95 } else { 0.05 }
+            }
+            hsl_to_rgb(&adjusted)
+        } else {
+            color
+        }
+    }
+
+    message GenerateAccessiblePalette(base_color: Color, size: i32) -> Result<Vec<Color>, String> {
+        if size < 3 || size > 100 {
+            return Err("Palette size must be 3-100".to_string())
+        }
+
+        let hsl = rgb_to_hsl(&base_color)
+        let mut palette: Vec<Color> = Vec::new()
+
+        for i in 0..size {
+            let lightness = 0.2 + (i as f64 / size as f64) * 0.6
+            let adjusted = HSLColor {
+                hue: hsl.hue,
+                saturation: hsl.saturation,
+                lightness: lightness
+            }
+            let color = hsl_to_rgb(&adjusted)
+            palette.push(color)
+        }
+
+        Ok(palette)
+    }
+
+    message EnableHapticFeedback(enabled: bool) -> Result<(), String> {
+        active_profile.haptic_feedback = enabled
+        Ok(())
+    }
+
+    message EnableAudioDescriptions(enabled: bool) -> Result<(), String> {
+        active_profile.audio_descriptions = enabled
+        Ok(())
+    }
+
+    message EnableScreenReader(enabled: bool) -> Result<(), String> {
+        active_profile.screen_reader = enabled
+        Ok(())
+    }
+}
+
+async fn test_color_accessibility() -> Result<(), String> {
+    let engine: ActorRef<ColorAccessibilityEngine> = spawn(ColorAccessibilityEngine {
+        active_profile: AccessibilityProfile {
+            name: "default".to_string(),
+            color_blind_type: "none".to_string(),
+            high_contrast: false,
+            large_text: false,
+            reduce_motion: false,
+            audio_descriptions: false,
+            haptic_feedback: false,
+            screen_reader: false
+        },
+        profiles: HashMap::new(),
+        color_gamut: ColorGamut::sRGB,
+        verified_palettes: Vec::new()
+    })
+
+    let white = Color { red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0 }
+    let black = Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }
+
+    let (ratio, level) = await engine.call(ColorAccessibilityEngine::CheckContrast(white, black))?
+    println("Contrast ratio: {} ({})", ratio, level)
+
+    await engine.call(ColorAccessibilityEngine::CreateAccessibilityProfile("high_contrast".to_string(), "none".to_string(), true))?
+    await engine.call(ColorAccessibilityEngine::SetActiveProfile("high_contrast".to_string()))?
+
+    Ok(())
+}

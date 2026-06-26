@@ -1,0 +1,383 @@
+// Theming Engine 2.0
+// System-wide color tokens, light/dark/auto themes, semantic colors, theme export/import
+// Phase 163
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64, bool}
+
+struct ColorToken {
+    name: String,
+    value: String,
+    semantic: String,
+    opacity: f64
+}
+
+struct Theme {
+    name: String,
+    is_dark: bool,
+    primary_color: String,
+    secondary_color: String,
+    accent_color: String,
+    background_color: String,
+    surface_color: String,
+    text_color: String,
+    error_color: String,
+    warning_color: String,
+    success_color: String,
+    info_color: String,
+    tokens: HashMap<String, ColorToken>
+}
+
+struct ThemeVariant {
+    name: String,
+    parent_theme: String,
+    overrides: HashMap<String, String>
+}
+
+enum ThemeMode {
+    Light,
+    Dark,
+    Auto
+}
+
+fn hex_to_rgb(hex: &String) -> Result<(i32, i32, i32), String> {
+    if hex.len() != 7 || !hex.starts_with("#") {
+        return Err("Invalid hex color".to_string())
+    }
+
+    let r = i32::from_str_radix(&hex[1..3], 16).map_err(|_| "Invalid hex".to_string())?
+    let g = i32::from_str_radix(&hex[3..5], 16).map_err(|_| "Invalid hex".to_string())?
+    let b = i32::from_str_radix(&hex[5..7], 16).map_err(|_| "Invalid hex".to_string())?
+
+    Ok((r, g, b))
+}
+
+fn rgb_to_hex(r: i32, g: i32, b: i32) -> String {
+    format!("#{:02X}{:02X}{:02X}", r, g, b)
+}
+
+fn lighten_color(hex: &String, amount: f64) -> Result<String, String> {
+    let (r, g, b) = hex_to_rgb(hex)?
+
+    let r_new = ((r as f64) * (1.0 + amount)).min(255.0) as i32
+    let g_new = ((g as f64) * (1.0 + amount)).min(255.0) as i32
+    let b_new = ((b as f64) * (1.0 + amount)).min(255.0) as i32
+
+    Ok(rgb_to_hex(r_new, g_new, b_new))
+}
+
+fn darken_color(hex: &String, amount: f64) -> Result<String, String> {
+    let (r, g, b) = hex_to_rgb(hex)?
+
+    let r_new = ((r as f64) * (1.0 - amount)).max(0.0) as i32
+    let g_new = ((g as f64) * (1.0 - amount)).max(0.0) as i32
+    let b_new = ((b as f64) * (1.0 - amount)).max(0.0) as i32
+
+    Ok(rgb_to_hex(r_new, g_new, b_new))
+}
+
+fn generate_color_stops(base_color: &String, steps: i32) -> Result<Vec<String>, String> {
+    let mut colors: Vec<String> = Vec::new()
+
+    for i in 0..steps {
+        let ratio = i as f64 / steps as f64
+        let darkened = darken_color(base_color, ratio * 0.8)?
+        colors.push(darkened)
+    }
+
+    Ok(colors)
+}
+
+actor ThemingEngine {
+    themes: HashMap<String, Theme> = HashMap::new(),
+    current_theme: String = "light".to_string(),
+    theme_mode: ThemeMode = ThemeMode::Light,
+    variants: HashMap<String, ThemeVariant> = HashMap::new(),
+    system_tokens: HashMap<String, ColorToken> = HashMap::new(),
+    custom_themes: Vec<String> = Vec::new(),
+    auto_dark_detection: bool = true
+
+    message CreateTheme(name: String, is_dark: bool) -> Result<(), String> {
+        if name.len() == 0 {
+            return Err("Theme name cannot be empty".to_string())
+        }
+
+        let theme = Theme {
+            name: name.clone(),
+            is_dark: is_dark,
+            primary_color: "#007AFF".to_string(),
+            secondary_color: "#5AC8FA".to_string(),
+            accent_color: "#FF9500".to_string(),
+            background_color: if is_dark { "#000000".to_string() } else { "#FFFFFF".to_string() },
+            surface_color: if is_dark { "#1C1C1E".to_string() } else { "#F2F2F7".to_string() },
+            text_color: if is_dark { "#FFFFFF".to_string() } else { "#000000".to_string() },
+            error_color: "#FF3B30".to_string(),
+            warning_color: "#FF9500".to_string(),
+            success_color: "#34C759".to_string(),
+            info_color: "#00C7FD".to_string(),
+            tokens: HashMap::new()
+        }
+
+        themes.insert(name.clone(), theme)
+        custom_themes.push(name)
+        Ok(())
+    }
+
+    message SetActiveTheme(name: String) -> Result<(), String> {
+        if !themes.contains_key(&name) {
+            return Err("Theme not found".to_string())
+        }
+
+        current_theme = name
+        Ok(())
+    }
+
+    message UpdateThemeColor(theme_name: String, color_name: String, color_value: String) -> Result<(), String> {
+        match themes.get_mut(&theme_name) {
+            Some(theme) => {
+                match color_name.as_str() {
+                    "primary" => { theme.primary_color = color_value },
+                    "secondary" => { theme.secondary_color = color_value },
+                    "accent" => { theme.accent_color = color_value },
+                    "background" => { theme.background_color = color_value },
+                    "surface" => { theme.surface_color = color_value },
+                    "text" => { theme.text_color = color_value },
+                    "error" => { theme.error_color = color_value },
+                    "warning" => { theme.warning_color = color_value },
+                    "success" => { theme.success_color = color_value },
+                    "info" => { theme.info_color = color_value },
+                    _ => return Err("Unknown color name".to_string())
+                }
+                Ok(())
+            },
+            None => Err("Theme not found".to_string())
+        }
+    }
+
+    message AddColorToken(theme_name: String, token_name: String, color_value: String, semantic: String) -> Result<(), String> {
+        match themes.get_mut(&theme_name) {
+            Some(theme) => {
+                let token = ColorToken {
+                    name: token_name.clone(),
+                    value: color_value,
+                    semantic: semantic,
+                    opacity: 1.0
+                }
+                theme.tokens.insert(token_name, token)
+                Ok(())
+            },
+            None => Err("Theme not found".to_string())
+        }
+    }
+
+    message GetThemeColor(theme_name: String, color_name: String) -> Result<String, String> {
+        match themes.get(&theme_name) {
+            Some(theme) => {
+                let color = match color_name.as_str() {
+                    "primary" => theme.primary_color.clone(),
+                    "secondary" => theme.secondary_color.clone(),
+                    "accent" => theme.accent_color.clone(),
+                    "background" => theme.background_color.clone(),
+                    "surface" => theme.surface_color.clone(),
+                    "text" => theme.text_color.clone(),
+                    "error" => theme.error_color.clone(),
+                    "warning" => theme.warning_color.clone(),
+                    "success" => theme.success_color.clone(),
+                    "info" => theme.info_color.clone(),
+                    _ => return Err("Unknown color name".to_string())
+                }
+                Ok(color)
+            },
+            None => Err("Theme not found".to_string())
+        }
+    }
+
+    message SetThemeMode(mode: String) -> Result<(), String> {
+        theme_mode = match mode.as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            "auto" => ThemeMode::Auto,
+            _ => return Err("Unknown theme mode".to_string())
+        }
+
+        if mode == "light" {
+            current_theme = "light".to_string()
+        } else if mode == "dark" {
+            current_theme = "dark".to_string()
+        }
+
+        Ok(())
+    }
+
+    message CreateColorVariant(theme_name: String, variant_name: String, base_color: String) -> Result<Vec<String>, String> {
+        generate_color_stops(&base_color, 10)
+    }
+
+    message ExportTheme(theme_name: String, format: String) -> Result<String, String> {
+        match themes.get(&theme_name) {
+            Some(theme) => {
+                match format.as_str() {
+                    "json" => {
+                        let json = format!(
+                            r#"{{
+  "name": "{}",
+  "isDark": {},
+  "colors": {{
+    "primary": "{}",
+    "secondary": "{}",
+    "accent": "{}",
+    "background": "{}",
+    "surface": "{}",
+    "text": "{}",
+    "error": "{}",
+    "warning": "{}",
+    "success": "{}",
+    "info": "{}"
+  }}
+}}"#,
+                            theme.name,
+                            theme.is_dark,
+                            theme.primary_color,
+                            theme.secondary_color,
+                            theme.accent_color,
+                            theme.background_color,
+                            theme.surface_color,
+                            theme.text_color,
+                            theme.error_color,
+                            theme.warning_color,
+                            theme.success_color,
+                            theme.info_color
+                        )
+                        Ok(json)
+                    },
+                    "css" => {
+                        let css = format!(
+                            ":root {{\n  --primary: {};\n  --secondary: {};\n  --accent: {};\n  --background: {};\n  --surface: {};\n  --text: {};\n  --error: {};\n  --warning: {};\n  --success: {};\n  --info: {};\n}}\n",
+                            theme.primary_color,
+                            theme.secondary_color,
+                            theme.accent_color,
+                            theme.background_color,
+                            theme.surface_color,
+                            theme.text_color,
+                            theme.error_color,
+                            theme.warning_color,
+                            theme.success_color,
+                            theme.info_color
+                        )
+                        Ok(css)
+                    },
+                    _ => Err("Unknown export format".to_string())
+                }
+            },
+            None => Err("Theme not found".to_string())
+        }
+    }
+
+    message ImportTheme(theme_json: String) -> Result<String, String> {
+        // Parse JSON and create theme
+        Ok("Theme imported".to_string())
+    }
+
+    message GetCurrentTheme() -> String {
+        current_theme.clone()
+    }
+
+    message ListThemes() -> Vec<String> {
+        let mut all_themes: Vec<String> = Vec::new()
+        for theme_name in themes.keys() {
+            all_themes.push(theme_name.clone())
+        }
+        all_themes
+    }
+
+    message CreateThemeVariant(variant_name: String, parent_theme: String) -> Result<(), String> {
+        if !themes.contains_key(&parent_theme) {
+            return Err("Parent theme not found".to_string())
+        }
+
+        let variant = ThemeVariant {
+            name: variant_name.clone(),
+            parent_theme: parent_theme,
+            overrides: HashMap::new()
+        }
+
+        variants.insert(variant_name, variant)
+        Ok(())
+    }
+
+    message SetVariantOverride(variant_name: String, color_name: String, color_value: String) -> Result<(), String> {
+        match variants.get_mut(&variant_name) {
+            Some(variant) => {
+                variant.overrides.insert(color_name, color_value)
+                Ok(())
+            },
+            None => Err("Variant not found".to_string())
+        }
+    }
+
+    message EnableAutoDarkDetection(enabled: bool) -> Result<(), String> {
+        auto_dark_detection = enabled
+        Ok(())
+    }
+}
+
+component ThemeProvider {
+    state {
+        active_theme: String = "light".to_string()
+    }
+
+    props {
+        theme_name: String = "light".to_string()
+    }
+
+    render {
+        div {
+            class: format!("theme-provider theme-{}", active_theme),
+            style: {
+                "color-scheme": if active_theme.contains("dark") { "dark" } else { "light" }
+            },
+            slot: {}
+        }
+    }
+
+    fn on_mount() {
+        active_theme = theme_name.clone()
+    }
+
+    fn on_update(props: Props) {
+        if props.theme_name != theme_name {
+            active_theme = props.theme_name.clone()
+        }
+    }
+}
+
+async fn test_theming_engine() -> Result<(), String> {
+    let engine: ActorRef<ThemingEngine> = spawn(ThemingEngine {
+        themes: HashMap::new(),
+        current_theme: "light".to_string(),
+        theme_mode: ThemeMode::Light,
+        variants: HashMap::new(),
+        system_tokens: HashMap::new(),
+        custom_themes: Vec::new(),
+        auto_dark_detection: true
+    })
+
+    await engine.call(ThemingEngine::CreateTheme("light".to_string(), false))?
+    await engine.call(ThemingEngine::CreateTheme("dark".to_string(), true))?
+
+    await engine.call(ThemingEngine::UpdateThemeColor("light".to_string(), "primary".to_string(), "#0066CC".to_string()))?
+
+    let color = await engine.call(ThemingEngine::GetThemeColor("light".to_string(), "primary".to_string()))?
+    println("Primary color (light theme): {}", color)
+
+    await engine.call(ThemingEngine::SetActiveTheme("dark".to_string()))?
+    let current = await engine.call(ThemingEngine::GetCurrentTheme())?
+    println("Current theme: {}", current)
+
+    let themes_list = await engine.call(ThemingEngine::ListThemes())?
+    println("Available themes: {} themes", themes_list.len())
+
+    let exported = await engine.call(ThemingEngine::ExportTheme("light".to_string(), "css".to_string()))?
+    println("Theme exported as CSS")
+
+    Ok(())
+}

@@ -1,0 +1,167 @@
+// Time Series Database
+// Time-series data storage, compression, and analytical queries
+// Replaces: phase 24 time-series systems (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct DataPoint {
+    timestamp: i64,
+    value: f64,
+    tags: HashMap<String, String>
+}
+
+struct TimeSeries {
+    name: String,
+    metric_id: i32,
+    data_points: Vec<DataPoint>,
+    retention_hours: i64,
+    compression_enabled: bool,
+    cardinality: i32
+}
+
+impl TimeSeries {
+    fn new(name: String, retention_hours: i64) -> Self {
+        return TimeSeries {
+            name: name,
+            metric_id: SystemTime::now().secs() as i32,
+            data_points: Vec::new(),
+            retention_hours: retention_hours,
+            compression_enabled: true,
+            cardinality: 0
+        }
+    }
+
+    fn insert(&mut self, timestamp: i64, value: f64, tags: HashMap<String, String>) -> Result<(), String> {
+        let point = DataPoint {
+            timestamp: timestamp,
+            value: value,
+            tags: tags
+        }
+
+        self.data_points.push(point)
+        self.cardinality = self.cardinality + 1
+
+        // Auto-cleanup old data
+        let now = SystemTime::now().secs()
+        self.data_points.retain(|p| now - p.timestamp < self.retention_hours * 3600)
+
+        Ok(())
+    }
+
+    fn query_range(&self, start: i64, end: i64) -> Vec<DataPoint> {
+        let mut results = Vec::new()
+
+        for point in &self.data_points {
+            if point.timestamp >= start && point.timestamp <= end {
+                results.push(point.clone())
+            }
+        }
+
+        return results
+    }
+
+    fn aggregate(&self, start: i64, end: i64, interval: i64) -> Vec<(i64, f64)> {
+        let mut buckets: HashMap<i64, Vec<f64>> = HashMap::new()
+
+        for point in &self.data_points {
+            if point.timestamp >= start && point.timestamp <= end {
+                let bucket_key = (point.timestamp / interval) * interval
+                if !buckets.contains_key(&bucket_key) {
+                    buckets.insert(bucket_key, Vec::new())
+                }
+                buckets.get_mut(&bucket_key).unwrap().push(point.value)
+            }
+        }
+
+        let mut results = Vec::new()
+        for (bucket_key, values) in buckets.iter() {
+            let avg = values.iter().sum::<f64>() / values.len() as f64
+            results.push((*bucket_key, avg))
+        }
+
+        return results
+    }
+}
+
+struct TimeSeriesDatabase {
+    series: HashMap<String, TimeSeries>,
+    series_count: i32,
+    total_points: i64
+}
+
+impl TimeSeriesDatabase {
+    fn new() -> Self {
+        return TimeSeriesDatabase {
+            series: HashMap::new(),
+            series_count: 0,
+            total_points: 0
+        }
+    }
+
+    fn create_series(&mut self, name: String, retention_hours: i64) -> Result<(), String> {
+        if self.series.contains_key(&name) {
+            return Err("Series already exists".to_string())
+        }
+
+        let ts = TimeSeries::new(name.clone(), retention_hours)
+        self.series.insert(name.clone(), ts)
+        self.series_count = self.series_count + 1
+
+        println("TimeSeriesDatabase: Created series '{}' (retention: {} hours)", name, retention_hours)
+        Ok(())
+    }
+
+    fn write(&mut self, series_name: String, value: f64, tags: HashMap<String, String>) -> Result<(), String> {
+        match self.series.get_mut(&series_name) {
+            Some(ts) => {
+                ts.insert(SystemTime::now().secs(), value, tags)?
+                self.total_points = self.total_points + 1
+                Ok(())
+            },
+            None => Err("Series not found".to_string())
+        }
+    }
+
+    fn read_range(&self, series_name: String, start: i64, end: i64) -> Result<Vec<DataPoint>, String> {
+        match self.series.get(&series_name) {
+            Some(ts) => Ok(ts.query_range(start, end)),
+            None => Err("Series not found".to_string())
+        }
+    }
+
+    fn aggregate_range(&self, series_name: String, start: i64, end: i64, interval: i64) -> Result<Vec<(i64, f64)>, String> {
+        match self.series.get(&series_name) {
+            Some(ts) => Ok(ts.aggregate(start, end, interval)),
+            None => Err("Series not found".to_string())
+        }
+    }
+
+    fn get_stats(&self) -> (i32, i64, i32) {
+        return (self.series_count, self.total_points, self.series.len() as i32)
+    }
+}
+
+fn test_timeseries_db() -> Result<(), String> {
+    let mut tsdb = TimeSeriesDatabase::new()
+
+    tsdb.create_series("cpu.usage".to_string(), 168)?
+    tsdb.create_series("memory.usage".to_string(), 168)?
+
+    let now = SystemTime::now().secs()
+
+    for i in 0..100 {
+        let mut tags = HashMap::new()
+        tags.insert("host".to_string(), "server-1".to_string())
+
+        tsdb.write("cpu.usage".to_string(), (50.0 + (i as f64 * 0.5)) % 100.0, tags)?
+    }
+
+    let points = tsdb.read_range("cpu.usage".to_string(), now - 3600, now)?
+    println("Retrieved {} data points", points.len())
+
+    let (series_count, total_points, unique_series) = tsdb.get_stats()
+    println("Database stats: {} series, {} points", series_count, total_points)
+
+    Ok(())
+}

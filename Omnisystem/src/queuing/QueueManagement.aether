@@ -1,0 +1,111 @@
+// Queue Management
+// Job queues, priority processing, work distribution
+// Replaces: phase 37 queue management
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+
+struct Job {
+    id: String,
+    job_type: String,
+    payload: Vec<u8>,
+    priority: i32,
+    status: String,
+    retry_count: i32
+}
+
+actor JobQueue {
+    queue: Vec<Job> = Vec::new(),
+    processing: HashMap<String, Job> = HashMap::new(),
+    completed: Vec<Job> = Vec::new()
+
+    message EnqueueJob(
+        job_type: String,
+        payload: Vec<u8>,
+        priority: i32
+    ) -> Result<String, String> {
+        let job = Job {
+            id: "job_".to_string() + &SystemTime::now().secs().to_string(),
+            job_type: job_type,
+            payload: payload,
+            priority: priority,
+            status: "queued".to_string(),
+            retry_count: 0
+        }
+
+        let job_id = job.id.clone()
+        queue.push(job)
+        println("JobQueue: Enqueued job {}", job_id)
+        return Ok(job_id)
+    }
+
+    message DequeueJob() -> Result<Job, String> {
+        if queue.is_empty() {
+            return Err("Queue empty".to_string())
+        }
+
+        // Sort by priority and dequeue
+        queue.sort_by_key(|j| -j.priority)
+        let job = queue.remove(0)
+
+        processing.insert(job.id.clone(), job.clone())
+        println("JobQueue: Dequeued job {}", job.id)
+
+        return Ok(job)
+    }
+
+    message CompleteJob(job_id: String) -> Result<(), String> {
+        match processing.remove(&job_id) {
+            Some(mut job) => {
+                job.status = "completed".to_string()
+                completed.push(job)
+                return Ok(())
+            },
+            None => return Err("Job not found".to_string())
+        }
+    }
+
+    message GetQueueLength() -> i32 {
+        return queue.len() as i32
+    }
+
+    message GetProcessingCount() -> i32 {
+        return processing.len() as i32
+    }
+
+    message GetCompletedCount() -> i32 {
+        return completed.len() as i32
+    }
+}
+
+async fn test_queue_management() -> Result<(), String> {
+    let queue: ActorRef<JobQueue> = spawn(JobQueue {
+        queue: Vec::new(),
+        processing: HashMap::new(),
+        completed: Vec::new()
+    })
+
+    for i in 0..10 {
+        await queue.call(JobQueue::EnqueueJob(
+            "process_data".to_string(),
+            vec![i as u8],
+            i % 3
+        ))?
+    }
+
+    let length = await queue.call(JobQueue::GetQueueLength())?
+    println("Queue length: {}", length)
+
+    for _ in 0..5 {
+        match await queue.call(JobQueue::DequeueJob()) {
+            Ok(job) => {
+                await queue.call(JobQueue::CompleteJob(job.id))?
+            },
+            Err(_) => break
+        }
+    }
+
+    let completed = await queue.call(JobQueue::GetCompletedCount())?
+    println("Completed: {}", completed)
+
+    Ok(())
+}

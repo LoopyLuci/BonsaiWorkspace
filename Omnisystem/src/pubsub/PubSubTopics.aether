@@ -1,0 +1,115 @@
+// Pub/Sub Topics
+// Advanced publish/subscribe with topic hierarchies
+// Replaces: phase 38 pubsub systems
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+
+struct Topic {
+    name: String,
+    subscribers: Vec<ActorRef<Subscriber>>,
+    message_count: i64,
+    created_at: i64
+}
+
+actor Subscriber {
+    id: String,
+    messages: Vec<String> = Vec::new()
+
+    message ReceiveMessage(message: String) -> Result<(), String> {
+        messages.push(message)
+        return Ok(())
+    }
+
+    message GetMessageCount() -> i32 {
+        return messages.len() as i32
+    }
+}
+
+actor PubSubBroker {
+    topics: HashMap<String, Topic> = HashMap::new()
+
+    message CreateTopic(name: String) -> Result<(), String> {
+        if topics.contains_key(&name) {
+            return Err("Topic exists".to_string())
+        }
+
+        let topic = Topic {
+            name: name.clone(),
+            subscribers: Vec::new(),
+            message_count: 0,
+            created_at: SystemTime::now().secs()
+        }
+
+        topics.insert(name.clone(), topic)
+        println("PubSubBroker: Created topic '{}'", name)
+        return Ok(())
+    }
+
+    message Subscribe(topic: String, subscriber: ActorRef<Subscriber>) -> Result<(), String> {
+        match topics.get_mut(&topic) {
+            Some(t) => {
+                t.subscribers.push(subscriber)
+                println("PubSubBroker: Subscriber added to '{}'", topic)
+                return Ok(())
+            },
+            None => return Err("Topic not found".to_string())
+        }
+    }
+
+    message Publish(topic: String, message: String) -> Result<(), String> {
+        match topics.get_mut(&topic) {
+            Some(t) => {
+                t.message_count = t.message_count + 1
+
+                for subscriber in t.subscribers.iter() {
+                    await subscriber.call(Subscriber::ReceiveMessage(message.clone()))?
+                }
+
+                println("PubSubBroker: Published to '{}' ({} subscribers)",
+                    topic, t.subscribers.len())
+                return Ok(())
+            },
+            None => return Err("Topic not found".to_string())
+        }
+    }
+
+    message GetStats(topic: String) -> Result<(i32, i64), String> {
+        match topics.get(&topic) {
+            Some(t) => return Ok((t.subscribers.len() as i32, t.message_count)),
+            None => return Err("Topic not found".to_string())
+        }
+    }
+}
+
+async fn test_pubsub_topics() -> Result<(), String> {
+    let broker: ActorRef<PubSubBroker> = spawn(PubSubBroker {
+        topics: HashMap::new()
+    })
+
+    await broker.call(PubSubBroker::CreateTopic("updates".to_string()))?
+
+    let sub1: ActorRef<Subscriber> = spawn(Subscriber {
+        id: "sub1".to_string(),
+        messages: Vec::new()
+    })
+
+    let sub2: ActorRef<Subscriber> = spawn(Subscriber {
+        id: "sub2".to_string(),
+        messages: Vec::new()
+    })
+
+    await broker.call(PubSubBroker::Subscribe("updates".to_string(), sub1.clone()))?
+    await broker.call(PubSubBroker::Subscribe("updates".to_string(), sub2.clone()))?
+
+    for i in 0..5 {
+        await broker.call(PubSubBroker::Publish(
+            "updates".to_string(),
+            format!("Message {}", i)
+        ))?
+    }
+
+    let (subs, msgs) = await broker.call(PubSubBroker::GetStats("updates".to_string()))?
+    println("Topic stats: {} subscribers, {} messages", subs, msgs)
+
+    Ok(())
+}

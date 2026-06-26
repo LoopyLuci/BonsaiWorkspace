@@ -1,0 +1,136 @@
+// Feature Flags
+// Feature toggling, A/B testing, and gradual rollout
+// Replaces: phase 29 feature flag systems (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Feature {
+    name: String,
+    enabled: bool,
+    rollout_percentage: i32,
+    created_at: i64,
+    updated_at: i64,
+    tags: Vec<String>
+}
+
+struct FeatureFlagManager {
+    features: HashMap<String, Feature>,
+    user_feature_cache: HashMap<String, Vec<String>>
+}
+
+impl FeatureFlagManager {
+    fn new() -> Self {
+        return FeatureFlagManager {
+            features: HashMap::new(),
+            user_feature_cache: HashMap::new()
+        }
+    }
+
+    fn create_feature(
+        &mut self,
+        name: String,
+        enabled: bool,
+        rollout_percentage: i32
+    ) -> Result<(), String> {
+        if self.features.contains_key(&name) {
+            return Err("Feature already exists".to_string())
+        }
+
+        let feature = Feature {
+            name: name.clone(),
+            enabled: enabled,
+            rollout_percentage: rollout_percentage,
+            created_at: SystemTime::now().secs(),
+            updated_at: SystemTime::now().secs(),
+            tags: Vec::new()
+        }
+
+        self.features.insert(name.clone(), feature)
+        println("FeatureFlagManager: Created feature '{}' (rollout: {}%)", name, rollout_percentage)
+
+        Ok(())
+    }
+
+    fn is_enabled(&self, name: String) -> bool {
+        match self.features.get(&name) {
+            Some(feature) => feature.enabled,
+            None => false
+        }
+    }
+
+    fn is_enabled_for_user(&mut self, user_id: String, feature_name: String) -> bool {
+        match self.features.get(&feature_name) {
+            Some(feature) => {
+                if !feature.enabled {
+                    return false
+                }
+
+                // Hash user_id to determine if they're in rollout
+                let mut hash = 0i32
+                for byte in user_id.bytes() {
+                    hash = ((hash << 5) - hash) + (byte as i32)
+                }
+
+                let user_percentage = (hash.abs() % 100)
+                return user_percentage < feature.rollout_percentage
+            },
+            None => false
+        }
+    }
+
+    fn enable_feature(&mut self, name: String) -> Result<(), String> {
+        match self.features.get_mut(&name) {
+            Some(feature) => {
+                feature.enabled = true
+                feature.updated_at = SystemTime::now().secs()
+                println("FeatureFlagManager: Enabled feature '{}'", name)
+                Ok(())
+            },
+            None => Err("Feature not found".to_string())
+        }
+    }
+
+    fn set_rollout(&mut self, name: String, percentage: i32) -> Result<(), String> {
+        if percentage < 0 || percentage > 100 {
+            return Err("Percentage must be 0-100".to_string())
+        }
+
+        match self.features.get_mut(&name) {
+            Some(feature) => {
+                feature.rollout_percentage = percentage
+                feature.updated_at = SystemTime::now().secs()
+                self.user_feature_cache.clear()  // Invalidate cache
+                println("FeatureFlagManager: Set rollout for '{}' to {}%", name, percentage)
+                Ok(())
+            },
+            None => Err("Feature not found".to_string())
+        }
+    }
+
+    fn get_feature_count(&self) -> i32 {
+        return self.features.len() as i32
+    }
+}
+
+fn test_feature_flags() -> Result<(), String> {
+    let mut manager = FeatureFlagManager::new()
+
+    manager.create_feature("new_ui".to_string(), true, 50)?
+    manager.create_feature("dark_mode".to_string(), false, 0)?
+    manager.create_feature("beta_api".to_string(), true, 25)?
+
+    println("Feature 'new_ui' enabled: {}", manager.is_enabled("new_ui".to_string()))
+
+    // Test user rollout
+    for user_id in &["user_1".to_string(), "user_2".to_string(), "user_3".to_string()] {
+        let has_feature = manager.is_enabled_for_user(user_id.clone(), "beta_api".to_string())
+        println("User {} has beta_api: {}", user_id, has_feature)
+    }
+
+    manager.set_rollout("beta_api".to_string(), 75)?
+
+    println("Total features: {}", manager.get_feature_count())
+
+    Ok(())
+}

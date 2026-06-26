@@ -1,119 +1,173 @@
-// DistributedTracing.aether - Distributed tracing and request tracking
-use crate::personal::ModuleFramework::*;
-use std::collections::HashMap;
+// Distributed Tracing
+// Request tracing, span collection, and observability
+// Replaces: phase 28 tracing systems (100% rewrite in AETHER)
 
-pub struct Span {
-    pub span_id: String,
-    pub trace_id: String,
-    pub parent_span_id: Option<String>,
-    pub operation_name: String,
-    pub start_time: u64,
-    pub end_time: Option<u64>,
-    pub duration_ms: u32,
-    pub tags: HashMap<String, String>,
-    pub logs: Vec<String>,
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Span {
+    trace_id: String,
+    span_id: String,
+    parent_span_id: Option<String>,
+    operation: String,
+    start_time: i64,
+    end_time: Option<i64>,
+    duration_ms: Option<i64>,
+    tags: HashMap<String, String>,
+    logs: Vec<String>
 }
 
-impl Span {
-    pub fn new(span_id: String, trace_id: String, operation_name: String) -> Self {
-        Span {
-            span_id,
-            trace_id,
-            parent_span_id: None,
-            operation_name,
-            start_time: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+actor TraceCollector {
+    traces: HashMap<String, Vec<Span>> = HashMap::new(),
+    span_count: i64 = 0
+
+    message StartSpan(
+        trace_id: String,
+        span_id: String,
+        parent_span_id: Option<String>,
+        operation: String
+    ) -> Result<(), String> {
+        if !traces.contains_key(&trace_id) {
+            traces.insert(trace_id.clone(), Vec::new())
+        }
+
+        let span = Span {
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            parent_span_id: parent_span_id,
+            operation: operation.clone(),
+            start_time: SystemTime::now().secs(),
             end_time: None,
-            duration_ms: 0,
+            duration_ms: None,
             tags: HashMap::new(),
-            logs: Vec::new(),
+            logs: Vec::new()
+        }
+
+        traces.get_mut(&trace_id).unwrap().push(span)
+        span_count = span_count + 1
+
+        println("TraceCollector: Started span {} in trace {}", span_id, trace_id)
+        return Ok(())
+    }
+
+    message EndSpan(trace_id: String, span_id: String) -> Result<(), String> {
+        match traces.get_mut(&trace_id) {
+            Some(spans) => {
+                for span in spans.iter_mut() {
+                    if span.span_id == span_id {
+                        let now = SystemTime::now().secs()
+                        span.end_time = Some(now)
+                        span.duration_ms = Some((now - span.start_time) * 1000)
+                        println("TraceCollector: Ended span {} (duration: {}ms)",
+                            span_id, span.duration_ms.unwrap_or(0))
+                        return Ok(())
+                    }
+                }
+                Err("Span not found".to_string())
+            },
+            None => Err("Trace not found".to_string())
         }
     }
 
-    pub fn add_tag(&mut self, key: String, value: String) {
-        self.tags.insert(key, value);
-    }
-
-    pub fn finish(&mut self) {
-        self.end_time = Some(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
-        );
-        self.duration_ms = (self.end_time.unwrap_or(0) - self.start_time) as u32;
-    }
-}
-
-pub struct Trace {
-    pub trace_id: String,
-    pub spans: HashMap<String, Span>,
-    pub root_span_id: String,
-}
-
-impl Trace {
-    pub fn new(trace_id: String, root_span_id: String) -> Self {
-        Trace {
-            trace_id,
-            spans: HashMap::new(),
-            root_span_id,
+    message AddTag(
+        trace_id: String,
+        span_id: String,
+        key: String,
+        value: String
+    ) -> Result<(), String> {
+        match traces.get_mut(&trace_id) {
+            Some(spans) => {
+                for span in spans.iter_mut() {
+                    if span.span_id == span_id {
+                        span.tags.insert(key, value)
+                        return Ok(())
+                    }
+                }
+                Err("Span not found".to_string())
+            },
+            None => Err("Trace not found".to_string())
         }
     }
 
-    pub fn add_span(&mut self, span: Span) {
-        self.spans.insert(span.span_id.clone(), span);
-    }
-}
-
-pub struct DistributedTracer {
-    pub tracer_id: String,
-    pub traces: HashMap<String, Trace>,
-    pub active_traces: u32,
-}
-
-impl DistributedTracer {
-    pub fn new(tracer_id: String) -> Self {
-        DistributedTracer {
-            tracer_id,
-            traces: HashMap::new(),
-            active_traces: 0,
+    message AddLog(
+        trace_id: String,
+        span_id: String,
+        message: String
+    ) -> Result<(), String> {
+        match traces.get_mut(&trace_id) {
+            Some(spans) => {
+                for span in spans.iter_mut() {
+                    if span.span_id == span_id {
+                        span.logs.push(message)
+                        return Ok(())
+                    }
+                }
+                Err("Span not found".to_string())
+            },
+            None => Err("Trace not found".to_string())
         }
     }
 
-    pub fn start_trace(&mut self, trace_id: String) -> Result<String, String> {
-        let root_span_id = format!("{}_root", trace_id);
-        let span = Span::new(root_span_id.clone(), trace_id.clone(), "root".to_string());
-
-        let mut trace = Trace::new(trace_id.clone(), root_span_id);
-        trace.add_span(span);
-
-        self.traces.insert(trace_id.clone(), trace);
-        self.active_traces += 1;
-
-        Ok(trace_id)
+    message GetTrace(trace_id: String) -> Result<Vec<Span>, String> {
+        match traces.get(&trace_id) {
+            Some(spans) => Ok(spans.clone()),
+            None => Err("Trace not found".to_string())
+        }
     }
 
-    pub fn finish_trace(&mut self, trace_id: &str) -> Result<(), String> {
-        if let Some(trace) = self.traces.get_mut(trace_id) {
-            if let Some(span) = trace.spans.get_mut(&trace.root_span_id) {
-                span.finish();
-            }
-            self.active_traces = self.active_traces.saturating_sub(1);
-            Ok(())
-        } else {
-            Err(format!("Trace {} not found", trace_id))
-        }
+    message GetSpanCount() -> i64 {
+        return span_count
     }
 }
 
-fn main() -> Result<(), String> {
-    println!("=== PHASE 62: DISTRIBUTED TRACER ===\n");
-    let mut tracer = DistributedTracer::new("tracer_001".to_string());
-    tracer.start_trace("trace_001".to_string())?;
-    tracer.finish_trace("trace_001")?;
-    println!("✓ Trace recorded");
-    println!("✓✓✓ Distributed Tracer operational ✓✓✓");
-    Ok(())
+async fn test_distributed_tracing() -> Result<(), String> {
+    let collector: ActorRef<TraceCollector> = spawn(TraceCollector {
+        traces: HashMap::new(),
+        span_count: 0
+    })
+
+    let trace_id = "trace-123".to_string()
+
+    // Start root span
+    await collector.call(TraceCollector::StartSpan(
+        trace_id.clone(),
+        "span-1".to_string(),
+        None,
+        "handle_request".to_string()
+    ))?
+
+    // Add child span
+    await collector.call(TraceCollector::StartSpan(
+        trace_id.clone(),
+        "span-2".to_string(),
+        Some("span-1".to_string()),
+        "query_database".to_string()
+    ))?
+
+    // Add tags and logs
+    await collector.call(TraceCollector::AddTag(
+        trace_id.clone(),
+        "span-1".to_string(),
+        "service".to_string(),
+        "api".to_string()
+    ))?
+
+    await collector.call(TraceCollector::AddLog(
+        trace_id.clone(),
+        "span-2".to_string(),
+        "Query executed successfully".to_string()
+    ))?
+
+    // End spans
+    await collector.call(TraceCollector::EndSpan(trace_id.clone(), "span-2".to_string()))?
+    await collector.call(TraceCollector::EndSpan(trace_id.clone(), "span-1".to_string()))?
+
+    let spans = await collector.call(TraceCollector::GetTrace(trace_id))?
+    println("Trace contains {} spans", spans.len())
+
+    let count = await collector.call(TraceCollector::GetSpanCount())?
+    println("Total spans collected: {}", count)
+
+    println("Distributed Tracing test complete")
+    return Ok(())
 }

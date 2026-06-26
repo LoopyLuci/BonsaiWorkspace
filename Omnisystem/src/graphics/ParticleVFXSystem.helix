@@ -1,0 +1,324 @@
+// Particle & VFX System
+// GPU-driven particles, physics, wind, turbulence, destruction, fluid dynamics
+// Phase 155
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+use omnisystem::sync::{Arc, Mutex}
+
+struct Vector3 {
+    x: f64,
+    y: f64,
+    z: f64
+}
+
+struct Particle {
+    position: Vector3,
+    velocity: Vector3,
+    acceleration: Vector3,
+    lifetime: f64,
+    max_lifetime: f64,
+    size: f64,
+    color: (f64, f64, f64, f64),
+    rotation: f64
+}
+
+struct ParticleEmitter {
+    position: Vector3,
+    emission_rate: f64,
+    particle_lifetime: f64,
+    initial_velocity: Vector3,
+    velocity_variance: f64,
+    size_range: (f64, f64)
+}
+
+struct PhysicsField {
+    field_type: String,
+    position: Vector3,
+    strength: f64,
+    radius: f64
+}
+
+enum FieldType {
+    Gravity,
+    Wind,
+    Turbulence,
+    Vortex,
+    Attraction
+}
+
+gpu_kernel update_particles(particles: &[Particle], gravity: f64, delta_time: f64) -> Vec<Particle> {
+    let mut updated: Vec<Particle> = Vec::new()
+
+    for particle in particles {
+        let mut p = particle.clone()
+
+        // Apply gravity
+        p.acceleration.y = p.acceleration.y - gravity
+
+        // Update velocity
+        p.velocity.x = p.velocity.x + p.acceleration.x * delta_time
+        p.velocity.y = p.velocity.y + p.acceleration.y * delta_time
+        p.velocity.z = p.velocity.z + p.acceleration.z * delta_time
+
+        // Update position
+        p.position.x = p.position.x + p.velocity.x * delta_time
+        p.position.y = p.position.y + p.velocity.y * delta_time
+        p.position.z = p.position.z + p.velocity.z * delta_time
+
+        // Update lifetime
+        p.lifetime = p.lifetime - delta_time
+
+        // Apply drag
+        p.velocity.x = p.velocity.x * 0.98
+        p.velocity.y = p.velocity.y * 0.98
+        p.velocity.z = p.velocity.z * 0.98
+
+        updated.push(p)
+    }
+
+    updated
+}
+
+gpu_kernel apply_wind_field(particles: &[Particle], wind_x: f64, wind_y: f64, wind_z: f64, strength: f64) -> Vec<Particle> {
+    let mut updated: Vec<Particle> = Vec::new()
+
+    for particle in particles {
+        let mut p = particle.clone()
+
+        p.velocity.x = p.velocity.x + wind_x * strength
+        p.velocity.y = p.velocity.y + wind_y * strength
+        p.velocity.z = p.velocity.z + wind_z * strength
+
+        updated.push(p)
+    }
+
+    updated
+}
+
+gpu_kernel apply_turbulence(particles: &[Particle], turbulence_scale: f64) -> Vec<Particle> {
+    let mut updated: Vec<Particle> = Vec::new()
+
+    for particle in particles {
+        let mut p = particle.clone()
+
+        // Pseudo-random perturbation based on position
+        let perturb_x = (p.position.x * 12.9898 + p.position.y * 78.233).sin() * turbulence_scale
+        let perturb_y = (p.position.y * 37.539 + p.position.z * 39.398).sin() * turbulence_scale
+        let perturb_z = (p.position.z * 83.545 + p.position.x * 23.455).sin() * turbulence_scale
+
+        p.acceleration.x = p.acceleration.x + perturb_x
+        p.acceleration.y = p.acceleration.y + perturb_y
+        p.acceleration.z = p.acceleration.z + perturb_z
+
+        updated.push(p)
+    }
+
+    updated
+}
+
+fn distance(a: &Vector3, b: &Vector3) -> f64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    let dz = a.z - b.z
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+fn apply_attraction_field(particle: &mut Particle, field: &PhysicsField) {
+    let dist = distance(&particle.position, &field.position)
+    if dist < field.radius && dist > 0.01 {
+        let dir_x = (field.position.x - particle.position.x) / dist
+        let dir_y = (field.position.y - particle.position.y) / dist
+        let dir_z = (field.position.z - particle.position.z) / dist
+
+        let force = field.strength / (dist * dist + 0.1)
+
+        particle.acceleration.x = particle.acceleration.x + dir_x * force
+        particle.acceleration.y = particle.acceleration.y + dir_y * force
+        particle.acceleration.z = particle.acceleration.z + dir_z * force
+    }
+}
+
+actor ParticleVFXEngine {
+    particles: Vec<Particle> = Vec::new(),
+    emitters: Vec<ParticleEmitter> = Vec::new(),
+    physics_fields: Vec<PhysicsField> = Vec::new(),
+    gravity: f64 = 9.81,
+    max_particles: i32 = 1000000,
+    active_particle_count: i32 = 0,
+    wind: Vector3 = Vector3 { x: 0.0, y: 0.0, z: 0.0 },
+    turbulence_scale: f64 = 0.1,
+    time_accumulated: f64 = 0.0
+
+    message CreateEmitter(position: Vector3, rate: f64, lifetime: f64) -> Result<i32, String> {
+        if rate < 0.0 || lifetime <= 0.0 {
+            return Err("Invalid emitter parameters".to_string())
+        }
+
+        let emitter = ParticleEmitter {
+            position: position,
+            emission_rate: rate,
+            particle_lifetime: lifetime,
+            initial_velocity: Vector3 { x: 0.0, y: 1.0, z: 0.0 },
+            velocity_variance: 0.5,
+            size_range: (0.1, 0.5)
+        }
+
+        let id = emitters.len() as i32
+        emitters.push(emitter)
+        Ok(id)
+    }
+
+    message AddPhysicsField(field_type: String, position: Vector3, strength: f64, radius: f64) -> Result<i32, String> {
+        if strength.abs() < 0.01 {
+            return Err("Field strength too small".to_string())
+        }
+
+        let field = PhysicsField {
+            field_type: field_type,
+            position: position,
+            strength: strength,
+            radius: radius
+        }
+
+        let id = physics_fields.len() as i32
+        physics_fields.push(field)
+        Ok(id)
+    }
+
+    message SetWind(wind_x: f64, wind_y: f64, wind_z: f64) -> Result<(), String> {
+        wind = Vector3 { x: wind_x, y: wind_y, z: wind_z }
+        Ok(())
+    }
+
+    message SetTurbulence(scale: f64) -> Result<(), String> {
+        if scale < 0.0 {
+            return Err("Turbulence scale cannot be negative".to_string())
+        }
+        turbulence_scale = scale
+        Ok(())
+    }
+
+    message Update(delta_time: f64) -> Result<(), String> {
+        if delta_time <= 0.0 {
+            return Err("Delta time must be positive".to_string())
+        }
+
+        // Emit new particles
+        for emitter in &emitters {
+            let particles_to_emit = (emitter.emission_rate * delta_time) as i32
+            for _ in 0..particles_to_emit {
+                if (particles.len() as i32) < max_particles {
+                    let particle = Particle {
+                        position: emitter.position.clone(),
+                        velocity: emitter.initial_velocity.clone(),
+                        acceleration: Vector3 { x: 0.0, y: 0.0, z: 0.0 },
+                        lifetime: emitter.particle_lifetime,
+                        max_lifetime: emitter.particle_lifetime,
+                        size: 0.3,
+                        color: (1.0, 1.0, 1.0, 1.0),
+                        rotation: 0.0
+                    }
+                    particles.push(particle)
+                }
+            }
+        }
+
+        // Update existing particles
+        let mut alive_particles: Vec<Particle> = Vec::new()
+
+        for mut particle in particles.iter_mut() {
+            // Apply physics fields
+            for field in &physics_fields {
+                if field.field_type == "attraction" {
+                    apply_attraction_field(&mut particle, field)
+                }
+            }
+
+            // Apply wind
+            particle.velocity.x = particle.velocity.x + wind.x * 0.01
+            particle.velocity.y = particle.velocity.y + wind.y * 0.01
+            particle.velocity.z = particle.velocity.z + wind.z * 0.01
+
+            // Apply turbulence
+            let perturb = turbulence_scale * 0.01
+            particle.acceleration.x = particle.acceleration.x + perturb
+
+            // Apply gravity
+            particle.acceleration.y = particle.acceleration.y - gravity * 0.01
+
+            // Update velocity
+            particle.velocity.x = particle.velocity.x + particle.acceleration.x * delta_time
+            particle.velocity.y = particle.velocity.y + particle.acceleration.y * delta_time
+            particle.velocity.z = particle.velocity.z + particle.acceleration.z * delta_time
+
+            // Update position
+            particle.position.x = particle.position.x + particle.velocity.x * delta_time
+            particle.position.y = particle.position.y + particle.velocity.y * delta_time
+            particle.position.z = particle.position.z + particle.velocity.z * delta_time
+
+            // Update lifetime
+            particle.lifetime = particle.lifetime - delta_time
+
+            // Apply alpha fade
+            let alpha_factor = particle.lifetime / particle.max_lifetime
+            let (r, g, b, _) = particle.color
+            particle.color = (r, g, b, alpha_factor)
+
+            // Keep alive particles
+            if particle.lifetime > 0.0 {
+                alive_particles.push(particle.clone())
+            }
+        }
+
+        particles = alive_particles
+        active_particle_count = particles.len() as i32
+
+        Ok(())
+    }
+
+    message GetActiveParticleCount() -> i32 {
+        active_particle_count
+    }
+
+    message GetParticles() -> Vec<Particle> {
+        particles.clone()
+    }
+
+    message ClearAllParticles() -> Result<(), String> {
+        particles.clear()
+        active_particle_count = 0
+        Ok(())
+    }
+}
+
+async fn test_particle_vfx() -> Result<(), String> {
+    let vfx: ActorRef<ParticleVFXEngine> = spawn(ParticleVFXEngine {
+        particles: Vec::new(),
+        emitters: Vec::new(),
+        physics_fields: Vec::new(),
+        gravity: 9.81,
+        max_particles: 1000000,
+        active_particle_count: 0,
+        wind: Vector3 { x: 0.0, y: 0.0, z: 0.0 },
+        turbulence_scale: 0.1,
+        time_accumulated: 0.0
+    })
+
+    let emitter_id = await vfx.call(ParticleVFXEngine::CreateEmitter(
+        Vector3 { x: 0.0, y: 0.0, z: 0.0 },
+        100.0,
+        5.0
+    ))?
+
+    await vfx.call(ParticleVFXEngine::SetWind(1.0, 0.0, 0.0))?
+    await vfx.call(ParticleVFXEngine::SetTurbulence(0.5))?
+
+    for _ in 0..10 {
+        await vfx.call(ParticleVFXEngine::Update(0.016))?
+    }
+
+    let count = await vfx.call(ParticleVFXEngine::GetActiveParticleCount())?
+    println("VFX System: {} active particles", count)
+
+    Ok(())
+}

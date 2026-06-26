@@ -1,0 +1,269 @@
+// Cache Layer
+// Redis-like distributed caching with TTL and eviction
+// Replaces: phase 15 caching systems (100% rewrite in AETHER)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct CacheValue {
+    key: String,
+    data: Vec<u8>,
+    ttl: Option<i64>,
+    created_at: i64,
+    accessed_at: i64,
+    access_count: i32
+}
+
+struct CacheStats {
+    hits: i64,
+    misses: i64,
+    evictions: i64,
+    total_entries: i32
+}
+
+// Local cache node
+actor CacheNode {
+    node_id: String,
+    data: HashMap<String, CacheValue> = HashMap::new(),
+    max_size: i64,
+    current_size: i64 = 0,
+    stats: CacheStats = CacheStats { hits: 0, misses: 0, evictions: 0, total_entries: 0 }
+
+    message Set(key: String, value: Vec<u8>, ttl: Option<i64>) -> Result<(), String> {
+        let size = value.len() as i64
+
+        if current_size + size > max_size {
+            evict_oldest()?
+        }
+
+        let cache_value = CacheValue {
+            key: key.clone(),
+            data: value,
+            ttl: ttl,
+            created_at: SystemTime::now().secs(),
+            accessed_at: SystemTime::now().secs(),
+            access_count: 0
+        }
+
+        data.insert(key.clone(), cache_value)
+        current_size = current_size + size
+
+        return Ok(())
+    }
+
+    message Get(key: String) -> Result<Option<Vec<u8>>, String> {
+        match data.get_mut(&key) {
+            Some(value) => {
+                let now = SystemTime::now().secs()
+
+                // Check TTL
+                if let Some(ttl) = value.ttl {
+                    if now - value.created_at > ttl {
+                        data.remove(&key)
+                        stats.misses = stats.misses + 1
+                        return Ok(None)
+                    }
+                }
+
+                value.accessed_at = now
+                value.access_count = value.access_count + 1
+                stats.hits = stats.hits + 1
+
+                return Ok(Some(value.data.clone()))
+            },
+            None => {
+                stats.misses = stats.misses + 1
+                return Ok(None)
+            }
+        }
+    }
+
+    message Delete(key: String) -> Result<(), String> {
+        match data.remove(&key) {
+            Some(value) => {
+                current_size = current_size - value.data.len() as i64
+                return Ok(())
+            },
+            None => return Err("Key not found".to_string())
+        }
+    }
+
+    message Clear() -> Result<(), String> {
+        data.clear()
+        current_size = 0
+        stats.total_entries = 0
+        return Ok(())
+    }
+
+    message GetStats() -> CacheStats {
+        stats.total_entries = data.len() as i32
+        return stats.clone()
+    }
+
+    fn evict_oldest() -> Result<(), String> {
+        // Find oldest accessed entry
+        let mut oldest_key: Option<String> = None
+        let mut oldest_time: i64 = SystemTime::now().secs()
+
+        for (key, value) in data.iter() {
+            if value.accessed_at < oldest_time {
+                oldest_time = value.accessed_at
+                oldest_key = Some(key.clone())
+            }
+        }
+
+        if let Some(key) = oldest_key {
+            if let Some(value) = data.remove(&key) {
+                current_size = current_size - value.data.len() as i64
+                stats.evictions = stats.evictions + 1
+                println("Cache evicted: {}", key)
+            }
+        }
+
+        return Ok(())
+    }
+}
+
+// Distributed cache cluster
+actor CacheCluster {
+    cluster_id: String,
+    nodes: HashMap<String, ActorRef<CacheNode>> = HashMap::new(),
+    replication_factor: i32 = 3
+
+    message RegisterNode(
+        node_id: String,
+        node_actor: ActorRef<CacheNode>
+    ) -> Result<(), String> {
+        nodes.insert(node_id.clone(), node_actor)
+        println("Cache: Registered node {}", node_id)
+        return Ok(())
+    }
+
+    message Set(
+        key: String,
+        value: Vec<u8>,
+        ttl: Option<i64>
+    ) -> Result<(), String> {
+        if nodes.is_empty() {
+            return Err("No cache nodes available".to_string())
+        }
+
+        // Replicate to multiple nodes
+        let mut replicated = 0
+        for (_, node) in nodes.iter() {
+            match await node.call(CacheNode::Set(key.clone(), value.clone(), ttl)) {
+                Ok(_) => {
+                    replicated = replicated + 1
+                },
+                Err(e) => {
+                    println("Cache replication failed: {}", e)
+                }
+            }
+        }
+
+        if replicated >= replication_factor {
+            return Ok(())
+        } else {
+            return Err("Insufficient replication".to_string())
+        }
+    }
+
+    message Get(key: String) -> Result<Option<Vec<u8>>, String> {
+        // Read from first available node
+        for (_, node) in nodes.iter() {
+            match await node.call(CacheNode::Get(key.clone())) {
+                Ok(Some(data)) => return Ok(Some(data)),
+                _ => {}
+            }
+        }
+
+        return Ok(None)
+    }
+
+    message GetStats() -> Result<CacheStats, String> {
+        // Aggregate stats from all nodes
+        let mut total_stats = CacheStats { hits: 0, misses: 0, evictions: 0, total_entries: 0 }
+
+        for (_, node) in nodes.iter() {
+            match await node.call(CacheNode::GetStats()) {
+                Ok(stats) => {
+                    total_stats.hits = total_stats.hits + stats.hits
+                    total_stats.misses = total_stats.misses + stats.misses
+                    total_stats.evictions = total_stats.evictions + stats.evictions
+                    total_stats.total_entries = total_stats.total_entries + stats.total_entries
+                },
+                Err(_) => {}
+            }
+        }
+
+        return Ok(total_stats)
+    }
+
+    message Invalidate(key: String) -> Result<(), String> {
+        for (_, node) in nodes.iter() {
+            let _ = await node.call(CacheNode::Delete(key.clone()))
+        }
+        return Ok(())
+    }
+}
+
+async fn test_cache_layer() -> Result<(), String> {
+    println("Starting Cache Layer test")
+
+    let cluster: ActorRef<CacheCluster> = spawn(CacheCluster {
+        cluster_id: "cache-cluster-1".to_string(),
+        nodes: HashMap::new(),
+        replication_factor: 2
+    })
+
+    // Create cache nodes
+    let node1: ActorRef<CacheNode> = spawn(CacheNode {
+        node_id: "node-1".to_string(),
+        data: HashMap::new(),
+        max_size: 100 * 1024 * 1024,
+        current_size: 0,
+        stats: CacheStats { hits: 0, misses: 0, evictions: 0, total_entries: 0 }
+    })
+
+    let node2: ActorRef<CacheNode> = spawn(CacheNode {
+        node_id: "node-2".to_string(),
+        data: HashMap::new(),
+        max_size: 100 * 1024 * 1024,
+        current_size: 0,
+        stats: CacheStats { hits: 0, misses: 0, evictions: 0, total_entries: 0 }
+    })
+
+    // Register nodes
+    await cluster.call(CacheCluster::RegisterNode("node-1".to_string(), node1))?
+    await cluster.call(CacheCluster::RegisterNode("node-2".to_string(), node2))?
+
+    // Set values
+    await cluster.call(CacheCluster::Set(
+        "user:1:profile".to_string(),
+        b"user profile data".to_vec(),
+        Some(3600)  // 1 hour TTL
+    ))?
+
+    await cluster.call(CacheCluster::Set(
+        "session:abc123".to_string(),
+        b"session data".to_vec(),
+        Some(1800)  // 30 min TTL
+    ))?
+
+    // Get values
+    match await cluster.call(CacheCluster::Get("user:1:profile".to_string()))? {
+        Some(data) => println("Cache hit: {} bytes", data.len()),
+        None => println("Cache miss")
+    }
+
+    // Stats
+    let stats = await cluster.call(CacheCluster::GetStats())?
+    println("Cache stats - Hits: {}, Misses: {}, Evictions: {}, Entries: {}",
+        stats.hits, stats.misses, stats.evictions, stats.total_entries)
+
+    // Invalidate
+    await cluster.call(CacheCluster::Invalidate("user:1:profile".to_string()))?
+
+    println("Cache Layer test complete")
+    return Ok(())
+}

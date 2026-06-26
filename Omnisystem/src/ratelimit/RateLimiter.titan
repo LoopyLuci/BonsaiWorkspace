@@ -1,63 +1,196 @@
-// RateLimiter.titan - Rate limiting and throttling
-use crate::personal::ModuleFramework::*;
-use std::collections::HashMap;
+// Rate Limiter
+// Token bucket, sliding window, and adaptive rate limiting
+// Replaces: phase 23 rate limiting systems (100% rewrite in TITAN)
 
-pub struct RateLimitBucket {
-    pub bucket_id: String,
-    pub max_requests: u32,
-    pub current_requests: u32,
-    pub reset_at: u64,
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+enum RateLimitStrategy {
+    TokenBucket,
+    SlidingWindow,
+    FixedWindow,
+    LeakyBucket
 }
 
-impl RateLimitBucket {
-    pub fn new(bucket_id: String, max_requests: u32) -> Self {
-        RateLimitBucket {
-            bucket_id,
-            max_requests,
-            current_requests: 0,
-            reset_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() + 60,
+struct RateLimitConfig {
+    strategy: RateLimitStrategy,
+    rate: i32,  // requests per window
+    window: i64,  // milliseconds
+    burst_size: i32
+}
+
+struct TokenBucket {
+    tokens: f32,
+    capacity: f32,
+    refill_rate: f32,
+    last_refill: i64
+}
+
+impl TokenBucket {
+    fn new(capacity: f32, refill_rate: f32) -> Self {
+        return TokenBucket {
+            tokens: capacity,
+            capacity: capacity,
+            refill_rate: refill_rate,
+            last_refill: SystemTime::now().secs()
         }
     }
 
-    pub fn allow_request(&mut self) -> bool {
-        if self.current_requests < self.max_requests {
-            self.current_requests += 1;
-            true
-        } else {
-            false
+    fn refill(&mut self) -> void {
+        let now = SystemTime::now().secs()
+        let time_passed = (now - self.last_refill) as f32
+
+        self.tokens = self.tokens + (time_passed * self.refill_rate)
+        if self.tokens > self.capacity {
+            self.tokens = self.capacity
         }
+
+        self.last_refill = now
+    }
+
+    fn consume(&mut self, tokens: f32) -> bool {
+        self.refill()
+
+        if self.tokens >= tokens {
+            self.tokens = self.tokens - tokens
+            return true
+        }
+
+        return false
     }
 }
 
-pub struct RateLimiter {
-    pub limiter_id: String,
-    pub buckets: HashMap<String, RateLimitBucket>,
+struct RateLimiter {
+    config: RateLimitConfig,
+    buckets: HashMap<String, TokenBucket>,
+    window_counters: HashMap<String, Vec<i64>>  // client_id -> [timestamps]
 }
 
 impl RateLimiter {
-    pub fn new(limiter_id: String) -> Self {
-        RateLimiter {
-            limiter_id,
+    fn new(config: RateLimitConfig) -> Self {
+        return RateLimiter {
+            config: config,
             buckets: HashMap::new(),
+            window_counters: HashMap::new()
         }
     }
 
-    pub fn check_limit(&mut self, client_id: &str) -> bool {
-        let bucket = self.buckets.entry(client_id.to_string())
-            .or_insert_with(|| RateLimitBucket::new(client_id.to_string(), 100));
-        bucket.allow_request()
+    fn allow_request(&mut self, client_id: String) -> Result<bool, String> {
+        match self.config.strategy {
+            RateLimitStrategy::TokenBucket => {
+                self.allow_token_bucket(client_id)
+            },
+            RateLimitStrategy::SlidingWindow => {
+                self.allow_sliding_window(client_id)
+            },
+            RateLimitStrategy::FixedWindow => {
+                self.allow_fixed_window(client_id)
+            },
+            RateLimitStrategy::LeakyBucket => {
+                self.allow_leaky_bucket(client_id)
+            }
+        }
+    }
+
+    fn allow_token_bucket(&mut self, client_id: String) -> Result<bool, String> {
+        if !self.buckets.contains_key(&client_id) {
+            let bucket = TokenBucket::new(
+                self.config.burst_size as f32,
+                (self.config.rate as f32) / (self.config.window as f32)
+            )
+            self.buckets.insert(client_id.clone(), bucket)
+        }
+
+        match self.buckets.get_mut(&client_id) {
+            Some(bucket) => {
+                let allowed = bucket.consume(1.0)
+                if allowed {
+                    println("RateLimiter: Request allowed for {}", client_id)
+                } else {
+                    println("RateLimiter: Request denied for {} (rate exceeded)", client_id)
+                }
+                return Ok(allowed)
+            },
+            None => Err("Bucket not found".to_string())
+        }
+    }
+
+    fn allow_sliding_window(&mut self, client_id: String) -> Result<bool, String> {
+        let now = SystemTime::now().secs()
+
+        if !self.window_counters.contains_key(&client_id) {
+            self.window_counters.insert(client_id.clone(), Vec::new())
+        }
+
+        let timestamps = self.window_counters.get_mut(&client_id).unwrap()
+
+        // Remove old timestamps outside window
+        timestamps.retain(|&ts| now - ts < self.config.window)
+
+        if timestamps.len() < self.config.rate as usize {
+            timestamps.push(now)
+            return Ok(true)
+        }
+
+        Ok(false)
+    }
+
+    fn allow_fixed_window(&mut self, client_id: String) -> Result<bool, String> {
+        let now = SystemTime::now().secs()
+        let window_key = client_id.clone() + ":".to_string().as_str() + &(now / self.config.window).to_string()
+
+        if !self.window_counters.contains_key(&window_key) {
+            self.window_counters.insert(window_key.clone(), Vec::new())
+        }
+
+        let count = self.window_counters.get_mut(&window_key).unwrap()
+
+        if count.len() < self.config.rate as usize {
+            count.push(now)
+            return Ok(true)
+        }
+
+        Ok(false)
+    }
+
+    fn allow_leaky_bucket(&mut self, client_id: String) -> Result<bool, String> {
+        // Simplified leaky bucket (similar to token bucket)
+        self.allow_token_bucket(client_id)
+    }
+
+    fn get_remaining(&self, client_id: String) -> Option<i32> {
+        match self.buckets.get(&client_id) {
+            Some(bucket) => Some(bucket.tokens.ceil() as i32),
+            None => None
+        }
     }
 }
 
-fn main() -> Result<(), String> {
-    println!("=== PHASE 57: RATE LIMITER ===\n");
-    let mut limiter = RateLimiter::new("rl_001".to_string());
-    for _ in 0..5 {
-        limiter.check_limit("client_1");
+fn test_rate_limiter() -> Result<(), String> {
+    let config = RateLimitConfig {
+        strategy: RateLimitStrategy::TokenBucket,
+        rate: 100,  // 100 requests
+        window: 60000,  // per minute
+        burst_size: 10
     }
-    println!("✓✓✓ Rate Limiter operational ✓✓✓");
+
+    let mut limiter = RateLimiter::new(config)
+
+    // Simulate requests from different clients
+    for client_num in 0..3 {
+        let client_id = "client:".to_string() + &client_num.to_string()
+
+        for req in 0..15 {
+            match limiter.allow_request(client_id.clone())? {
+                true => println("  Request {} allowed", req),
+                false => {
+                    println("  Request {} denied", req)
+                    break
+                }
+            }
+        }
+    }
+
+    println("Rate Limiter test complete")
     Ok(())
 }

@@ -1,0 +1,87 @@
+// Dead Letter Queue
+// Failed message handling and retry management
+// Replaces: phase 39 dlq systems
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+
+struct DeadMessage {
+    id: String,
+    original_queue: String,
+    message: Vec<u8>,
+    error: String,
+    retry_count: i32,
+    max_retries: i32,
+    timestamp: i64
+}
+
+actor DeadLetterQueue {
+    messages: Vec<DeadMessage> = Vec::new(),
+    processed: Vec<DeadMessage> = Vec::new()
+
+    message EnqueueDeadMessage(
+        original_queue: String,
+        message: Vec<u8>,
+        error: String,
+        retry_count: i32
+    ) -> Result<String, String> {
+        let dead_msg = DeadMessage {
+            id: "dlq_".to_string() + &SystemTime::now().secs().to_string(),
+            original_queue: original_queue,
+            message: message,
+            error: error,
+            retry_count: retry_count,
+            max_retries: 3,
+            timestamp: SystemTime::now().secs()
+        }
+
+        let msg_id = dead_msg.id.clone()
+        messages.push(dead_msg)
+        println("DeadLetterQueue: Enqueued dead message {}", msg_id)
+        return Ok(msg_id)
+    }
+
+    message RetryMessage(message_id: String) -> Result<(), String> {
+        for (i, msg) in messages.iter_mut().enumerate() {
+            if msg.id == message_id {
+                if msg.retry_count < msg.max_retries {
+                    msg.retry_count = msg.retry_count + 1
+                    println("DeadLetterQueue: Retrying message {} (attempt {})",
+                        message_id, msg.retry_count)
+                    return Ok(())
+                } else {
+                    let processed_msg = messages.remove(i)
+                    processed.push(processed_msg)
+                    return Err("Max retries exceeded".to_string())
+                }
+            }
+        }
+        return Err("Message not found".to_string())
+    }
+
+    message GetQueueSize() -> i32 {
+        return messages.len() as i32
+    }
+
+    message GetProcessedCount() -> i32 {
+        return processed.len() as i32
+    }
+}
+
+async fn test_dlq() -> Result<(), String> {
+    let dlq: ActorRef<DeadLetterQueue> = spawn(DeadLetterQueue {
+        messages: Vec::new(),
+        processed: Vec::new()
+    })
+
+    await dlq.call(DeadLetterQueue::EnqueueDeadMessage(
+        "main_queue".to_string(),
+        vec![1, 2, 3],
+        "Deserialization failed".to_string(),
+        0
+    ))?
+
+    let size = await dlq.call(DeadLetterQueue::GetQueueSize())?
+    println("DLQ size: {}", size)
+
+    Ok(())
+}

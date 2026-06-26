@@ -1,0 +1,457 @@
+// Asset Manager
+// Resource loading, caching, streaming, and lifecycle management
+// Replaces: phase 13 resource systems (100% rewrite in TITAN)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::io::{File, FileMode}
+use omnisystem::time::SystemTime
+use omnisystem::sync::{Mutex, Arc}
+
+enum AssetType {
+    Texture,
+    Mesh,
+    Shader,
+    Audio,
+    Font,
+    Material,
+    Scene,
+    Data
+}
+
+enum AssetState {
+    Unloaded,
+    Loading,
+    Loaded,
+    Error,
+    Unloading
+}
+
+struct AssetMetadata {
+    id: String,
+    path: String,
+    asset_type: AssetType,
+    file_size: i64,
+    created_at: i64,
+    loaded_at: Option<i64>,
+    access_count: i32,
+    last_accessed: i64
+}
+
+struct AssetData {
+    id: String,
+    data: Vec<u8>,
+    metadata: AssetMetadata,
+    state: AssetState,
+    ref_count: i32
+}
+
+struct CacheEntry {
+    asset: AssetData,
+    loaded_at: i64,
+    last_accessed: i64,
+    size_bytes: i64
+}
+
+struct AssetCache {
+    entries: HashMap<String, CacheEntry>,
+    max_size: i64,
+    current_size: i64,
+    eviction_policy: String  // lru, lfu, fifo
+}
+
+impl AssetCache {
+    fn new(max_size: i64, eviction_policy: String) -> Self {
+        return AssetCache {
+            entries: HashMap::new(),
+            max_size: max_size,
+            current_size: 0,
+            eviction_policy: eviction_policy
+        }
+    }
+
+    fn add(&mut self, asset: AssetData, size_bytes: i64) -> Result<(), String> {
+        // Check if we need to evict
+        if self.current_size + size_bytes > self.max_size {
+            self.evict_entries(size_bytes)?
+        }
+
+        let id = asset.id.clone()
+        let entry = CacheEntry {
+            asset: asset,
+            loaded_at: SystemTime::now().secs(),
+            last_accessed: SystemTime::now().secs(),
+            size_bytes: size_bytes
+        }
+
+        self.entries.insert(id.clone(), entry)
+        self.current_size = self.current_size + size_bytes
+
+        println("Cache: Added asset {} ({} bytes), cache at {}/{}",
+            id,
+            size_bytes,
+            self.current_size,
+            self.max_size
+        )
+
+        Ok(())
+    }
+
+    fn get(&mut self, id: String) -> Result<Option<Vec<u8>>, String> {
+        match self.entries.get_mut(&id) {
+            Some(entry) => {
+                entry.last_accessed = SystemTime::now().secs()
+                entry.asset.metadata.access_count = entry.asset.metadata.access_count + 1
+                println("Cache: Hit for asset {} (access count: {})",
+                    id,
+                    entry.asset.metadata.access_count
+                )
+                Ok(Some(entry.asset.data.clone()))
+            },
+            None => {
+                println("Cache: Miss for asset {}", id)
+                Ok(None)
+            }
+        }
+    }
+
+    fn remove(&mut self, id: String) -> Result<(), String> {
+        match self.entries.remove(&id) {
+            Some(entry) => {
+                self.current_size = self.current_size - entry.size_bytes
+                println("Cache: Removed asset {}, cache at {}/{}",
+                    id,
+                    self.current_size,
+                    self.max_size
+                )
+                Ok(())
+            },
+            None => Err("Asset not in cache".to_string())
+        }
+    }
+
+    fn evict_entries(&mut self, required_space: i64) -> Result<(), String> {
+        let mut space_freed = 0i64
+
+        if self.eviction_policy == "lru" {
+            // Sort by last_accessed time
+            let mut sorted_entries: Vec<(String, i64)> = Vec::new()
+
+            for (id, entry) in self.entries.iter() {
+                sorted_entries.push((id.clone(), entry.last_accessed))
+            }
+
+            // Sort ascending (oldest first)
+            sorted_entries.sort_by_key(|(_, time)| *time)
+
+            // Evict oldest entries
+            for (id, _) in sorted_entries.iter() {
+                if space_freed >= required_space {
+                    break
+                }
+
+                if let Some(entry) = self.entries.remove(id) {
+                    space_freed = space_freed + entry.size_bytes
+                    self.current_size = self.current_size - entry.size_bytes
+                    println("Cache: Evicted LRU asset {} ({} bytes)",
+                        id,
+                        entry.size_bytes
+                    )
+                }
+            }
+        } else if self.eviction_policy == "lfu" {
+            // Sort by access count
+            let mut sorted_entries: Vec<(String, i32)> = Vec::new()
+
+            for (id, entry) in self.entries.iter() {
+                sorted_entries.push((id.clone(), entry.asset.metadata.access_count))
+            }
+
+            sorted_entries.sort_by_key(|(_, count)| *count)
+
+            for (id, _) in sorted_entries.iter() {
+                if space_freed >= required_space {
+                    break
+                }
+
+                if let Some(entry) = self.entries.remove(id) {
+                    space_freed = space_freed + entry.size_bytes
+                    self.current_size = self.current_size - entry.size_bytes
+                    println("Cache: Evicted LFU asset {} ({} bytes)",
+                        id,
+                        entry.size_bytes
+                    )
+                }
+            }
+        }
+
+        if space_freed < required_space {
+            return Err("Unable to evict enough space".to_string())
+        }
+
+        Ok(())
+    }
+
+    fn get_stats(&self) -> (i64, i64, i32) {
+        return (self.current_size, self.max_size, self.entries.len() as i32)
+    }
+}
+
+struct AssetManager {
+    cache: Arc<Mutex<AssetCache>>,
+    loaded_assets: HashMap<String, AssetData>,
+    loading_queue: Vec<String>,
+    asset_paths: HashMap<String, String>,  // asset_id -> file_path
+    asset_types: HashMap<String, AssetType>
+}
+
+impl AssetManager {
+    fn new(cache_size: i64) -> Self {
+        return AssetManager {
+            cache: Arc::new(Mutex::new(
+                AssetCache::new(cache_size, "lru".to_string())
+            )),
+            loaded_assets: HashMap::new(),
+            loading_queue: Vec::new(),
+            asset_paths: HashMap::new(),
+            asset_types: HashMap::new()
+        }
+    }
+
+    fn register_asset(
+        &mut self,
+        id: String,
+        path: String,
+        asset_type: AssetType
+    ) -> Result<(), String> {
+        self.asset_paths.insert(id.clone(), path.clone())
+        self.asset_types.insert(id.clone(), asset_type)
+
+        println("AssetManager: Registered asset {} -> {}", id, path)
+        Ok(())
+    }
+
+    fn load_asset(&mut self, id: String) -> Result<(), String> {
+        // Check if already loaded
+        if self.loaded_assets.contains_key(&id) {
+            println("AssetManager: Asset {} already loaded", id)
+            return Ok(())
+        }
+
+        // Get file path
+        let path = match self.asset_paths.get(&id) {
+            Some(p) => p.clone(),
+            None => return Err("Asset path not found".to_string())
+        }
+
+        // Load file
+        let data = self.load_file(&path)?
+
+        let asset_type = self.asset_types.get(&id).cloned()
+            .unwrap_or(AssetType::Data)
+
+        let metadata = AssetMetadata {
+            id: id.clone(),
+            path: path,
+            asset_type: asset_type,
+            file_size: data.len() as i64,
+            created_at: SystemTime::now().secs(),
+            loaded_at: Some(SystemTime::now().secs()),
+            access_count: 0,
+            last_accessed: SystemTime::now().secs()
+        }
+
+        let asset = AssetData {
+            id: id.clone(),
+            data: data.clone(),
+            metadata: metadata,
+            state: AssetState::Loaded,
+            ref_count: 1
+        }
+
+        // Add to cache
+        let size = data.len() as i64
+        let mut cache = self.cache.lock()?
+        cache.add(asset.clone(), size)?
+
+        self.loaded_assets.insert(id.clone(), asset)
+
+        println("AssetManager: Loaded asset {} ({} bytes)", id, size)
+        Ok(())
+    }
+
+    fn get_asset(&mut self, id: String) -> Result<Vec<u8>, String> {
+        // Try cache first
+        let mut cache = self.cache.lock()?
+        match cache.get(id.clone())? {
+            Some(data) => return Ok(data),
+            None => {}
+        }
+
+        // Not in cache, load from disk
+        drop(cache)  // Release lock before loading
+        self.load_asset(id.clone())?
+
+        // Get from loaded assets
+        match self.loaded_assets.get(&id) {
+            Some(asset) => Ok(asset.data.clone()),
+            None => Err("Failed to load asset".to_string())
+        }
+    }
+
+    fn unload_asset(&mut self, id: String) -> Result<(), String> {
+        let mut cache = self.cache.lock()?
+        cache.remove(id.clone())?
+        self.loaded_assets.remove(&id)
+
+        println("AssetManager: Unloaded asset {}", id)
+        Ok(())
+    }
+
+    fn preload_assets(&mut self, ids: Vec<String>) -> Result<(), String> {
+        for id in ids {
+            self.load_asset(id)?
+        }
+        Ok(())
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        let mut cache = self.cache.lock()?
+        cache.entries.clear()
+        cache.current_size = 0
+
+        println("AssetManager: Cache cleared")
+        Ok(())
+    }
+
+    fn get_cache_stats(&self) -> Result<(i64, i64, i32), String> {
+        let cache = self.cache.lock()?
+        Ok(cache.get_stats())
+    }
+
+    fn load_file(&self, path: &str) -> Result<Vec<u8>, String> {
+        // Simulate file loading
+        // In real implementation:
+        // - Open file with File::open
+        // - Read entire contents
+        // - Handle errors
+
+        println("AssetManager: Reading file: {}", path)
+
+        // Simulate loading texture file
+        let mut data = Vec::new()
+        for i in 0..1024 {
+            data.push((i % 256) as u8)
+        }
+
+        Ok(data)
+    }
+}
+
+// Asset streaming for large files
+struct AssetStreamer {
+    chunk_size: i32,
+    max_concurrent_streams: i32,
+    active_streams: i32
+}
+
+impl AssetStreamer {
+    fn new(chunk_size: i32, max_concurrent: i32) -> Self {
+        return AssetStreamer {
+            chunk_size: chunk_size,
+            max_concurrent_streams: max_concurrent,
+            active_streams: 0
+        }
+    }
+
+    fn stream_asset(
+        &mut self,
+        path: String
+    ) -> Result<Vec<Vec<u8>>, String> {
+        if self.active_streams >= self.max_concurrent_streams {
+            return Err("Max concurrent streams reached".to_string())
+        }
+
+        self.active_streams = self.active_streams + 1
+
+        let mut chunks = Vec::new()
+
+        // Simulate streaming in chunks
+        for chunk_idx in 0..5 {
+            let mut chunk = Vec::new()
+            for i in 0..self.chunk_size {
+                chunk.push(((chunk_idx * self.chunk_size + i) % 256) as u8)
+            }
+            chunks.push(chunk)
+            println("AssetStreamer: Loaded chunk {} of {}", chunk_idx + 1, 5)
+        }
+
+        self.active_streams = self.active_streams - 1
+
+        println("AssetStreamer: Finished streaming {}", path)
+        Ok(chunks)
+    }
+}
+
+// Integration test
+fn test_asset_manager() -> Result<(), String> {
+    println("Starting Asset Manager test")
+
+    let mut manager = AssetManager::new(100 * 1024 * 1024)  // 100 MB cache
+
+    // Register assets
+    manager.register_asset(
+        "texture_hero".to_string(),
+        "assets/textures/hero.png".to_string(),
+        AssetType::Texture
+    )?
+
+    manager.register_asset(
+        "mesh_player".to_string(),
+        "assets/meshes/player.obj".to_string(),
+        AssetType::Mesh
+    )?
+
+    manager.register_asset(
+        "shader_pbr".to_string(),
+        "assets/shaders/pbr.glsl".to_string(),
+        AssetType::Shader
+    )?
+
+    manager.register_asset(
+        "audio_music".to_string(),
+        "assets/audio/music.wav".to_string(),
+        AssetType::Audio
+    )?
+
+    // Load individual asset
+    manager.load_asset("texture_hero".to_string())?
+
+    // Get asset
+    let data = manager.get_asset("texture_hero".to_string())?
+    println("Retrieved asset data: {} bytes", data.len())
+
+    // Preload multiple assets
+    manager.preload_assets(vec![
+        "mesh_player".to_string(),
+        "shader_pbr".to_string(),
+        "audio_music".to_string()
+    ])?
+
+    // Cache stats
+    let (used, total, count) = manager.get_cache_stats()?
+    println("Cache stats: {}/{} MB, {} assets", used / (1024 * 1024), total / (1024 * 1024), count)
+
+    // Unload asset
+    manager.unload_asset("shader_pbr".to_string())?
+
+    let (used2, total2, count2) = manager.get_cache_stats()?
+    println("After unload: {}/{} MB, {} assets", used2 / (1024 * 1024), total2 / (1024 * 1024), count2)
+
+    // Test streaming
+    let mut streamer = AssetStreamer::new(4096, 4)
+    let chunks = streamer.stream_asset("assets/scenes/level1.scene".to_string())?
+    println("Streamed {} chunks", chunks.len())
+
+    println("Asset Manager test complete")
+    Ok(())
+}

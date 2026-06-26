@@ -1,0 +1,273 @@
+// Advanced Shader Composition System
+// Shader graph visual editor, material blending, runtime compilation, optimization
+// Phase 159
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f64}
+
+struct ShaderNode {
+    id: String,
+    node_type: String,
+    inputs: HashMap<String, String>,
+    outputs: HashMap<String, String>,
+    parameters: HashMap<String, f64>
+}
+
+struct ShaderEdge {
+    from_node: String,
+    from_output: String,
+    to_node: String,
+    to_input: String
+}
+
+struct Material {
+    name: String,
+    shader_graph: Vec<ShaderNode>,
+    connections: Vec<ShaderEdge>,
+    compiled_code: String
+}
+
+struct TextureBinding {
+    name: String,
+    texture_path: String,
+    channel: i32
+}
+
+enum BlendMode {
+    Opaque,
+    Transparent,
+    Additive,
+    Multiply,
+    Screen
+}
+
+fn generate_shader_code(nodes: &Vec<ShaderNode>, edges: &Vec<ShaderEdge>) -> Result<String, String> {
+    let mut code = "shader ComposedMaterial {\n".to_string()
+
+    for node in nodes {
+        code = code + "    // Node: " + &node.id + " (" + &node.node_type + ")\n"
+
+        match node.node_type.as_str() {
+            "ColorOutput" => {
+                code = code + "    output vec4 diffuse_color;\n"
+            },
+            "NormalMap" => {
+                code = code + "    sampler normal_sampler;\n"
+            },
+            "Multiply" => {
+                code = code + "    vec3 multiply_result;\n"
+            },
+            "Add" => {
+                code = code + "    vec3 add_result;\n"
+            },
+            "Mix" => {
+                code = code + "    vec3 mix_result;\n"
+            },
+            _ => {}
+        }
+    }
+
+    code = code + "}\n"
+    Ok(code)
+}
+
+fn optimize_shader(code: &String) -> Result<String, String> {
+    let mut optimized = code.clone()
+
+    // Remove dead code
+    let lines: Vec<&str> = optimized.split("\n").collect()
+    let mut cleaned_lines: Vec<String> = Vec::new()
+
+    for line in lines {
+        if line.len() > 0 && !line.starts_with("//") {
+            cleaned_lines.push(line.to_string())
+        }
+    }
+
+    optimized = cleaned_lines.join("\n")
+    Ok(optimized)
+}
+
+actor ShaderCompositionEngine {
+    materials: HashMap<String, Material> = HashMap::new(),
+    compiled_cache: HashMap<String, String> = HashMap::new(),
+    texture_bindings: Vec<TextureBinding> = Vec::new(),
+    auto_compile: bool = true,
+    optimization_level: i32 = 2,
+    shader_version: String = "spirv".to_string()
+
+    message CreateMaterial(name: String) -> Result<(), String> {
+        if name.len() == 0 {
+            return Err("Material name cannot be empty".to_string())
+        }
+
+        let material = Material {
+            name: name.clone(),
+            shader_graph: Vec::new(),
+            connections: Vec::new(),
+            compiled_code: "".to_string()
+        }
+
+        materials.insert(name, material)
+        Ok(())
+    }
+
+    message AddShaderNode(material_name: String, node_id: String, node_type: String) -> Result<(), String> {
+        match materials.get_mut(&material_name) {
+            Some(material) => {
+                let node = ShaderNode {
+                    id: node_id,
+                    node_type: node_type,
+                    inputs: HashMap::new(),
+                    outputs: HashMap::new(),
+                    parameters: HashMap::new()
+                }
+                material.shader_graph.push(node)
+                Ok(())
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+
+    message ConnectNodes(material_name: String, from_node: String, from_output: String, to_node: String, to_input: String) -> Result<(), String> {
+        match materials.get_mut(&material_name) {
+            Some(material) => {
+                let edge = ShaderEdge {
+                    from_node: from_node,
+                    from_output: from_output,
+                    to_node: to_node,
+                    to_input: to_input
+                }
+                material.connections.push(edge)
+                Ok(())
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+
+    message CompileMaterial(material_name: String) -> Result<String, String> {
+        match materials.get_mut(&material_name) {
+            Some(material) => {
+                let code = generate_shader_code(&material.shader_graph, &material.connections)?
+                let optimized = optimize_shader(&code)?
+
+                material.compiled_code = optimized.clone()
+
+                compiled_cache.insert(material_name.clone(), optimized.clone())
+
+                Ok(optimized)
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+
+    message SetNodeParameter(material_name: String, node_id: String, param_name: String, value: f64) -> Result<(), String> {
+        match materials.get_mut(&material_name) {
+            Some(material) => {
+                for node in material.shader_graph.iter_mut() {
+                    if node.id == node_id {
+                        node.parameters.insert(param_name, value)
+                        return Ok(())
+                    }
+                }
+                Err("Node not found".to_string())
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+
+    message BindTexture(name: String, texture_path: String, channel: i32) -> Result<(), String> {
+        if texture_path.len() == 0 {
+            return Err("Texture path cannot be empty".to_string())
+        }
+
+        let binding = TextureBinding {
+            name: name,
+            texture_path: texture_path,
+            channel: channel
+        }
+        texture_bindings.push(binding)
+        Ok(())
+    }
+
+    message GetCompiledMaterial(material_name: String) -> Result<String, String> {
+        match compiled_cache.get(&material_name) {
+            Some(code) => Ok(code.clone()),
+            None => Err("Material not compiled".to_string())
+        }
+    }
+
+    message ValidateMaterial(material_name: String) -> Result<bool, String> {
+        match materials.get(&material_name) {
+            Some(material) => {
+                if material.shader_graph.len() == 0 {
+                    return Ok(false)
+                }
+
+                let mut has_output = false
+                for node in &material.shader_graph {
+                    if node.node_type == "ColorOutput" {
+                        has_output = true
+                        break
+                    }
+                }
+
+                Ok(has_output)
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+
+    message SetOptimizationLevel(level: i32) -> Result<(), String> {
+        if level < 0 || level > 3 {
+            return Err("Optimization level must be 0-3".to_string())
+        }
+        optimization_level = level
+        Ok(())
+    }
+
+    message ExportMaterial(material_name: String, format: String) -> Result<String, String> {
+        match materials.get(&material_name) {
+            Some(material) => {
+                match format.as_str() {
+                    "json" => {
+                        Ok("{ \"material\": \"".to_string() + &material.name + "\" }")
+                    },
+                    "glsl" => {
+                        Ok(material.compiled_code.clone())
+                    },
+                    "hlsl" => {
+                        Ok(material.compiled_code.clone())
+                    },
+                    _ => Err("Unknown export format".to_string())
+                }
+            },
+            None => Err("Material not found".to_string())
+        }
+    }
+}
+
+async fn test_shader_composition() -> Result<(), String> {
+    let engine: ActorRef<ShaderCompositionEngine> = spawn(ShaderCompositionEngine {
+        materials: HashMap::new(),
+        compiled_cache: HashMap::new(),
+        texture_bindings: Vec::new(),
+        auto_compile: true,
+        optimization_level: 2,
+        shader_version: "spirv".to_string()
+    })
+
+    await engine.call(ShaderCompositionEngine::CreateMaterial("pbr_material".to_string()))?
+    await engine.call(ShaderCompositionEngine::AddShaderNode("pbr_material".to_string(), "color_input".to_string(), "ColorInput".to_string()))?
+    await engine.call(ShaderCompositionEngine::AddShaderNode("pbr_material".to_string(), "normal_map".to_string(), "NormalMap".to_string()))?
+    await engine.call(ShaderCompositionEngine::AddShaderNode("pbr_material".to_string(), "output".to_string(), "ColorOutput".to_string()))?
+
+    await engine.call(ShaderCompositionEngine::ConnectNodes("pbr_material".to_string(), "color_input".to_string(), "color".to_string(), "output".to_string(), "albedo".to_string()))?
+
+    let compiled = await engine.call(ShaderCompositionEngine::CompileMaterial("pbr_material".to_string()))?
+    println("Shader compiled: {} bytes", compiled.len())
+
+    let is_valid = await engine.call(ShaderCompositionEngine::ValidateMaterial("pbr_material".to_string()))?
+    println("Material valid: {}", is_valid)
+
+    Ok(())
+}

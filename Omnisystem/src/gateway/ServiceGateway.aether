@@ -1,0 +1,255 @@
+// Service Gateway
+// API gateway, routing, authentication, and service orchestration
+// Replaces: phase 26 gateway systems (100% rewrite in AETHER)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Route {
+    path: String,
+    service: String,
+    method: String,
+    auth_required: bool,
+    rate_limit: Option<i32>
+}
+
+struct GatewayRequest {
+    id: String,
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+    client_ip: String
+}
+
+struct GatewayResponse {
+    status_code: i32,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+    latency_ms: i64
+}
+
+// Service gateway
+actor ServiceGateway {
+    gateway_id: String,
+    routes: HashMap<String, Route> = HashMap::new(),
+    services: HashMap<String, ActorRef<ServiceInstance>> = HashMap::new(),
+    auth_service: Option<ActorRef<AuthService>> = None,
+    request_count: i64 = 0
+
+    message RegisterRoute(route: Route) -> Result<(), String> {
+        let route_key = route.method.clone() + " " + &route.path
+        routes.insert(route_key.clone(), route)
+        println("ServiceGateway: Registered route {}", route_key)
+        return Ok(())
+    }
+
+    message RegisterService(
+        name: String,
+        service: ActorRef<ServiceInstance>
+    ) -> Result<(), String> {
+        services.insert(name.clone(), service)
+        println("ServiceGateway: Registered service '{}'", name)
+        return Ok(())
+    }
+
+    message HandleRequest(request: GatewayRequest) -> Result<GatewayResponse, String> {
+        let start_time = SystemTime::now().secs()
+        request_count = request_count + 1
+
+        let route_key = request.method.clone() + " " + &request.path
+
+        // Find matching route
+        let route = match routes.get(&route_key) {
+            Some(r) => r.clone(),
+            None => {
+                return Ok(GatewayResponse {
+                    status_code: 404,
+                    headers: HashMap::new(),
+                    body: b"Route not found".to_vec(),
+                    latency_ms: 0
+                })
+            }
+        }
+
+        // Check authentication if required
+        if route.auth_required {
+            if let Some(auth) = &auth_service {
+                let token = request.headers.get("Authorization").cloned()
+                match token {
+                    Some(t) => {
+                        let authenticated = await auth.call(
+                            AuthService::ValidateToken(t)
+                        )?
+
+                        if !authenticated {
+                            return Ok(GatewayResponse {
+                                status_code: 401,
+                                headers: HashMap::new(),
+                                body: b"Unauthorized".to_vec(),
+                                latency_ms: 0
+                            })
+                        }
+                    },
+                    None => {
+                        return Ok(GatewayResponse {
+                            status_code: 401,
+                            headers: HashMap::new(),
+                            body: b"Missing token".to_vec(),
+                            latency_ms: 0
+                        })
+                    }
+                }
+            }
+        }
+
+        // Route to service
+        match services.get(&route.service) {
+            Some(service) => {
+                let response = await service.call(
+                    ServiceInstance::ProcessRequest(request.clone())
+                )?
+
+                let end_time = SystemTime::now().secs()
+                let latency = (end_time - start_time) * 1000
+
+                println("ServiceGateway: Request {} handled in {}ms", request.id, latency)
+
+                return Ok(response)
+            },
+            None => {
+                return Ok(GatewayResponse {
+                    status_code: 503,
+                    headers: HashMap::new(),
+                    body: b"Service unavailable".to_vec(),
+                    latency_ms: 0
+                })
+            }
+        }
+    }
+
+    message GetStats() -> Result<i64, String> {
+        return Ok(request_count)
+    }
+}
+
+// Service instance
+actor ServiceInstance {
+    service_name: String,
+    instance_id: i32,
+    is_healthy: bool = true
+
+    message ProcessRequest(request: GatewayRequest) -> Result<GatewayResponse, String> {
+        if !is_healthy {
+            return Err("Service unhealthy".to_string())
+        }
+
+        println("ServiceInstance '{}': Processing request {}", service_name, request.id)
+
+        return Ok(GatewayResponse {
+            status_code: 200,
+            headers: HashMap::new(),
+            body: b"Service response".to_vec(),
+            latency_ms: 0
+        })
+    }
+
+    message HealthCheck() -> Result<bool, String> {
+        return Ok(is_healthy)
+    }
+}
+
+// Auth service
+actor AuthService {
+    tokens: HashMap<String, bool> = HashMap::new()
+
+    message ValidateToken(token: String) -> Result<bool, String> {
+        return Ok(tokens.get(&token).cloned().unwrap_or(false))
+    }
+
+    message IssueToken(user_id: String) -> Result<String, String> {
+        let token = "token_".to_string() + &SystemTime::now().secs().to_string()
+        tokens.insert(token.clone(), true)
+        return Ok(token)
+    }
+}
+
+async fn test_service_gateway() -> Result<(), String> {
+    println("Starting Service Gateway test")
+
+    let gateway: ActorRef<ServiceGateway> = spawn(ServiceGateway {
+        gateway_id: "gateway-1".to_string(),
+        routes: HashMap::new(),
+        services: HashMap::new(),
+        auth_service: None,
+        request_count: 0
+    })
+
+    // Create services
+    let service1: ActorRef<ServiceInstance> = spawn(ServiceInstance {
+        service_name: "user-service".to_string(),
+        instance_id: 1,
+        is_healthy: true
+    })
+
+    let service2: ActorRef<ServiceInstance> = spawn(ServiceInstance {
+        service_name: "product-service".to_string(),
+        instance_id: 2,
+        is_healthy: true
+    })
+
+    // Register services
+    await gateway.call(ServiceGateway::RegisterService(
+        "user-service".to_string(),
+        service1
+    ))?
+
+    await gateway.call(ServiceGateway::RegisterService(
+        "product-service".to_string(),
+        service2
+    ))?
+
+    // Register routes
+    let route1 = Route {
+        path: "/users".to_string(),
+        service: "user-service".to_string(),
+        method: "GET".to_string(),
+        auth_required: false,
+        rate_limit: Some(1000)
+    }
+
+    let route2 = Route {
+        path: "/products".to_string(),
+        service: "product-service".to_string(),
+        method: "GET".to_string(),
+        auth_required: false,
+        rate_limit: Some(500)
+    }
+
+    await gateway.call(ServiceGateway::RegisterRoute(route1))?
+    await gateway.call(ServiceGateway::RegisterRoute(route2))?
+
+    // Handle requests
+    for i in 0..5 {
+        let request = GatewayRequest {
+            id: format!("req-{}", i),
+            method: "GET".to_string(),
+            path: "/users".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+            client_ip: "192.168.1.100".to_string()
+        }
+
+        match await gateway.call(ServiceGateway::HandleRequest(request))? {
+            response => {
+                println("Response status: {}", response.status_code)
+            }
+        }
+    }
+
+    let stats = await gateway.call(ServiceGateway::GetStats())?
+    println("Total requests handled: {}", stats)
+
+    println("Service Gateway test complete")
+    return Ok(())
+}

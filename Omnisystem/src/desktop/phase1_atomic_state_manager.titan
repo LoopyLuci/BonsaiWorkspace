@@ -1,0 +1,192 @@
+// Phase 1: Atomic State Manager
+// Foundational state management with thread-safe updates
+// Replaces: src/desktop/phase1_atomic_state_manager.titan (100% rewrite)
+
+use omnisystem::{HashMap, Vec, String, Option}
+use omnisystem::time::SystemTime
+use omnisystem::sync::{Mutex, Arc}
+
+struct StateValue {
+    id: String,
+    data: Vec<u8>,
+    version: i32,
+    updated_at: i64,
+    is_dirty: bool
+}
+
+struct AtomicStateManager {
+    state: Arc<Mutex<HashMap<String, StateValue>>>,
+    watchers: Arc<Mutex<HashMap<String, Vec<fn(StateValue) -> void>>>>
+}
+
+impl AtomicStateManager {
+    fn new() -> Self {
+        return AtomicStateManager {
+            state: Arc::new(Mutex::new(HashMap::new())),
+            watchers: Arc::new(Mutex::new(HashMap::new()))
+        }
+    }
+
+    fn set_state(&self, id: String, data: Vec<u8>) -> Result<(), String> {
+        let mut state_lock = self.state.lock()?
+        let timestamp = SystemTime::now().secs()
+
+        match state_lock.get(&id) {
+            Some(old_value) => {
+                let updated_value = StateValue {
+                    id: id.clone(),
+                    data: data.clone(),
+                    version: old_value.version + 1,
+                    updated_at: timestamp,
+                    is_dirty: true
+                }
+
+                state_lock.insert(id.clone(), updated_value.clone())
+
+                // Notify watchers
+                self.notify_watchers(id, updated_value)?
+
+                Ok(())
+            },
+            None => {
+                let new_value = StateValue {
+                    id: id.clone(),
+                    data: data,
+                    version: 1,
+                    updated_at: timestamp,
+                    is_dirty: true
+                }
+
+                state_lock.insert(id.clone(), new_value.clone())
+
+                // Notify watchers
+                self.notify_watchers(id, new_value)?
+
+                Ok(())
+            }
+        }
+    }
+
+    fn get_state(&self, id: String) -> Result<Option<StateValue>, String> {
+        let state_lock = self.state.lock()?
+        return Ok(state_lock.get(&id).map(|v| v.clone()))
+    }
+
+    fn delete_state(&self, id: String) -> Result<(), String> {
+        let mut state_lock = self.state.lock()?
+        state_lock.remove(&id)
+        Ok(())
+    }
+
+    fn subscribe(&self, id: String, watcher: fn(StateValue) -> void) -> Result<(), String> {
+        let mut watchers_lock = self.watchers.lock()?
+
+        if !watchers_lock.contains_key(&id) {
+            watchers_lock.insert(id.clone(), Vec::new())
+        }
+
+        watchers_lock.get_mut(&id).push(watcher)
+        Ok(())
+    }
+
+    fn notify_watchers(&self, id: String, value: StateValue) -> Result<(), String> {
+        let watchers_lock = self.watchers.lock()?
+
+        match watchers_lock.get(&id) {
+            Some(callbacks) => {
+                for callback in callbacks {
+                    callback(value.clone())
+                }
+                Ok(())
+            },
+            None => Ok(())
+        }
+    }
+
+    fn get_all_state(&self) -> Result<Vec<StateValue>, String> {
+        let state_lock = self.state.lock()?
+        let mut result = Vec::new()
+
+        for (_, value) in state_lock.iter() {
+            result.push(value.clone())
+        }
+
+        Ok(result)
+    }
+
+    fn mark_clean(&self, id: String) -> Result<(), String> {
+        let mut state_lock = self.state.lock()?
+
+        match state_lock.get_mut(&id) {
+            Some(value) => {
+                value.is_dirty = false
+                Ok(())
+            },
+            None => Err("State not found".to_string())
+        }
+    }
+
+    fn get_dirty_states(&self) -> Result<Vec<StateValue>, String> {
+        let state_lock = self.state.lock()?
+        let mut result = Vec::new()
+
+        for (_, value) in state_lock.iter() {
+            if value.is_dirty {
+                result.push(value.clone())
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+// Global state manager instance
+static STATE_MANAGER: Option<AtomicStateManager> = None
+
+fn get_state_manager() -> Result<&'static AtomicStateManager, String> {
+    match &STATE_MANAGER {
+        Some(mgr) => Ok(mgr),
+        None => Err("State manager not initialized".to_string())
+    }
+}
+
+fn init_state_manager() -> Result<(), String> {
+    STATE_MANAGER = Some(AtomicStateManager::new())
+    Ok(())
+}
+
+// Integration test
+fn test_atomic_state_manager() -> Result<(), String> {
+    init_state_manager()?
+    let manager = get_state_manager()?
+
+    // Test basic set/get
+    manager.set_state("counter".to_string(), vec![0])?
+
+    match manager.get_state("counter".to_string())? {
+        Some(state) => {
+            println("State created with version {}", state.version)
+        },
+        None => return Err("State not found".to_string())
+    }
+
+    // Test update
+    manager.set_state("counter".to_string(), vec![1])?
+
+    match manager.get_state("counter".to_string())? {
+        Some(state) => {
+            println("State updated to version {}", state.version)
+        },
+        None => return Err("State not found".to_string())
+    }
+
+    // Test dirty tracking
+    let dirty = manager.get_dirty_states()?
+    println("Dirty states: {}", dirty.len())
+
+    manager.mark_clean("counter".to_string())?
+    let clean_dirty = manager.get_dirty_states()?
+    println("Dirty states after clean: {}", clean_dirty.len())
+
+    Ok(())
+}

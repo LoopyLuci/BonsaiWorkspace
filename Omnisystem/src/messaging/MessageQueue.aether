@@ -1,0 +1,276 @@
+// Message Queue
+// Kafka-like distributed event streaming and message broking
+// Replaces: phase 16 messaging systems (100% rewrite in AETHER)
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+use omnisystem::time::SystemTime
+
+struct Message {
+    id: i64,
+    key: String,
+    value: Vec<u8>,
+    timestamp: i64,
+    offset: i64,
+    partition: i32
+}
+
+struct Topic {
+    name: String,
+    partitions: i32,
+    replication_factor: i32,
+    retention_time: i64,
+    messages: Vec<Message>,
+    created_at: i64
+}
+
+struct ConsumerGroup {
+    group_id: String,
+    members: HashMap<String, i64>,  // member_id -> offset
+    topic: String
+}
+
+// Topic partition broker
+actor PartitionBroker {
+    partition_id: i32,
+    messages: Vec<Message> = Vec::new(),
+    next_offset: i64 = 0,
+    leader_replica: String = ""
+
+    message Append(key: String, value: Vec<u8>) -> Result<i64, String> {
+        let message = Message {
+            id: SystemTime::now().secs(),
+            key: key,
+            value: value,
+            timestamp: SystemTime::now().secs(),
+            offset: next_offset,
+            partition: partition_id
+        }
+
+        let offset = next_offset
+        messages.push(message)
+        next_offset = next_offset + 1
+
+        println("Partition {}: Appended message at offset {}", partition_id, offset)
+        return Ok(offset)
+    }
+
+    message FetchRange(start_offset: i64, end_offset: i64) -> Result<Vec<Message>, String> {
+        let mut result = Vec::new()
+
+        for message in messages.iter() {
+            if message.offset >= start_offset && message.offset < end_offset {
+                result.push(message.clone())
+            }
+        }
+
+        return Ok(result)
+    }
+
+    message GetLatestOffset() -> i64 {
+        return next_offset
+    }
+}
+
+// Topic broker
+actor TopicBroker {
+    topic_name: String,
+    partitions: Vec<ActorRef<PartitionBroker>> = Vec::new(),
+    replication_factor: i32 = 2
+
+    message CreatePartitions(partition_count: i32) -> Result<(), String> {
+        for i in 0..partition_count {
+            let broker: ActorRef<PartitionBroker> = spawn(PartitionBroker {
+                partition_id: i,
+                messages: Vec::new(),
+                next_offset: 0,
+                leader_replica: "replica-0".to_string()
+            })
+
+            partitions.push(broker)
+        }
+
+        println("Topic {}: Created {} partitions", topic_name, partition_count)
+        return Ok(())
+    }
+
+    message Publish(key: String, value: Vec<u8>) -> Result<i64, String> {
+        if partitions.is_empty() {
+            return Err("No partitions available".to_string())
+        }
+
+        // Hash key to partition
+        let mut hash = 0i32
+        for byte in key.bytes() {
+            hash = ((hash << 5) - hash) + (byte as i32)
+        }
+
+        let partition_idx = (hash.abs() % partitions.len() as i32) as usize
+        let broker = &partitions[partition_idx]
+
+        return await broker.call(PartitionBroker::Append(key, value))
+    }
+
+    message Subscribe(start_offset: i64, end_offset: i64) -> Result<Vec<Message>, String> {
+        let mut all_messages = Vec::new()
+
+        for broker in partitions.iter() {
+            match await broker.call(PartitionBroker::FetchRange(start_offset, end_offset)) {
+                Ok(messages) => {
+                    for msg in messages {
+                        all_messages.push(msg)
+                    }
+                },
+                Err(_) => {}
+            }
+        }
+
+        return Ok(all_messages)
+    }
+
+    message GetPartitionCount() -> i32 {
+        return partitions.len() as i32
+    }
+}
+
+// Message broker (message queue controller)
+actor MessageBroker {
+    broker_id: String,
+    topics: HashMap<String, ActorRef<TopicBroker>> = HashMap::new(),
+    consumer_groups: HashMap<String, ConsumerGroup> = HashMap::new()
+
+    message CreateTopic(
+        name: String,
+        partitions: i32
+    ) -> Result<(), String> {
+        if topics.contains_key(&name) {
+            return Err("Topic already exists".to_string())
+        }
+
+        let topic_broker: ActorRef<TopicBroker> = spawn(TopicBroker {
+            topic_name: name.clone(),
+            partitions: Vec::new(),
+            replication_factor: 2
+        })
+
+        await topic_broker.call(TopicBroker::CreatePartitions(partitions))?
+        topics.insert(name.clone(), topic_broker)
+
+        println("MessageBroker: Created topic '{}'", name)
+        return Ok(())
+    }
+
+    message Publish(
+        topic: String,
+        key: String,
+        value: Vec<u8>
+    ) -> Result<(), String> {
+        match topics.get(&topic) {
+            Some(broker) => {
+                await broker.call(TopicBroker::Publish(key, value))?
+                return Ok(())
+            },
+            None => return Err("Topic not found".to_string())
+        }
+    }
+
+    message Subscribe(
+        topic: String,
+        group_id: String,
+        member_id: String
+    ) -> Result<Vec<Message>, String> {
+        // Create consumer group if not exists
+        if !consumer_groups.contains_key(&group_id) {
+            consumer_groups.insert(group_id.clone(), ConsumerGroup {
+                group_id: group_id.clone(),
+                members: HashMap::new(),
+                topic: topic.clone()
+            })
+        }
+
+        // Add member to group
+        let group = consumer_groups.get_mut(&group_id).unwrap()
+        if !group.members.contains_key(&member_id) {
+            group.members.insert(member_id.clone(), 0)
+        }
+
+        // Fetch messages
+        match topics.get(&topic) {
+            Some(broker) => {
+                let start_offset = group.members.get(&member_id).cloned().unwrap_or(0)
+                let messages = await broker.call(TopicBroker::Subscribe(start_offset, start_offset + 100))?
+
+                // Update offset
+                if !messages.is_empty() {
+                    let last_offset = messages[messages.len() - 1].offset + 1
+                    group.members.insert(member_id, last_offset)
+                }
+
+                return Ok(messages)
+            },
+            None => return Err("Topic not found".to_string())
+        }
+    }
+
+    message GetTopicStats(topic: String) -> Result<(i32, i64), String> {
+        match topics.get(&topic) {
+            Some(broker) => {
+                let partition_count = await broker.call(TopicBroker::GetPartitionCount())?
+                return Ok((partition_count, 0))
+            },
+            None => return Err("Topic not found".to_string())
+        }
+    }
+
+    message DeleteTopic(topic: String) -> Result<(), String> {
+        topics.remove(&topic)
+        println("MessageBroker: Deleted topic '{}'", topic)
+        return Ok(())
+    }
+}
+
+async fn test_message_queue() -> Result<(), String> {
+    println("Starting Message Queue test")
+
+    let broker: ActorRef<MessageBroker> = spawn(MessageBroker {
+        broker_id: "broker-1".to_string(),
+        topics: HashMap::new(),
+        consumer_groups: HashMap::new()
+    })
+
+    // Create topics
+    await broker.call(MessageBroker::CreateTopic("events".to_string(), 3))?
+    await broker.call(MessageBroker::CreateTopic("logs".to_string(), 5))?
+
+    // Publish messages
+    for i in 0..10 {
+        let key = "key:".to_string() + &i.to_string()
+        let value = b"message data".to_vec()
+
+        await broker.call(MessageBroker::Publish(
+            "events".to_string(),
+            key,
+            value
+        ))?
+    }
+
+    println("Published 10 messages")
+
+    // Subscribe
+    let messages = await broker.call(MessageBroker::Subscribe(
+        "events".to_string(),
+        "consumer-group-1".to_string(),
+        "member-1".to_string()
+    ))?
+
+    println("Received {} messages", messages.len())
+
+    // Topic stats
+    let (partitions, _) = await broker.call(
+        MessageBroker::GetTopicStats("events".to_string())
+    )?
+
+    println("Topic 'events' has {} partitions", partitions)
+
+    println("Message Queue test complete")
+    return Ok(())
+}

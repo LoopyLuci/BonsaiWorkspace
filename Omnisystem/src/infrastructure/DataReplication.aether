@@ -1,0 +1,70 @@
+// Data Replication
+// Distributed data replication with consistency
+// System 52
+
+use omnisystem::{HashMap, Vec, String, Option, Result}
+
+struct ReplicaNode {
+    id: String,
+    address: String,
+    is_primary: bool,
+    offset: i64
+}
+
+actor DataReplicator {
+    replicas: Vec<ReplicaNode> = Vec::new(),
+    data: HashMap<String, Vec<u8>> = HashMap::new(),
+    sync_offset: i64 = 0
+
+    message AddReplica(id: String, address: String, is_primary: bool) -> Result<(), String> {
+        let replica = ReplicaNode {
+            id: id.clone(),
+            address: address,
+            is_primary: is_primary,
+            offset: 0
+        }
+        replicas.push(replica)
+        println("DataReplicator: Added replica {}", id)
+        Ok(())
+    }
+
+    message WriteData(key: String, value: Vec<u8>) -> Result<(), String> {
+        data.insert(key.clone(), value)
+        sync_offset = sync_offset + 1
+        println("DataReplicator: Wrote {}, offset {}", key, sync_offset)
+        Ok(())
+    }
+
+    message SyncReplicas() -> Result<i32, String> {
+        let mut synced = 0
+        for replica in replicas.iter_mut() {
+            if replica.is_primary == false {
+                replica.offset = sync_offset
+                synced = synced + 1
+            }
+        }
+        println("DataReplicator: Synced {} replicas to offset {}", synced, sync_offset)
+        Ok(synced)
+    }
+
+    message GetReplicaCount() -> i32 {
+        replicas.len() as i32
+    }
+}
+
+async fn test_data_replication() -> Result<(), String> {
+    let repl: ActorRef<DataReplicator> = spawn(DataReplicator {
+        replicas: Vec::new(),
+        data: HashMap::new(),
+        sync_offset: 0
+    })
+
+    await repl.call(DataReplicator::AddReplica("primary".to_string(), "localhost:5432".to_string(), true))?
+    await repl.call(DataReplicator::AddReplica("replica1".to_string(), "localhost:5433".to_string(), false))?
+
+    await repl.call(DataReplicator::WriteData("user:1".to_string(), vec![1,2,3]))?
+    let synced = await repl.call(DataReplicator::SyncReplicas())?
+    println("Synced {} replicas", synced)
+
+    Ok(())
+}
