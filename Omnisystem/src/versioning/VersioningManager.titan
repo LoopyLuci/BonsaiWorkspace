@@ -1,0 +1,136 @@
+// VersioningManager.titan - Schema versioning and migrations
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub struct SchemaVersion {
+    pub version: u32,
+    pub name: String,
+    pub schema_def: String,
+    pub created_at: u64,
+    pub applied: bool,
+}
+
+impl SchemaVersion {
+    pub fn new(version: u32, name: String, schema_def: String) -> Self {
+        SchemaVersion {
+            version,
+            name,
+            schema_def,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            applied: false,
+        }
+    }
+}
+
+pub struct Migration {
+    pub migration_id: String,
+    pub from_version: u32,
+    pub to_version: u32,
+    pub migration_script: String,
+    pub rollback_script: String,
+}
+
+impl Migration {
+    pub fn new(migration_id: String, from_version: u32, to_version: u32) -> Self {
+        Migration {
+            migration_id,
+            from_version,
+            to_version,
+            migration_script: String::new(),
+            rollback_script: String::new(),
+        }
+    }
+
+    pub fn set_scripts(&mut self, migration: String, rollback: String) {
+        self.migration_script = migration;
+        self.rollback_script = rollback;
+    }
+}
+
+pub struct VersioningManager {
+    pub manager_id: String,
+    pub current_version: u32,
+    pub versions: HashMap<u32, SchemaVersion>,
+    pub migrations: Vec<Migration>,
+}
+
+impl VersioningManager {
+    pub fn new(manager_id: String) -> Self {
+        VersioningManager {
+            manager_id,
+            current_version: 1,
+            versions: HashMap::new(),
+            migrations: Vec::new(),
+        }
+    }
+
+    pub fn register_version(&mut self, version: SchemaVersion) {
+        self.versions.insert(version.version, version);
+    }
+
+    pub fn add_migration(&mut self, migration: Migration) -> Result<(), String> {
+        if migration.from_version > self.current_version {
+            return Err("Cannot migrate from future version".to_string());
+        }
+        self.migrations.push(migration);
+        Ok(())
+    }
+
+    pub fn apply_migration(&mut self, from: u32, to: u32) -> Result<(), String> {
+        let migration = self.migrations
+            .iter()
+            .find(|m| m.from_version == from && m.to_version == to);
+
+        if let Some(mig) = migration {
+            if let Some(version) = self.versions.get_mut(&to) {
+                version.applied = true;
+                self.current_version = to;
+                Ok(())
+            } else {
+                Err(format!("Target version {} not found", to))
+            }
+        } else {
+            Err(format!("No migration path from {} to {}", from, to))
+        }
+    }
+
+    pub fn get_migration_path(&self, from: u32, to: u32) -> Vec<u32> {
+        let mut path = vec![from];
+        let mut current = from;
+
+        while current < to {
+            if let Some(next_mig) = self.migrations.iter().find(|m| m.from_version == current) {
+                path.push(next_mig.to_version);
+                current = next_mig.to_version;
+            } else {
+                break;
+            }
+        }
+
+        path
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 68: VERSIONING MANAGER ===\n");
+    let mut vm = VersioningManager::new("vm_001".to_string());
+
+    let v1 = SchemaVersion::new(1, "Initial".to_string(), "CREATE TABLE users(id INT)".to_string());
+    let v2 = SchemaVersion::new(2, "AddEmail".to_string(), "ALTER TABLE users ADD email VARCHAR".to_string());
+
+    vm.register_version(v1);
+    vm.register_version(v2);
+
+    let mut mig = Migration::new("mig_1_to_2".to_string(), 1, 2);
+    mig.set_scripts("ALTER TABLE users ADD email VARCHAR".to_string(), "ALTER TABLE users DROP email".to_string());
+    vm.add_migration(mig)?;
+
+    vm.apply_migration(1, 2)?;
+    println!("✓ Migration applied: v1 → v2");
+    println!("✓ Current version: {}", vm.current_version);
+    println!("✓✓✓ Versioning Manager operational ✓✓✓");
+    Ok(())
+}
