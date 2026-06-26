@@ -1,0 +1,158 @@
+// AnalyticsEngine.aether - Data analytics and business intelligence
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub struct DataPoint {
+    pub point_id: String,
+    pub metric_name: String,
+    pub value: f64,
+    pub dimensions: HashMap<String, String>,
+    pub timestamp: u64,
+}
+
+impl DataPoint {
+    pub fn new(point_id: String, metric_name: String, value: f64) -> Self {
+        DataPoint {
+            point_id,
+            metric_name,
+            value,
+            dimensions: HashMap::new(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+
+    pub fn add_dimension(&mut self, key: String, value: String) {
+        self.dimensions.insert(key, value);
+    }
+}
+
+pub struct AnalyticsQuery {
+    pub query_id: String,
+    pub metric_name: String,
+    pub filters: HashMap<String, String>,
+    pub aggregation: String, // sum, avg, count, min, max
+    pub time_range_seconds: u32,
+}
+
+impl AnalyticsQuery {
+    pub fn new(query_id: String, metric_name: String, aggregation: String) -> Self {
+        AnalyticsQuery {
+            query_id,
+            metric_name,
+            filters: HashMap::new(),
+            aggregation,
+            time_range_seconds: 3600,
+        }
+    }
+
+    pub fn add_filter(&mut self, key: String, value: String) {
+        self.filters.insert(key, value);
+    }
+}
+
+pub struct AnalyticsResult {
+    pub result_id: String,
+    pub query_id: String,
+    pub aggregated_value: f64,
+    pub data_point_count: u32,
+    pub computed_at: u64,
+}
+
+impl AnalyticsResult {
+    pub fn new(result_id: String, query_id: String, value: f64, count: u32) -> Self {
+        AnalyticsResult {
+            result_id,
+            query_id,
+            aggregated_value: value,
+            data_point_count: count,
+            computed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+}
+
+pub struct AnalyticsEngine {
+    pub engine_id: String,
+    pub data_points: HashMap<String, Vec<DataPoint>>,
+    pub queries_executed: u32,
+    pub total_data_points: u32,
+}
+
+impl AnalyticsEngine {
+    pub fn new(engine_id: String) -> Self {
+        AnalyticsEngine {
+            engine_id,
+            data_points: HashMap::new(),
+            queries_executed: 0,
+            total_data_points: 0,
+        }
+    }
+
+    pub fn ingest_data(&mut self, point: DataPoint) {
+        self.data_points
+            .entry(point.metric_name.clone())
+            .or_insert_with(Vec::new)
+            .push(point);
+        self.total_data_points += 1;
+    }
+
+    pub fn execute_query(&mut self, query: &AnalyticsQuery) -> Result<AnalyticsResult, String> {
+        if let Some(points) = self.data_points.get(&query.metric_name) {
+            let filtered_points: Vec<_> = points
+                .iter()
+                .filter(|p| {
+                    query.filters.iter().all(|(k, v)| {
+                        p.dimensions.get(k).map(|pv| pv == v).unwrap_or(false)
+                    })
+                })
+                .collect();
+
+            let aggregated_value = match query.aggregation.as_str() {
+                "sum" => filtered_points.iter().map(|p| p.value).sum::<f64>(),
+                "avg" => {
+                    if filtered_points.is_empty() {
+                        0.0
+                    } else {
+                        filtered_points.iter().map(|p| p.value).sum::<f64>() / filtered_points.len() as f64
+                    }
+                }
+                "count" => filtered_points.len() as f64,
+                "max" => filtered_points.iter().map(|p| p.value).fold(f64::NEG_INFINITY, f64::max),
+                "min" => filtered_points.iter().map(|p| p.value).fold(f64::INFINITY, f64::min),
+                _ => 0.0,
+            };
+
+            self.queries_executed += 1;
+
+            let result = AnalyticsResult::new(
+                format!("result_{}", self.queries_executed),
+                query.query_id.clone(),
+                aggregated_value,
+                filtered_points.len() as u32,
+            );
+
+            Ok(result)
+        } else {
+            Err(format!("Metric {} not found", query.metric_name))
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 98: ANALYTICS ENGINE ===\n");
+    let mut ae = AnalyticsEngine::new("ae_001".to_string());
+    let point = DataPoint::new("point_001".to_string(), "page_views".to_string(), 1500.0);
+    ae.ingest_data(point);
+    let mut query = AnalyticsQuery::new("query_001".to_string(), "page_views".to_string(), "sum".to_string());
+    query.time_range_seconds = 3600;
+    let result = ae.execute_query(&query)?;
+    println!("✓ Analytics query executed");
+    println!("✓ Aggregated value: {}", result.aggregated_value);
+    println!("✓✓✓ Analytics Engine operational ✓✓✓");
+    Ok(())
+}
