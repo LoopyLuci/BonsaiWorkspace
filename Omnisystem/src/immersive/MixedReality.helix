@@ -1,0 +1,560 @@
+// MixedReality.helix - Phase 29: AR/VR/XR framework for immersive computing
+// Spatial tracking, hand/body recognition, AR overlays, VR environments
+
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+// ============================================================================
+// SPATIAL TRACKING & TRANSFORMS
+// ============================================================================
+
+pub struct Vector3D {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl Vector3D {
+    pub fn new(x: f32, y: f32, z: f32) -> Self {
+        Vector3D { x, y, z }
+    }
+
+    pub fn distance_to(&self, other: &Vector3D) -> f32 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        let dz = self.z - other.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    pub fn normalize(&self) -> Vector3D {
+        let len = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        if len > 0.0 {
+            Vector3D {
+                x: self.x / len,
+                y: self.y / len,
+                z: self.z / len,
+            }
+        } else {
+            Vector3D::new(0.0, 0.0, 0.0)
+        }
+    }
+}
+
+pub struct Quaternion {
+    pub w: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl Quaternion {
+    pub fn identity() -> Self {
+        Quaternion {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+
+    pub fn from_euler(roll: f32, pitch: f32, yaw: f32) -> Self {
+        let cr = (roll * 0.5).cos();
+        let sr = (roll * 0.5).sin();
+        let cp = (pitch * 0.5).cos();
+        let sp = (pitch * 0.5).sin();
+        let cy = (yaw * 0.5).cos();
+        let sy = (yaw * 0.5).sin();
+
+        Quaternion {
+            w: cr * cp * cy + sr * sp * sy,
+            x: sr * cp * cy - cr * sp * sy,
+            y: cr * sp * cy + sr * cp * sy,
+            z: cr * cp * sy - sr * sp * cy,
+        }
+    }
+}
+
+pub struct Transform {
+    pub position: Vector3D,
+    pub rotation: Quaternion,
+    pub scale: Vector3D,
+}
+
+impl Transform {
+    pub fn new(position: Vector3D, rotation: Quaternion) -> Self {
+        Transform {
+            position,
+            rotation,
+            scale: Vector3D::new(1.0, 1.0, 1.0),
+        }
+    }
+
+    pub fn identity() -> Self {
+        Transform {
+            position: Vector3D::new(0.0, 0.0, 0.0),
+            rotation: Quaternion::identity(),
+            scale: Vector3D::new(1.0, 1.0, 1.0),
+        }
+    }
+}
+
+// ============================================================================
+// HAND & BODY TRACKING
+// ============================================================================
+
+pub enum HandSide {
+    Left,
+    Right,
+}
+
+pub struct Hand {
+    pub hand_id: String,
+    pub side: HandSide,
+    pub palm_position: Vector3D,
+    pub palm_orientation: Quaternion,
+    pub is_tracked: bool,
+    pub confidence: f32,
+    pub joint_positions: HashMap<String, Vector3D>,
+}
+
+impl Hand {
+    pub fn new(hand_id: String, side: HandSide) -> Self {
+        Hand {
+            hand_id,
+            side,
+            palm_position: Vector3D::new(0.0, 0.0, 0.0),
+            palm_orientation: Quaternion::identity(),
+            is_tracked: false,
+            confidence: 0.0,
+            joint_positions: HashMap::new(),
+        }
+    }
+
+    pub fn get_joint_distance(&self, joint1: &str, joint2: &str) -> Option<f32> {
+        match (self.joint_positions.get(joint1), self.joint_positions.get(joint2)) {
+            (Some(pos1), Some(pos2)) => Some(pos1.distance_to(pos2)),
+            _ => None,
+        }
+    }
+
+    pub fn is_pinching(&self) -> bool {
+        if let Some(thumb_tip) = self.joint_positions.get("thumb_tip") {
+            if let Some(index_tip) = self.joint_positions.get("index_tip") {
+                let distance = thumb_tip.distance_to(index_tip);
+                distance < 0.05 && self.confidence > 0.8
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    pub fn is_fist(&self) -> bool {
+        self.is_tracked && self.confidence > 0.8
+    }
+}
+
+pub struct BodyPose {
+    pub pose_id: String,
+    pub skeleton_joints: HashMap<String, Vector3D>,
+    pub is_tracking: bool,
+    pub confidence: f32,
+}
+
+impl BodyPose {
+    pub fn new(pose_id: String) -> Self {
+        BodyPose {
+            pose_id,
+            skeleton_joints: HashMap::new(),
+            is_tracking: false,
+            confidence: 0.0,
+        }
+    }
+
+    pub fn set_joint(&mut self, joint_name: String, position: Vector3D) {
+        self.skeleton_joints.insert(joint_name, position);
+    }
+
+    pub fn get_joint(&self, joint_name: &str) -> Option<&Vector3D> {
+        self.skeleton_joints.get(joint_name)
+    }
+}
+
+// ============================================================================
+// SPATIAL ANCHORS & MAPPING
+// ============================================================================
+
+pub struct SpatialAnchor {
+    pub anchor_id: String,
+    pub transform: Transform,
+    pub persistent: bool,
+    pub created_at: u64,
+}
+
+impl SpatialAnchor {
+    pub fn new(anchor_id: String, transform: Transform) -> Self {
+        SpatialAnchor {
+            anchor_id,
+            transform,
+            persistent: true,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+}
+
+pub struct EnvironmentMap {
+    pub map_id: String,
+    pub point_cloud: Vec<Vector3D>,
+    pub planes: Vec<(Vector3D, Vector3D, Vector3D)>, // position, normal, size
+    pub mesh_vertices: Vec<Vector3D>,
+    pub mesh_indices: Vec<u32>,
+}
+
+impl EnvironmentMap {
+    pub fn new(map_id: String) -> Self {
+        EnvironmentMap {
+            map_id,
+            point_cloud: vec![],
+            planes: vec![],
+            mesh_vertices: vec![],
+            mesh_indices: vec![],
+        }
+    }
+
+    pub fn add_point(&mut self, point: Vector3D) {
+        self.point_cloud.push(point);
+    }
+
+    pub fn detect_planes(&mut self) -> Vec<(Vector3D, Vector3D)> {
+        // Simulate plane detection (normal, center)
+        vec![(
+            Vector3D::new(0.0, 1.0, 0.0), // floor plane (normal)
+            Vector3D::new(0.0, 0.0, 0.0), // center
+        )]
+    }
+}
+
+// ============================================================================
+// AR OVERLAY SYSTEM
+// ============================================================================
+
+pub enum ARObjectType {
+    Image,
+    Model3D,
+    UI,
+    Text,
+}
+
+pub struct ARObject {
+    pub object_id: String,
+    pub object_type: ARObjectType,
+    pub transform: Transform,
+    pub anchor_id: Option<String>,
+    pub is_visible: bool,
+    pub opacity: f32,
+}
+
+impl ARObject {
+    pub fn new(object_id: String, object_type: ARObjectType) -> Self {
+        ARObject {
+            object_id,
+            object_type,
+            transform: Transform::identity(),
+            anchor_id: None,
+            is_visible: true,
+            opacity: 1.0,
+        }
+    }
+
+    pub fn set_anchor(&mut self, anchor_id: String) {
+        self.anchor_id = Some(anchor_id);
+    }
+
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+    }
+}
+
+pub struct ARScene {
+    pub scene_id: String,
+    pub objects: HashMap<String, ARObject>,
+    pub anchors: HashMap<String, SpatialAnchor>,
+    pub is_rendering: bool,
+}
+
+impl ARScene {
+    pub fn new(scene_id: String) -> Self {
+        ARScene {
+            scene_id,
+            objects: HashMap::new(),
+            anchors: HashMap::new(),
+            is_rendering: false,
+        }
+    }
+
+    pub fn add_object(&mut self, object: ARObject) -> Result<(), String> {
+        self.objects.insert(object.object_id.clone(), object);
+        Ok(())
+    }
+
+    pub fn add_anchor(&mut self, anchor: SpatialAnchor) -> Result<(), String> {
+        self.anchors.insert(anchor.anchor_id.clone(), anchor);
+        Ok(())
+    }
+
+    pub fn begin_render(&mut self) -> Result<(), String> {
+        self.is_rendering = true;
+        Ok(())
+    }
+
+    pub fn end_render(&mut self) -> Result<(), String> {
+        self.is_rendering = false;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// VR ENVIRONMENT SYSTEM
+// ============================================================================
+
+pub struct VREnvironment {
+    pub env_id: String,
+    pub background_color: (u8, u8, u8, u8),
+    pub lighting: Vec<(Vector3D, f32, (u8, u8, u8))>, // position, intensity, color
+    pub objects: HashMap<String, ARObject>,
+}
+
+impl VREnvironment {
+    pub fn new(env_id: String) -> Self {
+        VREnvironment {
+            env_id,
+            background_color: (135, 206, 235, 255), // Sky blue
+            lighting: vec![],
+            objects: HashMap::new(),
+        }
+    }
+
+    pub fn add_light(
+        &mut self,
+        position: Vector3D,
+        intensity: f32,
+        color: (u8, u8, u8),
+    ) -> Result<(), String> {
+        if intensity <= 0.0 || intensity > 10.0 {
+            return Err("Invalid intensity".to_string());
+        }
+        self.lighting.push((position, intensity, color));
+        Ok(())
+    }
+
+    pub fn set_background(&mut self, r: u8, g: u8, b: u8, a: u8) {
+        self.background_color = (r, g, b, a);
+    }
+
+    pub fn add_object(&mut self, object: ARObject) -> Result<(), String> {
+        self.objects.insert(object.object_id.clone(), object);
+        Ok(())
+    }
+
+    pub fn get_object(&self, object_id: &str) -> Option<&ARObject> {
+        self.objects.get(object_id)
+    }
+}
+
+// ============================================================================
+// HEAD-MOUNTED DISPLAY (HMD)
+// ============================================================================
+
+pub struct HMDDevice {
+    pub device_id: String,
+    pub device_name: String,
+    pub head_position: Vector3D,
+    pub head_rotation: Quaternion,
+    pub field_of_view_degrees: f32,
+    pub refresh_rate_hz: u32,
+    pub is_connected: bool,
+}
+
+impl HMDDevice {
+    pub fn new(device_id: String, device_name: String) -> Self {
+        HMDDevice {
+            device_id,
+            device_name,
+            head_position: Vector3D::new(0.0, 0.0, 0.0),
+            head_rotation: Quaternion::identity(),
+            field_of_view_degrees: 110.0,
+            refresh_rate_hz: 90,
+            is_connected: true,
+        }
+    }
+
+    pub fn update_head_pose(&mut self, position: Vector3D, rotation: Quaternion) {
+        self.head_position = position;
+        self.head_rotation = rotation;
+    }
+}
+
+// ============================================================================
+// MIXED REALITY SYSTEM
+// ============================================================================
+
+pub struct MixedRealitySystem {
+    pub active_mode: String, // "ar", "vr", "mixed"
+    pub hmd: Option<HMDDevice>,
+    pub hands: HashMap<String, Hand>,
+    pub body_pose: Option<BodyPose>,
+    pub ar_scene: Option<ARScene>,
+    pub vr_environment: Option<VREnvironment>,
+    pub environment_map: Option<EnvironmentMap>,
+    pub frame_time_ms: u32,
+}
+
+impl MixedRealitySystem {
+    pub fn new() -> Self {
+        MixedRealitySystem {
+            active_mode: "ar".to_string(),
+            hmd: None,
+            hands: HashMap::new(),
+            body_pose: None,
+            ar_scene: None,
+            vr_environment: None,
+            environment_map: None,
+            frame_time_ms: 11, // ~90 FPS
+        }
+    }
+
+    pub fn initialize_hmd(&mut self, device_name: String) -> Result<(), String> {
+        let hmd = HMDDevice::new("hmd_001".to_string(), device_name);
+        self.hmd = Some(hmd);
+        println!("✓ HMD initialized");
+        Ok(())
+    }
+
+    pub fn enable_hand_tracking(&mut self) -> Result<(), String> {
+        let left = Hand::new("hand_left".to_string(), HandSide::Left);
+        let right = Hand::new("hand_right".to_string(), HandSide::Right);
+
+        self.hands.insert("left".to_string(), left);
+        self.hands.insert("right".to_string(), right);
+
+        println!("✓ Hand tracking enabled");
+        Ok(())
+    }
+
+    pub fn enable_body_tracking(&mut self) -> Result<(), String> {
+        let pose = BodyPose::new("body_001".to_string());
+        self.body_pose = Some(pose);
+        println!("✓ Body tracking enabled");
+        Ok(())
+    }
+
+    pub fn create_ar_scene(&mut self, scene_id: String) -> Result<(), String> {
+        let scene = ARScene::new(scene_id);
+        self.ar_scene = Some(scene);
+        self.active_mode = "ar".to_string();
+        println!("✓ AR scene created");
+        Ok(())
+    }
+
+    pub fn create_vr_environment(&mut self, env_id: String) -> Result<(), String> {
+        let env = VREnvironment::new(env_id);
+        self.vr_environment = Some(env);
+        self.active_mode = "vr".to_string();
+        println!("✓ VR environment created");
+        Ok(())
+    }
+
+    pub fn map_environment(&mut self) -> Result<(), String> {
+        let map = EnvironmentMap::new("envmap_001".to_string());
+        self.environment_map = Some(map);
+        println!("✓ Environment mapping started");
+        Ok(())
+    }
+
+    pub fn print_status(&self) {
+        println!("\n╔════════════════════════════════════════════════════╗");
+        println!("║       MIXED REALITY SYSTEM (Phase 29)              ║");
+        println!("╚════════════════════════════════════════════════════╝\n");
+
+        println!("🎮 ACTIVE MODE: {}", self.active_mode);
+        println!("⌚ FRAME TIME: {} ms ({} FPS)", self.frame_time_ms, 1000 / self.frame_time_ms);
+
+        if let Some(hmd) = &self.hmd {
+            println!("\n🥽 HMD:");
+            println!("   Device: {}", hmd.device_name);
+            println!("   FOV: {}°", hmd.field_of_view_degrees);
+            println!("   Refresh: {} Hz", hmd.refresh_rate_hz);
+        }
+
+        println!("\n👋 HAND TRACKING:");
+        println!("   Hands: {}", self.hands.len());
+        for (side, hand) in &self.hands {
+            let tracked = if hand.is_tracked { "✓" } else { "✗" };
+            println!("   {}: {} (confidence: {:.1}%)", side, tracked, hand.confidence * 100.0);
+        }
+
+        if let Some(_) = &self.body_pose {
+            println!("\n🧍 BODY TRACKING:");
+            println!("   Status: Active");
+        }
+
+        println!("\n🎯 SCENES:");
+        if let Some(scene) = &self.ar_scene {
+            println!("   AR: {} objects", scene.objects.len());
+        }
+        if let Some(env) = &self.vr_environment {
+            println!("   VR: {} objects, {} lights", env.objects.len(), env.lighting.len());
+        }
+
+        println!("\n🗺️  ENVIRONMENT MAPPING:");
+        if let Some(map) = &self.environment_map {
+            println!("   Points: {}", map.point_cloud.len());
+            println!("   Planes: {}", map.planes.len());
+        }
+
+        println!("\n");
+    }
+}
+
+// ============================================================================
+// MAIN TEST
+// ============================================================================
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 29: MIXED REALITY SYSTEM ===\n");
+
+    let mut system = MixedRealitySystem::new();
+
+    // Initialize HMD
+    println!("--- Initializing HMD ---");
+    system.initialize_hmd("Meta Quest 3S".to_string())?;
+
+    // Enable tracking
+    println!("--- Enabling Tracking ---");
+    system.enable_hand_tracking()?;
+    system.enable_body_tracking()?;
+
+    // Create AR scene
+    println!("--- Creating AR Scene ---");
+    system.create_ar_scene("ar_scene_001".to_string())?;
+
+    // Add AR object
+    if let Some(scene) = &mut system.ar_scene {
+        let ar_obj = ARObject::new("obj_001".to_string(), ARObjectType::Model3D);
+        scene.add_object(ar_obj)?;
+        println!("✓ AR object added");
+    }
+
+    // Map environment
+    println!("\n--- Mapping Environment ---");
+    system.map_environment()?;
+
+    system.print_status();
+
+    println!("✓✓✓ Phase 29: Mixed Reality System operational ✓✓✓");
+    Ok(())
+}
