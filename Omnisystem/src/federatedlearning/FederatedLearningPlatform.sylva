@@ -1,0 +1,226 @@
+// FederatedLearningPlatform.sylva - Federated learning platform
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub struct FederatedClient {
+    pub client_id: String,
+    pub organization: String,
+    pub local_data_samples: u32,
+    pub model_version: u32,
+    pub status: String, // idle, training, synchronizing
+    pub last_sync: u64,
+}
+
+impl FederatedClient {
+    pub fn new(client_id: String, organization: String) -> Self {
+        FederatedClient {
+            client_id,
+            organization,
+            local_data_samples: 0,
+            model_version: 0,
+            status: "idle".to_string(),
+            last_sync: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+
+    pub fn start_training(&mut self) {
+        self.status = "training".to_string();
+    }
+
+    pub fn sync(&mut self) {
+        self.status = "synchronizing".to_string();
+        self.last_sync = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.model_version += 1;
+    }
+}
+
+pub struct LocalModel {
+    pub model_id: String,
+    pub client_id: String,
+    pub version: u32,
+    pub parameters_hash: String,
+    pub accuracy: f64,
+    pub training_time_seconds: u32,
+}
+
+impl LocalModel {
+    pub fn new(model_id: String, client_id: String) -> Self {
+        LocalModel {
+            model_id,
+            client_id,
+            version: 1,
+            parameters_hash: String::new(),
+            accuracy: 0.0,
+            training_time_seconds: 0,
+        }
+    }
+
+    pub fn update(&mut self, accuracy: f64, training_time: u32) {
+        self.accuracy = accuracy;
+        self.training_time_seconds = training_time;
+        self.version += 1;
+    }
+}
+
+pub struct GlobalModel {
+    pub model_id: String,
+    pub current_version: u32,
+    pub aggregated_parameters: String,
+    pub global_accuracy: f64,
+    pub num_clients_contributed: u32,
+    pub last_aggregation: u64,
+}
+
+impl GlobalModel {
+    pub fn new(model_id: String) -> Self {
+        GlobalModel {
+            model_id,
+            current_version: 0,
+            aggregated_parameters: String::new(),
+            global_accuracy: 0.0,
+            num_clients_contributed: 0,
+            last_aggregation: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        }
+    }
+
+    pub fn aggregate(&mut self, num_clients: u32, avg_accuracy: f64) {
+        self.current_version += 1;
+        self.num_clients_contributed = num_clients;
+        self.global_accuracy = avg_accuracy;
+        self.last_aggregation = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+    }
+}
+
+pub struct FederationRound {
+    pub round_id: String,
+    pub round_number: u32,
+    pub num_selected_clients: u32,
+    pub num_completed_clients: u32,
+    pub status: String, // initializing, in_progress, aggregating, completed
+    pub average_loss: f64,
+}
+
+impl FederationRound {
+    pub fn new(round_id: String, round_number: u32) -> Self {
+        FederationRound {
+            round_id,
+            round_number,
+            num_selected_clients: 0,
+            num_completed_clients: 0,
+            status: "initializing".to_string(),
+            average_loss: 0.0,
+        }
+    }
+
+    pub fn start(&mut self) {
+        self.status = "in_progress".to_string();
+    }
+
+    pub fn complete_client(&mut self) {
+        self.num_completed_clients += 1;
+    }
+
+    pub fn aggregate(&mut self, avg_loss: f64) {
+        self.status = "aggregating".to_string();
+        self.average_loss = avg_loss;
+    }
+
+    pub fn completion_percentage(&self) -> f64 {
+        if self.num_selected_clients == 0 {
+            0.0
+        } else {
+            (self.num_completed_clients as f64 / self.num_selected_clients as f64) * 100.0
+        }
+    }
+}
+
+pub struct FederatedLearningPlatformSystem {
+    pub system_id: String,
+    pub clients: HashMap<String, FederatedClient>,
+    pub local_models: HashMap<String, LocalModel>,
+    pub global_models: HashMap<String, GlobalModel>,
+    pub rounds: HashMap<String, FederationRound>,
+}
+
+impl FederatedLearningPlatformSystem {
+    pub fn new(system_id: String) -> Self {
+        FederatedLearningPlatformSystem {
+            system_id,
+            clients: HashMap::new(),
+            local_models: HashMap::new(),
+            global_models: HashMap::new(),
+            rounds: HashMap::new(),
+        }
+    }
+
+    pub fn register_client(&mut self, client: FederatedClient) {
+        self.clients.insert(client.client_id.clone(), client);
+    }
+
+    pub fn train_local_model(&mut self, model: LocalModel) {
+        self.local_models.insert(model.model_id.clone(), model);
+    }
+
+    pub fn create_global_model(&mut self, model: GlobalModel) {
+        self.global_models.insert(model.model_id.clone(), model);
+    }
+
+    pub fn start_round(&mut self, round: FederationRound) {
+        self.rounds.insert(round.round_id.clone(), round);
+    }
+
+    pub fn get_active_clients(&self) -> u32 {
+        self.clients
+            .iter()
+            .filter(|(_, c)| c.status == "training" || c.status == "synchronizing")
+            .count() as u32
+    }
+
+    pub fn get_completed_rounds(&self) -> u32 {
+        self.rounds
+            .iter()
+            .filter(|(_, r)| r.status == "completed")
+            .count() as u32
+    }
+
+    pub fn get_average_model_accuracy(&self) -> f64 {
+        if self.local_models.is_empty() {
+            0.0
+        } else {
+            let total: f64 = self.local_models
+                .iter()
+                .map(|(_, m)| m.accuracy)
+                .sum();
+            total / self.local_models.len() as f64
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 127: FEDERATED LEARNING PLATFORM ===\n");
+    let mut flps = FederatedLearningPlatformSystem::new("flps_001".to_string());
+    let client = FederatedClient::new("client_001".to_string(), "Hospital A".to_string());
+    flps.register_client(client);
+    let local_model = LocalModel::new("lm_001".to_string(), "client_001".to_string());
+    flps.train_local_model(local_model);
+    let global_model = GlobalModel::new("gm_001".to_string());
+    flps.create_global_model(global_model);
+    let round = FederationRound::new("round_001".to_string(), 1);
+    flps.start_round(round);
+    println!("✓ Client, local model, global model, and round recorded");
+    println!("✓ Average model accuracy: {:.2}%", flps.get_average_model_accuracy());
+    println!("✓✓✓ Federated Learning Platform operational ✓✓✓");
+    Ok(())
+}
