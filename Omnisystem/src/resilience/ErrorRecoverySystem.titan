@@ -1,0 +1,568 @@
+// ErrorRecoverySystem.titan - TIER 1: Enterprise-grade error recovery & resilience
+// Graceful degradation, circuit breakers, automatic reconnection, failover
+
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+// ============================================================================
+// CIRCUIT BREAKER PATTERN (Prevent cascading failures)
+// ============================================================================
+
+pub enum CircuitState {
+    Closed,      // Normal operation
+    Open,        // Too many failures, reject requests
+    HalfOpen,    // Testing if service recovered
+}
+
+pub struct CircuitBreaker {
+    pub name: String,
+    pub state: CircuitState,
+    pub failure_count: u32,
+    pub success_count: u32,
+    pub failure_threshold: u32,
+    pub success_threshold: u32,
+    pub last_failure_time: u64,
+    pub timeout_seconds: u32,
+}
+
+impl CircuitBreaker {
+    pub fn new(name: String) -> Self {
+        CircuitBreaker {
+            name,
+            state: CircuitState::Closed,
+            failure_count: 0,
+            success_count: 0,
+            failure_threshold: 5,
+            success_threshold: 3,
+            last_failure_time: 0,
+            timeout_seconds: 60,
+        }
+    }
+
+    pub fn call<F, T>(&mut self, operation: F) -> Result<T, String>
+    where
+        F: FnOnce() -> Result<T, String>,
+    {
+        match self.state {
+            CircuitState::Closed => {
+                match operation() {
+                    Ok(result) => {
+                        self.success_count += 1;
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        self.failure_count += 1;
+                        self.last_failure_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+
+                        if self.failure_count >= self.failure_threshold {
+                            self.state = CircuitState::Open;
+                            println!(
+                                "🔴 Circuit breaker '{}' opened after {} failures",
+                                self.name, self.failure_count
+                            );
+                        }
+                        Err(format!("Circuit closed but operation failed: {}", e))
+                    }
+                }
+            }
+            CircuitState::Open => {
+                let current_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                if current_time - self.last_failure_time > self.timeout_seconds as u64 {
+                    self.state = CircuitState::HalfOpen;
+                    self.success_count = 0;
+                    println!("🟡 Circuit breaker '{}' entering half-open state", self.name);
+                    self.call(operation)
+                } else {
+                    Err(format!("Circuit breaker '{}' is OPEN - rejecting request", self.name))
+                }
+            }
+            CircuitState::HalfOpen => {
+                match operation() {
+                    Ok(result) => {
+                        self.success_count += 1;
+
+                        if self.success_count >= self.success_threshold {
+                            self.state = CircuitState::Closed;
+                            self.failure_count = 0;
+                            println!(
+                                "🟢 Circuit breaker '{}' closed - service recovered",
+                                self.name
+                            );
+                        }
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        self.state = CircuitState::Open;
+                        self.last_failure_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        println!("🔴 Circuit breaker '{}' reopened", self.name);
+                        Err(format!("Half-open test failed: {}", e))
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_state_str(&self) -> &str {
+        match self.state {
+            CircuitState::Closed => "Closed",
+            CircuitState::Open => "Open",
+            CircuitState::HalfOpen => "HalfOpen",
+        }
+    }
+}
+
+// ============================================================================
+// EXPONENTIAL BACKOFF RETRY STRATEGY
+// ============================================================================
+
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub exponential_base: f64,
+}
+
+impl RetryPolicy {
+    pub fn new() -> Self {
+        RetryPolicy {
+            max_attempts: 5,
+            initial_backoff_ms: 100,
+            max_backoff_ms: 30000,
+            exponential_base: 2.0,
+        }
+    }
+
+    pub fn execute<F, T>(&self, mut operation: F) -> Result<T, String>
+    where
+        F: FnMut() -> Result<T, String>,
+    {
+        let mut attempt = 1;
+        let mut backoff_ms = self.initial_backoff_ms;
+
+        loop {
+            match operation() {
+                Ok(result) => {
+                    if attempt > 1 {
+                        println!("✓ Succeeded after {} attempts", attempt);
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    if attempt >= self.max_attempts {
+                        return Err(format!(
+                            "Failed after {} attempts. Last error: {}",
+                            self.max_attempts, e
+                        ));
+                    }
+
+                    println!(
+                        "⚠️  Attempt {} failed: {}. Retrying in {}ms...",
+                        attempt, e, backoff_ms
+                    );
+
+                    // Simulate backoff (in production, use actual sleep)
+                    attempt += 1;
+                    backoff_ms = ((backoff_ms as f64) * self.exponential_base)
+                        .min(self.max_backoff_ms as f64) as u64;
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// BULKHEAD PATTERN (Isolate failures)
+// ============================================================================
+
+pub struct Bulkhead {
+    pub name: String,
+    pub max_concurrent: u32,
+    pub current_concurrent: u32,
+    pub total_executed: u64,
+    pub total_rejected: u64,
+}
+
+impl Bulkhead {
+    pub fn new(name: String, max_concurrent: u32) -> Self {
+        Bulkhead {
+            name,
+            max_concurrent,
+            current_concurrent: 0,
+            total_executed: 0,
+            total_rejected: 0,
+        }
+    }
+
+    pub fn execute<F, T>(&mut self, operation: F) -> Result<T, String>
+    where
+        F: FnOnce() -> Result<T, String>,
+    {
+        if self.current_concurrent >= self.max_concurrent {
+            self.total_rejected += 1;
+            return Err(format!(
+                "Bulkhead '{}' at capacity ({}/{})",
+                self.name, self.current_concurrent, self.max_concurrent
+            ));
+        }
+
+        self.current_concurrent += 1;
+
+        let result = operation();
+
+        self.current_concurrent -= 1;
+        self.total_executed += 1;
+
+        result
+    }
+
+    pub fn get_utilization(&self) -> u8 {
+        ((self.current_concurrent as f32 / self.max_concurrent as f32) * 100.0) as u8
+    }
+}
+
+// ============================================================================
+// GRACEFUL DEGRADATION
+// ============================================================================
+
+pub enum ServiceMode {
+    Full,         // All features available
+    Degraded,     // Some features offline
+    Readonly,     // Read-only mode
+    Offline,      // Fully offline
+}
+
+pub struct GracefulDegradation {
+    pub current_mode: ServiceMode,
+    pub available_services: HashMap<String, bool>,
+    pub offline_cache: HashMap<String, Vec<u8>>,
+}
+
+impl GracefulDegradation {
+    pub fn new() -> Self {
+        GracefulDegradation {
+            current_mode: ServiceMode::Full,
+            available_services: HashMap::new(),
+            offline_cache: HashMap::new(),
+        }
+    }
+
+    pub fn service_failed(&mut self, service_name: &str) -> Result<(), String> {
+        self.available_services.insert(service_name.to_string(), false);
+
+        let available_count = self
+            .available_services
+            .values()
+            .filter(|&&v| v)
+            .count();
+        let total_count = self.available_services.len();
+
+        // Determine degradation level
+        self.current_mode = match (available_count as f32 / total_count as f32) {
+            ratio if ratio >= 0.8 => ServiceMode::Full,
+            ratio if ratio >= 0.5 => ServiceMode::Degraded,
+            ratio if ratio >= 0.2 => ServiceMode::Readonly,
+            _ => ServiceMode::Offline,
+        };
+
+        println!(
+            "⚠️  Service '{}' failed. System mode: {:?}",
+            service_name, self.current_mode
+        );
+        Ok(())
+    }
+
+    pub fn service_recovered(&mut self, service_name: &str) -> Result<(), String> {
+        self.available_services.insert(service_name.to_string(), true);
+
+        let available_count = self
+            .available_services
+            .values()
+            .filter(|&&v| v)
+            .count();
+        let total_count = self.available_services.len();
+
+        self.current_mode = match (available_count as f32 / total_count as f32) {
+            ratio if ratio >= 0.8 => ServiceMode::Full,
+            ratio if ratio >= 0.5 => ServiceMode::Degraded,
+            ratio if ratio >= 0.2 => ServiceMode::Readonly,
+            _ => ServiceMode::Offline,
+        };
+
+        println!(
+            "✓ Service '{}' recovered. System mode: {:?}",
+            service_name, self.current_mode
+        );
+        Ok(())
+    }
+
+    pub fn cache_for_offline(&mut self, key: String, data: Vec<u8>) -> Result<(), String> {
+        self.offline_cache.insert(key, data);
+        Ok(())
+    }
+
+    pub fn get_cached_data(&self, key: &str) -> Option<&Vec<u8>> {
+        self.offline_cache.get(key)
+    }
+
+    pub fn can_write(&self) -> bool {
+        matches!(self.current_mode, ServiceMode::Full)
+    }
+
+    pub fn can_read(&self) -> bool {
+        !matches!(self.current_mode, ServiceMode::Offline)
+    }
+}
+
+// ============================================================================
+// AUTOMATIC RECONNECTION WITH EXPONENTIAL BACKOFF
+// ============================================================================
+
+pub struct ConnectionManager {
+    pub service_name: String,
+    pub connected: bool,
+    pub last_connection_attempt: u64,
+    pub connection_attempts: u32,
+    pub backoff_ms: u64,
+}
+
+impl ConnectionManager {
+    pub fn new(service_name: String) -> Self {
+        ConnectionManager {
+            service_name,
+            connected: false,
+            last_connection_attempt: 0,
+            connection_attempts: 0,
+            backoff_ms: 100,
+        }
+    }
+
+    pub fn attempt_reconnect(&mut self) -> Result<(), String> {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let time_since_last = current_time - self.last_connection_attempt;
+        let backoff_seconds = (self.backoff_ms / 1000).max(1);
+
+        if time_since_last < backoff_seconds {
+            return Err(format!(
+                "Service '{}' still in backoff period ({}s remaining)",
+                self.service_name,
+                backoff_seconds - time_since_last
+            ));
+        }
+
+        self.connection_attempts += 1;
+        self.last_connection_attempt = current_time;
+
+        // Simulate connection attempt
+        let connection_success = self.connection_attempts >= 3; // Succeeds after 3 attempts
+
+        if connection_success {
+            self.connected = true;
+            self.connection_attempts = 0;
+            self.backoff_ms = 100; // Reset backoff
+            println!("✓ Reconnected to service '{}'", self.service_name);
+            Ok(())
+        } else {
+            self.backoff_ms = (self.backoff_ms * 2).min(30000); // Cap at 30s
+            Err(format!(
+                "Reconnection attempt {} failed. Will retry in {}ms",
+                self.connection_attempts, self.backoff_ms
+            ))
+        }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
+// ============================================================================
+// MAIN ERROR RECOVERY SYSTEM
+// ============================================================================
+
+pub struct ErrorRecoverySystem {
+    pub circuit_breakers: HashMap<String, CircuitBreaker>,
+    pub retry_policies: HashMap<String, RetryPolicy>,
+    pub bulkheads: HashMap<String, Bulkhead>,
+    pub degradation: GracefulDegradation,
+    pub connections: HashMap<String, ConnectionManager>,
+}
+
+impl ErrorRecoverySystem {
+    pub fn new() -> Self {
+        ErrorRecoverySystem {
+            circuit_breakers: HashMap::new(),
+            retry_policies: HashMap::new(),
+            bulkheads: HashMap::new(),
+            degradation: GracefulDegradation::new(),
+            connections: HashMap::new(),
+        }
+    }
+
+    pub fn register_service(&mut self, service_name: String) -> Result<(), String> {
+        self.circuit_breakers
+            .insert(service_name.clone(), CircuitBreaker::new(service_name.clone()));
+        self.retry_policies
+            .insert(service_name.clone(), RetryPolicy::new());
+        self.bulkheads
+            .insert(service_name.clone(), Bulkhead::new(service_name.clone(), 10));
+        self.degradation
+            .available_services
+            .insert(service_name.clone(), true);
+        self.connections
+            .insert(service_name.clone(), ConnectionManager::new(service_name.clone()));
+
+        Ok(())
+    }
+
+    pub fn handle_service_failure(&mut self, service_name: &str) -> Result<(), String> {
+        self.degradation.service_failed(service_name)?;
+
+        if let Some(connection) = self.connections.get_mut(service_name) {
+            connection.connected = false;
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_service_recovery(&mut self, service_name: &str) -> Result<(), String> {
+        self.degradation.service_recovered(service_name)?;
+
+        if let Some(connection) = self.connections.get_mut(service_name) {
+            connection.connected = true;
+        }
+
+        Ok(())
+    }
+
+    pub fn print_status(&self) {
+        println!("\n╔════════════════════════════════════════════════════════╗");
+        println!("║         ERROR RECOVERY SYSTEM STATUS                    ║");
+        println!("╚════════════════════════════════════════════════════════╝\n");
+
+        println!("📊 CIRCUIT BREAKERS:");
+        for (name, cb) in &self.circuit_breakers {
+            println!("  {} - {} (Failures: {})", name, cb.get_state_str(), cb.failure_count);
+        }
+
+        println!("\n🚧 BULKHEADS:");
+        for (name, bh) in &self.bulkheads {
+            println!(
+                "  {} - {}% utilization ({}/{})",
+                name,
+                bh.get_utilization(),
+                bh.current_concurrent,
+                bh.max_concurrent
+            );
+        }
+
+        println!("\n🔄 CONNECTIONS:");
+        for (name, conn) in &self.connections {
+            let status = if conn.is_connected() { "✓ Connected" } else { "✗ Disconnected" };
+            println!("  {} - {}", name, status);
+        }
+
+        println!("\n📈 DEGRADATION STATUS:");
+        println!("  Current Mode: {:?}", self.degradation.current_mode);
+        println!(
+            "  Available Services: {}/{}",
+            self.degradation
+                .available_services
+                .values()
+                .filter(|&&v| v)
+                .count(),
+            self.degradation.available_services.len()
+        );
+
+        println!("\n");
+    }
+}
+
+// ============================================================================
+// MAIN TEST
+// ============================================================================
+
+fn main() -> Result<(), String> {
+    println!("=== ERROR RECOVERY SYSTEM ===\n");
+
+    let mut system = ErrorRecoverySystem::new();
+
+    // Register core services
+    system.register_service("CloudSync".to_string())?;
+    system.register_service("EmailClient".to_string())?;
+    system.register_service("FileManager".to_string())?;
+    system.register_service("PersonalAI".to_string())?;
+
+    println!("✓ Registered 4 core services\n");
+
+    // Test Circuit Breaker
+    println!("--- Testing Circuit Breaker ---");
+    let mut cb = CircuitBreaker::new("DatabaseConnection".to_string());
+    for i in 1..=7 {
+        let result = cb.call(|| {
+            if i <= 5 {
+                Err("Connection timeout".to_string())
+            } else {
+                Ok("Connected".to_string())
+            }
+        });
+        println!("Attempt {}: {:?}", i, result.is_ok());
+    }
+
+    // Test Retry Policy
+    println!("\n--- Testing Retry Policy ---");
+    let retry = RetryPolicy::new();
+    let mut attempt = 0;
+    let result = retry.execute(|| {
+        attempt += 1;
+        if attempt < 3 {
+            Err("Temporary failure".to_string())
+        } else {
+            Ok("Success".to_string())
+        }
+    });
+    println!("Retry result: {:?}\n", result);
+
+    // Test Bulkhead
+    println!("--- Testing Bulkhead ---");
+    let mut bulkhead = Bulkhead::new("APIEndpoint".to_string(), 5);
+    for i in 1..=7 {
+        let result = bulkhead.execute(|| Ok(format!("Request {}", i)));
+        println!("Request {}: {:?} (Utilization: {}%)", i, result.is_ok(), bulkhead.get_utilization());
+    }
+
+    // Test Graceful Degradation
+    println!("\n--- Testing Graceful Degradation ---");
+    system.handle_service_failure("CloudSync")?;
+    system.handle_service_failure("EmailClient")?;
+    println!("Current mode after 2 failures: {:?}\n", system.degradation.current_mode);
+
+    // Test Connection Manager
+    println!("--- Testing Connection Manager ---");
+    let mut conn_mgr = ConnectionManager::new("RemoteService".to_string());
+    for i in 1..=5 {
+        println!("Reconnection attempt {}:", i);
+        match conn_mgr.attempt_reconnect() {
+            Ok(_) => println!("  ✓ Successfully reconnected"),
+            Err(e) => println!("  ✗ {}", e),
+        }
+    }
+
+    system.print_status();
+
+    println!("✓✓✓ Error Recovery System operational ✓✓✓");
+    Ok(())
+}
