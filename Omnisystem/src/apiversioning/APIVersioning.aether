@@ -1,0 +1,165 @@
+// APIVersioning.aether - API versioning and deprecation management
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub struct APIVersion {
+    pub version: String,
+    pub release_date: u64,
+    pub deprecation_date: Option<u64>,
+    pub sunset_date: Option<u64>,
+    pub endpoints: Vec<String>,
+    pub breaking_changes: Vec<String>,
+}
+
+impl APIVersion {
+    pub fn new(version: String) -> Self {
+        APIVersion {
+            version,
+            release_date: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            deprecation_date: None,
+            sunset_date: None,
+            endpoints: Vec::new(),
+            breaking_changes: Vec::new(),
+        }
+    }
+
+    pub fn set_deprecation(&mut self, days_from_now: u32) {
+        self.deprecation_date = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() + (days_from_now as u64 * 86400)
+        );
+    }
+
+    pub fn set_sunset(&mut self, days_from_now: u32) {
+        self.sunset_date = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() + (days_from_now as u64 * 86400)
+        );
+    }
+
+    pub fn is_deprecated(&self) -> bool {
+        if let Some(dep_date) = self.deprecation_date {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            now > dep_date
+        } else {
+            false
+        }
+    }
+
+    pub fn is_sunset(&self) -> bool {
+        if let Some(sunset) = self.sunset_date {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            now > sunset
+        } else {
+            false
+        }
+    }
+}
+
+pub struct APIEndpointChange {
+    pub endpoint: String,
+    pub old_behavior: String,
+    pub new_behavior: String,
+    pub migration_path: String,
+}
+
+impl APIEndpointChange {
+    pub fn new(endpoint: String, old: String, new: String) -> Self {
+        APIEndpointChange {
+            endpoint,
+            old_behavior: old,
+            new_behavior: new,
+            migration_path: String::new(),
+        }
+    }
+}
+
+pub struct APIVersioningManager {
+    pub manager_id: String,
+    pub versions: HashMap<String, APIVersion>,
+    pub current_version: String,
+    pub endpoint_changes: HashMap<String, APIEndpointChange>,
+}
+
+impl APIVersioningManager {
+    pub fn new(manager_id: String) -> Self {
+        APIVersioningManager {
+            manager_id,
+            versions: HashMap::new(),
+            current_version: "v1".to_string(),
+            endpoint_changes: HashMap::new(),
+        }
+    }
+
+    pub fn release_version(&mut self, version: APIVersion) {
+        self.versions.insert(version.version.clone(), version);
+    }
+
+    pub fn deprecate_version(&mut self, version: &str, days_until_sunset: u32) -> Result<(), String> {
+        if let Some(ver) = self.versions.get_mut(version) {
+            ver.set_deprecation(90); // 90 days notice
+            ver.set_sunset(90 + days_until_sunset);
+            Ok(())
+        } else {
+            Err(format!("Version {} not found", version))
+        }
+    }
+
+    pub fn track_endpoint_change(&mut self, change: APIEndpointChange) {
+        self.endpoint_changes.insert(change.endpoint.clone(), change);
+    }
+
+    pub fn get_active_versions(&self) -> Vec<String> {
+        self.versions
+            .iter()
+            .filter(|(_, v)| !v.is_sunset())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub fn get_deprecation_notices(&self) -> Vec<String> {
+        let mut notices = Vec::new();
+        for (version, info) in &self.versions {
+            if info.is_deprecated() && !info.is_sunset() {
+                if let Some(sunset) = info.sunset_date {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let days_remaining = ((sunset - now) / 86400) as u32;
+                    notices.push(format!("{} will be sunset in {} days", version, days_remaining));
+                }
+            }
+        }
+        notices
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 91: API VERSIONING ===\n");
+    let mut avm = APIVersioningManager::new("avm_001".to_string());
+    let v1 = APIVersion::new("v1".to_string());
+    avm.release_version(v1);
+    let mut v2 = APIVersion::new("v2".to_string());
+    v2.breaking_changes.push("Endpoint /users changed to /api/users".to_string());
+    avm.release_version(v2);
+    avm.deprecate_version("v1", 60)?;
+    println!("✓ API versions released");
+    println!("✓ Active versions: {}", avm.get_active_versions().len());
+    println!("✓ Deprecation notices: {}", avm.get_deprecation_notices().len());
+    println!("✓✓✓ API Versioning operational ✓✓✓");
+    Ok(())
+}
