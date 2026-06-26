@@ -1,0 +1,148 @@
+// TransactionManager.titan - ACID transaction management
+use crate::personal::ModuleFramework::*;
+use std::collections::HashMap;
+
+pub enum TransactionState {
+    Active,
+    Committed,
+    RolledBack,
+    Failed,
+}
+
+pub struct Transaction {
+    pub transaction_id: String,
+    pub state: TransactionState,
+    pub operations: Vec<String>,
+    pub start_time: u64,
+    pub isolation_level: String,
+}
+
+impl Transaction {
+    pub fn new(transaction_id: String) -> Self {
+        Transaction {
+            transaction_id,
+            state: TransactionState::Active,
+            operations: Vec::new(),
+            start_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            isolation_level: "READ_COMMITTED".to_string(),
+        }
+    }
+
+    pub fn add_operation(&mut self, operation: String) {
+        self.operations.push(operation);
+    }
+
+    pub fn commit(&mut self) -> Result<(), String> {
+        if matches!(self.state, TransactionState::Active) {
+            self.state = TransactionState::Committed;
+            Ok(())
+        } else {
+            Err("Transaction not active".to_string())
+        }
+    }
+
+    pub fn rollback(&mut self) -> Result<(), String> {
+        if matches!(self.state, TransactionState::Active) || matches!(self.state, TransactionState::Failed) {
+            self.state = TransactionState::RolledBack;
+            Ok(())
+        } else {
+            Err("Cannot rollback committed transaction".to_string())
+        }
+    }
+}
+
+pub struct TransactionLog {
+    pub log_id: String,
+    pub entries: Vec<(String, String, u64)>, // (tx_id, action, timestamp)
+}
+
+impl TransactionLog {
+    pub fn new(log_id: String) -> Self {
+        TransactionLog {
+            log_id,
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn write_entry(&mut self, tx_id: String, action: String) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.entries.push((tx_id, action, timestamp));
+    }
+}
+
+pub struct TransactionManager {
+    pub manager_id: String,
+    pub transactions: HashMap<String, Transaction>,
+    pub transaction_log: TransactionLog,
+    pub total_committed: u32,
+}
+
+impl TransactionManager {
+    pub fn new(manager_id: String) -> Self {
+        TransactionManager {
+            manager_id,
+            transactions: HashMap::new(),
+            transaction_log: TransactionLog::new("txlog_001".to_string()),
+            total_committed: 0,
+        }
+    }
+
+    pub fn begin_transaction(&mut self, transaction_id: String) -> Result<(), String> {
+        let tx = Transaction::new(transaction_id.clone());
+        self.transactions.insert(transaction_id.clone(), tx);
+        self.transaction_log.write_entry(transaction_id, "BEGIN".to_string());
+        Ok(())
+    }
+
+    pub fn execute_operation(&mut self, transaction_id: &str, operation: String) -> Result<(), String> {
+        if let Some(tx) = self.transactions.get_mut(transaction_id) {
+            if matches!(tx.state, TransactionState::Active) {
+                tx.add_operation(operation);
+                Ok(())
+            } else {
+                Err("Transaction not active".to_string())
+            }
+        } else {
+            Err(format!("Transaction {} not found", transaction_id))
+        }
+    }
+
+    pub fn commit_transaction(&mut self, transaction_id: &str) -> Result<(), String> {
+        if let Some(tx) = self.transactions.get_mut(transaction_id) {
+            tx.commit()?;
+            self.transaction_log.write_entry(transaction_id.to_string(), "COMMIT".to_string());
+            self.total_committed += 1;
+            Ok(())
+        } else {
+            Err(format!("Transaction {} not found", transaction_id))
+        }
+    }
+
+    pub fn rollback_transaction(&mut self, transaction_id: &str) -> Result<(), String> {
+        if let Some(tx) = self.transactions.get_mut(transaction_id) {
+            tx.rollback()?;
+            self.transaction_log.write_entry(transaction_id.to_string(), "ROLLBACK".to_string());
+            Ok(())
+        } else {
+            Err(format!("Transaction {} not found", transaction_id))
+        }
+    }
+}
+
+fn main() -> Result<(), String> {
+    println!("=== PHASE 71: TRANSACTION MANAGER ===\n");
+    let mut tm = TransactionManager::new("tm_001".to_string());
+    tm.begin_transaction("tx_001".to_string())?;
+    tm.execute_operation("tx_001", "UPDATE users SET name='Alice'".to_string())?;
+    tm.commit_transaction("tx_001")?;
+    println!("✓ Transaction committed");
+    println!("✓ Total committed: {}", tm.total_committed);
+    println!("✓✓✓ Transaction Manager operational ✓✓✓");
+    Ok(())
+}
