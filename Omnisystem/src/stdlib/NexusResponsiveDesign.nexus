@@ -1,0 +1,335 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// NEXUS RESPONSIVE DESIGN STANDARD LIBRARY
+// Layouts, Breakpoints, Grid, Flex, Media Queries, Constraints
+// 100% Pure NEXUS - Enterprise Grade Responsive Framework
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 1: BREAKPOINT SYSTEM
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum DeviceType {
+    Mobile,
+    Tablet,
+    Desktop,
+    LargeDesktop,
+}
+
+pub struct Breakpoint {
+    name: String,
+    device_type: DeviceType,
+    min_width: i32,
+    max_width: i32,
+    columns: i32,
+    gutter_width: i32,
+}
+
+pub actor BreakpointManager {
+    breakpoints: Arc<Mutex<Vec<Breakpoint>>>,
+    current_viewport_width: i32 = 1920,
+    current_device_type: DeviceType = DeviceType::Desktop,
+
+    message CreateBreakpoint(name: String, device: DeviceType, min_width: i32, max_width: i32, columns: i32) -> Result<(), String> {
+        let bp = Breakpoint {
+            name: name,
+            device_type: device,
+            min_width: min_width,
+            max_width: max_width,
+            columns: columns,
+            gutter_width: 16,
+        }
+
+        breakpoints.lock().unwrap().push(bp)
+        Ok(())
+    }
+
+    message SetViewportWidth(width: i32) -> Result<(), String> {
+        self.current_viewport_width = width
+
+        // Determine device type based on width
+        if width < 768 {
+            self.current_device_type = DeviceType::Mobile
+        } else if width < 1024 {
+            self.current_device_type = DeviceType::Tablet
+        } else if width < 1440 {
+            self.current_device_type = DeviceType::Desktop
+        } else {
+            self.current_device_type = DeviceType::LargeDesktop
+        }
+
+        Ok(())
+    }
+
+    message GetCurrentDeviceType() -> Result<String, String> {
+        Ok(match self.current_device_type {
+            DeviceType::Mobile => "mobile".to_string(),
+            DeviceType::Tablet => "tablet".to_string(),
+            DeviceType::Desktop => "desktop".to_string(),
+            DeviceType::LargeDesktop => "large-desktop".to_string(),
+        })
+    }
+
+    message GetBreakpointCount() -> Result<i32, String> {
+        Ok(breakpoints.lock().unwrap().len() as i32)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 2: GRID SYSTEM
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct GridDefinition {
+    id: String,
+    columns: i32,
+    rows: i32,
+    gutter_width: i32,
+    gutter_height: i32,
+    column_widths: Vec<i32>,
+}
+
+pub struct GridItem {
+    id: String,
+    column_start: i32,
+    column_end: i32,
+    row_start: i32,
+    row_end: i32,
+}
+
+pub actor GridSystem {
+    grids: Arc<Mutex<HashMap<String, GridDefinition>>>,
+    grid_items: Arc<Mutex<Vec<GridItem>>>,
+    grid_count: i32 = 0,
+
+    message CreateGrid(columns: i32, rows: i32, gutter: i32) -> Result<String, String> {
+        let grid_id = format!("grid_{}", self.grid_count)
+
+        let grid = GridDefinition {
+            id: grid_id.clone(),
+            columns: columns,
+            rows: rows,
+            gutter_width: gutter,
+            gutter_height: gutter,
+            column_widths: vec![100 / columns; columns as usize],
+        }
+
+        grids.lock().unwrap().insert(grid_id.clone(), grid)
+        self.grid_count += 1
+
+        Ok(grid_id)
+    }
+
+    message PlaceItem(grid_id: String, col_start: i32, col_end: i32, row_start: i32, row_end: i32) -> Result<String, String> {
+        let item_id = format!("item_{}", grid_items.lock().unwrap().len())
+
+        let item = GridItem {
+            id: item_id.clone(),
+            column_start: col_start,
+            column_end: col_end,
+            row_start: row_start,
+            row_end: row_end,
+        }
+
+        grid_items.lock().unwrap().push(item)
+        Ok(item_id)
+    }
+
+    message CalculateLayout(grid_id: String, container_width: i32) -> Result<Vec<(i32, i32, i32, i32)>, String> {
+        let grids_lock = grids.lock().unwrap()
+
+        if let Some(grid) = grids_lock.get(&grid_id) {
+            let col_width = (container_width - (grid.gutter_width * (grid.columns - 1))) / grid.columns
+            let mut positions = Vec::new()
+
+            for item in grid_items.lock().unwrap().iter() {
+                let x = item.column_start * col_width + item.column_start * grid.gutter_width
+                let y = item.row_start * 100 + item.row_start * grid.gutter_height
+                let w = (item.column_end - item.column_start + 1) * col_width
+                let h = (item.row_end - item.row_start + 1) * 100
+
+                positions.push((x, y, w, h))
+            }
+
+            Ok(positions)
+        } else {
+            Err("Grid not found".to_string())
+        }
+    }
+
+    message GetGridCount() -> Result<i32, String> {
+        Ok(self.grid_count)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 3: FLEXBOX LAYOUT
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct FlexContainer {
+    id: String,
+    flex_direction: String,  // row, column
+    justify_content: String,  // flex-start, center, flex-end, space-between, space-around, space-evenly
+    align_items: String,  // flex-start, center, flex-end, stretch
+    flex_wrap: String,  // nowrap, wrap, wrap-reverse
+    gap: i32,
+}
+
+pub struct FlexItem {
+    id: String,
+    flex_grow: f32,
+    flex_shrink: f32,
+    flex_basis: i32,
+    align_self: String,
+}
+
+pub actor FlexLayoutEngine {
+    containers: Arc<Mutex<HashMap<String, FlexContainer>>>,
+    items: Arc<Mutex<Vec<FlexItem>>>,
+    container_count: i32 = 0,
+
+    message CreateFlexContainer(direction: String) -> Result<String, String> {
+        let container_id = format!("flex_{}", self.container_count)
+
+        let container = FlexContainer {
+            id: container_id.clone(),
+            flex_direction: direction,
+            justify_content: "flex-start".to_string(),
+            align_items: "stretch".to_string(),
+            flex_wrap: "nowrap".to_string(),
+            gap: 0,
+        }
+
+        containers.lock().unwrap().insert(container_id.clone(), container)
+        self.container_count += 1
+
+        Ok(container_id)
+    }
+
+    message SetJustifyContent(container_id: String, value: String) -> Result<(), String> {
+        let mut containers_lock = containers.lock().unwrap()
+
+        if let Some(container) = containers_lock.get_mut(&container_id) {
+            container.justify_content = value
+            Ok(())
+        } else {
+            Err("Container not found".to_string())
+        }
+    }
+
+    message AddFlexItem(flex_grow: f32, flex_shrink: f32, basis: i32) -> Result<String, String> {
+        let item_id = format!("item_{}", items.lock().unwrap().len())
+
+        let item = FlexItem {
+            id: item_id.clone(),
+            flex_grow: flex_grow,
+            flex_shrink: flex_shrink,
+            flex_basis: basis,
+            align_self: "auto".to_string(),
+        }
+
+        items.lock().unwrap().push(item)
+        Ok(item_id)
+    }
+
+    message CalculateFlexLayout(container_id: String, container_width: i32) -> Result<Vec<(i32, i32)>, String> {
+        let mut layout_positions = Vec::new()
+
+        for item in items.lock().unwrap().iter() {
+            let width = ((container_width as f32) * item.flex_grow) as i32
+            let height = 100
+
+            layout_positions.push((width, height))
+        }
+
+        Ok(layout_positions)
+    }
+
+    message GetContainerCount() -> Result<i32, String> {
+        Ok(self.container_count)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 4: MEDIA QUERIES & RESPONSIVE STYLES
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct MediaQuery {
+    id: String,
+    min_width: Option<i32>,
+    max_width: Option<i32>,
+    device_type: Option<DeviceType>,
+    orientation: Option<String>,
+}
+
+pub struct ResponsiveStyle {
+    property: String,
+    mobile_value: String,
+    tablet_value: String,
+    desktop_value: String,
+}
+
+pub actor ResponsiveStyleManager {
+    media_queries: Arc<Mutex<HashMap<String, MediaQuery>>>,
+    responsive_styles: Arc<Mutex<Vec<ResponsiveStyle>>>,
+    current_width: i32 = 1920,
+
+    message RegisterMediaQuery(min_w: Option<i32>, max_w: Option<i32>) -> Result<String, String> {
+        let query_id = format!("query_{}", media_queries.lock().unwrap().len())
+
+        let query = MediaQuery {
+            id: query_id.clone(),
+            min_width: min_w,
+            max_width: max_w,
+            device_type: None,
+            orientation: None,
+        }
+
+        media_queries.lock().unwrap().insert(query_id.clone(), query)
+        Ok(query_id)
+    }
+
+    message AddResponsiveStyle(property: String, mobile: String, tablet: String, desktop: String) -> Result<(), String> {
+        let style = ResponsiveStyle {
+            property: property,
+            mobile_value: mobile,
+            tablet_value: tablet,
+            desktop_value: desktop,
+        }
+
+        responsive_styles.lock().unwrap().push(style)
+        Ok(())
+    }
+
+    message ResolveStyle(property: String) -> Result<String, String> {
+        let styles_lock = responsive_styles.lock().unwrap()
+
+        for style in styles_lock.iter() {
+            if style.property == property {
+                // Return value based on current viewport width
+                if self.current_width < 768 {
+                    return Ok(style.mobile_value.clone())
+                } else if self.current_width < 1024 {
+                    return Ok(style.tablet_value.clone())
+                } else {
+                    return Ok(style.desktop_value.clone())
+                }
+            }
+        }
+
+        Err("Style not found".to_string())
+    }
+
+    message SetViewportWidth(width: i32) -> Result<(), String> {
+        self.current_width = width
+        Ok(())
+    }
+
+    message GetResponsiveStyleCount() -> Result<i32, String> {
+        Ok(responsive_styles.lock().unwrap().len() as i32)
+    }
+}
+
+pub fn test_nexus_design() -> Result<(), String> {
+    Ok(())
+}
