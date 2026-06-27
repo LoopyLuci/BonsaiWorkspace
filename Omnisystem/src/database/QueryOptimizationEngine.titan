@@ -1,0 +1,467 @@
+// OMNISYSTEM ADVANCED QUERY OPTIMIZATION ENGINE
+// Query Planning, Index Selection, Execution Strategies, Cost Analysis
+// 100% Pure TITAN - Enterprise Grade Database Performance
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ============================================================================
+// QUERY OPTIMIZATION TYPES
+// ============================================================================
+
+pub struct Query {
+    id: String,
+    sql: String,
+    tables: Vec<String>,
+    columns: Vec<String>,
+    filters: Vec<Filter>,
+    joins: Vec<Join>,
+    order_by: Vec<OrderByClause>,
+    limit: Option<i32>,
+}
+
+pub struct Filter {
+    column: String,
+    operator: String,  // =, <, >, <=, >=, IN, BETWEEN
+    value: String,
+}
+
+pub struct Join {
+    join_type: String,  // INNER, LEFT, RIGHT, FULL
+    table: String,
+    on_condition: String,
+}
+
+pub struct OrderByClause {
+    column: String,
+    direction: String,  // ASC, DESC
+}
+
+pub struct Index {
+    id: String,
+    name: String,
+    table: String,
+    columns: Vec<String>,
+    index_type: String,  // B-TREE, HASH, BITMAP
+    cardinality: i64,
+    selectivity: f32,
+}
+
+pub struct QueryPlan {
+    id: String,
+    query_id: String,
+    steps: Vec<ExecutionStep>,
+    estimated_cost: f32,
+    estimated_rows: i64,
+    estimated_time_ms: i64,
+}
+
+pub struct ExecutionStep {
+    step_number: i32,
+    operation: String,  // TableScan, IndexScan, Join, Filter, Sort
+    table: Option<String>,
+    index: Option<String>,
+    condition: Option<String>,
+    estimated_rows: i64,
+    estimated_cost: f32,
+}
+
+pub struct QueryStatistics {
+    query_id: String,
+    execution_time_ms: i64,
+    actual_rows: i64,
+    optimizer_estimate: i64,
+    cache_hit: bool,
+    indexes_used: Vec<String>,
+}
+
+pub struct IndexStatistics {
+    index_name: String,
+    usage_count: i64,
+    avg_lookup_time_ms: i64,
+    selectivity: f32,
+    fragmentation_percent: f32,
+}
+
+pub struct CostEstimator {
+    table_size_mb: i64,
+    disk_access_cost_ms: f32,
+    memory_access_cost_ns: f32,
+    network_latency_ms: f32,
+}
+
+// ============================================================================
+// QUERY OPTIMIZER ACTOR
+// ============================================================================
+
+pub actor QueryOptimizer {
+    // Query storage
+    queries: Arc<Mutex<HashMap<String, Query>>>,
+    query_plans: Arc<Mutex<HashMap<String, QueryPlan>>>,
+
+    // Indexes
+    indexes: Arc<Mutex<HashMap<String, Index>>>,
+    index_statistics: Arc<Mutex<HashMap<String, IndexStatistics>>>,
+
+    // Statistics
+    table_statistics: Arc<Mutex<HashMap<String, TableStatistics>>>,
+    query_statistics: Arc<Mutex<Vec<QueryStatistics>>>,
+
+    // Configuration
+    cost_estimator: CostEstimator,
+    plan_cache_size: usize = 1000,
+    plan_cache: Arc<Mutex<HashMap<String, QueryPlan>>>,
+
+    // Optimization strategies
+    use_index_hints: bool = true,
+    use_join_reordering: bool = true,
+    use_predicate_pushdown: bool = true,
+}
+
+pub struct TableStatistics {
+    table_name: String,
+    row_count: i64,
+    size_mb: i64,
+    column_stats: HashMap<String, ColumnStatistics>,
+}
+
+pub struct ColumnStatistics {
+    column_name: String,
+    cardinality: i64,
+    min_value: String,
+    max_value: String,
+    null_count: i64,
+}
+
+impl QueryOptimizer {
+    // ============================================================================
+    // INDEX MANAGEMENT
+    // ============================================================================
+
+    message RegisterIndex(index: Index) -> Result<(), String> {
+        let mut indexes = indexes.lock().unwrap()
+
+        indexes.insert(index.name.clone(), index.clone())
+
+        let mut stats = index_statistics.lock().unwrap()
+        stats.insert(index.name.clone(), IndexStatistics {
+            index_name: index.name,
+            usage_count: 0,
+            avg_lookup_time_ms: 0,
+            selectivity: index.selectivity,
+            fragmentation_percent: 0.0,
+        })
+
+        Ok(())
+    }
+
+    message GetAvailableIndexes(table: String) -> Result<Vec<Index>, String> {
+        let indexes = indexes.lock().unwrap()
+
+        let table_indexes: Vec<_> = indexes.values()
+            .filter(|idx| idx.table == table)
+            .cloned()
+            .collect()
+
+        Ok(table_indexes)
+    }
+
+    message AnalyzeIndexFragmentation(index_name: String) -> Result<f32, String> {
+        let mut stats = index_statistics.lock().unwrap()
+
+        if let Some(stat) = stats.get_mut(&index_name) {
+            // Simulate fragmentation analysis
+            let fragmentation = (stat.usage_count as f32) / 1000.0
+            stat.fragmentation_percent = fragmentation
+            Ok(fragmentation)
+        } else {
+            Err("Index not found".to_string())
+        }
+    }
+
+    // ============================================================================
+    // QUERY PLANNING
+    // ============================================================================
+
+    message OptimizeQuery(query: Query) -> Result<QueryPlan, String> {
+        let query_id = query.id.clone()
+
+        // Check plan cache first
+        let cache = plan_cache.lock().unwrap()
+        if let Some(cached_plan) = cache.get(&query_id) {
+            return Ok(cached_plan.clone())
+        }
+
+        drop(cache)
+
+        // Analyze query
+        let mut steps = Vec::new()
+
+        // Step 1: Determine best access method (table scan vs index scan)
+        let indexes = self.GetAvailableIndexes(query.tables[0].clone())?
+        let best_index = select_best_index(&query, &indexes)
+
+        let access_step = if let Some(index) = best_index {
+            ExecutionStep {
+                step_number: 1,
+                operation: "IndexScan".to_string(),
+                table: Some(query.tables[0].clone()),
+                index: Some(index.name.clone()),
+                condition: None,
+                estimated_rows: estimate_index_rows(&index, &query),
+                estimated_cost: estimate_index_cost(&index),
+            }
+        } else {
+            ExecutionStep {
+                step_number: 1,
+                operation: "TableScan".to_string(),
+                table: Some(query.tables[0].clone()),
+                index: None,
+                condition: None,
+                estimated_rows: estimate_table_rows(&query.tables[0]),
+                estimated_cost: estimate_table_scan_cost(&query.tables[0]),
+            }
+        }
+
+        steps.push(access_step)
+
+        // Step 2: Apply filters
+        if !query.filters.is_empty() {
+            let filter_rows = estimate_filtered_rows(steps.last().unwrap().estimated_rows, &query.filters)
+
+            steps.push(ExecutionStep {
+                step_number: 2,
+                operation: "Filter".to_string(),
+                table: None,
+                index: None,
+                condition: Some(format_filters(&query.filters)),
+                estimated_rows: filter_rows,
+                estimated_cost: 0.1,  // Low cost for in-memory filter
+            })
+        }
+
+        // Step 3: Handle joins
+        let mut step_num = if query.filters.is_empty() { 2 } else { 3 }
+
+        for join in &query.joins {
+            steps.push(ExecutionStep {
+                step_number: step_num,
+                operation: format!("{}Join", join.join_type),
+                table: Some(join.table.clone()),
+                index: None,
+                condition: Some(join.on_condition.clone()),
+                estimated_rows: estimate_join_rows(steps.last().unwrap().estimated_rows),
+                estimated_cost: estimate_join_cost(&steps),
+            })
+            step_num += 1
+        }
+
+        // Step 4: Sorting
+        if !query.order_by.is_empty() {
+            steps.push(ExecutionStep {
+                step_number: step_num,
+                operation: "Sort".to_string(),
+                table: None,
+                index: None,
+                condition: None,
+                estimated_rows: steps.last().unwrap().estimated_rows,
+                estimated_cost: estimate_sort_cost(steps.last().unwrap().estimated_rows),
+            })
+        }
+
+        // Calculate total cost
+        let total_cost: f32 = steps.iter().map(|s| s.estimated_cost).sum()
+        let total_rows = steps.last().map(|s| s.estimated_rows).unwrap_or(0)
+
+        let plan = QueryPlan {
+            id: generate_plan_id(),
+            query_id: query_id.clone(),
+            steps: steps,
+            estimated_cost: total_cost,
+            estimated_rows: total_rows,
+            estimated_time_ms: (total_cost * 1000.0) as i64,
+        }
+
+        // Cache plan
+        let mut cache = plan_cache.lock().unwrap()
+        if cache.len() >= self.plan_cache_size {
+            // Evict oldest entry
+            if let Some(first_key) = cache.keys().next().cloned() {
+                cache.remove(&first_key)
+            }
+        }
+        cache.insert(query_id, plan.clone())
+
+        Ok(plan)
+    }
+
+    // ============================================================================
+    // QUERY EXECUTION & STATISTICS
+    // ============================================================================
+
+    message ExecuteQuery(query: Query) -> Result<QueryResult, String> {
+        let start_time = current_time_ms()
+
+        // Optimize query
+        let plan = self.OptimizeQuery(query.clone())?
+
+        // Execute according to plan
+        let mut result_rows = Vec::new()
+
+        // Would execute actual query here
+        // For now, return placeholder
+        result_rows.push(HashMap::new())
+
+        let execution_time = current_time_ms() - start_time
+
+        let stats = QueryStatistics {
+            query_id: query.id.clone(),
+            execution_time_ms: execution_time,
+            actual_rows: result_rows.len() as i64,
+            optimizer_estimate: plan.estimated_rows,
+            cache_hit: false,
+            indexes_used: plan.steps.iter()
+                .filter_map(|s| s.index.clone())
+                .collect(),
+        }
+
+        query_statistics.lock().unwrap().push(stats)
+
+        Ok(QueryResult {
+            rows: result_rows,
+            execution_time_ms: execution_time,
+        })
+    }
+
+    message GetQueryStatistics(query_id: String) -> Result<Vec<QueryStatistics>, String> {
+        let stats = query_statistics.lock().unwrap()
+
+        let query_stats: Vec<_> = stats.iter()
+            .filter(|s| s.query_id == query_id)
+            .cloned()
+            .collect()
+
+        Ok(query_stats)
+    }
+
+    message GetIndexStatistics(index_name: String) -> Result<IndexStatistics, String> {
+        let stats = index_statistics.lock().unwrap()
+
+        stats.get(&index_name)
+            .cloned()
+            .ok_or("Index not found".to_string())
+    }
+
+    message GetOptimizationMetrics() -> Result<OptimizationMetrics, String> {
+        let stats = query_statistics.lock().unwrap()
+
+        let total_queries = stats.len()
+        let avg_execution_time: i64 = if total_queries > 0 {
+            stats.iter().map(|s| s.execution_time_ms).sum::<i64>() / total_queries as i64
+        } else {
+            0
+        }
+
+        let estimate_accuracy: f32 = if total_queries > 0 {
+            stats.iter()
+                .map(|s| {
+                    if s.optimizer_estimate > 0 {
+                        (s.actual_rows as f32) / (s.optimizer_estimate as f32)
+                    } else {
+                        1.0
+                    }
+                })
+                .sum::<f32>() / total_queries as f32
+        } else {
+            0.0
+        }
+
+        Ok(OptimizationMetrics {
+            total_queries_optimized: total_queries as i32,
+            avg_execution_time_ms: avg_execution_time,
+            estimate_accuracy: estimate_accuracy,
+            plans_cached: plan_cache.lock().unwrap().len() as i32,
+        })
+    }
+}
+
+pub struct QueryResult {
+    rows: Vec<HashMap<String, String>>,
+    execution_time_ms: i64,
+}
+
+pub struct OptimizationMetrics {
+    total_queries_optimized: i32,
+    avg_execution_time_ms: i64,
+    estimate_accuracy: f32,
+    plans_cached: i32,
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+fn select_best_index(query: &Query, indexes: &Vec<Index>) -> Option<Index> {
+    // Find index that covers most filter columns
+    indexes.iter()
+        .max_by(|a, b| {
+            let a_coverage = count_covered_filters(query, a)
+            let b_coverage = count_covered_filters(query, b)
+            a_coverage.cmp(&b_coverage)
+        })
+        .cloned()
+}
+
+fn count_covered_filters(query: &Query, index: &Index) -> usize {
+    query.filters.iter()
+        .filter(|f| index.columns.contains(&f.column))
+        .count()
+}
+
+fn estimate_index_rows(index: &Index, _query: &Query) -> i64 {
+    index.cardinality
+}
+
+fn estimate_index_cost(_index: &Index) -> f32 {
+    0.5
+}
+
+fn estimate_table_rows(table: &str) -> i64 {
+    10000  // Placeholder
+}
+
+fn estimate_table_scan_cost(_table: &str) -> f32 {
+    100.0
+}
+
+fn estimate_filtered_rows(base_rows: i64, filters: &Vec<Filter>) -> i64 {
+    let selectivity = 0.1_f32.powi(filters.len() as i32)
+    ((base_rows as f32) * selectivity) as i64
+}
+
+fn format_filters(filters: &Vec<Filter>) -> String {
+    filters.iter()
+        .map(|f| format!("{} {} {}", f.column, f.operator, f.value))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn estimate_join_rows(input_rows: i64) -> i64 {
+    // Assume many-to-one join
+    (input_rows as f32 * 0.5) as i64
+}
+
+fn estimate_join_cost(_steps: &Vec<ExecutionStep>) -> f32 {
+    50.0
+}
+
+fn estimate_sort_cost(rows: i64) -> f32 {
+    (rows as f32).log2() * 10.0
+}
+
+fn generate_plan_id() -> String {
+    "plan_id".to_string()
+}
+
+fn current_time_ms() -> i64 {
+    0  // Placeholder
+}
