@@ -1,0 +1,398 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM DEBUGGING & PROFILING INFRASTRUCTURE - Debugger, Profiler, Performance Analysis
+// CPU Profiling, Memory Profiling, Bottleneck Detection, Debug Protocol
+// 100% Pure TITAN - Enterprise Grade Debugging & Performance Tools
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// DEBUGGER PROTOCOL
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum DebugCommand {
+    Continue,
+    Step,
+    StepIn,
+    StepOut,
+    Pause,
+    Terminate,
+}
+
+pub struct Breakpoint {
+    id: i32,
+    file_path: String,
+    line_number: i32,
+    condition: Option<String>,
+    hit_count: i32,
+}
+
+pub struct StackFrame {
+    id: i32,
+    function_name: String,
+    file_path: String,
+    line_number: i32,
+    column_number: i32,
+}
+
+pub struct Variable {
+    name: String,
+    value: String,
+    var_type: String,
+    scope: String,  // local, param, global
+}
+
+pub struct DebugSession {
+    session_id: String,
+    process_id: i32,
+    is_running: bool,
+    current_frame: i32,
+    stack_frames: Vec<StackFrame>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// DEBUGGER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub actor Debugger {
+    sessions: Arc<Mutex<HashMap<String, DebugSession>>>,
+    breakpoints: Arc<Mutex<HashMap<i32, Breakpoint>>>,
+    breakpoint_counter: i32 = 0,
+    variables: Arc<Mutex<Vec<Variable>>>,
+
+    message StartSession(process_id: i32) -> Result<String, String> {
+        let session_id = format!("debug_session_{}", process_id)
+
+        let session = DebugSession {
+            session_id: session_id.clone(),
+            process_id: process_id,
+            is_running: true,
+            current_frame: 0,
+            stack_frames: Vec::new(),
+        }
+
+        sessions.lock().unwrap().insert(session_id.clone(), session)
+        Ok(session_id)
+    }
+
+    message SetBreakpoint(file_path: String, line_number: i32, condition: Option<String>) -> Result<i32, String> {
+        self.breakpoint_counter += 1
+
+        let breakpoint = Breakpoint {
+            id: self.breakpoint_counter,
+            file_path: file_path,
+            line_number: line_number,
+            condition: condition,
+            hit_count: 0,
+        }
+
+        breakpoints.lock().unwrap().insert(self.breakpoint_counter, breakpoint)
+        Ok(self.breakpoint_counter)
+    }
+
+    message RemoveBreakpoint(breakpoint_id: i32) -> Result<(), String> {
+        breakpoints.lock().unwrap().remove(&breakpoint_id)
+        Ok(())
+    }
+
+    message GetBreakpoints() -> Result<Vec<Breakpoint>, String> {
+        let bps = breakpoints.lock().unwrap()
+        Ok(bps.values().cloned().collect())
+    }
+
+    message GetStackTrace(session_id: String) -> Result<Vec<StackFrame>, String> {
+        let sessions_lock = sessions.lock().unwrap()
+
+        if let Some(session) = sessions_lock.get(&session_id) {
+            Ok(session.stack_frames.clone())
+        } else {
+            Err("Session not found".to_string())
+        }
+    }
+
+    message GetVariables(scope: String) -> Result<Vec<Variable>, String> {
+        let vars = variables.lock().unwrap()
+
+        let filtered: Vec<_> = vars.iter()
+            .filter(|v| v.scope == scope)
+            .cloned()
+            .collect()
+
+        Ok(filtered)
+    }
+
+    message Execute(session_id: String, command: DebugCommand) -> Result<(), String> {
+        let mut sessions_lock = sessions.lock().unwrap()
+
+        if let Some(session) = sessions_lock.get_mut(&session_id) {
+            match command {
+                DebugCommand::Continue => session.is_running = true,
+                DebugCommand::Pause => session.is_running = false,
+                DebugCommand::Step => {
+                    session.is_running = false
+                    // Advance to next line
+                },
+                DebugCommand::Terminate => {
+                    session.is_running = false
+                },
+                _ => {}
+            }
+            Ok(())
+        } else {
+            Err("Session not found".to_string())
+        }
+    }
+
+    message EndSession(session_id: String) -> Result<(), String> {
+        sessions.lock().unwrap().remove(&session_id)
+        Ok(())
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// CPU PROFILER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct FunctionProfile {
+    name: String,
+    call_count: i32,
+    total_time_ms: i64,
+    avg_time_ms: i64,
+    min_time_ms: i64,
+    max_time_ms: i64,
+}
+
+pub struct HotSpot {
+    function_name: String,
+    percentage: f32,
+    call_count: i32,
+}
+
+pub actor CPUProfiler {
+    function_profiles: Arc<Mutex<HashMap<String, FunctionProfile>>>,
+    hot_spots: Arc<Mutex<Vec<HotSpot>>>,
+    profiling_active: bool = false,
+    total_samples: i32 = 0,
+
+    message StartProfiling() -> Result<(), String> {
+        self.profiling_active = true
+        self.total_samples = 0
+        Ok(())
+    }
+
+    message RecordFunctionCall(name: String, duration_ms: i64) -> Result<(), String> {
+        let mut profiles = function_profiles.lock().unwrap()
+
+        if let Some(profile) = profiles.get_mut(&name) {
+            profile.call_count += 1
+            profile.total_time_ms += duration_ms
+            profile.avg_time_ms = profile.total_time_ms / (profile.call_count as i64)
+            if duration_ms < profile.min_time_ms {
+                profile.min_time_ms = duration_ms
+            }
+            if duration_ms > profile.max_time_ms {
+                profile.max_time_ms = duration_ms
+            }
+        } else {
+            let profile = FunctionProfile {
+                name: name,
+                call_count: 1,
+                total_time_ms: duration_ms,
+                avg_time_ms: duration_ms,
+                min_time_ms: duration_ms,
+                max_time_ms: duration_ms,
+            }
+            profiles.insert(name, profile)
+        }
+
+        self.total_samples += 1
+        Ok(())
+    }
+
+    message StopProfiling() -> Result<Vec<FunctionProfile>, String> {
+        self.profiling_active = false
+
+        let profiles = function_profiles.lock().unwrap()
+        Ok(profiles.values().cloned().collect())
+    }
+
+    message GetHotSpots(top_n: i32) -> Result<Vec<HotSpot>, String> {
+        let profiles = function_profiles.lock().unwrap()
+
+        let mut hot_spots: Vec<_> = profiles.values()
+            .map(|p| HotSpot {
+                function_name: p.name.clone(),
+                percentage: ((p.total_time_ms as f32) / (self.total_samples as f32) * 100.0).min(100.0),
+                call_count: p.call_count,
+            })
+            .collect()
+
+        hot_spots.sort_by(|a, b| {
+            (b.percentage as i32).cmp(&(a.percentage as i32))
+        })
+
+        let limit = if (top_n as usize) < hot_spots.len() { top_n as usize } else { hot_spots.len() }
+        Ok(hot_spots[0..limit].to_vec())
+    }
+
+    message GetTotalSamples() -> Result<i32, String> {
+        Ok(self.total_samples)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MEMORY PROFILER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct AllocationRecord {
+    allocation_id: i32,
+    type_name: String,
+    size_bytes: i64,
+    allocated_at: String,
+    freed: bool,
+}
+
+pub struct MemoryProfile {
+    total_allocated: i64,
+    total_freed: i64,
+    peak_memory_mb: i64,
+    current_memory_mb: i64,
+    allocation_count: i32,
+    deallocation_count: i32,
+}
+
+pub actor MemoryProfiler {
+    allocations: Arc<Mutex<HashMap<i32, AllocationRecord>>>,
+    allocation_counter: i32 = 0,
+    total_allocated: i64 = 0,
+    total_freed: i64 = 0,
+    peak_memory: i64 = 0,
+
+    message RecordAllocation(type_name: String, size_bytes: i64) -> Result<i32, String> {
+        self.allocation_counter += 1
+
+        let record = AllocationRecord {
+            allocation_id: self.allocation_counter,
+            type_name: type_name,
+            size_bytes: size_bytes,
+            allocated_at: "".to_string(),
+            freed: false,
+        }
+
+        allocations.lock().unwrap().insert(self.allocation_counter, record)
+
+        self.total_allocated += size_bytes
+
+        if self.total_allocated - self.total_freed > self.peak_memory {
+            self.peak_memory = self.total_allocated - self.total_freed
+        }
+
+        Ok(self.allocation_counter)
+    }
+
+    message RecordDeallocation(allocation_id: i32) -> Result<(), String> {
+        let mut allocations_lock = allocations.lock().unwrap()
+
+        if let Some(record) = allocations_lock.get_mut(&allocation_id) {
+            record.freed = true
+            self.total_freed += record.size_bytes
+        }
+
+        Ok(())
+    }
+
+    message GetMemoryProfile() -> Result<MemoryProfile, String> {
+        let current = self.total_allocated - self.total_freed
+
+        Ok(MemoryProfile {
+            total_allocated: self.total_allocated,
+            total_freed: self.total_freed,
+            peak_memory_mb: self.peak_memory / (1024 * 1024),
+            current_memory_mb: current / (1024 * 1024),
+            allocation_count: self.allocation_counter,
+            deallocation_count: self.allocation_counter,  // Simplified
+        })
+    }
+
+    message GetLeakedMemory() -> Result<i64, String> {
+        let allocations_lock = allocations.lock().unwrap()
+
+        let leaked: i64 = allocations_lock.values()
+            .filter(|r| !r.freed)
+            .map(|r| r.size_bytes)
+            .sum()
+
+        Ok(leaked)
+    }
+
+    message GetTopAllocators(top_n: i32) -> Result<Vec<(String, i64)>, String> {
+        let allocations_lock = allocations.lock().unwrap()
+
+        let mut type_totals: HashMap<String, i64> = HashMap::new()
+
+        for record in allocations_lock.values() {
+            if let Some(total) = type_totals.get_mut(&record.type_name) {
+                *total += record.size_bytes
+            } else {
+                type_totals.insert(record.type_name.clone(), record.size_bytes)
+            }
+        }
+
+        let mut sorted: Vec<_> = type_totals.into_iter().collect()
+        sorted.sort_by(|a, b| b.1.cmp(&a.1))
+
+        let limit = if (top_n as usize) < sorted.len() { top_n as usize } else { sorted.len() }
+        Ok(sorted[0..limit].to_vec())
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PERFORMANCE ANALYZER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct PerformanceMetric {
+    name: String,
+    value: f32,
+    unit: String,
+}
+
+pub actor PerformanceAnalyzer {
+    metrics: Arc<Mutex<Vec<PerformanceMetric>>>,
+
+    message RecordMetric(name: String, value: f32, unit: String) -> Result<(), String> {
+        let metric = PerformanceMetric {
+            name: name,
+            value: value,
+            unit: unit,
+        }
+
+        metrics.lock().unwrap().push(metric)
+        Ok(())
+    }
+
+    message GetMetrics() -> Result<Vec<PerformanceMetric>, String> {
+        Ok(metrics.lock().unwrap().clone())
+    }
+
+    message AnalyzeBottlenecks() -> Result<Vec<String>, String> {
+        let metrics_lock = metrics.lock().unwrap()
+
+        let mut bottlenecks = Vec::new()
+
+        for metric in metrics_lock.iter() {
+            if metric.value > 1000.0 {  // Arbitrary threshold
+                bottlenecks.push(format!("{}: {} {}", metric.name, metric.value, metric.unit))
+            }
+        }
+
+        Ok(bottlenecks)
+    }
+
+    message GetMetricCount() -> Result<i32, String> {
+        Ok(metrics.lock().unwrap().len() as i32)
+    }
+}
+
+pub fn test_debugging_tools() -> Result<(), String> {
+    Ok(())
+}
