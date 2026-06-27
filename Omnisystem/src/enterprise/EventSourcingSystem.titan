@@ -1,0 +1,472 @@
+// OMNISYSTEM ADVANCED EVENT SOURCING SYSTEM
+// Event Store, Snapshots, Projections, Event Replay, Audit Trails
+// 100% Pure TITAN - Enterprise Grade State Management
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ============================================================================
+// EVENT SOURCING TYPES
+// ============================================================================
+
+pub enum EventType {
+    Created,
+    Updated,
+    Deleted,
+    Transitioned,
+    Compensated,
+}
+
+pub struct DomainEvent {
+    id: String,
+    aggregate_id: String,
+    event_type: EventType,
+    timestamp: i64,
+    version: i64,
+    data: HashMap<String, String>,
+    metadata: HashMap<String, String>,
+    correlation_id: String,
+    causation_id: Option<String>,
+}
+
+pub struct Snapshot {
+    aggregate_id: String,
+    version: i64,
+    state: HashMap<String, String>,
+    timestamp: i64,
+}
+
+pub struct Projection {
+    id: String,
+    name: String,
+    aggregate_type: String,
+    state: HashMap<String, String>,
+    version: i64,
+    last_updated: i64,
+}
+
+pub struct EventStoreMetadata {
+    total_events: i64,
+    total_aggregates: i32,
+    oldest_event_timestamp: i64,
+    newest_event_timestamp: i64,
+    total_snapshots: i32,
+    avg_events_per_aggregate: i32,
+}
+
+pub struct AggregateState {
+    id: String,
+    aggregate_type: String,
+    current_version: i64,
+    state: HashMap<String, String>,
+    uncommitted_events: Vec<DomainEvent>,
+}
+
+pub struct EventStream {
+    aggregate_id: String,
+    events: Vec<DomainEvent>,
+    snapshot: Option<Snapshot>,
+    from_version: i64,
+    to_version: i64,
+}
+
+// ============================================================================
+// EVENT STORE ACTOR
+// ============================================================================
+
+pub actor EventStore {
+    // Core storage
+    events: Arc<Mutex<Vec<DomainEvent>>>,
+    event_index: Arc<Mutex<HashMap<String, Vec<i64>>>>,  // aggregate_id -> event indices
+    snapshots: Arc<Mutex<HashMap<String, Snapshot>>>,
+    projections: Arc<Mutex<HashMap<String, Projection>>>,
+
+    // Configuration
+    snapshot_interval: i64 = 100,  // Create snapshot every 100 events
+    projection_update_batch_size: i32 = 1000,
+
+    // Indexes
+    correlation_index: Arc<Mutex<HashMap<String, Vec<String>>>>,  // correlation_id -> event_ids
+    timestamp_index: Arc<Mutex<Vec<(i64, String)>>>,  // timestamp -> event_id
+
+    // Statistics
+    total_events: i64 = 0,
+    total_aggregates: i32 = 0,
+    total_snapshots: i32 = 0,
+}
+
+impl EventStore {
+    // ============================================================================
+    // EVENT APPENDING
+    // ============================================================================
+
+    message AppendEvent(event: DomainEvent) -> Result<String, String> {
+        // Verify event is valid
+        validate_event(&event)?
+
+        let mut events = events.lock().unwrap()
+        let mut index = event_index.lock().unwrap()
+
+        // Get current aggregate version
+        let current_version = if let Some(versions) = index.get(&event.aggregate_id) {
+            versions.len() as i64
+        } else {
+            0
+        }
+
+        // Verify version is sequential
+        if event.version != current_version {
+            return Err("Version mismatch".to_string())
+        }
+
+        // Append event
+        let event_position = events.len() as i64
+        let event_id = event.id.clone()
+
+        events.push(event.clone())
+
+        // Update indexes
+        index.entry(event.aggregate_id.clone())
+            .or_insert(Vec::new())
+            .push(event_position)
+
+        // Update correlation index
+        let mut corr_index = correlation_index.lock().unwrap()
+        corr_index.entry(event.correlation_id.clone())
+            .or_insert(Vec::new())
+            .push(event_id.clone())
+
+        // Update timestamp index
+        let mut ts_index = timestamp_index.lock().unwrap()
+        ts_index.push((event.timestamp, event_id.clone()))
+
+        self.total_events += 1
+
+        // Check if we should create a snapshot
+        if event.version > 0 && event.version % self.snapshot_interval == 0 {
+            self.CreateSnapshot(event.aggregate_id.clone(), event.version)?
+        }
+
+        Ok(event_id)
+    }
+
+    message AppendEvents(events_to_add: Vec<DomainEvent>) -> Result<i32, String> {
+        let mut count = 0
+
+        for event in events_to_add {
+            match self.AppendEvent(event) {
+                Ok(_) => count += 1,
+                Err(e) => return Err(format!("Failed to append event: {}", e))
+            }
+        }
+
+        Ok(count)
+    }
+
+    // ============================================================================
+    // EVENT RETRIEVAL
+    // ============================================================================
+
+    message GetEvents(aggregate_id: String) -> Result<Vec<DomainEvent>, String> {
+        let events = events.lock().unwrap()
+        let index = event_index.lock().unwrap()
+
+        if let Some(positions) = index.get(&aggregate_id) {
+            let mut result = Vec::new()
+            for &pos in positions {
+                if let Some(event) = events.get(pos as usize) {
+                    result.push(event.clone())
+                }
+            }
+            Ok(result)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    message GetEventStream(
+        aggregate_id: String,
+        from_version: i64,
+        to_version: i64
+    ) -> Result<EventStream, String> {
+        let events = events.lock().unwrap()
+        let index = event_index.lock().unwrap()
+        let snapshots = snapshots.lock().unwrap()
+
+        let mut stream_events = Vec::new()
+
+        if let Some(positions) = index.get(&aggregate_id) {
+            for &pos in positions {
+                if let Some(event) = events.get(pos as usize) {
+                    if event.version >= from_version && event.version <= to_version {
+                        stream_events.push(event.clone())
+                    }
+                }
+            }
+        }
+
+        let snapshot = snapshots.get(&aggregate_id).cloned()
+
+        Ok(EventStream {
+            aggregate_id: aggregate_id,
+            events: stream_events,
+            snapshot: snapshot,
+            from_version: from_version,
+            to_version: to_version,
+        })
+    }
+
+    message GetEventsByCorrelation(correlation_id: String) -> Result<Vec<DomainEvent>, String> {
+        let events = events.lock().unwrap()
+        let corr_index = correlation_index.lock().unwrap()
+
+        if let Some(event_ids) = corr_index.get(&correlation_id) {
+            let mut result = Vec::new()
+            for event_id in event_ids {
+                for event in events.iter() {
+                    if event.id == *event_id {
+                        result.push(event.clone())
+                    }
+                }
+            }
+            Ok(result)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    message GetEventsSince(timestamp: i64) -> Result<Vec<DomainEvent>, String> {
+        let events = events.lock().unwrap()
+        let ts_index = timestamp_index.lock().unwrap()
+
+        let mut result = Vec::new()
+
+        for (ts, event_id) in ts_index.iter() {
+            if *ts >= timestamp {
+                for event in events.iter() {
+                    if event.id == *event_id {
+                        result.push(event.clone())
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    // ============================================================================
+    // SNAPSHOTS
+    // ============================================================================
+
+    message CreateSnapshot(aggregate_id: String, version: i64) -> Result<(), String> {
+        // Replay events to build state
+        let events = events.lock().unwrap()
+        let index = event_index.lock().unwrap()
+        let mut state = HashMap::new()
+
+        if let Some(positions) = index.get(&aggregate_id) {
+            for &pos in positions {
+                if let Some(event) = events.get(pos as usize) {
+                    if event.version <= version {
+                        // Apply event to state
+                        for (k, v) in &event.data {
+                            state.insert(k.clone(), v.clone())
+                        }
+                    }
+                }
+            }
+        }
+
+        drop(events)
+        drop(index)
+
+        let snapshot = Snapshot {
+            aggregate_id: aggregate_id.clone(),
+            version: version,
+            state: state,
+            timestamp: current_time_ms(),
+        }
+
+        let mut snapshots = snapshots.lock().unwrap()
+        snapshots.insert(aggregate_id, snapshot)
+
+        self.total_snapshots += 1
+
+        Ok(())
+    }
+
+    message GetSnapshot(aggregate_id: String) -> Result<Option<Snapshot>, String> {
+        let snapshots = snapshots.lock().unwrap()
+        Ok(snapshots.get(&aggregate_id).cloned())
+    }
+
+    // ============================================================================
+    // STATE RECONSTRUCTION & REPLAY
+    // ============================================================================
+
+    message ReplayState(aggregate_id: String) -> Result<AggregateState, String> {
+        // Get snapshot if available
+        let snapshot = match self.GetSnapshot(aggregate_id.clone())? {
+            Some(s) => Some(s),
+            None => None
+        }
+
+        let from_version = if let Some(snap) = &snapshot {
+            snap.version + 1
+        } else {
+            0
+        }
+
+        let stream = self.GetEventStream(aggregate_id.clone(), from_version, i64::MAX)?
+
+        let mut state = if let Some(snap) = snapshot {
+            snap.state.clone()
+        } else {
+            HashMap::new()
+        }
+
+        // Replay events
+        for event in &stream.events {
+            for (k, v) in &event.data {
+                state.insert(k.clone(), v.clone())
+            }
+        }
+
+        Ok(AggregateState {
+            id: aggregate_id,
+            aggregate_type: "".to_string(),
+            current_version: if stream.events.is_empty() {
+                0
+            } else {
+                stream.events.last().unwrap().version
+            },
+            state: state,
+            uncommitted_events: Vec::new(),
+        })
+    }
+
+    // ============================================================================
+    // PROJECTIONS
+    // ============================================================================
+
+    message RegisterProjection(projection: Projection) -> Result<(), String> {
+        let mut projections = projections.lock().unwrap()
+        projections.insert(projection.id.clone(), projection)
+        Ok(())
+    }
+
+    message UpdateProjection(projection_id: String) -> Result<ProjectionUpdateReport, String> {
+        // Rebuild projection from events
+        let mut projections = projections.lock().unwrap()
+
+        if let Some(projection) = projections.get_mut(&projection_id) {
+            let events = events.lock().unwrap()
+
+            let mut updated_count = 0
+            for event in events.iter() {
+                if projection.aggregate_type == "" || event.aggregate_id.starts_with(&projection.aggregate_type) {
+                    // Apply event to projection
+                    for (k, v) in &event.data {
+                        projection.state.insert(k.clone(), v.clone())
+                    }
+                    updated_count += 1
+
+                    if updated_count >= self.projection_update_batch_size {
+                        break
+                    }
+                }
+            }
+
+            projection.version += 1
+            projection.last_updated = current_time_ms()
+
+            Ok(ProjectionUpdateReport {
+                projection_id: projection_id,
+                events_processed: updated_count as i32,
+                new_version: projection.version,
+            })
+        } else {
+            Err("Projection not found".to_string())
+        }
+    }
+
+    message GetProjection(projection_id: String) -> Result<Projection, String> {
+        let projections = projections.lock().unwrap()
+
+        projections.get(&projection_id)
+            .cloned()
+            .ok_or("Projection not found".to_string())
+    }
+
+    // ============================================================================
+    // STATISTICS & MONITORING
+    // ============================================================================
+
+    message GetMetadata() -> Result<EventStoreMetadata, String> {
+        let events = events.lock().unwrap()
+        let index = event_index.lock().unwrap()
+
+        let total = events.len() as i64
+        let aggregate_count = index.len() as i32
+
+        let oldest_timestamp = events.first().map(|e| e.timestamp).unwrap_or(0)
+        let newest_timestamp = events.last().map(|e| e.timestamp).unwrap_or(0)
+
+        Ok(EventStoreMetadata {
+            total_events: total,
+            total_aggregates: aggregate_count,
+            oldest_event_timestamp: oldest_timestamp,
+            newest_event_timestamp: newest_timestamp,
+            total_snapshots: self.total_snapshots,
+            avg_events_per_aggregate: if aggregate_count > 0 {
+                (total as i32) / aggregate_count
+            } else {
+                0
+            },
+        })
+    }
+
+    message GetAggregateStats() -> Result<Vec<AggregateStats>, String> {
+        let index = event_index.lock().unwrap()
+        let mut stats = Vec::new()
+
+        for (aggregate_id, positions) in index.iter() {
+            stats.push(AggregateStats {
+                aggregate_id: aggregate_id.clone(),
+                event_count: positions.len() as i32,
+            })
+        }
+
+        Ok(stats)
+    }
+}
+
+pub struct ProjectionUpdateReport {
+    projection_id: String,
+    events_processed: i32,
+    new_version: i64,
+}
+
+pub struct AggregateStats {
+    aggregate_id: String,
+    event_count: i32,
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+fn validate_event(event: &DomainEvent) -> Result<(), String> {
+    if event.aggregate_id.is_empty() {
+        return Err("Aggregate ID required".to_string())
+    }
+
+    if event.id.is_empty() {
+        return Err("Event ID required".to_string())
+    }
+
+    Ok(())
+}
+
+fn current_time_ms() -> i64 {
+    0  // Placeholder
+}
