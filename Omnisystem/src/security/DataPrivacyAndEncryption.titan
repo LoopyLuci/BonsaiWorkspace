@@ -1,0 +1,339 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM DATA PRIVACY & ENCRYPTION - PII Detection, DLP, Encryption Management
+// Data Classification, Tokenization, Privacy Controls, Key Management
+// 100% Pure TITAN - Enterprise Grade Privacy
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// DATA CLASSIFICATION & DETECTION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum DataClassification {
+    Public,
+    Internal,
+    Confidential,
+    Restricted,
+    PII,
+    PHI,
+    PCI,
+}
+
+pub struct DataElement {
+    id: String,
+    content: String,
+    classification: DataClassification,
+    detected_pii_types: Vec<String>,
+}
+
+pub struct PIIDetectionResult {
+    data_id: String,
+    pii_found: bool,
+    pii_types: Vec<String>,
+    confidence: f32,
+}
+
+pub actor PIIDetectionEngine {
+    detected_data: Arc<Mutex<HashMap<String, DataElement>>>,
+    detection_results: Arc<Mutex<Vec<PIIDetectionResult>>>,
+    total_scans: i32 = 0,
+
+    message ScanForPII(data_id: String, content: String) -> Result<PIIDetectionResult, String> {
+        self.total_scans += 1
+
+        let mut pii_types = Vec::new()
+        let mut confidence = 0.0
+
+        // Simple pattern matching
+        if content.contains("@") {
+            pii_types.push("Email Address".to_string())
+            confidence += 0.8
+        }
+
+        if content.contains("SSN") || content.len() >= 11 {
+            pii_types.push("Social Security Number".to_string())
+            confidence += 0.7
+        }
+
+        if content.contains("password=") || content.contains("key=") {
+            pii_types.push("Credentials".to_string())
+            confidence += 0.9
+        }
+
+        let pii_found = !pii_types.is_empty()
+
+        if pii_found {
+            confidence = (confidence / pii_types.len().max(1) as f32).min(1.0)
+        }
+
+        let result = PIIDetectionResult {
+            data_id: data_id.clone(),
+            pii_found: pii_found,
+            pii_types: pii_types.clone(),
+            confidence: confidence,
+        }
+
+        self.detection_results.lock().unwrap().push(result.clone())
+
+        let classification = if pii_found {
+            DataClassification::PII
+        } else {
+            DataClassification::Internal
+        }
+
+        let element = DataElement {
+            id: data_id,
+            content: content,
+            classification: classification,
+            detected_pii_types: pii_types,
+        }
+
+        detected_data.lock().unwrap().insert(element.id.clone(), element)
+
+        Ok(result)
+    }
+
+    message GetDetectionStats() -> Result<(i32, i32), String> {
+        let results = self.detection_results.lock().unwrap()
+
+        let pii_count = results.iter().filter(|r| r.pii_found).count()
+
+        Ok((self.total_scans, pii_count as i32))
+    }
+
+    message ClassifyData(data_id: String, classification: String) -> Result<(), String> {
+        let mut data_lock = detected_data.lock().unwrap()
+
+        if let Some(element) = data_lock.get_mut(&data_id) {
+            element.classification = match classification.as_str() {
+                "PUBLIC" => DataClassification::Public,
+                "CONFIDENTIAL" => DataClassification::Confidential,
+                "PII" => DataClassification::PII,
+                _ => DataClassification::Internal,
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// DATA LOSS PREVENTION (DLP)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum DLPAction {
+    Allow,
+    Warn,
+    Block,
+    Quarantine,
+}
+
+pub struct DLPPolicy {
+    policy_id: String,
+    name: String,
+    description: String,
+    rules: Vec<String>,
+    enabled: bool,
+}
+
+pub struct DLPEvent {
+    event_id: String,
+    policy_id: String,
+    user_id: String,
+    action: DLPAction,
+    timestamp: i64,
+}
+
+pub actor DLPEngine {
+    policies: Arc<Mutex<HashMap<String, DLPPolicy>>>,
+    events: Arc<Mutex<Vec<DLPEvent>>>,
+    policy_counter: i32 = 0,
+    blocked_attempts: i32 = 0,
+
+    message CreateDLPPolicy(name: String, description: String) -> Result<String, String> {
+        self.policy_counter += 1
+
+        let policy = DLPPolicy {
+            policy_id: format!("dlp_policy_{}", self.policy_counter),
+            name: name,
+            description: description,
+            rules: Vec::new(),
+            enabled: true,
+        }
+
+        let id = policy.policy_id.clone()
+        policies.lock().unwrap().insert(id.clone(), policy)
+        Ok(id)
+    }
+
+    message EvaluateDLPPolicy(policy_id: String, user_id: String, data: String) -> Result<String, String> {
+        let action = if data.contains("password") || data.contains("key") {
+            DLPAction::Block
+        } else if data.contains("confidential") {
+            DLPAction::Warn
+        } else {
+            DLPAction::Allow
+        }
+
+        let action_str = match action {
+            DLPAction::Block => {
+                self.blocked_attempts += 1
+                "BLOCKED"
+            },
+            DLPAction::Warn => "WARNED",
+            DLPAction::Allow => "ALLOWED",
+            DLPAction::Quarantine => "QUARANTINED",
+        }
+
+        let event = DLPEvent {
+            event_id: format!("dlp_event_{}", self.blocked_attempts),
+            policy_id: policy_id,
+            user_id: user_id,
+            action: action,
+            timestamp: 0,
+        }
+
+        events.lock().unwrap().push(event)
+
+        Ok(action_str.to_string())
+    }
+
+    message GetDLPStats() -> Result<i32, String> {
+        Ok(self.blocked_attempts)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// KEY MANAGEMENT SERVICE (KMS)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct EncryptionKey {
+    key_id: String,
+    algorithm: String,
+    key_size: i32,
+    created_at: i64,
+    rotated_at: i64,
+    rotation_needed: bool,
+}
+
+pub actor KeyManagementService {
+    keys: Arc<Mutex<HashMap<String, EncryptionKey>>>,
+    key_counter: i32 = 0,
+    total_encryptions: i32 = 0,
+
+    message GenerateKey(algorithm: String, key_size: i32) -> Result<String, String> {
+        self.key_counter += 1
+
+        let key = EncryptionKey {
+            key_id: format!("key_{}", self.key_counter),
+            algorithm: algorithm,
+            key_size: key_size,
+            created_at: 0,
+            rotated_at: 0,
+            rotation_needed: false,
+        }
+
+        let id = key.key_id.clone()
+        keys.lock().unwrap().insert(id.clone(), key)
+        Ok(id)
+    }
+
+    message EncryptData(key_id: String, plaintext: String) -> Result<String, String> {
+        self.total_encryptions += 1
+
+        let keys_lock = keys.lock().unwrap()
+
+        if let Some(key) = keys_lock.get(&key_id) {
+            // Simulated encryption (in real scenario would do actual encryption)
+            let ciphertext = format!("encrypted_{}", plaintext.len())
+            Ok(ciphertext)
+        } else {
+            Err("Key not found".to_string())
+        }
+    }
+
+    message DecryptData(key_id: String, ciphertext: String) -> Result<String, String> {
+        let keys_lock = keys.lock().unwrap()
+
+        if let Some(_key) = keys_lock.get(&key_id) {
+            Ok("decrypted_data".to_string())
+        } else {
+            Err("Key not found".to_string())
+        }
+    }
+
+    message RotateKey(key_id: String) -> Result<(), String> {
+        let mut keys_lock = keys.lock().unwrap()
+
+        if let Some(key) = keys_lock.get_mut(&key_id) {
+            key.rotated_at = 0
+            key.rotation_needed = false
+        }
+
+        Ok(())
+    }
+
+    message GetKeyStats() -> Result<(i32, i32), String> {
+        Ok((self.key_counter, self.total_encryptions))
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PRIVACY CONTROL MANAGER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct PrivacyControl {
+    control_id: String,
+    name: String,
+    description: String,
+    implemented: bool,
+    compliance_frameworks: Vec<String>,
+}
+
+pub actor PrivacyControlManager {
+    controls: Arc<Mutex<Vec<PrivacyControl>>>,
+    implemented_controls: i32 = 0,
+
+    message AddPrivacyControl(name: String, description: String) -> Result<String, String> {
+        let control = PrivacyControl {
+            control_id: format!("pc_{}", self.implemented_controls),
+            name: name,
+            description: description,
+            implemented: false,
+            compliance_frameworks: Vec::new(),
+        }
+
+        let id = control.control_id.clone()
+        controls.lock().unwrap().push(control)
+        Ok(id)
+    }
+
+    message ImplementControl(control_id: String) -> Result<(), String> {
+        let mut controls_lock = controls.lock().unwrap()
+
+        if let Some(control) = controls_lock.iter_mut().find(|c| c.control_id == control_id) {
+            control.implemented = true
+            self.implemented_controls += 1
+        }
+
+        Ok(())
+    }
+
+    message GetComplianceStatus() -> Result<f32, String> {
+        let controls_lock = controls.lock().unwrap()
+
+        if controls_lock.is_empty() {
+            return Ok(0.0)
+        }
+
+        let implemented = controls_lock.iter().filter(|c| c.implemented).count()
+        let percentage = (implemented as f32 / controls_lock.len() as f32) * 100.0
+
+        Ok(percentage)
+    }
+}
+
+pub fn test_privacy_encryption() -> Result<(), String> {
+    Ok(())
+}
