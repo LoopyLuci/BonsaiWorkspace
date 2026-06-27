@@ -1,0 +1,232 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM CODE FORMATTER - Multi-Language Formatting Engine
+// Consistent Code Style, Indentation, Spacing, Line Breaks
+// 100% Pure TITAN - Enterprise Grade Code Formatter
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// FORMATTING CONFIGURATION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct FormattingConfig {
+    indent_size: i32,
+    use_tabs: bool,
+    max_line_length: i32,
+    space_after_keywords: bool,
+    space_around_operators: bool,
+    space_after_commas: bool,
+    brace_style: String,  // allman, kr, gnuemacs
+}
+
+impl FormattingConfig {
+    pub fn new() -> Self {
+        FormattingConfig {
+            indent_size: 4,
+            use_tabs: false,
+            max_line_length: 100,
+            space_after_keywords: true,
+            space_around_operators: true,
+            space_after_commas: true,
+            brace_style: "kr".to_string(),
+        }
+    }
+
+    pub fn for_language(language: String) -> Self {
+        match language.as_str() {
+            "TITAN" | "VERA" | "HELIX" | "AETHER" | "AXIOM" | "SYLVA" | "NEXUS" => {
+                FormattingConfig::new()
+            },
+            _ => FormattingConfig::new(),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// FORMATTER ENGINE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct FormattingResult {
+    formatted_code: String,
+    lines_changed: i32,
+    indentation_fixed: i32,
+    spacing_fixed: i32,
+    line_breaks_fixed: i32,
+}
+
+pub actor CodeFormatter {
+    config: Arc<Mutex<FormattingConfig>>,
+    total_files_formatted: i32 = 0,
+    total_lines_formatted: i64 = 0,
+
+    message SetConfig(cfg: FormattingConfig) -> Result<(), String> {
+        *config.lock().unwrap() = cfg
+        Ok(())
+    }
+
+    message FormatCode(code: String) -> Result<String, String> {
+        let cfg = config.lock().unwrap()
+
+        let mut formatted = String::new()
+        let mut indent_level = 0
+        let mut lines_changed = 0
+
+        for line in code.lines() {
+            let trimmed = line.trim()
+
+            if trimmed.is_empty() {
+                formatted.push('\n')
+                continue
+            }
+
+            // Determine indentation
+            if trimmed.starts_with("}") || trimmed.starts_with("]") || trimmed.starts_with(")") {
+                indent_level = (indent_level - 1).max(0)
+            }
+
+            // Add indentation
+            for _ in 0..indent_level {
+                if cfg.use_tabs {
+                    formatted.push('\t')
+                } else {
+                    for _ in 0..cfg.indent_size {
+                        formatted.push(' ')
+                    }
+                }
+            }
+
+            // Add formatted line
+            let formatted_line = self.format_line(trimmed, &cfg)?
+            formatted.push_str(&formatted_line)
+            formatted.push('\n')
+
+            // Adjust indentation for next line
+            if trimmed.ends_with("{") || trimmed.ends_with("[") || trimmed.ends_with("(") {
+                indent_level += 1
+            }
+
+            lines_changed += 1
+        }
+
+        self.total_files_formatted += 1
+        self.total_lines_formatted += lines_changed
+
+        Ok(formatted)
+    }
+
+    message format_line(&self, line: &str, cfg: &FormattingConfig) -> Result<String, String> {
+        let mut result = String::new()
+        let mut prev_char = ' '
+
+        for ch in line.chars() {
+            // Add spaces around operators
+            if cfg.space_around_operators && (ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '=') {
+                if prev_char != ' ' && prev_char != '(' && prev_char != '[' {
+                    result.push(' ')
+                }
+                result.push(ch)
+                result.push(' ')
+                prev_char = ch
+                continue
+            }
+
+            // Add space after commas
+            if cfg.space_after_commas && ch == ',' {
+                result.push(ch)
+                result.push(' ')
+                prev_char = ch
+                continue
+            }
+
+            // Prevent multiple spaces
+            if ch == ' ' && prev_char == ' ' {
+                continue
+            }
+
+            result.push(ch)
+            prev_char = ch
+        }
+
+        Ok(result.trim_end().to_string())
+    }
+
+    message GetStatistics() -> Result<(i32, i64), String> {
+        Ok((self.total_files_formatted, self.total_lines_formatted))
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// LINE LENGTH HANDLER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub actor LineLengthManager {
+    max_line_length: i32,
+    long_lines: Vec<(i32, i32)>,  // (line_number, length)
+
+    message CheckLineLength(line_number: i32, line: String) -> Result<bool, String> {
+        if (line.len() as i32) > self.max_line_length {
+            self.long_lines.push((line_number, line.len() as i32))
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    message GetLongLines() -> Result<Vec<(i32, i32)>, String> {
+        Ok(self.long_lines.clone())
+    }
+
+    message GetLongLineCount() -> Result<i32, String> {
+        Ok(self.long_lines.len() as i32)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BRACKET & BRACE MATCHER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub actor BracketMatcher {
+    bracket_pairs: HashMap<i32, i32>,  // open_line -> close_line
+    mismatched_brackets: Vec<i32>,
+
+    message ScanBrackets(code: String) -> Result<bool, String> {
+        let mut depth = 0
+        let mut open_positions = Vec::new()
+
+        for (line_num, line) in code.lines().enumerate() {
+            for ch in line.chars() {
+                match ch {
+                    '{' | '[' | '(' => {
+                        open_positions.push(line_num as i32)
+                        depth += 1
+                    },
+                    '}' | ']' | ')' => {
+                        if !open_positions.is_empty() {
+                            if let Some(open_line) = open_positions.pop() {
+                                bracket_pairs.insert(open_line, line_num as i32)
+                            }
+                        }
+                        depth -= 1
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        if depth != 0 || !open_positions.is_empty() {
+            self.mismatched_brackets = open_positions
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+
+    message GetMismatchedBrackets() -> Result<Vec<i32>, String> {
+        Ok(self.mismatched_brackets.clone())
+    }
+}
+
+pub fn test_formatter() -> Result<(), String> {
+    Ok(())
+}
