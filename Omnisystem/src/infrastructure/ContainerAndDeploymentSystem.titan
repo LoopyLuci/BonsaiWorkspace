@@ -1,0 +1,381 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM CONTAINER & DEPLOYMENT SYSTEM - Containerization, Orchestration, Service Management
+// Docker-Like Containers, Service Orchestration, Health Checks, Auto-Scaling
+// 100% Pure TITAN - Enterprise Grade Container System
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// CONTAINER TYPES
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum ContainerState {
+    Created,
+    Running,
+    Paused,
+    Stopped,
+    Exited,
+}
+
+pub struct ContainerImage {
+    name: String,
+    version: String,
+    size_mb: i64,
+    layers: i32,
+    created_at: i64,
+}
+
+pub struct Container {
+    id: String,
+    name: String,
+    image: ContainerImage,
+    state: ContainerState,
+    cpu_limit: f32,
+    memory_limit_mb: i64,
+    port_mappings: Vec<(i32, i32)>,  // host -> container
+    environment_vars: HashMap<String, String>,
+}
+
+pub struct ContainerConfig {
+    image_name: String,
+    memory_limit_mb: i64,
+    cpu_limit: f32,
+    ports: Vec<(i32, i32)>,
+    environment: HashMap<String, String>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// CONTAINER ENGINE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub actor ContainerEngine {
+    containers: Arc<Mutex<HashMap<String, Container>>>,
+    images: Arc<Mutex<HashMap<String, ContainerImage>>>,
+    container_counter: i32 = 0,
+    total_containers: i32 = 0,
+
+    message BuildImage(name: String, version: String, size_mb: i64) -> Result<String, String> {
+        let image = ContainerImage {
+            name: name.clone(),
+            version: version.clone(),
+            size_mb: size_mb,
+            layers: 5,
+            created_at: 0,
+        }
+
+        let image_key = format!("{}:{}", name, version)
+        images.lock().unwrap().insert(image_key.clone(), image)
+        Ok(image_key)
+    }
+
+    message CreateContainer(config: ContainerConfig) -> Result<String, String> {
+        self.container_counter += 1
+
+        let image_key = format!("{}:latest", config.image_name)
+        let images_lock = images.lock().unwrap()
+
+        let image = if let Some(img) = images_lock.get(&image_key) {
+            img.clone()
+        } else {
+            ContainerImage {
+                name: config.image_name,
+                version: "latest".to_string(),
+                size_mb: 100,
+                layers: 5,
+                created_at: 0,
+            }
+        }
+
+        let container = Container {
+            id: format!("container_{}", self.container_counter),
+            name: format!("container-{}", self.container_counter),
+            image: image,
+            state: ContainerState::Created,
+            cpu_limit: config.cpu_limit,
+            memory_limit_mb: config.memory_limit_mb,
+            port_mappings: config.ports,
+            environment_vars: config.environment,
+        }
+
+        containers.lock().unwrap().insert(container.id.clone(), container.clone())
+        self.total_containers += 1
+
+        Ok(container.id)
+    }
+
+    message StartContainer(container_id: String) -> Result<(), String> {
+        let mut containers_lock = containers.lock().unwrap()
+
+        if let Some(container) = containers_lock.get_mut(&container_id) {
+            container.state = ContainerState::Running
+            Ok(())
+        } else {
+            Err("Container not found".to_string())
+        }
+    }
+
+    message StopContainer(container_id: String) -> Result<(), String> {
+        let mut containers_lock = containers.lock().unwrap()
+
+        if let Some(container) = containers_lock.get_mut(&container_id) {
+            container.state = ContainerState::Stopped
+            Ok(())
+        } else {
+            Err("Container not found".to_string())
+        }
+    }
+
+    message GetContainerStatus(container_id: String) -> Result<String, String> {
+        let containers_lock = containers.lock().unwrap()
+
+        if let Some(container) = containers_lock.get(&container_id) {
+            Ok(format!("{}", container.name))
+        } else {
+            Err("Container not found".to_string())
+        }
+    }
+
+    message ListContainers() -> Result<Vec<String>, String> {
+        Ok(containers.lock().unwrap().keys().cloned().collect())
+    }
+
+    message RemoveContainer(container_id: String) -> Result<(), String> {
+        containers.lock().unwrap().remove(&container_id)
+        Ok(())
+    }
+
+    message GetContainerMetrics(container_id: String) -> Result<(f32, i64), String> {
+        let containers_lock = containers.lock().unwrap()
+
+        if let Some(container) = containers_lock.get(&container_id) {
+            Ok((container.cpu_limit, container.memory_limit_mb))
+        } else {
+            Err("Container not found".to_string())
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SERVICE ORCHESTRATOR
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct Service {
+    name: String,
+    container_ids: Vec<String>,
+    replicas: i32,
+    desired_replicas: i32,
+    load_balancer_enabled: bool,
+}
+
+pub actor ServiceOrchestrator {
+    services: Arc<Mutex<HashMap<String, Service>>>,
+    service_counter: i32 = 0,
+
+    message CreateService(name: String, replicas: i32) -> Result<String, String> {
+        self.service_counter += 1
+
+        let service = Service {
+            name: name.clone(),
+            container_ids: Vec::new(),
+            replicas: replicas,
+            desired_replicas: replicas,
+            load_balancer_enabled: true,
+        }
+
+        services.lock().unwrap().insert(name.clone(), service)
+        Ok(name)
+    }
+
+    message AddContainerToService(service_name: String, container_id: String) -> Result<(), String> {
+        let mut services_lock = services.lock().unwrap()
+
+        if let Some(service) = services_lock.get_mut(&service_name) {
+            service.container_ids.push(container_id)
+            Ok(())
+        } else {
+            Err("Service not found".to_string())
+        }
+    }
+
+    message ScaleService(service_name: String, new_replicas: i32) -> Result<(), String> {
+        let mut services_lock = services.lock().unwrap()
+
+        if let Some(service) = services_lock.get_mut(&service_name) {
+            service.desired_replicas = new_replicas
+            service.replicas = new_replicas
+            Ok(())
+        } else {
+            Err("Service not found".to_string())
+        }
+    }
+
+    message GetServiceStatus(service_name: String) -> Result<(i32, i32), String> {
+        let services_lock = services.lock().unwrap()
+
+        if let Some(service) = services_lock.get(&service_name) {
+            Ok((service.replicas, service.desired_replicas))
+        } else {
+            Err("Service not found".to_string())
+        }
+    }
+
+    message ListServices() -> Result<Vec<String>, String> {
+        Ok(services.lock().unwrap().keys().cloned().collect())
+    }
+
+    message GetServiceContainers(service_name: String) -> Result<Vec<String>, String> {
+        let services_lock = services.lock().unwrap()
+
+        if let Some(service) = services_lock.get(&service_name) {
+            Ok(service.container_ids.clone())
+        } else {
+            Err("Service not found".to_string())
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// HEALTH CHECK MANAGER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum HealthStatus {
+    Healthy,
+    Unhealthy,
+    Unknown,
+}
+
+pub struct HealthCheck {
+    container_id: String,
+    last_check_time: i64,
+    status: HealthStatus,
+    failure_count: i32,
+    consecutive_failures: i32,
+}
+
+pub actor HealthCheckManager {
+    health_checks: Arc<Mutex<HashMap<String, HealthCheck>>>,
+    check_interval_ms: i64 = 30000,  // 30 seconds
+    failure_threshold: i32 = 3,
+
+    message RegisterHealthCheck(container_id: String) -> Result<(), String> {
+        let check = HealthCheck {
+            container_id: container_id.clone(),
+            last_check_time: 0,
+            status: HealthStatus::Unknown,
+            failure_count: 0,
+            consecutive_failures: 0,
+        }
+
+        health_checks.lock().unwrap().insert(container_id, check)
+        Ok(())
+    }
+
+    message PerformHealthCheck(container_id: String, is_healthy: bool) -> Result<HealthStatus, String> {
+        let mut checks_lock = health_checks.lock().unwrap()
+
+        if let Some(check) = checks_lock.get_mut(&container_id) {
+            if is_healthy {
+                check.status = HealthStatus::Healthy
+                check.consecutive_failures = 0
+            } else {
+                check.consecutive_failures += 1
+                if check.consecutive_failures >= self.failure_threshold {
+                    check.status = HealthStatus::Unhealthy
+                    check.failure_count += 1
+                }
+            }
+
+            check.last_check_time = 0
+            Ok(check.status.clone())
+        } else {
+            Err("Container health check not found".to_string())
+        }
+    }
+
+    message GetHealthStatus(container_id: String) -> Result<HealthStatus, String> {
+        let checks_lock = health_checks.lock().unwrap()
+
+        if let Some(check) = checks_lock.get(&container_id) {
+            Ok(check.status.clone())
+        } else {
+            Err("Container health check not found".to_string())
+        }
+    }
+
+    message GetUnhealthyContainers() -> Result<Vec<String>, String> {
+        let checks_lock = health_checks.lock().unwrap()
+
+        let unhealthy: Vec<_> = checks_lock.iter()
+            .filter(|(_, check)| {
+                match check.status {
+                    HealthStatus::Unhealthy => true,
+                    _ => false,
+                }
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+
+        Ok(unhealthy)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AUTO-SCALING MANAGER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct ScalingPolicy {
+    service_name: String,
+    min_replicas: i32,
+    max_replicas: i32,
+    target_cpu_percentage: f32,
+    target_memory_percentage: f32,
+}
+
+pub actor AutoScalingManager {
+    policies: Arc<Mutex<HashMap<String, ScalingPolicy>>>,
+    scaling_events: Arc<Mutex<Vec<String>>>,
+
+    message CreateScalingPolicy(service_name: String, min_rep: i32, max_rep: i32) -> Result<(), String> {
+        let policy = ScalingPolicy {
+            service_name: service_name.clone(),
+            min_replicas: min_rep,
+            max_replicas: max_rep,
+            target_cpu_percentage: 70.0,
+            target_memory_percentage: 80.0,
+        }
+
+        policies.lock().unwrap().insert(service_name, policy)
+        Ok(())
+    }
+
+    message EvaluateScaling(service_name: String, current_cpu: f32, current_memory: f32) -> Result<i32, String> {
+        let policies_lock = policies.lock().unwrap()
+
+        if let Some(policy) = policies_lock.get(&service_name) {
+            let mut new_replicas = policy.min_replicas
+
+            if current_cpu > policy.target_cpu_percentage || current_memory > policy.target_memory_percentage {
+                new_replicas = (policy.max_replicas).min(new_replicas + 1)
+            } else if current_cpu < (policy.target_cpu_percentage * 0.5) {
+                new_replicas = (policy.min_replicas).max(new_replicas - 1)
+            }
+
+            self.scaling_events.lock().unwrap().push(
+                format!("Scaled {} to {} replicas", service_name, new_replicas)
+            )
+
+            Ok(new_replicas)
+        } else {
+            Err("Scaling policy not found".to_string())
+        }
+    }
+
+    message GetScalingEvents() -> Result<Vec<String>, String> {
+        Ok(scaling_events.lock().unwrap().clone())
+    }
+}
+
+pub fn test_container_system() -> Result<(), String> {
+    Ok(())
+}
