@@ -1,0 +1,289 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS MODEL LOADER BRIDGE — Titan Systems Integration Layer
+// GPU-aware model loading, hardware-driven model selection, and dual-model
+// (candidate vs. reference) inference comparison.
+// 100% TITAN — extends the restored Workspace Rust backend rather than
+// replacing it: every call here is a thin REST client against the endpoints
+// already defined in src/systems/desktop/workspace/src-tauri/src/management_api.rs
+// (mgmt_compare_models, mgmt_loop_start/stop/status, model load/switch), the
+// same "Titan calls the Rust process's REST API" convention HarnessCore.titan
+// uses against the Python orchestrator.
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, u32, u64, f32, f64, bool}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+pub struct WorkspaceBridgeConfig {
+    pub host:       String,
+    pub port:       i32,
+    pub auth_token: Option<String>,
+}
+
+impl WorkspaceBridgeConfig {
+    pub fn from_env() -> Self {
+        WorkspaceBridgeConfig {
+            host:       bridge_env("OMNIHARNESS_WORKSPACE_HOST", "localhost"),
+            port:       bridge_env_int("OMNIHARNESS_WORKSPACE_PORT", 8090),
+            auth_token: std::env::var("OMNIHARNESS_WORKSPACE_TOKEN").ok(),
+        }
+    }
+}
+
+fn bridge_env(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn bridge_env_int(key: &str, default: i32) -> i32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+// ── GPU model loading (mirrors gpu_model_loader.rs::GpuModelConfig) ───────────
+
+pub struct GpuModelConfig {
+    pub model_path:         String,
+    pub port:                u32,
+    pub context_size:        u32,
+    pub force_cpu_fallback:  bool,
+}
+
+impl GpuModelConfig {
+    pub fn new(model_path: String) -> Self {
+        GpuModelConfig {
+            model_path,
+            port: 11420,
+            context_size: 4096,
+            force_cpu_fallback: false,
+        }
+    }
+}
+
+pub struct GpuLoadResult {
+    pub pid:               u32,
+    pub gpu_layers_used:    u32,
+}
+
+// ── Hardware-aware model selection (mirrors micro_bonsai.rs) ─────────────────
+//
+// The Rust side ("Micro BonsAI") polls VRAM/RAM/CPU/GPU at 1 Hz, classifies
+// task intent, and scores available models against hardware + intent. This
+// struct set is the Titan-facing read model for that same data — nothing here
+// re-implements the polling loop, it only calls the process that already runs
+// it, per the "extend, don't replace" instruction for this restore.
+
+pub struct HardwareSnapshot {
+    pub vram_used_mb:          u64,
+    pub vram_total_mb:         u64,
+    pub ram_free_mb:           u64,
+    pub ram_total_mb:          u64,
+    pub cpu_utilisation_pct:   f32,
+    pub gpu_utilisation_pct:   f32,
+    pub timestamp_secs:        u64,
+}
+
+impl HardwareSnapshot {
+    pub fn vram_free_mb(&self) -> u64 {
+        if self.vram_total_mb > self.vram_used_mb { self.vram_total_mb - self.vram_used_mb } else { 0 }
+    }
+}
+
+pub struct ModelSelection {
+    pub primary_model:    String,
+    pub draft_model:      Option<String>,
+    pub adapter:          Option<String>,
+    pub swarm_config_id:  Option<String>,
+    pub confidence:       f32,
+}
+
+// ── Dual-model inference comparison (mirrors dual_inference.rs) ──────────────
+
+pub struct CompareRequest {
+    pub base_model:      String,
+    pub candidate_adapter: String,   // renamed from "bonsai_adapter" — same field
+    pub prompt:          String,
+    pub gpu_layers:      Option<u32>,
+}
+
+pub struct ParsedModelOutput {
+    pub raw_content: String,
+    pub intent:      Option<String>,
+    pub tools:       Vec<String>,
+    pub confidence:  Option<f32>,
+    pub reasoning:   Option<String>,
+    pub latency_ms:  u64,
+}
+
+pub struct ComparisonResult {
+    pub prompt:              String,
+    pub intent_match:        bool,
+    pub tool_overlap_pct:    f64,
+    pub candidate_tools:     Vec<String>,
+    pub reference_tools:     Vec<String>,
+    pub candidate_confidence: Option<f32>,
+}
+
+// ── Main bridge struct ────────────────────────────────────────────────────────
+
+pub struct ModelLoaderBridge {
+    config: WorkspaceBridgeConfig,
+}
+
+impl ModelLoaderBridge {
+    pub fn new(config: WorkspaceBridgeConfig) -> Self {
+        ModelLoaderBridge { config }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(WorkspaceBridgeConfig::from_env())
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}:{}", self.config.host, self.config.port)
+    }
+
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut h = vec![("content-type".to_string(), "application/json".to_string())]
+        if let Some(tok) = &self.config.auth_token {
+            h.push(("authorization".to_string(), format!("Bearer {}", tok)))
+        }
+        h
+    }
+
+    // ── Model load / switch (proxies to /api/v1/models/load, /models/switch) ──
+
+    pub fn load_model(&self, config: GpuModelConfig) -> Result<GpuLoadResult, String> {
+        let body = format!(
+            r#"{{"model_path":"{}","port":{},"context_size":{},"force_cpu_fallback":{}}}"#,
+            config.model_path, config.port, config.context_size, config.force_cpu_fallback
+        )
+        let url = format!("{}/api/v1/models/load", self.base_url())
+        let resp = bridge_post_json(&url, &body, self.headers())
+            .map_err(|e| format!("Workspace model load failed: {}", e))?
+        parse_gpu_load_result(resp)
+    }
+
+    pub fn switch_model(&self, model_id: String) -> Result<(), String> {
+        let body = format!(r#"{{"model_id":"{}"}}"#, model_id)
+        let url  = format!("{}/api/v1/models/switch", self.base_url())
+        bridge_post_json(&url, &body, self.headers())
+            .map_err(|e| format!("Workspace model switch failed: {}", e))?
+        Ok(())
+    }
+
+    // ── Hardware-aware selection ───────────────────────────────────────────────
+    //
+    // No dedicated REST route exists for this yet on the Workspace side (Micro
+    // BonsAI currently only feeds its own in-process swarm-config assembly).
+    // list_models() on the shared kernel/orchestrator already returns
+    // context_window/supports_tools per model (see OmniHarnessClient.ModelDescriptor
+    // in the VS Code extension) — the natural next step is exposing
+    // micro_bonsai.rs's HardwareSnapshot + ModelSelection scoring behind a new
+    // "/api/v1/hardware/select" route on the Workspace's management_api.rs so
+    // this bridge stops being a stub for that one call. Tracked as follow-up.
+
+    pub fn select_model(&self, task_hint: Option<String>) -> Result<ModelSelection, String> {
+        let url = format!("{}/api/v1/hardware/select", self.base_url())
+        let body = match task_hint {
+            Some(t) => format!(r#"{{"task_hint":"{}"}}"#, t),
+            None    => "{}".to_string(),
+        }
+        let resp = bridge_post_json(&url, &body, self.headers())
+            .map_err(|e| format!("Hardware-aware selection unavailable ({}). \
+                Add POST /api/v1/hardware/select to management_api.rs backed by \
+                micro_bonsai.rs to enable this.", e))?
+        parse_model_selection(resp)
+    }
+
+    // ── Dual-model comparison (proxies to /api/v1/compare) ─────────────────────
+
+    pub fn compare_models(&self, req: CompareRequest) -> Result<ComparisonResult, String> {
+        let layers_json = match req.gpu_layers {
+            Some(l) => l.to_string(),
+            None    => "null".to_string(),
+        }
+        let body = format!(
+            r#"{{"base_model":"{}","bonsai_adapter":"{}","prompt":"{}","gpu_layers":{}}}"#,
+            req.base_model, req.candidate_adapter, req.prompt.replace("\"", "\\\""), layers_json
+        )
+        let url = format!("{}/api/v1/compare", self.base_url())
+        let resp = bridge_post_json(&url, &body, self.headers())
+            .map_err(|e| format!("Workspace dual-inference compare failed: {}", e))?
+        parse_comparison_result(resp)
+    }
+}
+
+// ── JSON helpers (no external deps, mirrors HarnessCore.titan's parser style) ──
+
+fn bridge_post_json(url: &str, body: &str, headers: Vec<(String, String)>) -> Result<String, String> {
+    omnisystem::net::http_post_with_headers(url, body, headers)
+        .map_err(|e| format!("HTTP POST failed: {}", e))
+}
+
+fn bridge_extract_field(json: &str, field: &str) -> Option<String> {
+    let key = format!("\"{}\":\"", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        if let Some(end) = after.find('"') {
+            return Some(after[..end].to_string())
+        }
+    }
+    None
+}
+
+fn bridge_extract_number(json: &str, field: &str) -> Option<f64> {
+    let key = format!("\"{}\":", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len())
+        return after[..end].trim().parse::<f64>().ok()
+    }
+    None
+}
+
+fn bridge_extract_bool(json: &str, field: &str) -> Option<bool> {
+    bridge_extract_number(json, field).map(|n| n != 0.0)
+        .or_else(|| {
+            let key = format!("\"{}\":true", field)
+            if json.contains(&key) { Some(true) } else { None }
+        })
+}
+
+fn parse_gpu_load_result(json: String) -> Result<GpuLoadResult, String> {
+    let pid    = bridge_extract_number(&json, "pid").unwrap_or(0.0) as u32
+    let layers = bridge_extract_number(&json, "gpu_layers_used").unwrap_or(0.0) as u32
+    Ok(GpuLoadResult { pid, gpu_layers_used: layers })
+}
+
+fn parse_model_selection(json: String) -> Result<ModelSelection, String> {
+    Ok(ModelSelection {
+        primary_model:   bridge_extract_field(&json, "primary_model").unwrap_or_default(),
+        draft_model:     bridge_extract_field(&json, "draft_model"),
+        adapter:         bridge_extract_field(&json, "adapter"),
+        swarm_config_id: bridge_extract_field(&json, "swarm_config_id"),
+        confidence:      bridge_extract_number(&json, "confidence").unwrap_or(0.0) as f32,
+    })
+}
+
+fn parse_comparison_result(json: String) -> Result<ComparisonResult, String> {
+    Ok(ComparisonResult {
+        prompt:               bridge_extract_field(&json, "prompt").unwrap_or_default(),
+        intent_match:         bridge_extract_bool(&json, "intent_match").unwrap_or(false),
+        tool_overlap_pct:     bridge_extract_number(&json, "tool_overlap_pct").unwrap_or(0.0),
+        candidate_tools:      Vec::new(), // array field; left for the array-parsing helper once added
+        reference_tools:      Vec::new(),
+        candidate_confidence: bridge_extract_number(&json, "bonsai_confidence").map(|n| n as f32),
+    })
+}
+
+// ── Public module interface ───────────────────────────────────────────────────
+
+pub mod ModelLoader {
+    pub use super::{
+        ModelLoaderBridge, WorkspaceBridgeConfig, GpuModelConfig, GpuLoadResult,
+        HardwareSnapshot, ModelSelection, CompareRequest, ParsedModelOutput, ComparisonResult,
+    }
+
+    pub fn create() -> ModelLoaderBridge {
+        ModelLoaderBridge::from_env()
+    }
+}

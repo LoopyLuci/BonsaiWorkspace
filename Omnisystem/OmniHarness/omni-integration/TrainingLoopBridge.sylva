@@ -1,0 +1,201 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS TRAINING LOOP BRIDGE — Sylva ML Layer
+// Continuous candidate-vs-reference training loop: run both models on the same
+// prompts, score the gap, synthesise training examples from the reference's
+// correct answers, and queue a fine-tune once enough examples accumulate.
+// 100% SYLVA — this is the ML/training domain (Sylva = Python/ML equivalent);
+// extends the restored Workspace Rust backend
+// (src/systems/desktop/workspace/src-tauri/src/training_loop.rs) rather than
+// replacing it — every control call below is a REST client against the
+// /api/v1/training/loop/* routes already defined in that backend's
+// management_api.rs, matching DistillationEngine.sylva's declarative style
+// for the training-recipe shape and HarnessCore.titan's REST-bridge convention
+// for the actual process control.
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f32, f64, u32, u64, bool}
+
+// ── Loop configuration (mirrors training_loop.rs::LoopConfig) ────────────────
+
+struct LoopConfig {
+    base_model_path:      String,   // GGUF both candidate and reference load
+    candidate_adapter_path: String, // LoRA adapter under continuous improvement
+    output_data_path:      String,  // synthesised JSONL training data
+    output_adapter_path:   String,  // next fine-tuned adapter
+    gpu_layers:            u32,
+    finetune_threshold:    u32,     // examples collected before a fine-tune kicks off
+    prompts:               Vec<String>,
+    interval_secs:         u64,     // 0 = as fast as possible
+}
+
+// ── Loop status (mirrors training_loop.rs::LoopStatus) ────────────────────────
+
+struct LoopStatus {
+    running:                bool,
+    rounds_completed:       u64,
+    examples_collected:     u32,
+    last_intent_match_pct:  f64,
+    last_tool_overlap_pct:  f64,
+}
+
+// ── Declarative training recipe (Sylva pipeline DSL, matching
+//    DistillationEngine.sylva) — describes WHAT the loop is training toward;
+//    the Rust side (training_loop.rs) executes the actual continuous rounds.
+
+pipeline ContinuousImprovementLoop {
+    // Each round: run candidate + reference on the same prompt, score the gap,
+    // and — if the candidate lost the comparison — record a training example
+    // built from the reference's answer.
+    stage compare {
+        input:  prompt
+        run:    [candidate_model, reference_model]
+        score:  intent_match, tool_overlap_pct
+    }
+
+    stage synthesize {
+        // Only examples where the reference won contribute training data —
+        // this is what keeps the candidate improving toward the reference
+        // rather than toward its own mistakes.
+        condition: gap_detected
+        emit:      training_example(prompt, reference_output)
+    }
+
+    stage finetune_gate {
+        // Trips training_loop.rs's fine-tune trigger once enough examples
+        // have accumulated (LoopConfig.finetune_threshold).
+        condition: examples_collected >= finetune_threshold
+        action:    trigger_finetune(output_data_path, output_adapter_path)
+    }
+}
+
+// ── Bridge config ─────────────────────────────────────────────────────────────
+
+struct WorkspaceBridgeConfig {
+    host:       String,
+    port:       i32,
+    auth_token: Option<String>,
+}
+
+fn bridge_config_from_env() -> WorkspaceBridgeConfig {
+    WorkspaceBridgeConfig {
+        host:       bridge_env("OMNIHARNESS_WORKSPACE_HOST", "localhost"),
+        port:       bridge_env_int("OMNIHARNESS_WORKSPACE_PORT", 8090),
+        auth_token: std::env::var("OMNIHARNESS_WORKSPACE_TOKEN").ok(),
+    }
+}
+
+fn bridge_env(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn bridge_env_int(key: &str, default: i32) -> i32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+// ── Bridge struct ─────────────────────────────────────────────────────────────
+
+pub struct TrainingLoopBridge {
+    config: WorkspaceBridgeConfig,
+}
+
+impl TrainingLoopBridge {
+    pub fn new(config: WorkspaceBridgeConfig) -> Self {
+        TrainingLoopBridge { config }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(bridge_config_from_env())
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}:{}", self.config.host, self.config.port)
+    }
+
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut h = vec![("content-type".to_string(), "application/json".to_string())]
+        if let Some(tok) = &self.config.auth_token {
+            h.push(("authorization".to_string(), format!("Bearer {}", tok)))
+        }
+        h
+    }
+
+    // ── Start / stop / status (proxies /api/v1/training/loop/*) ───────────────
+
+    pub fn start(&self, config: LoopConfig) -> Result<(), String> {
+        let prompts_json = config.prompts.iter()
+            .map(|p| format!("\"{}\"", p.replace("\"", "\\\"")))
+            .collect::<Vec<_>>().join(",")
+        let body = format!(
+            r#"{{"base_model_path":"{}","bonsai_adapter_path":"{}","output_data_path":"{}",
+                "output_adapter_path":"{}","gpu_layers":{},"finetune_threshold":{},
+                "prompts":[{}],"interval_secs":{}}}"#,
+            config.base_model_path, config.candidate_adapter_path, config.output_data_path,
+            config.output_adapter_path, config.gpu_layers, config.finetune_threshold,
+            prompts_json, config.interval_secs
+        )
+        let url = format!("{}/api/v1/training/loop/start", self.base_url())
+        bridge_post_json(&url, &body, self.headers())
+            .map_err(|e| format!("Training loop start failed: {}", e))?
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), String> {
+        let url = format!("{}/api/v1/training/loop/stop", self.base_url())
+        bridge_post_json(&url, "{}", self.headers())
+            .map_err(|e| format!("Training loop stop failed: {}", e))?
+        Ok(())
+    }
+
+    pub fn status(&self) -> Result<LoopStatus, String> {
+        let url  = format!("{}/api/v1/training/loop/status", self.base_url())
+        let resp = bridge_get_json(&url, self.headers())
+            .map_err(|e| format!("Training loop status unavailable: {}", e))?
+        parse_loop_status(resp)
+    }
+}
+
+// ── HTTP + JSON helpers ────────────────────────────────────────────────────────
+
+fn bridge_post_json(url: &str, body: &str, headers: Vec<(String, String)>) -> Result<String, String> {
+    omnisystem::net::http_post_with_headers(url, body, headers)
+        .map_err(|e| format!("HTTP POST failed: {}", e))
+}
+
+fn bridge_get_json(url: &str, headers: Vec<(String, String)>) -> Result<String, String> {
+    omnisystem::net::http_get_with_headers(url, headers)
+        .map_err(|e| format!("HTTP GET failed: {}", e))
+}
+
+fn extract_number(json: &str, field: &str) -> Option<f64> {
+    let key = format!("\"{}\":", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len())
+        return after[..end].trim().parse::<f64>().ok()
+    }
+    None
+}
+
+fn extract_bool(json: &str, field: &str) -> bool {
+    json.contains(&format!("\"{}\":true", field))
+}
+
+fn parse_loop_status(json: String) -> Result<LoopStatus, String> {
+    Ok(LoopStatus {
+        running:               extract_bool(&json, "running"),
+        rounds_completed:      extract_number(&json, "rounds_completed").unwrap_or(0.0) as u64,
+        examples_collected:    extract_number(&json, "examples_collected").unwrap_or(0.0) as u32,
+        last_intent_match_pct: extract_number(&json, "last_intent_match_pct").unwrap_or(0.0),
+        last_tool_overlap_pct: extract_number(&json, "last_tool_overlap_pct").unwrap_or(0.0),
+    })
+}
+
+// ── Public module interface ───────────────────────────────────────────────────
+
+pub mod TrainingLoop {
+    pub use super::{TrainingLoopBridge, WorkspaceBridgeConfig, LoopConfig, LoopStatus}
+
+    pub fn create() -> TrainingLoopBridge {
+        TrainingLoopBridge::from_env()
+    }
+}
