@@ -7,7 +7,7 @@
 
   function handleToggle() {
     devMode = !devMode;
-    dispatch('bonsai-dev-mode-changed', devMode);
+    dispatch('omnisystem-dev-mode-changed', devMode);
   }
 </script>
 

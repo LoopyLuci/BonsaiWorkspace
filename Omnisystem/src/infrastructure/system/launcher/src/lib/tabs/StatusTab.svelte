@@ -27,7 +27,7 @@
       {#if !devMode}
         <div class="simple-status">
           <p class="status-message">✅ Everything is working great!</p>
-          <p class="status-description">Your computer is running Bonsai smoothly.</p>
+          <p class="status-description">Your computer is running Omnisystem smoothly.</p>
         </div>
       {:else}
         <div class="dev-status">

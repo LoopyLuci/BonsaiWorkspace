@@ -132,9 +132,49 @@ module OmniDocumentConverters {
 
   impl PDFConverter {
     pub fn from_pdf(pdf_bytes: &[u8]) -> Result<OmniFile> {
-      // Parse PDF and convert to OMNI
-      // This would require PDF parsing library integration
-      Err("PDF parsing not fully implemented yet")
+      // Extract text from PDF byte stream: scan for BT...ET blocks (PDF text objects)
+      let text_str = String::from_utf8_lossy(pdf_bytes)
+      let mut extracted = String::new()
+      let mut rest = text_str.as_ref()
+      while let Some(bt) = rest.find("BT") {
+        if let Some(et) = rest[bt..].find("ET") {
+          let block = &rest[bt+2..bt+et]
+          // Extract strings from (text) Tj / Tj [ (text) ] TJ patterns
+          let mut br = block
+          while let Some(op) = br.find("(") {
+            if let Some(cl) = br[op+1..].find(")") {
+              let s = &br[op+1..op+1+cl]
+              extracted.push_str(s); extracted.push(' ')
+              br = &br[op+1+cl+1..]
+            } else { break }
+          }
+          rest = &rest[bt+et+2..]
+        } else { break }
+      }
+      let now = json_now_ns()
+      Ok(OmniFile {
+        header: OmniHeader { magic: 0x4F4D4E49, version: 0x0100, revision: 0, endianness: 1,
+          compression_type: CompressionType::None, encryption_type: EncryptionType::None, checksum_algo: ChecksumAlgorithm::Crc32,
+          total_file_size: 0, content_payload_size: extracted.len() as u32,
+          metadata_offset: 0, schema_offset: 0, content_offset: 0, attachments_offset: 0, history_offset: 0, compatibility_offset: 0, footer_offset: 0,
+          created_at: now, modified_at: now, master_checksum: [0u8;32], file_id: [0u8;16], author_signature: [0u8;32], reserved: [0u8;32], custom_header: [0u8;80] },
+        metadata: OmniMetadata { version: "1.0".to_string(), created_at: now, modified_at: now, author: "PDFConverter".to_string(),
+          title: "PDF Document".to_string(), description: "Converted from PDF".to_string(), keywords: vec![], language: "en".to_string(), encoding: "UTF-8".to_string(),
+          source_format: SourceFormatInfo { original_format: "application/pdf".to_string(), original_version: "1.4".to_string(), original_app: "PDF".to_string(), conversion_date: now, conversion_tool: "OmniPDFConverter v1.0".to_string() },
+          compression_info: CompressionInfo { algorithm: "none".to_string(), level: 0, original_size: 0, compressed_size: 0 },
+          encryption_info: EncryptionInfo { algorithm: "none".to_string(), key_derivation: "".to_string(), salt: vec![], iv: vec![], tag: vec![] },
+          validation_info: ValidationInfo { checksum_algorithm: "crc32".to_string(), master_checksum: "".to_string(), section_checksums: Map::new() },
+          digital_signature: DigitalSignatureInfo { algorithm: "".to_string(), signer: "".to_string(), timestamp: 0, signature: "".to_string() },
+          compatibility_info: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["pdf".to_string()] } },
+        schema: OmniSchema { types: Map::new(), validations: vec![], format_mappings: Map::new() },
+        content: Value::String(extracted.trim().to_string()),
+        attachments: OmniAttachments { files: vec![], embedded_data: vec![] },
+        history: OmniHistory { versions: vec![], change_log: vec![] },
+        compatibility: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["pdf".to_string()] },
+        footer: OmniFooter { content_integrity: 0, section_hash_tree: [0u8;32], master_signature: [0u8;32],
+          timestamp: (now/1_000_000_000) as u32, sequence_number: 1, public_key: [0u8;32],
+          reserved_field_1: 0, reserved_field_2: 0, reserved_field_3: 0, magic_end: 0x4944454E, footer_version: 1, footer_size: 256, checksum_verification: 0, reserved: [0u8;32], file_terminator: 0xFFFFFFFF },
+      })
     }
 
     pub fn to_pdf(omni_file: &OmniFile) -> Result<Vec<u8>> {
@@ -201,9 +241,68 @@ module OmniDocumentConverters {
     }
 
     fn serialize_pdf(pdf: &PDFDocument) -> Result<Vec<u8>> {
-      // Serialize PDF document to bytes
-      // This would use a PDF library
-      Err("PDF serialization not fully implemented yet")
+      // Emit minimal valid PDF 1.4 in ASCII
+      let mut objects: Vec<String> = Vec::new()
+      let mut offsets: Vec<usize> = Vec::new()
+      let mut buf = String::new()
+
+      // Header
+      buf.push_str("%PDF-1.4\n%\xc2\xa9\xc3\xb0\n")
+
+      // Collect all text from all pages
+      let mut all_text = String::new()
+      for page in &pdf.pages {
+        for te in &page.content.text_elements {
+          all_text.push_str(&te.text.replace('(', "\\(").replace(')', "\\)").replace('\\', "\\\\"))
+          all_text.push('\n')
+        }
+      }
+
+      // Object 1: Catalog
+      offsets.push(buf.len())
+      buf.push_str("1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n")
+
+      // Object 2: Pages
+      offsets.push(buf.len())
+      let page_count = pdf.pages.len().max(1)
+      let kids: String = (0..page_count).map(|i| format!("{} 0 R", i+3)).collect::<Vec<_>>().join(" ")
+      buf.push_str(&format!("2 0 obj<</Type/Pages/Kids[{}]/Count {}>>endobj\n", kids, page_count))
+
+      // Object 3: Font
+      offsets.push(buf.len())
+      buf.push_str("3 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n")
+
+      // Object 4+: Page + Content stream pairs
+      for (i, page) in pdf.pages.iter().enumerate() {
+        let content_obj = 5 + i * 2
+        let page_obj = 4 + i * 2
+        let mut page_text = String::new()
+        for te in &page.content.text_elements {
+          let safe = te.text.replace('(', "\\(").replace(')', "\\)").replace('\\', "\\\\")
+          page_text.push_str(&format!("BT /F1 {} Tf {} {} Td ({}) Tj ET\n", te.font_size as i32, te.x as i32, te.y as i32, safe))
+        }
+        let stream_len = page_text.len()
+
+        // Page object
+        offsets.push(buf.len())
+        buf.push_str(&format!("{} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 {} {}]/Contents {} 0 R/Resources<</Font<</F1 3 0 R>>>>>>endobj\n",
+          page_obj, page.width as i32, page.height as i32, content_obj))
+
+        // Content stream object
+        offsets.push(buf.len())
+        buf.push_str(&format!("{} 0 obj<</Length {}>>stream\n{}endstream endobj\n", content_obj, stream_len, page_text))
+      }
+
+      // xref table
+      let xref_offset = buf.len()
+      let total_objs = 3 + pdf.pages.len() * 2 + 1
+      buf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", total_objs))
+      for off in &offsets { buf.push_str(&format!("{:010} 00000 n \n", off)) }
+
+      // Trailer
+      buf.push_str(&format!("trailer<</Size {}/Root 1 0 R>>\nstartxref\n{}\n%%EOF\n", total_objs, xref_offset))
+
+      Ok(buf.into_bytes())
     }
   }
 
@@ -293,8 +392,45 @@ module OmniDocumentConverters {
 
   impl DOCXConverter {
     pub fn from_docx(docx_bytes: &[u8]) -> Result<OmniFile> {
-      // Parse DOCX and convert to OMNI
-      Err("DOCX parsing not fully implemented yet")
+      // Extract text from DOCX ZIP: find document.xml and strip XML tags
+      let text_str = String::from_utf8_lossy(docx_bytes)
+      let mut extracted = String::new()
+      // Find embedded XML text between <w:t> tags (works on stored ZIP entries)
+      let mut rest = text_str.as_ref()
+      while let Some(s) = rest.find("<w:t") {
+        if let Some(gt) = rest[s..].find('>') {
+          let after_gt = &rest[s+gt+1..]
+          if let Some(cl) = after_gt.find("</w:t>") {
+            let content = &after_gt[..cl]
+            if !content.is_empty() { extracted.push_str(content); extracted.push('\n') }
+            rest = &after_gt[cl+6..]
+          } else { break }
+        } else { break }
+      }
+      let now = json_now_ns()
+      Ok(OmniFile {
+        header: OmniHeader { magic: 0x4F4D4E49, version: 0x0100, revision: 0, endianness: 1,
+          compression_type: CompressionType::None, encryption_type: EncryptionType::None, checksum_algo: ChecksumAlgorithm::Crc32,
+          total_file_size: 0, content_payload_size: extracted.len() as u32,
+          metadata_offset: 0, schema_offset: 0, content_offset: 0, attachments_offset: 0, history_offset: 0, compatibility_offset: 0, footer_offset: 0,
+          created_at: now, modified_at: now, master_checksum: [0u8;32], file_id: [0u8;16], author_signature: [0u8;32], reserved: [0u8;32], custom_header: [0u8;80] },
+        metadata: OmniMetadata { version: "1.0".to_string(), created_at: now, modified_at: now, author: "DOCXConverter".to_string(),
+          title: "Word Document".to_string(), description: "Converted from DOCX".to_string(), keywords: vec![], language: "en".to_string(), encoding: "UTF-8".to_string(),
+          source_format: SourceFormatInfo { original_format: "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(), original_version: "1.0".to_string(), original_app: "Word".to_string(), conversion_date: now, conversion_tool: "OmniDOCXConverter v1.0".to_string() },
+          compression_info: CompressionInfo { algorithm: "none".to_string(), level: 0, original_size: 0, compressed_size: 0 },
+          encryption_info: EncryptionInfo { algorithm: "none".to_string(), key_derivation: "".to_string(), salt: vec![], iv: vec![], tag: vec![] },
+          validation_info: ValidationInfo { checksum_algorithm: "crc32".to_string(), master_checksum: "".to_string(), section_checksums: Map::new() },
+          digital_signature: DigitalSignatureInfo { algorithm: "".to_string(), signer: "".to_string(), timestamp: 0, signature: "".to_string() },
+          compatibility_info: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["docx".to_string()] } },
+        schema: OmniSchema { types: Map::new(), validations: vec![], format_mappings: Map::new() },
+        content: Value::String(extracted.trim().to_string()),
+        attachments: OmniAttachments { files: vec![], embedded_data: vec![] },
+        history: OmniHistory { versions: vec![], change_log: vec![] },
+        compatibility: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["docx".to_string()] },
+        footer: OmniFooter { content_integrity: 0, section_hash_tree: [0u8;32], master_signature: [0u8;32],
+          timestamp: (now/1_000_000_000) as u32, sequence_number: 1, public_key: [0u8;32],
+          reserved_field_1: 0, reserved_field_2: 0, reserved_field_3: 0, magic_end: 0x4944454E, footer_version: 1, footer_size: 256, checksum_verification: 0, reserved: [0u8;32], file_terminator: 0xFFFFFFFF },
+      })
     }
 
     pub fn to_docx(omni_file: &OmniFile) -> Result<Vec<u8>> {
@@ -388,9 +524,32 @@ module OmniDocumentConverters {
     }
 
     fn serialize_docx(docx: &DOCXDocument) -> Result<Vec<u8>> {
-      // Serialize DOCX document to bytes
-      // This would use Office Open XML library
-      Err("DOCX serialization not fully implemented yet")
+      // Emit minimal OOXML/ZIP with stored (no-compression) entries
+      let content_types = b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+<Default Extension=\"xml\" ContentType=\"application/xml\"/>\
+<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
+</Types>"
+
+      let rels = b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>\
+</Relationships>"
+
+      let mut doc_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>")
+      for para in &docx.paragraphs {
+        let safe = para.text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        doc_body.push_str(&format!("<w:p><w:r><w:t>{}</w:t></w:r></w:p>", safe))
+      }
+      doc_body.push_str("</w:body></w:document>")
+
+      let files: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", content_types),
+        ("_rels/.rels", rels),
+        ("word/document.xml", doc_body.as_bytes()),
+      ]
+      Ok(docx_zip_stored(&files))
     }
   }
 
@@ -459,8 +618,41 @@ module OmniDocumentConverters {
 
   impl XLSXConverter {
     pub fn from_xlsx(xlsx_bytes: &[u8]) -> Result<OmniFile> {
-      // Parse XLSX and convert to OMNI
-      Err("XLSX parsing not fully implemented yet")
+      // Extract cell values from XLSX ZIP: scan for <v>value</v> and <t>text</t> tags
+      let text_str = String::from_utf8_lossy(xlsx_bytes)
+      let mut cells: Vec<String> = Vec::new()
+      let mut rest = text_str.as_ref()
+      while let Some(s) = rest.find("<v>") {
+        if let Some(e) = rest[s+3..].find("</v>") {
+          cells.push(rest[s+3..s+3+e].to_string())
+          rest = &rest[s+3+e+4..]
+        } else { break }
+      }
+      let csv_content = cells.join(",")
+      let now = json_now_ns()
+      Ok(OmniFile {
+        header: OmniHeader { magic: 0x4F4D4E49, version: 0x0100, revision: 0, endianness: 1,
+          compression_type: CompressionType::None, encryption_type: EncryptionType::None, checksum_algo: ChecksumAlgorithm::Crc32,
+          total_file_size: 0, content_payload_size: csv_content.len() as u32,
+          metadata_offset: 0, schema_offset: 0, content_offset: 0, attachments_offset: 0, history_offset: 0, compatibility_offset: 0, footer_offset: 0,
+          created_at: now, modified_at: now, master_checksum: [0u8;32], file_id: [0u8;16], author_signature: [0u8;32], reserved: [0u8;32], custom_header: [0u8;80] },
+        metadata: OmniMetadata { version: "1.0".to_string(), created_at: now, modified_at: now, author: "XLSXConverter".to_string(),
+          title: "Spreadsheet".to_string(), description: "Converted from XLSX".to_string(), keywords: vec![], language: "en".to_string(), encoding: "UTF-8".to_string(),
+          source_format: SourceFormatInfo { original_format: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(), original_version: "1.0".to_string(), original_app: "Excel".to_string(), conversion_date: now, conversion_tool: "OmniXLSXConverter v1.0".to_string() },
+          compression_info: CompressionInfo { algorithm: "none".to_string(), level: 0, original_size: 0, compressed_size: 0 },
+          encryption_info: EncryptionInfo { algorithm: "none".to_string(), key_derivation: "".to_string(), salt: vec![], iv: vec![], tag: vec![] },
+          validation_info: ValidationInfo { checksum_algorithm: "crc32".to_string(), master_checksum: "".to_string(), section_checksums: Map::new() },
+          digital_signature: DigitalSignatureInfo { algorithm: "".to_string(), signer: "".to_string(), timestamp: 0, signature: "".to_string() },
+          compatibility_info: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["xlsx".to_string()] } },
+        schema: OmniSchema { types: Map::new(), validations: vec![], format_mappings: Map::new() },
+        content: Value::String(csv_content),
+        attachments: OmniAttachments { files: vec![], embedded_data: vec![] },
+        history: OmniHistory { versions: vec![], change_log: vec![] },
+        compatibility: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["xlsx".to_string()] },
+        footer: OmniFooter { content_integrity: 0, section_hash_tree: [0u8;32], master_signature: [0u8;32],
+          timestamp: (now/1_000_000_000) as u32, sequence_number: 1, public_key: [0u8;32],
+          reserved_field_1: 0, reserved_field_2: 0, reserved_field_3: 0, magic_end: 0x4944454E, footer_version: 1, footer_size: 256, checksum_verification: 0, reserved: [0u8;32], file_terminator: 0xFFFFFFFF },
+      })
     }
 
     pub fn to_xlsx(omni_file: &OmniFile) -> Result<Vec<u8>> {
@@ -540,9 +732,45 @@ module OmniDocumentConverters {
     }
 
     fn serialize_xlsx(xlsx: &XLSXDocument) -> Result<Vec<u8>> {
-      // Serialize XLSX document to bytes
-      // This would use Office Open XML library
-      Err("XLSX serialization not fully implemented yet")
+      let content_types = b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\
+<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>\
+</Types>"
+
+      let rels = b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>\
+</Relationships>"
+
+      let workbook = b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
+<sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"/></sheets>\
+</workbook>"
+
+      let mut sheet_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
+      let sheet = xlsx.sheets.first()
+      if let Some(s) = sheet {
+        for (ri, row) in s.rows.iter().enumerate() {
+          sheet_xml.push_str(&format!("<row r=\"{}\">", ri + 1))
+          for (ci, cell) in row.cells.iter().enumerate() {
+            let col_letter = (b'A' + ci as u8) as char
+            let safe = cell.value.replace('&', "&amp;").replace('<', "&lt;")
+            sheet_xml.push_str(&format!("<c r=\"{}{}\"><v>{}</v></c>", col_letter, ri+1, safe))
+          }
+          sheet_xml.push_str("</row>")
+        }
+      }
+      sheet_xml.push_str("</sheetData></worksheet>")
+
+      let files: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", content_types),
+        ("_rels/.rels", rels),
+        ("xl/workbook.xml", workbook),
+        ("xl/worksheets/sheet1.xml", sheet_xml.as_bytes()),
+      ]
+      Ok(docx_zip_stored(&files))
     }
   }
 
@@ -646,3 +874,81 @@ module OmniDocumentConverters {
 }
 
 pub use OmniDocumentConverters::*;
+
+// ── Minimal ZIP writer (stored / no compression) for DOCX and XLSX ────────────
+
+fn docx_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFFFFFFu32
+    for b in data { let idx = ((crc ^ *b as u32) & 0xFF) as usize; crc = (crc >> 8) ^ docx_crc_table(idx) }
+    crc ^ 0xFFFFFFFF
+}
+fn docx_crc_table(i: usize) -> u32 {
+    let mut c = i as u32
+    for _ in 0..8 { if c & 1 != 0 { c = 0xEDB88320 ^ (c >> 1) } else { c >>= 1 } }
+    c
+}
+fn docx_le16(v: u16) -> [u8; 2] { v.to_le_bytes() }
+fn docx_le32(v: u32) -> [u8; 4] { v.to_le_bytes() }
+
+fn docx_zip_stored(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new()
+    let mut central_dir: Vec<u8> = Vec::new()
+    let mut entry_offsets: Vec<u32> = Vec::new()
+
+    for (name, data) in files {
+        let name_bytes = name.as_bytes()
+        let crc = docx_crc32(data)
+        let offset = out.len() as u32
+        entry_offsets.push(offset)
+
+        // Local file header (sig 0x04034b50)
+        out.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04])
+        out.extend_from_slice(&docx_le16(20))   // version needed
+        out.extend_from_slice(&docx_le16(0))    // flags
+        out.extend_from_slice(&docx_le16(0))    // compression: stored
+        out.extend_from_slice(&docx_le16(0))    // mod time
+        out.extend_from_slice(&docx_le16(0))    // mod date
+        out.extend_from_slice(&docx_le32(crc))
+        out.extend_from_slice(&docx_le32(data.len() as u32))  // compressed
+        out.extend_from_slice(&docx_le32(data.len() as u32))  // uncompressed
+        out.extend_from_slice(&docx_le16(name_bytes.len() as u16))
+        out.extend_from_slice(&docx_le16(0))    // extra field length
+        out.extend_from_slice(name_bytes)
+        out.extend_from_slice(data)
+
+        // Central directory entry (sig 0x02014b50)
+        central_dir.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02])
+        central_dir.extend_from_slice(&docx_le16(20))  // version made by
+        central_dir.extend_from_slice(&docx_le16(20))  // version needed
+        central_dir.extend_from_slice(&docx_le16(0))   // flags
+        central_dir.extend_from_slice(&docx_le16(0))   // compression
+        central_dir.extend_from_slice(&docx_le16(0))   // mod time
+        central_dir.extend_from_slice(&docx_le16(0))   // mod date
+        central_dir.extend_from_slice(&docx_le32(crc))
+        central_dir.extend_from_slice(&docx_le32(data.len() as u32))
+        central_dir.extend_from_slice(&docx_le32(data.len() as u32))
+        central_dir.extend_from_slice(&docx_le16(name_bytes.len() as u16))
+        central_dir.extend_from_slice(&docx_le16(0))   // extra
+        central_dir.extend_from_slice(&docx_le16(0))   // comment
+        central_dir.extend_from_slice(&docx_le16(0))   // disk number
+        central_dir.extend_from_slice(&docx_le16(0))   // internal attrs
+        central_dir.extend_from_slice(&docx_le32(0))   // external attrs
+        central_dir.extend_from_slice(&docx_le32(offset))
+        central_dir.extend_from_slice(name_bytes)
+    }
+
+    let cd_offset = out.len() as u32
+    let cd_size = central_dir.len() as u32
+    out.extend_from_slice(&central_dir)
+
+    // End of central directory (sig 0x06054b50)
+    out.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06])
+    out.extend_from_slice(&docx_le16(0))                        // disk number
+    out.extend_from_slice(&docx_le16(0))                        // disk with CD start
+    out.extend_from_slice(&docx_le16(files.len() as u16))       // entries on disk
+    out.extend_from_slice(&docx_le16(files.len() as u16))       // total entries
+    out.extend_from_slice(&docx_le32(cd_size))
+    out.extend_from_slice(&docx_le32(cd_offset))
+    out.extend_from_slice(&docx_le16(0))                        // comment length
+    out
+}

@@ -1,7 +1,7 @@
 # ============================================================================
 # OMNISYSTEM BUILD SCRIPT
 # ============================================================================
-# Builds all launchers and components for BonsaiEcosystem Desktop Environment
+# Builds all launchers and components for OmnisystemEcosystem Desktop Environment
 # Usage: .\Build-Omnisystem.ps1 [-Release] [-Clean] [-Verbose]
 # ============================================================================
 
@@ -32,8 +32,8 @@ if ($Verbose) { $CargoArgs += "--verbose" }
 
 $Launchers = @(
     @{
-        Name = "BonsaiEcosystem Desktop Environment"
-        Path = "Omnisystem\applications\bonsai-desktop-environment"
+        Name = "OmnisystemEcosystem Desktop Environment"
+        Path = "Omnisystem\applications\omnisystem-desktop-environment"
         Binary = "Omnisystem"
         Output = "Omnisystem.exe"
     },
@@ -45,10 +45,10 @@ $Launchers = @(
         IsTauri = $true
     },
     @{
-        Name = "BonsaiEcosystem Launcher"
-        Path = "Omnisystem\modules\base-modules\applications\bonsai-ecosystem\launcher"
-        Binary = "bonsai-launcher"
-        Output = "BonsaiLauncher.exe"
+        Name = "OmnisystemEcosystem Launcher"
+        Path = "Omnisystem\modules\base-modules\applications\omnisystem-ecosystem\launcher"
+        Binary = "omnisystem-launcher"
+        Output = "OmnisystemLauncher.exe"
         IsTauri = $true
     }
 )
@@ -136,7 +136,7 @@ function Build-Launcher {
 function Main {
     Write-Host "`n"
     Write-Host "╔════════════════════════════════════════════════════════════════╗"
-    Write-Host "║     OMNISYSTEM BUILD SYSTEM - BonsaiEcosystem Desktop          ║"
+    Write-Host "║     OMNISYSTEM BUILD SYSTEM - OmnisystemEcosystem Desktop          ║"
     Write-Host "║     Building all launchers and components                      ║"
     Write-Host "╚════════════════════════════════════════════════════════════════╝"
     Write-Host ""

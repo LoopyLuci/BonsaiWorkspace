@@ -1,4 +1,4 @@
-🎯 BONSAI BUG HUNT SYSTEM - COMPLETE DEEP INTEGRATION
+🎯 OMNISYSTEM BUG HUNT SYSTEM - COMPLETE DEEP INTEGRATION
 Session 2 Final Summary
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -14,7 +14,7 @@ Status: FULLY INTEGRATED & DEPLOYABLE
 ## 🏗️ ARCHITECTURE SUMMARY
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        BONSAI ECOSYSTEM SELF-HEALING                        │
+│                        OMNISYSTEM ECOSYSTEM SELF-HEALING                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  Survival System (Crash Detection)                                         │
@@ -96,8 +96,8 @@ No errors across:
 - Type checking
 - Module exports
 
-$ cargo check -p bonsai-bug-hunt
-   Compiling bonsai-bug-hunt v0.1.0
+$ cargo check -p omnisystem-bug-hunt
+   Compiling omnisystem-bug-hunt v0.1.0
     Finished check [unoptimized + debuginfo] target(s) in 2.34s
 
 
@@ -212,7 +212,7 @@ INTEGRATION.md (~300 lines)
 
 ## 🔐 SECURITY & CAPABILITIES
 
-✅ Capability Token Integration (from bonsai-capability-registry):
+✅ Capability Token Integration (from omnisystem-capability-registry):
   BugHuntCap:scan     – Can trigger scans
   BugHuntCap:list    – Can retrieve findings
   BugHuntCap:fix     – Can apply auto-fixes
@@ -286,15 +286,15 @@ Future Enhancements (non-blocking):
 
 ## 🎁 BONUS: MCP TOOLS READY FOR AI AGENTS
 
-Tool: bonsai_scan_repo
+Tool: omnisystem_scan_repo
   Input:  path, mode ("quick"|"full"), ai_review, output_format
   Output: JSON report with findings list
 
-Tool: bonsai_list_findings
+Tool: omnisystem_list_findings
   Input:  severity filter, file pattern
   Output: Findings list with suggestions
 
-Tool: bonsai_auto_fix
+Tool: omnisystem_auto_fix
   Input:  finding_id, confirm boolean
   Output: Success/failure + applied diff
 
@@ -305,7 +305,7 @@ All tools ready for Copilot, Claude, and other MCP-compatible agents.
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║  ✅ BONSAI BUG HUNT SYSTEM - PRODUCTION READY                             ║
+║  ✅ OMNISYSTEM BUG HUNT SYSTEM - PRODUCTION READY                             ║
 ║                                                                           ║
 ║  • 11 modules, 3,500+ LOC, 0 compilation errors                          ║
 ║  • Deep integration: Survival System, KDB, Universe, Database, ETL       ║
@@ -320,6 +320,6 @@ All tools ready for Copilot, Claude, and other MCP-compatible agents.
 ║  3. Test end-to-end on real crash scenario                               ║
 ║  4. Monitor feedback loop through EternalTrainingLoop                    ║
 ║                                                                           ║
-║  The Bonsai Ecosystem is now a self-healing platform. 🚀                  ║
+║  The Omnisystem Ecosystem is now a self-healing platform. 🚀                  ║
 ║                                                                           ║
 ╚═══════════════════════════════════════════════════════════════════════════╝

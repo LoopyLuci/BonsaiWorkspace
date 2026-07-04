@@ -13,8 +13,8 @@ The BonsAI Model Registry provides:
 
 ## Components
 
-### bonsai-model-registry
-**Location**: `crates/bonsai-model-registry/`
+### omnisystem-model-registry
+**Location**: `crates/omnisystem-model-registry/`
 
 Central registry for all available models.
 
@@ -25,8 +25,8 @@ Central registry for all available models.
 - Hardware requirements
 - Integration lookups
 
-### bonsai-model-scanner
-**Location**: `crates/bonsai-model-scanner/`
+### omnisystem-model-scanner
+**Location**: `crates/omnisystem-model-scanner/`
 
 Scans and catalogs available models.
 
@@ -36,8 +36,8 @@ Scans and catalogs available models.
 - Extract metadata
 - Build model index
 
-### bonsai-model-converter
-**Location**: `crates/bonsai-model-converter/`
+### omnisystem-model-converter
+**Location**: `crates/omnisystem-model-converter/`
 
 Convert models between formats.
 
@@ -88,8 +88,8 @@ Registry Entry:
 The model registry integrates with BUEB for automatic device allocation:
 
 ```rust
-use bonsai_backend::*;
-use bonsai_model_registry::*;
+use omnisystem_backend::*;
+use omnisystem_model_registry::*;
 
 // Initialize
 initialize()?;
@@ -112,7 +112,7 @@ let loaded = model.load_on_device(&allocation)?;
 ### Discovering Models
 
 ```rust
-use bonsai_model_registry::*;
+use omnisystem_model_registry::*;
 
 let registry = ModelRegistry::new()?;
 
@@ -129,7 +129,7 @@ let model = registry.find("octopus-ai-model")?;
 ### Registering New Models
 
 ```rust
-use bonsai_model_registry::*;
+use omnisystem_model_registry::*;
 
 let registry = ModelRegistry::new()?;
 
@@ -210,7 +210,7 @@ Each model entry contains:
 
 The model registry can be:
 1. **File-based**: JSON files in `models/`
-2. **Database**: SQLite in `.bonsai/models.db`
+2. **Database**: SQLite in `.omnisystem/models.db`
 3. **In-memory**: Cached in application memory
 
 Current implementation uses file-based registry for simplicity.

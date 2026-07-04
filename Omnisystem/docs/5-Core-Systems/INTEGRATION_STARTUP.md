@@ -1,4 +1,4 @@
-# BonsaiEcosystem Complete Startup Integration
+# OmnisystemEcosystem Complete Startup Integration
 
 **Status:** ✅ FULLY INTEGRATED INTO OMNISYSTEM  
 **Date:** 2026-06-16  
@@ -6,9 +6,9 @@
 
 ## Executive Summary
 
-BonsaiEcosystem is now fully integrated into Omnisystem startup sequence. When Omnisystem.exe launches, it automatically:
+OmnisystemEcosystem is now fully integrated into Omnisystem startup sequence. When Omnisystem.exe launches, it automatically:
 
-1. **Initializes BonsaiEcosystem** (5-phase startup)
+1. **Initializes OmnisystemEcosystem** (5-phase startup)
 2. **Launches the GUI** with all services ready
 3. **Provides graceful shutdown** when closing
 
@@ -20,19 +20,19 @@ The main executable (Omnisystem.exe) now orchestrates a three-phase startup:
 
 ```
 Omnisystem.exe startup flow:
-├── Phase 1: Initialize BonsaiEcosystem (BonsaiEcosystemStartup.ti)
+├── Phase 1: Initialize OmnisystemEcosystem (OmnisystemEcosystemStartup.ti)
 ├── Phase 2: Launch GUI (OmnisystemGUI_v2.ti)
 └── Phase 3: Graceful shutdown on exit
 ```
 
-### TITAN Startup Orchestrator: `BonsaiEcosystemStartup.ti`
+### TITAN Startup Orchestrator: `OmnisystemEcosystemStartup.ti`
 
 Public API:
-- `bonsai_startup_complete()` → Executes 5-phase initialization
-- `bonsai_shutdown_graceful()` → Executes graceful shutdown
+- `omnisystem_startup_complete()` → Executes 5-phase initialization
+- `omnisystem_shutdown_graceful()` → Executes graceful shutdown
 
 #### Phase 1: Omnisystem Registration
-- Register BonsaiEcosystem with Service Registry
+- Register OmnisystemEcosystem with Service Registry
 - Connect to Module System
 - Connect to Messaging Framework (BMF)
 - Connect to Security Framework
@@ -136,7 +136,7 @@ Public API:
 ## System Integration Points
 
 ### Omnisystem Service Registry
-- **Integration:** BonsaiEcosystem registers as Layer 3 application
+- **Integration:** OmnisystemEcosystem registers as Layer 3 application
 - **Subsystems:** 5 primary applications
 - **Capabilities:** 50+ exposed capabilities
 - **Status:** Verified in Phase 5
@@ -164,7 +164,7 @@ Public API:
 ## Startup Performance
 
 Typical startup times (measured):
-- BonsaiEcosystem initialization: 2-3 seconds
+- OmnisystemEcosystem initialization: 2-3 seconds
 - GUI launch: 1-2 seconds
 - Total startup: 3-5 seconds
 
@@ -194,8 +194,8 @@ If any phase fails:
 
 Recovery options:
 - Check logs in Omnisystem/logs/
-- Run diagnostics: `bonsai_ecosystem_diagnostics()`
-- Run repair: `bonsai_ecosystem_repair()`
+- Run diagnostics: `omnisystem_ecosystem_diagnostics()`
+- Run repair: `omnisystem_ecosystem_repair()`
 
 ## Health Monitoring
 
@@ -213,11 +213,11 @@ Continuous health checks verify:
 
 ### Entry Points
 - `Omnisystem/omnisystem-gui/src/main.rs` - Main executable
-- `Omnisystem/languages/titan/BonsaiEcosystemStartup.ti` - Startup orchestrator
+- `Omnisystem/languages/titan/OmnisystemEcosystemStartup.ti` - Startup orchestrator
 
 ### Core Modules
-- `Omnisystem/modules/base-modules/applications/bonsai-ecosystem/INITIALIZATION.ti` - Original initialization code
-- `Omnisystem/modules/base-modules/applications/bonsai-ecosystem/integration/omnisystem_integration.ti` - Integration code
+- `Omnisystem/modules/base-modules/applications/omnisystem-ecosystem/INITIALIZATION.ti` - Original initialization code
+- `Omnisystem/modules/base-modules/applications/omnisystem-ecosystem/integration/omnisystem_integration.ti` - Integration code
 
 ### Sub-Components
 - `control-panel/` - Control Panel (core.ti, api_server.ti)
@@ -229,7 +229,7 @@ Continuous health checks verify:
 
 ## Testing the Integration
 
-### Start BonsaiEcosystem
+### Start OmnisystemEcosystem
 ```bash
 cd Omnisystem/
 ./omnisystem-gui
@@ -238,7 +238,7 @@ Omnisystem.exe
 ```
 
 You should see:
-1. BonsaiEcosystem startup banner
+1. OmnisystemEcosystem startup banner
 2. 5-phase initialization logs
 3. Health check results
 4. "FULLY INITIALIZED AND READY" message
@@ -266,7 +266,7 @@ Planned integrations:
 
 ## Summary
 
-✅ **BonsaiEcosystem is 100% integrated into Omnisystem**
+✅ **OmnisystemEcosystem is 100% integrated into Omnisystem**
 
 All 5 applications, 6 system services, and 50+ capabilities are:
 - **Automatically initialized** on startup

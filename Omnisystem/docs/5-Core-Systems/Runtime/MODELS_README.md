@@ -60,7 +60,7 @@ Poe models integrate with:
 ### With BUEB Allocation
 
 ```python
-from bonsai_backend import *
+from omnisystem_backend import *
 
 initialize()
 

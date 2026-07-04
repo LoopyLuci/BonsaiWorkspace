@@ -1,4 +1,4 @@
-# Comprehensive Test Suite Design - Omnisystem, BonsaiEcosystem, UOSC
+# Comprehensive Test Suite Design - Omnisystem, OmnisystemEcosystem, UOSC
 
 **Purpose**: 100% verification of functionality, integration, performance, security, and compliance  
 **Scope**: All 3 layers + Neural Network Framework  
@@ -18,7 +18,7 @@
                      │
 ┌────────────────────▼────────────────────────────────────┐
 │ SYSTEM INTEGRATION TESTS (Cross-Layer)                  │
-│ - UOSC ↔ Omnisystem ↔ BonsaiEcosystem ↔ Neural Network  │
+│ - UOSC ↔ Omnisystem ↔ OmnisystemEcosystem ↔ Neural Network  │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
@@ -209,7 +209,7 @@ fn test_ipc_message_passing() {
 ✅ Data retention
 ```
 
-### 2.3 BonsaiEcosystem Tests (1,500 tests)
+### 2.3 OmnisystemEcosystem Tests (1,500 tests)
 
 **Workspace Tests** (300 tests)
 ```
@@ -332,7 +332,7 @@ fn test_ipc_message_passing() {
 - Allocate/deallocate memory under stress
 - Inject errors at boundary, verify handling
 
-### 3.2 Omnisystem ↔ BonsaiEcosystem Integration
+### 3.2 Omnisystem ↔ OmnisystemEcosystem Integration
 
 ```
 ✅ Application launching (50 tests)
@@ -349,7 +349,7 @@ fn test_ipc_message_passing() {
 - Real-time event delivery to multiple listeners
 - Resource usage tracking
 
-### 3.3 BonsaiEcosystem ↔ Neural Network Framework Integration
+### 3.3 OmnisystemEcosystem ↔ Neural Network Framework Integration
 
 ```
 ✅ Model loading into Buddy (30 tests)
@@ -377,7 +377,7 @@ fn test_ipc_message_passing() {
 ```
 ✅ UOSC context switch: <1ms
 ✅ Omnisystem IPC roundtrip: <5ms
-✅ BonsaiEcosystem file operation: <10ms
+✅ OmnisystemEcosystem file operation: <10ms
 ✅ Neural Network inference (ResNet-50): <100ms on GPU
 ✅ API gateway request: <20ms
 ```

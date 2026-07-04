@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-Common issues and solutions for Bonsai Buddy's remote desktop client.
+Common issues and solutions for Omnisystem Buddy's remote desktop client.
 
 ## Connection Issues
 
@@ -17,7 +17,7 @@ Common issues and solutions for Bonsai Buddy's remote desktop client.
    - Check system notifications on remote machine
    - Try connecting from another device
 2. Check firewall settings
-   - Windows: Allow Bonsai in Windows Defender Firewall
+   - Windows: Allow Omnisystem in Windows Defender Firewall
    - Linux: Check iptables or ufw rules
    - macOS: Check System Preferences → Security & Privacy
 3. Verify peer ID is correct
@@ -257,7 +257,7 @@ Common issues and solutions for Bonsai Buddy's remote desktop client.
 1. Free up phone memory
    - Close other apps
    - Restart phone
-   - Clear app cache: Settings → Apps → Bonsai Buddy → Storage → Clear Cache
+   - Clear app cache: Settings → Apps → Omnisystem Buddy → Storage → Clear Cache
 2. Check device compatibility
    - Minimum API 26 (Android 8)
    - MediaCodec support required
@@ -378,7 +378,7 @@ Common issues and solutions for Bonsai Buddy's remote desktop client.
    - Tap "Rescan" in device list
    - Wait 10 seconds for mDNS to respond
 4. Check firewall
-   - Allow Bonsai mDNS traffic (port 5353)
+   - Allow Omnisystem mDNS traffic (port 5353)
    - Windows: Windows Defender Firewall
    - Linux: ufw or iptables
    - macOS: System Preferences → Security
@@ -393,7 +393,7 @@ Common issues and solutions for Bonsai Buddy's remote desktop client.
 
 **Solutions:**
 1. Grant camera permission
-   - Settings → Apps → Bonsai Buddy → Permissions → Camera
+   - Settings → Apps → Omnisystem Buddy → Permissions → Camera
 2. Improve lighting
    - Move to brighter area
    - Avoid glare on QR code
@@ -428,7 +428,7 @@ Common issues and solutions for Bonsai Buddy's remote desktop client.
 
 1. Go to Settings → Developer Options
 2. Enable "Remote Desktop Debug Logging"
-3. Logs saved to: `/sdcard/Android/data/ai.bonsai.buddy/files/brdf.log`
+3. Logs saved to: `/sdcard/Android/data/ai.omnisystem.buddy/files/brdf.log`
 4. Share log file for support
 
 ### Check Codec Support
@@ -459,12 +459,12 @@ If issue persists:
    - Last 5 lines of error message
 
 2. **Report in GitHub Issues**
-   - https://github.com/bonsai/bonsai-workspace/issues
+   - https://github.com/omnisystem/omnisystem-workspace/issues
    - Include diagnostics
    - Description of steps to reproduce
 
 3. **Community Discord**
-   - https://discord.gg/bonsai
+   - https://discord.gg/omnisystem
    - Real-time help from developers
    - Community solutions often available
 

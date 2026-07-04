@@ -1,4 +1,4 @@
-# BonsaiEcosystem Desktop - Architecture
+# OmnisystemEcosystem Desktop - Architecture
 
 Complete technical architecture of the real GUI application built with Omnisystem languages.
 

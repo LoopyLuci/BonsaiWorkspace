@@ -1,13 +1,13 @@
-# Bonsai Universal Surface Runtime (USR)
+# Omnisystem Universal Surface Runtime (USR)
 
 ## Goal
-Build a custom rendering/runtime stack so Bonsai has one UX across desktop and Android, including Fire OS devices where system WebView is incomplete.
+Build a custom rendering/runtime stack so Omnisystem has one UX across desktop and Android, including Fire OS devices where system WebView is incomplete.
 
 ## Problem Statement
 Current Android app relies on system WebView. On some Fire OS builds, required framework classes (for example WebView stack dependencies) are missing, causing blank app rendering.
 
 ## Proposed System
-Replace WebView dependency with a Bonsai-owned surface pipeline:
+Replace WebView dependency with a Omnisystem-owned surface pipeline:
 
 1. Shared UI Runtime Layer
 - Keep one UI feature model and state protocol.
@@ -46,8 +46,8 @@ The backend command layer now supports richer mobile view orchestration:
   - Pulls device display size, density, and current orientation telemetry.
 - android_mobile_set_orientation
   - Locks portrait/landscape or unlocks rotation for stable UX.
-- android_mobile_launch_bonsai
-  - Launches Bonsai activity on target device.
+- android_mobile_launch_omnisystem
+  - Launches Omnisystem activity on target device.
 - android_mobile_prepare_uniform_runtime
   - One-shot bootstrap: wake + unlock + reverse API/WS ports + launch app.
 
@@ -65,7 +65,7 @@ Phase 2: Remote Surface Parity (2-4 sprints)
 - Route all input through existing remote input command pipeline.
 
 Phase 3: Native Surface Renderer (4-8 sprints)
-- Implement local Android renderer for core Bonsai panels.
+- Implement local Android renderer for core Omnisystem panels.
 - Reuse same UI state protocol as desktop.
 - Keep remote_surface as compatibility fallback.
 
@@ -81,7 +81,7 @@ Phase 4: Convergence and Hardening
 - Local artifact logging for screenshots, session traces, and fallback reason codes.
 
 ## Success Criteria
-- Any supported Android/Fire device can open Bonsai without blank screen.
+- Any supported Android/Fire device can open Omnisystem without blank screen.
 - Same settings, panes, and assistant behaviors across desktop and Android.
 - Runtime mode transitions are transparent and recoverable.
 - User-visible UX is functionally equivalent regardless of rendering backend.

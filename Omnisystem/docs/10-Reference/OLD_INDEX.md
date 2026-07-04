@@ -11,7 +11,7 @@
 - **[Omnisystem Overview](Omnisystem/README.md)** - Three-layer architecture (UOSC → Omnisystem → Applications)
 - **[UOSC Microkernel](Omnisystem/UOSC/README.md)** - Layer 1: Microkernel foundation
 - **[Omnisystem Core](Omnisystem/README.md)** - Layer 2: OS Services
-- **[BonsaiEcosystem](Omnisystem/modules/BonsaiEcosystem/README.md)** - Layer 3: Applications
+- **[OmnisystemEcosystem](Omnisystem/modules/OmnisystemEcosystem/README.md)** - Layer 3: Applications
 
 ---
 
@@ -87,7 +87,7 @@ Z:\Projects\Omnisystem/
 │   │   │   ├── phase_22/                   (4 enterprise modules)
 │   │   │   └── phase_23/                   (4 production modules)
 │   │   │
-│   │   └── BonsaiEcosystem/               (Layer 3: Applications)
+│   │   └── OmnisystemEcosystem/               (Layer 3: Applications)
 │   │       ├── README.md
 │   │       ├── core_apps/
 │   │       ├── developer_tools/
@@ -200,7 +200,7 @@ Z:\Projects\Omnisystem/
 
 [**→ Omnisystem Complete Documentation**](Omnisystem/README.md)
 
-### Layer 3: BonsaiEcosystem Applications 📋
+### Layer 3: OmnisystemEcosystem Applications 📋
 **Application Ecosystem & Tools**
 
 **Purpose**: Real-world applications on top of Omnisystem
@@ -210,7 +210,7 @@ Z:\Projects\Omnisystem/
 - Enterprise applications
 - Mobile applications
 
-[**→ BonsaiEcosystem Documentation**](Omnisystem/modules/BonsaiEcosystem/README.md)
+[**→ OmnisystemEcosystem Documentation**](Omnisystem/modules/OmnisystemEcosystem/README.md)
 
 ---
 
@@ -373,7 +373,7 @@ cd Omnisystem
 ## 🔗 Related Projects
 
 - **Omnisystem**: Main OS platform
-- **BonsaiEcosystem**: Application layer
+- **OmnisystemEcosystem**: Application layer
 - **Conductor**: Security and DNS services
 - **OMNI Format**: Universal data format
 
@@ -459,7 +459,7 @@ For detailed information:
 
 **Future**:
 - 📋 OMNI Phase 2-4 converters
-- 📋 BonsaiEcosystem applications
+- 📋 OmnisystemEcosystem applications
 - 📋 Community ecosystem
 
 ---

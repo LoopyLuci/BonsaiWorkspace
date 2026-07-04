@@ -6,7 +6,7 @@ The SRWSTS Full-Stack Integrated Testing System is a comprehensive stress-testin
 
 1. **UOSC Kernel** - Bare-metal OS with scheduling, memory management, I/O
 2. **Omnisystem Services** - Service Lifecycle Manager, Buddy sync, Workspace, Survival System
-3. **Bonsai Applications** - Multi-language runtime ecosystem (750+ languages)
+3. **Omnisystem Applications** - Multi-language runtime ecosystem (750+ languages)
 
 ## Core Architecture
 
@@ -399,7 +399,7 @@ Test Categories (9 concurrent test suites)
 - Workspace: File management operations
 - Survival: Event audit logging
 
-### Bonsai Applications
+### Omnisystem Applications
 - Multi-language runtime registration
 - Execution state tracking
 - Error rate monitoring
@@ -451,4 +451,4 @@ Test Categories (9 concurrent test suites)
 
 - UOSC Kernel Specification: See crates/srwsts-kernel/
 - Omnisystem Architecture: See crates/omnisystem-config/
-- Bonsai Ecosystem: See crates/bonsai-buddy-*/
+- Omnisystem Ecosystem: See crates/omnisystem-buddy-*/

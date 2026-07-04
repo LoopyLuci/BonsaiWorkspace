@@ -273,14 +273,14 @@ When launched, displays:
 ```
 ╔════════════════════════════════════════════════════════════════════════╗
 ║ OMNISYSTEM v29.0.0 - TERMINAL USER INTERFACE                          ║
-║ Enterprise Operating System | UOSC + Omnisystem + BonsaiEcosystem    ║
+║ Enterprise Operating System | UOSC + Omnisystem + OmnisystemEcosystem    ║
 ║ Status: OPERATIONAL                                                  ║
 ╚════════════════════════════════════════════════════════════════════════╝
 
 SYSTEM STATUS: ALL SERVICES RUNNING (35/35)
 
 ┌─ LAYER 3: APPLICATIONS & USER EXPERIENCE ──────────────────────────────┐
-│  [OK] BonsaiEcosystem Framework                                        │
+│  [OK] OmnisystemEcosystem Framework                                        │
 │  [OK] Core, Web, Mobile, AI, Services Applications                    │
 └────────────────────────────────────────────────────────────────────────┘
 

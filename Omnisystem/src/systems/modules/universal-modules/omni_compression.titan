@@ -93,13 +93,29 @@ module OmniCompression {
         output.extend_from_slice(&dict_id.to_le_bytes());
       }
 
-      // TODO: Compress data blocks
-      // For now, append data as-is with block headers
-      // In production, this would use actual ZSTD compression
+      // Emit data as ZSTD Raw_Block (block_type=0x00), last block set
+      // Block header: 3 bytes = last(1b) | type(2b) | size(21b)
+      let mut remaining = data;
+      let max_block = (1usize << 17) - 1; // ZSTD max raw block = 128K - 1
+      while !remaining.is_empty() {
+        let chunk_len = remaining.len().min(max_block);
+        let chunk = &remaining[..chunk_len];
+        remaining = &remaining[chunk_len..];
+        let is_last = if remaining.is_empty() { 1u32 } else { 0u32 };
+        // block_header = last_block | (Block_Type=0 << 1) | (block_size << 3)
+        let bh = is_last | (0u32 << 1) | ((chunk_len as u32) << 3);
+        output.push((bh & 0xff) as u8);
+        output.push(((bh >> 8) & 0xff) as u8);
+        output.push(((bh >> 16) & 0xff) as u8);
+        output.extend_from_slice(chunk);
+      }
 
-      output.extend_from_slice(data);
-
-      // TODO: Calculate and append xxHash64 content checksum if enabled
+      // Append xxHash64 content checksum (last 4 bytes of 64-bit hash per ZSTD spec)
+      if config.enable_checksum {
+        let h64 = xxhash64(data)
+        let checksum = ((h64 >> 32) & 0xffffffff) as u32;
+        output.extend_from_slice(&checksum.to_le_bytes());
+      }
 
       let compressed_size = output.len() as u64;
       let elapsed = get_current_time_ms() - start_time;
@@ -128,15 +144,56 @@ module OmniCompression {
         return Err("Invalid ZSTD magic number");
       }
 
-      // TODO: Parse frame descriptor and decompress
+      // Parse frame header descriptor
+      let fhd = data[4];
+      let has_checksum = (fhd & 0x04) != 0;
+      let has_content_size = (fhd & 0x40) != 0;
+      let has_dict = (fhd & 0x01) != 0;
 
-      Err("ZSTD decompression not yet fully implemented")
+      let mut pos = 5usize;
+      if has_content_size { pos += 8 }   // skip 8-byte content size
+      if has_dict         { pos += 4 }   // skip 4-byte dict ID
+
+      let mut out = Vec::new();
+      loop {
+        if pos + 3 > data.len() { break }
+        let bh = data[pos] as u32 | ((data[pos+1] as u32) << 8) | ((data[pos+2] as u32) << 16)
+        pos += 3
+        let last_block  = (bh & 1) != 0
+        let block_type  = (bh >> 1) & 0x3
+        let block_size  = (bh >> 3) as usize
+
+        match block_type {
+          0 => { // Raw_Block
+            if pos + block_size > data.len() { return Err("Truncated raw block") }
+            out.extend_from_slice(&data[pos..pos+block_size])
+            pos += block_size
+          },
+          1 => { // RLE_Block: block_size bytes of data[pos]
+            if pos >= data.len() { return Err("Truncated RLE block") }
+            let byte = data[pos]; pos += 1
+            out.resize(out.len() + block_size, byte)
+          },
+          _ => return Err("Compressed blocks not yet decodable in this build"),
+        }
+
+        if last_block { break }
+      }
+
+      // Verify checksum if present
+      if has_checksum && pos + 4 <= data.len() {
+        let stored = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]])
+        let computed = ((xxhash64(&out) >> 32) & 0xffffffff) as u32
+        if stored != computed { return Err("ZSTD checksum mismatch") }
+      }
+
+      let original_size = out.len() as u64
+      let elapsed = get_current_time_ms() - start_time
+      let stats = CompressionStats { algorithm: "zstd".to_string(), original_size, compressed_size: data.len() as u64, ratio: 1.0, time_ms: elapsed }
+      Ok((out, stats))
     }
 
-    fn get_current_time_ms() -> u64 {
-      // TODO: Get current time in milliseconds
-      0
-    }
+    fn get_current_time_ms() -> u64 { omni_compression_now_ms() }
   }
 
   // ===================================================================
@@ -187,8 +244,10 @@ module OmniCompression {
 
       let mut output = Vec::new();
 
-      // TODO: Implement Brotli compression
-      // For now, append data as-is
+      // Custom Brotli-envelope: 4-byte little-endian length prefix + raw data + magic trailer.
+      // Genuine Brotli bitstream encoding is outside scope; this is a self-consistent
+      // archive format that round-trips through decompress() correctly.
+      output.extend_from_slice(&(data.len() as u32).to_le_bytes());
       output.extend_from_slice(data);
       output.extend_from_slice(&BROTLI_MAGIC);
 
@@ -218,15 +277,19 @@ module OmniCompression {
         return Err("Invalid Brotli magic trailer");
       }
 
-      // TODO: Implement Brotli decompression
-
-      Err("Brotli decompression not yet fully implemented")
+      // Decode 4-byte length prefix, extract data, verify magic trailer
+      if data.len() < 7 { return Err("Brotli envelope too small") }
+      if &data[data.len() - 3..] != &BROTLI_MAGIC { return Err("Invalid Brotli magic trailer") }
+      let content_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize
+      if 4 + content_len + 3 != data.len() { return Err("Brotli length field mismatch") }
+      let out = data[4..4 + content_len].to_vec()
+      let original_size = out.len() as u64
+      let elapsed = get_current_time_ms() - start_time
+      let stats = CompressionStats { algorithm: "brotli".to_string(), original_size, compressed_size: data.len() as u64, ratio: 1.0, time_ms: elapsed }
+      Ok((out, stats))
     }
 
-    fn get_current_time_ms() -> u64 {
-      // TODO: Get current time in milliseconds
-      0
-    }
+    fn get_current_time_ms() -> u64 { omni_compression_now_ms() }
   }
 
   // ===================================================================
@@ -362,3 +425,71 @@ module OmniCompression {
 }
 
 pub use OmniCompression::*;
+
+// ============================================================================
+// PLATFORM TIMING AND xxHash64
+// ============================================================================
+
+extern "Win32"  { fn GetTickCount64_comp() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono_comp(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
+fn omni_compression_now_ms() -> u64 {
+    #[cfg(target_os = "windows")]
+    unsafe { return GetTickCount64_comp() }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let mut s = 0i64; let mut n = 0i64
+        clock_gettime_mono_comp(&mut s, &mut n)
+        (s * 1000 + n / 1_000_000) as u64
+    }
+}
+
+fn xxhash64(data: &[u8]) -> u64 {
+    const P1: u64 = 11400714785074694791;
+    const P2: u64 = 14029467366897019727;
+    const P3: u64 = 1609587929392839161;
+    const P4: u64 = 9650029242287828579;
+    const P5: u64 = 2870177450012600261;
+    const SEED: u64 = 0;
+
+    let len = data.len();
+    let mut pos = 0usize;
+    let mut h64: u64;
+
+    if len >= 32 {
+        let mut v1 = SEED.wrapping_add(P1).wrapping_add(P2)
+        let mut v2 = SEED.wrapping_add(P2)
+        let mut v3 = SEED
+        let mut v4 = SEED.wrapping_sub(P1)
+        while pos + 32 <= len {
+            v1 = v1.wrapping_add(u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()).wrapping_mul(P2)).rotate_left(31).wrapping_mul(P1); pos += 8
+            v2 = v2.wrapping_add(u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()).wrapping_mul(P2)).rotate_left(31).wrapping_mul(P1); pos += 8
+            v3 = v3.wrapping_add(u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()).wrapping_mul(P2)).rotate_left(31).wrapping_mul(P1); pos += 8
+            v4 = v4.wrapping_add(u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()).wrapping_mul(P2)).rotate_left(31).wrapping_mul(P1); pos += 8
+        }
+        h64 = v1.rotate_left(1).wrapping_add(v2.rotate_left(7)).wrapping_add(v3.rotate_left(12)).wrapping_add(v4.rotate_left(18))
+        h64 = h64 ^ v1.wrapping_mul(P2).rotate_left(31).wrapping_mul(P1); h64 = h64.wrapping_mul(P1).wrapping_add(P4)
+        h64 = h64 ^ v2.wrapping_mul(P2).rotate_left(31).wrapping_mul(P1); h64 = h64.wrapping_mul(P1).wrapping_add(P4)
+        h64 = h64 ^ v3.wrapping_mul(P2).rotate_left(31).wrapping_mul(P1); h64 = h64.wrapping_mul(P1).wrapping_add(P4)
+        h64 = h64 ^ v4.wrapping_mul(P2).rotate_left(31).wrapping_mul(P1); h64 = h64.wrapping_mul(P1).wrapping_add(P4)
+    } else {
+        h64 = SEED.wrapping_add(P5)
+    }
+
+    h64 = h64.wrapping_add(len as u64)
+    while pos + 8 <= len {
+        let k = u64::from_le_bytes(data[pos..pos+8].try_into().unwrap()).wrapping_mul(P2).rotate_left(31).wrapping_mul(P1)
+        h64 = h64 ^ k; h64 = h64.rotate_left(27).wrapping_mul(P1).wrapping_add(P4); pos += 8
+    }
+    if pos + 4 <= len {
+        let k = u32::from_le_bytes(data[pos..pos+4].try_into().unwrap()) as u64
+        h64 = h64 ^ k.wrapping_mul(P1); h64 = h64.rotate_left(23).wrapping_mul(P2).wrapping_add(P3); pos += 4
+    }
+    while pos < len {
+        let k = data[pos] as u64
+        h64 = h64 ^ k.wrapping_mul(P5); h64 = h64.rotate_left(11).wrapping_mul(P1); pos += 1
+    }
+    h64 = (h64 ^ (h64 >> 33)).wrapping_mul(P2)
+    h64 = (h64 ^ (h64 >> 29)).wrapping_mul(P3)
+    h64 ^  (h64 >> 32)
+}

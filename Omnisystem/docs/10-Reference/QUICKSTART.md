@@ -1,4 +1,4 @@
-# BonsaiEcosystem Desktop - Quick Start Guide
+# OmnisystemEcosystem Desktop - Quick Start Guide
 
 Get the real GUI application running in seconds.
 
@@ -45,14 +45,14 @@ When you launch the application:
 1. **Console Output** (2-3 seconds):
    ```
    ╔════════════════════════════════════════════════╗
-   ║  BONSAI ECOSYSTEM DESKTOP - REAL GUI           ║
+   ║  OMNISYSTEM ECOSYSTEM DESKTOP - REAL GUI           ║
    ║  Launching graphical window...                 ║
    ╚════════════════════════════════════════════════╝
    ```
 
 2. **Graphical Window Appears**:
    - 1920x800 pixel window
-   - "BonsaiEcosystem Desktop Environment v29.0.0" title
+   - "OmnisystemEcosystem Desktop Environment v29.0.0" title
    - Dark professional theme
 
 3. **Desktop Display**:
@@ -67,7 +67,7 @@ When you launch the application:
 ## Window Layout
 
 ```
-┌─ BonsaiEcosystem Desktop Environment v29.0.0 ──────────────────┐
+┌─ OmnisystemEcosystem Desktop Environment v29.0.0 ──────────────────┐
 │ (Blue Title Bar - 0x0D47A1)                                    │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
@@ -121,7 +121,7 @@ Test-Path 'Z:\Projects\Omnisystem\Omnisystem\launchers\Omnisystem.exe'
 If false, rebuild:
 
 ```powershell
-cd Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment
+cd Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment
 cargo build --release
 ```
 
@@ -240,5 +240,5 @@ For issues or questions:
 
 ---
 
-**BonsaiEcosystem Desktop v29.0.0**  
+**OmnisystemEcosystem Desktop v29.0.0**  
 Built with 7 Omnisystem Languages | Enterprise-Grade | Production Ready

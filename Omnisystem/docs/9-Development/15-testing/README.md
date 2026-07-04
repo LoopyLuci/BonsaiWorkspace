@@ -1,7 +1,7 @@
 # Omnisystem Comprehensive Test Suite - Complete Documentation
 
 **Status**: ✅ **PRODUCTION-GRADE TEST SUITE DESIGNED & READY FOR EXECUTION**  
-**Scope**: 3,000+ tests across UOSC, Omnisystem, BonsaiEcosystem, Neural Network Framework  
+**Scope**: 3,000+ tests across UOSC, Omnisystem, OmnisystemEcosystem, Neural Network Framework  
 **Timeline**: 6 weeks to complete verification  
 **Expected Outcome**: 100% system functionality verified, production-ready release  
 
@@ -59,7 +59,7 @@ Status:               ✅ Design ready
 Total Tests:          10,000+
 UOSC Core:            800 tests
 Omnisystem Modules:   1,500 tests
-BonsaiEcosystem:      1,500 tests
+OmnisystemEcosystem:      1,500 tests
 Neural Network:       2,000+ tests
 Coverage Target:      >95%
 Status:               ✅ Test specifications ready
@@ -69,8 +69,8 @@ Status:               ✅ Test specifications ready
 ```
 Total Tests:          500+
 UOSC ↔ Omnisystem:    100 tests
-Omnisystem ↔ Bonsai:  100 tests
-Bonsai ↔ NNF:         100 tests
+Omnisystem ↔ Omnisystem:  100 tests
+Omnisystem ↔ NNF:         100 tests
 Cross-module:         100 tests
 API contracts:        100 tests
 Status:               ✅ Test specifications ready
@@ -391,7 +391,7 @@ Level 4: CTO → Executive Sponsor
 ## 📚 RELATED DOCUMENTATION
 
 - [Neural Network Framework](../neural-network-framework/)
-- [BonsaiEcosystem Documentation](../../modules/base-modules/applications/bonsai-ecosystem/)
+- [OmnisystemEcosystem Documentation](../../modules/base-modules/applications/omnisystem-ecosystem/)
 - [Omnisystem Design](../omnisystem/)
 - [UOSC Architecture](../uosc/)
 

@@ -1,10 +1,10 @@
 # Universal Metrics and Analytics System (UMAS) – Complete Implementation Guide
 
-**Production-Grade Observability Infrastructure for Entire Bonsai Ecosystem**
+**Production-Grade Observability Infrastructure for Entire Omnisystem Ecosystem**
 
 ## Overview
 
-UMAS is a comprehensive, unified metrics collection, aggregation, analysis, and alerting system integrated throughout the entire Bonsai Ecosystem. It provides real-time visibility into all services, from TransferDaemon P2P transfers to API gateways to mobile applications.
+UMAS is a comprehensive, unified metrics collection, aggregation, analysis, and alerting system integrated throughout the entire Omnisystem Ecosystem. It provides real-time visibility into all services, from TransferDaemon P2P transfers to API gateways to mobile applications.
 
 **Core Capabilities**:
 - ✅ Unified metrics collection from 50+ services
@@ -323,8 +323,8 @@ Slack:
   • #operations (info + all)
 
 Email:
-  • ops-team@bonsaieco.org (critical)
-  • oncall@bonsaieco.org (warning)
+  • ops-team@omnisystemeco.org (critical)
+  • oncall@omnisystemeco.org (warning)
 
 PagerDuty:
   • Critical alerts trigger incidents
@@ -547,7 +547,7 @@ Horizontal Scaling:
 
 ✅ **Production Ready**
 
-UMAS is fully integrated throughout the Bonsai Ecosystem with:
+UMAS is fully integrated throughout the Omnisystem Ecosystem with:
 - Complete type system (60+ types)
 - Full manager/orchestrator (850+ LOC)
 - 1GB load-balanced test suite
@@ -560,5 +560,5 @@ UMAS is fully integrated throughout the Bonsai Ecosystem with:
 
 **Version**: 1.0.0  
 **Status**: Production Ready  
-**Maintainer**: BonsaiEcosystem Team  
+**Maintainer**: OmnisystemEcosystem Team  
 **Last Updated**: 2026-06-07

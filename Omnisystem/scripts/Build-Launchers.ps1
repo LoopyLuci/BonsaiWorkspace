@@ -1,7 +1,7 @@
 # ============================================================================
 # OMNISYSTEM LAUNCHERS BUILD SCRIPT
 # ============================================================================
-# Builds all BonsaiEcosystem launchers and desktop environment
+# Builds all OmnisystemEcosystem launchers and desktop environment
 # Handles both standard Rust projects and Tauri applications
 # ============================================================================
 
@@ -32,20 +32,20 @@ $Config.Projects = @(
     @{
         Name = "Desktop Environment (Main)"
         Key = "desktop"
-        Path = "Omnisystem\applications\bonsai-desktop-environment"
+        Path = "Omnisystem\applications\omnisystem-desktop-environment"
         Type = "cargo"
         BinaryName = "Omnisystem"
         OutputName = "Omnisystem.exe"
-        Description = "BonsaiEcosystem Desktop Environment v29.0.0"
+        Description = "OmnisystemEcosystem Desktop Environment v29.0.0"
     },
     @{
         Name = "Desktop Environment (TUI)"
         Key = "desktop"
-        Path = "Omnisystem\applications\bonsai-desktop-environment"
+        Path = "Omnisystem\applications\omnisystem-desktop-environment"
         Type = "cargo"
         BinaryName = "Omnisystem_TUI"
         OutputName = "Omnisystem_TUI.exe"
-        Description = "BonsaiEcosystem Desktop Environment - Interactive TUI"
+        Description = "OmnisystemEcosystem Desktop Environment - Interactive TUI"
     },
     @{
         Name = "Omnisystem GUI Launcher"
@@ -57,13 +57,13 @@ $Config.Projects = @(
         Description = "Omnisystem Native Desktop Launcher (Tauri)"
     },
     @{
-        Name = "BonsaiEcosystem Launcher"
+        Name = "OmnisystemEcosystem Launcher"
         Key = "launcher"
-        Path = "Omnisystem\modules\base-modules\applications\bonsai-ecosystem\launcher"
+        Path = "Omnisystem\modules\base-modules\applications\omnisystem-ecosystem\launcher"
         Type = "cargo"
-        BinaryName = "bonsai-launcher"
-        OutputName = "BonsaiLauncher.exe"
-        Description = "BonsaiEcosystem Application Launcher"
+        BinaryName = "omnisystem-launcher"
+        OutputName = "OmnisystemLauncher.exe"
+        Description = "OmnisystemEcosystem Application Launcher"
     }
 )
 

@@ -1,6 +1,6 @@
 # Build Scripts
 
-Automated build and compilation scripts for BonsaiWorkspace.
+Automated build and compilation scripts for OmnisystemWorkspace.
 
 ## Location
 

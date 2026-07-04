@@ -1,8 +1,8 @@
-# Bonsai Android Agent - Kotlin Implementation Guide
+# Omnisystem Android Agent - Kotlin Implementation Guide
 
 ## Overview
 
-The Bonsai Android Agent is a lightweight companion service running on Android devices that enables the Desktop Bridge to control the device. This document provides the implementation skeleton and architecture for the Kotlin agent.
+The Omnisystem Android Agent is a lightweight companion service running on Android devices that enables the Desktop Bridge to control the device. This document provides the implementation skeleton and architecture for the Kotlin agent.
 
 ## Project Structure
 
@@ -11,9 +11,9 @@ android-agent/
 ├── app/
 │  ├── src/
 │  │  ├── main/
-│  │  │  ├── java/com/bonsai/agent/
+│  │  │  ├── java/com/omnisystem/agent/
 │  │  │  │  ├── MainActivity.kt              # Main entry point
-│  │  │  │  ├── BonsaiService.kt             # Foreground service
+│  │  │  │  ├── OmnisystemService.kt             # Foreground service
 │  │  │  │  ├── connection/
 │  │  │  │  │  ├── NoiseProtocol.kt          # Encryption handshake
 │  │  │  │  │  ├── SessionKey.kt             # Session management
@@ -39,7 +39,7 @@ android-agent/
 │  │  │  │  ├── telemetry/
 │  │  │  │  │  ├── TelemetryReporter.kt      # Event logging
 │  │  │  │  │  └── Metrics.kt                # Performance metrics
-│  │  │  │  └── BonsaiAgent.kt               # Main coordinator
+│  │  │  │  └── OmnisystemAgent.kt               # Main coordinator
 │  │  │  ├── AndroidManifest.xml
 │  │  │  └── res/
 │  │  │     ├── layout/
@@ -58,7 +58,7 @@ android-agent/
 ### 1. MainActivity.kt
 
 ```kotlin
-package com.bonsai.agent
+package com.omnisystem.agent
 
 import android.content.Intent
 import android.os.Build
@@ -75,8 +75,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Start Bonsai Agent service
-        val intent = Intent(this, BonsaiService::class.java)
+        // Start Omnisystem Agent service
+        val intent = Intent(this, OmnisystemService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -86,33 +86,33 @@ class MainActivity : AppCompatActivity() {
 }
 ```
 
-### 2. BonsaiService.kt
+### 2. OmnisystemService.kt
 
 ```kotlin
-package com.bonsai.agent
+package com.omnisystem.agent
 
 import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.bonsai.agent.connection.NoiseProtocol
-import com.bonsai.agent.screen.ScreenCapture
-import com.bonsai.agent.input.InputHandler
-import com.bonsai.agent.file.FileSyncService
-import com.bonsai.agent.telemetry.TelemetryReporter
+import com.omnisystem.agent.connection.NoiseProtocol
+import com.omnisystem.agent.screen.ScreenCapture
+import com.omnisystem.agent.input.InputHandler
+import com.omnisystem.agent.file.FileSyncService
+import com.omnisystem.agent.telemetry.TelemetryReporter
 import kotlinx.coroutines.*
 import java.net.ServerSocket
 
-class BonsaiService : Service() {
+class OmnisystemService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
-    private val binder = BonsaiBinder()
+    private val binder = OmnisystemBinder()
 
-    private lateinit var agent: BonsaiAgent
+    private lateinit var agent: OmnisystemAgent
     private var serverSocket: ServerSocket? = null
 
-    inner class BonsaiBinder : Binder() {
-        fun getService(): BonsaiService = this@BonsaiService
+    inner class OmnisystemBinder : Binder() {
+        fun getService(): OmnisystemService = this@OmnisystemService
     }
 
     override fun onCreate() {
@@ -120,7 +120,7 @@ class BonsaiService : Service() {
 
         // Create notification for foreground service
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Bonsai Agent")
+            .setContentTitle("Omnisystem Agent")
             .setContentText("Running device control service")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
@@ -128,7 +128,7 @@ class BonsaiService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         // Initialize agent
-        agent = BonsaiAgent(applicationContext)
+        agent = OmnisystemAgent(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,31 +161,31 @@ class BonsaiService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     companion object {
-        private const val CHANNEL_ID = "bonsai_channel"
+        private const val CHANNEL_ID = "omnisystem_channel"
         private const val NOTIFICATION_ID = 1
         private const val BRIDGE_PORT = 5037
     }
 }
 ```
 
-### 3. BonsaiAgent.kt (Main Coordinator)
+### 3. OmnisystemAgent.kt (Main Coordinator)
 
 ```kotlin
-package com.bonsai.agent
+package com.omnisystem.agent
 
 import android.content.Context
-import com.bonsai.agent.connection.SessionKey
-import com.bonsai.agent.screen.ScreenCapture
-import com.bonsai.agent.screen.ScreenEncoder
-import com.bonsai.agent.input.InputHandler
-import com.bonsai.agent.file.FileSyncService
-import com.bonsai.agent.capability.CapabilityChecker
-import com.bonsai.agent.telemetry.TelemetryReporter
+import com.omnisystem.agent.connection.SessionKey
+import com.omnisystem.agent.screen.ScreenCapture
+import com.omnisystem.agent.screen.ScreenEncoder
+import com.omnisystem.agent.input.InputHandler
+import com.omnisystem.agent.file.FileSyncService
+import com.omnisystem.agent.capability.CapabilityChecker
+import com.omnisystem.agent.telemetry.TelemetryReporter
 import kotlinx.coroutines.*
 import java.net.Socket
 import javax.crypto.Cipher
 
-class BonsaiAgent(private val context: Context) {
+class OmnisystemAgent(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
 
     private val screenCapture = ScreenCapture(context)
@@ -342,7 +342,7 @@ class BonsaiAgent(private val context: Context) {
 
 ```kotlin
 // screen/ScreenCapture.kt
-package com.bonsai.agent.screen
+package com.omnisystem.agent.screen
 
 import android.content.Context
 import android.graphics.PixelFormat
@@ -379,7 +379,7 @@ class ScreenCapture(context: Context) {
 }
 
 // screen/ScreenEncoder.kt
-package com.bonsai.agent.screen
+package com.omnisystem.agent.screen
 
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -421,7 +421,7 @@ class ScreenEncoder(
 
 ```kotlin
 // input/InputHandler.kt
-package com.bonsai.agent.input
+package com.omnisystem.agent.input
 
 import android.content.Context
 import android.view.KeyEvent
@@ -466,7 +466,7 @@ class InputHandler(private val context: Context) {
 
 ```kotlin
 // file/FileSyncService.kt
-package com.bonsai.agent.file
+package com.omnisystem.agent.file
 
 import android.content.Context
 import android.os.Environment
@@ -476,7 +476,7 @@ import java.io.File
 import java.security.MessageDigest
 
 class FileSyncService(private val context: Context) {
-    private val syncRoot = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "bonsai_sync")
+    private val syncRoot = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "omnisystem_sync")
 
     suspend fun sync(direction: String) = withContext(Dispatchers.IO) {
         when (direction) {
@@ -538,7 +538,7 @@ data class FileMetadata(
 
 ```kotlin
 // capability/CapabilityChecker.kt
-package com.bonsai.agent.capability
+package com.omnisystem.agent.capability
 
 import android.util.Base64
 import java.security.Signature
@@ -601,14 +601,14 @@ data class CapabilityToken(
 
 ```kotlin
 // telemetry/TelemetryReporter.kt
-package com.bonsai.agent.telemetry
+package com.omnisystem.agent.telemetry
 
 import android.util.Log
 import kotlinx.coroutines.*
 import java.time.Instant
 
 class TelemetryReporter {
-    private val tag = "BonsaiAgent"
+    private val tag = "OmnisystemAgent"
 
     fun logInputEvent(type: String) {
         Log.i(tag, "Input event: $type at ${Instant.now()}")
@@ -644,10 +644,10 @@ plugins {
 
 android {
     compileSdk = 33
-    namespace = "com.bonsai.agent"
+    namespace = "com.omnisystem.agent"
 
     defaultConfig {
-        applicationId = "com.bonsai.agent"
+        applicationId = "com.omnisystem.agent"
         minSdk = 24
         targetSdk = 33
         versionCode = 1
@@ -695,7 +695,7 @@ dependencies {
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.bonsai.agent">
+    package="com.omnisystem.agent">
 
     <!-- Required permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -721,9 +721,9 @@ dependencies {
             </intent-filter>
         </activity>
 
-        <service android:name=".BonsaiService" />
+        <service android:name=".OmnisystemService" />
         <service
-            android:name=".accessibility.BonsaiAccessibilityService"
+            android:name=".accessibility.OmnisystemAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -748,17 +748,17 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 ### Grant Permissions
 ```bash
-adb shell pm grant com.bonsai.agent android.permission.BIND_ACCESSIBILITY_SERVICE
+adb shell pm grant com.omnisystem.agent android.permission.BIND_ACCESSIBILITY_SERVICE
 ```
 
 ### Start Service
 ```bash
-adb shell am startservice com.bonsai.agent/.BonsaiService
+adb shell am startservice com.omnisystem.agent/.OmnisystemService
 ```
 
 ### Monitor Logs
 ```bash
-adb logcat | grep BonsaiAgent
+adb logcat | grep OmnisystemAgent
 ```
 
 ## Future Enhancements

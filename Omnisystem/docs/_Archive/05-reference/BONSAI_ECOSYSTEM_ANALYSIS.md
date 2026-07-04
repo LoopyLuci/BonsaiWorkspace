@@ -1,4 +1,4 @@
-# BonsaiEcosystem Comprehensive Analysis
+# OmnisystemEcosystem Comprehensive Analysis
 ## Features, Systems & Integration Review
 **Date**: 2026-06-16 | **Status**: Analysis Complete
 
@@ -6,18 +6,18 @@
 
 ## Executive Summary
 
-BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisystem containing **17 major feature modules**, **744 files**, and **95+ KB of core code**. 
+OmnisystemEcosystem is a comprehensive desktop/system integration layer for Omnisystem containing **17 major feature modules**, **744 files**, and **95+ KB of core code**. 
 
 **Key Finding**: 7 core system features should be **directly integrated into Omnisystem core** to ensure every Omnisystem installation includes essential system-level functionality.
 
 ---
 
-## Complete BonsaiEcosystem Features
+## Complete OmnisystemEcosystem Features
 
 ### A. CORE SYSTEM FEATURES (Should be in Omnisystem Core)
 
 #### 1. **Desktop Launcher** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/launcher/`
+- **Location**: `omnisystem-ecosystem/launcher/`
 - **Technology**: Tauri Framework
 - **Purpose**: Provides window management, native OS integration, application packaging
 - **Files**: 10+ (Cargo.toml, tauri.conf.json, vite.config.ts, build.rs)
@@ -27,7 +27,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Essential for users to launch Omnisystem applications. Should be standard infrastructure.
 
 #### 2. **Control Panel (Management System)** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/control-panel/`
+- **Location**: `omnisystem-ecosystem/control-panel/`
 - **Files**: `core.ti` (16 KB), `api_server.ti`, `architecture.md`
 - **Language**: TITAN
 - **Purpose**: Central management interface for Omnisystem configuration
@@ -37,7 +37,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Every Omnisystem installation needs centralized management. Should be core service.
 
 #### 3. **Installation System** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/installer/`
+- **Location**: `omnisystem-ecosystem/installer/`
 - **Files**: `core.ti` (20 KB), `host_detection.ti`, `architecture.md`
 - **Language**: TITAN
 - **Purpose**: Omnisystem installation and setup
@@ -47,7 +47,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Fundamental for deploying Omnisystem. Must be universally available.
 
 #### 4. **File Associations Handler** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/file-associations/`
+- **Location**: `omnisystem-ecosystem/file-associations/`
 - **Files**: `core.ti` (15 KB)
 - **Language**: TITAN
 - **Purpose**: Register Omnisystem as handler for custom file types
@@ -57,7 +57,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Essential for OS integration. Every installation should support file associations.
 
 #### 5. **Notifications Daemon** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/notifications/`
+- **Location**: `omnisystem-ecosystem/notifications/`
 - **Files**: `notification_daemon.ti` (15 KB)
 - **Language**: TITAN
 - **Purpose**: Cross-platform notification service
@@ -67,7 +67,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Critical for system notifications. Should be available to all Omnisystem apps.
 
 #### 6. **System Tray Integration** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/system-tray/`
+- **Location**: `omnisystem-ecosystem/system-tray/`
 - **Files**: `core.ti` (14 KB)
 - **Language**: TITAN
 - **Purpose**: System tray/menu bar integration
@@ -77,7 +77,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 **Rationale**: Standard for desktop applications. Should be core infrastructure.
 
 #### 7. **Runtime Management** ✅ MOVE TO CORE
-- **Location**: `bonsai-ecosystem/runtime/` and `bonsai-ecosystem/runtimes/`
+- **Location**: `omnisystem-ecosystem/runtime/` and `omnisystem-ecosystem/runtimes/`
 - **Technology**: Cargo-based runtime infrastructure
 - **Purpose**: Manage Omnisystem runtime environments
 - **Functions**: Runtime selection, version management, environment configuration
@@ -87,76 +87,76 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 
 ---
 
-### B. OPTIONAL SYSTEM FEATURES (Keep in BonsaiEcosystem)
+### B. OPTIONAL SYSTEM FEATURES (Keep in OmnisystemEcosystem)
 
-#### 1. **Theme System** ⚠️ KEEP IN BONSAI
-- **Location**: `bonsai-ecosystem/theme-system/`
+#### 1. **Theme System** ⚠️ KEEP IN OMNISYSTEM
+- **Location**: `omnisystem-ecosystem/theme-system/`
 - **Files**: `core.ti` (16 KB)
 - **Purpose**: Theme customization and management
-- **Status**: 🟡 **OPTIONAL - Bonsai Enhancement**
+- **Status**: 🟡 **OPTIONAL - Omnisystem Enhancement**
 
-#### 2. **Shared UI Components** ⚠️ KEEP IN BONSAI
-- **Location**: `bonsai-ecosystem/shared-ui/`
+#### 2. **Shared UI Components** ⚠️ KEEP IN OMNISYSTEM
+- **Location**: `omnisystem-ecosystem/shared-ui/`
 - **Files**: Svelte components, CSS, configuration
-- **Purpose**: Reusable UI components for Bonsai applications
-- **Status**: 🟡 **OPTIONAL - Bonsai Enhancement**
+- **Purpose**: Reusable UI components for Omnisystem applications
+- **Status**: 🟡 **OPTIONAL - Omnisystem Enhancement**
 
-#### 3. **Workspace Management** ⚠️ KEEP IN BONSAI
-- **Location**: `bonsai-ecosystem/workspace/`
+#### 3. **Workspace Management** ⚠️ KEEP IN OMNISYSTEM
+- **Location**: `omnisystem-ecosystem/workspace/`
 - **Files**: Workspace configuration, user manuals
 - **Purpose**: Project/workspace organization
 - **Status**: 🟡 **OPTIONAL - Development Tool**
 
 ---
 
-### C. IDE & DEVELOPMENT TOOLS (Keep in BonsaiEcosystem)
+### C. IDE & DEVELOPMENT TOOLS (Keep in OmnisystemEcosystem)
 
 #### 1. **VSCode Extension**
-- **Location**: `bonsai-ecosystem/vscode-extension/`
+- **Location**: `omnisystem-ecosystem/vscode-extension/`
 - **Files**: TypeScript, test configuration, manifest
 - **Purpose**: Omnisystem language support in VSCode
 - **Status**: 🟡 **OPTIONAL - IDE Tool**
 
 #### 2. **Rust Compiler GUI**
-- **Location**: `bonsai-ecosystem/rust-compiler-gui/`
+- **Location**: `omnisystem-ecosystem/rust-compiler-gui/`
 - **Files**: Complete feature summary, build system
 - **Purpose**: Visual interface for Rust compilation
 - **Status**: 🟡 **OPTIONAL - Development Tool**
 
 #### 3. **UACS Dashboard**
-- **Location**: `bonsai-ecosystem/uacs-dashboard/`
+- **Location**: `omnisystem-ecosystem/uacs-dashboard/`
 - **Files**: Web dashboard, metrics visualization
 - **Purpose**: System monitoring and visualization
 - **Status**: 🟡 **OPTIONAL - Monitoring Tool**
 
 #### 4. **Visualizer UI**
-- **Location**: `bonsai-ecosystem/visualiser-ui/`
+- **Location**: `omnisystem-ecosystem/visualiser-ui/`
 - **Files**: Web-based visualization interface
 - **Purpose**: Data and system visualization
 - **Status**: 🟡 **OPTIONAL - Development Tool**
 
 ---
 
-### D. BROWSER & EXTENSION SUPPORT (Keep in BonsaiEcosystem)
+### D. BROWSER & EXTENSION SUPPORT (Keep in OmnisystemEcosystem)
 
 #### 1. **Browser Extension**
-- **Location**: `bonsai-ecosystem/browser-extension/`
+- **Location**: `omnisystem-ecosystem/browser-extension/`
 - **Files**: Chrome & Firefox manifests, HTML, JavaScript
 - **Purpose**: Browser integration for Omnisystem
 - **Status**: 🟡 **OPTIONAL - Browser Integration**
 
 ---
 
-### E. CI/CD & BUILD INFRASTRUCTURE (Keep in BonsaiEcosystem)
+### E. CI/CD & BUILD INFRASTRUCTURE (Keep in OmnisystemEcosystem)
 
 #### 1. **CI/CD Pipeline**
-- **Location**: `bonsai-ecosystem/ci/`
-- **Files**: `bonsai-pipeline.yaml`, orchestration scripts
+- **Location**: `omnisystem-ecosystem/ci/`
+- **Files**: `omnisystem-pipeline.yaml`, orchestration scripts
 - **Purpose**: Automated build and deployment
 - **Status**: 🟡 **OPTIONAL - Build Infrastructure**
 
 #### 2. **Build Scripts**
-- **Location**: `bonsai-ecosystem/scripts/`
+- **Location**: `omnisystem-ecosystem/scripts/`
 - **Statistics**: 71 PowerShell, 16 Shell, 27 Python, others
 - **Purpose**: Build automation, deployment, testing, training
 - **Status**: 🟡 **OPTIONAL - Build Tools**
@@ -177,7 +177,7 @@ BonsaiEcosystem is a comprehensive desktop/system integration layer for Omnisyst
 | **System Tray** | Desktop Integration | 🔴 CRITICAL | Standard app feature |
 | **Runtime Management** | Environment | 🔴 CRITICAL | Application execution |
 
-### Should Keep in BonsaiEcosystem
+### Should Keep in OmnisystemEcosystem
 
 | Feature | Category | Priority | Reason |
 |---------|----------|----------|--------|
@@ -206,16 +206,16 @@ Omnisystem/
 ├── UOSC/
 ├── docs/
 ├── system/                          🆕 NEW
-│   ├── launcher/                   (moved from bonsai)
-│   ├── control-panel/              (moved from bonsai)
-│   ├── installer/                  (moved from bonsai)
-│   ├── file-associations/          (moved from bonsai)
-│   ├── notifications/              (moved from bonsai)
-│   ├── system-tray/                (moved from bonsai)
-│   └── runtime/                    (moved from bonsai)
+│   ├── launcher/                   (moved from omnisystem)
+│   ├── control-panel/              (moved from omnisystem)
+│   ├── installer/                  (moved from omnisystem)
+│   ├── file-associations/          (moved from omnisystem)
+│   ├── notifications/              (moved from omnisystem)
+│   ├── system-tray/                (moved from omnisystem)
+│   └── runtime/                    (moved from omnisystem)
 │
 ├── applications/
-│   └── bonsai-ecosystem/           (remaining features)
+│   └── omnisystem-ecosystem/           (remaining features)
 │       ├── theme-system/
 │       ├── workspace/
 │       ├── vscode-extension/
@@ -251,8 +251,8 @@ Omnisystem/
 - [ ] Add system services to module registry
 - [ ] Update initialization sequence
 
-### Phase 4: Update BonsaiEcosystem
-- [ ] Update BonsaiEcosystem to use core system services
+### Phase 4: Update OmnisystemEcosystem
+- [ ] Update OmnisystemEcosystem to use core system services
 - [ ] Remove duplicate code
 - [ ] Consolidate integration layer
 
@@ -285,9 +285,9 @@ Omnisystem/
 
 ---
 
-## What Remains in BonsaiEcosystem
+## What Remains in OmnisystemEcosystem
 
-After integration, BonsaiEcosystem becomes a **specialized ecosystem application** providing:
+After integration, OmnisystemEcosystem becomes a **specialized ecosystem application** providing:
 
 - 🎨 Advanced theming and customization
 - 🛠️ Development tools (VSCode extension, compiler GUI)
@@ -296,13 +296,13 @@ After integration, BonsaiEcosystem becomes a **specialized ecosystem application
 - 🌐 Browser integration
 - 🔨 Build and CI/CD infrastructure
 
-This makes BonsaiEcosystem an **optional enhancement package** rather than a core system component.
+This makes OmnisystemEcosystem an **optional enhancement package** rather than a core system component.
 
 ---
 
 ## Summary
 
-**BonsaiEcosystem contains 7 critical system features that should be integrated into Omnisystem core:**
+**OmnisystemEcosystem contains 7 critical system features that should be integrated into Omnisystem core:**
 
 1. ✅ Desktop Launcher (Tauri)
 2. ✅ Control Panel
@@ -312,7 +312,7 @@ This makes BonsaiEcosystem an **optional enhancement package** rather than a cor
 6. ✅ System Tray
 7. ✅ Runtime Management
 
-**10 optional features should remain in BonsaiEcosystem**, making it a specialized ecosystem for advanced users and developers.
+**10 optional features should remain in OmnisystemEcosystem**, making it a specialized ecosystem for advanced users and developers.
 
 **Recommendation**: Implement Phase 1-2 integration to ensure every Omnisystem installation has essential system-level functionality.
 

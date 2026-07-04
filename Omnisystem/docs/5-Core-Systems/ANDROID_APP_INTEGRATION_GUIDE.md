@@ -1,8 +1,8 @@
-# Bonsai Android App Suite - Integration Guide
+# Omnisystem Android App Suite - Integration Guide
 
 ## Overview
 
-This document provides the complete guide for integrating all 12 Android apps in the Bonsai suite. The apps are fully modularized and share infrastructure through the `library-bonsai-shared` module.
+This document provides the complete guide for integrating all 12 Android apps in the Omnisystem suite. The apps are fully modularized and share infrastructure through the `library-omnisystem-shared` module.
 
 **Status:** 9/12 apps have build.gradle.kts configured. Core infrastructure (Phase 1) is complete.
 
@@ -12,7 +12,7 @@ This document provides the complete guide for integrating all 12 Android apps in
 
 ### Build All Apps
 ```bash
-cd /z/Projects/BonsaiWorkspace/android-runtime
+cd /z/Projects/OmnisystemWorkspace/android-runtime
 ./gradlew clean build
 ```
 
@@ -40,7 +40,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="ai.bonsai.APP_NAME">
+    package="ai.omnisystem.APP_NAME">
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -56,13 +56,13 @@ Each app needs an AndroidManifest.xml in `src/main/`:
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.BonsaiApp"
+        android:theme="@style/Theme.OmnisystemApp"
         android:usesCleartextTraffic="false">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.BonsaiApp">
+            android:theme="@style/Theme.OmnisystemApp">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -75,7 +75,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
             <category android:name="android.intent.category.DEFAULT" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data
-                android:scheme="bonsai"
+                android:scheme="omnisystem"
                 android:host="APP_NAME" />
         </intent-filter>
     </application>
@@ -86,14 +86,14 @@ Each app needs an AndroidManifest.xml in `src/main/`:
 
 ## Module-by-Module Setup
 
-### library-bonsai-shared ✅ COMPLETE
+### library-omnisystem-shared ✅ COMPLETE
 
 **Status:** Phase 1 infrastructure fully implemented
 
 **Key Components:**
-- BonsaiService (AIDL) - Core inference service
-- BonsaiDataManager - Database access
-- BonsaiContentProvider - File/data sharing
+- OmnisystemService (AIDL) - Core inference service
+- OmnisystemDataManager - Database access
+- OmnisystemContentProvider - File/data sharing
 - ModelRegistry - Hot-swapping
 - ModelConverter - Format conversion
 - KdbRetriever - RAG with vectors
@@ -103,7 +103,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
 
 ---
 
-### app (Bonsai Buddy) ✅ COMPLETE
+### app (Omnisystem Buddy) ✅ COMPLETE
 
 **Status:** Full implementation with inference, chat, and tool calling
 
@@ -192,7 +192,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
     <string name="model_list_title">Models</string>
     <string name="download_button">Download</string>
     <string name="model_detail_title">Model Details</string>
-    <string name="test_button">Test in Bonsai Buddy</string>
+    <string name="test_button">Test in Omnisystem Buddy</string>
     <string name="quantize_button">Quantize Model</string>
     <string name="delete_button">Delete Model</string>
     <string name="error_loading">Error loading models</string>
@@ -230,7 +230,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="ai.bonsai.computedonor">
+    package="ai.omnisystem.computedonor">
     
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -257,7 +257,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
 
 **Architecture Notes:**
 - Uses WorkManager for scheduled tasks
-- Binds to BonsaiService for credit tracking
+- Binds to OmnisystemService for credit tracking
 - Stores preferences in SharedPreferences
 - Monitors battery and network state
 
@@ -338,7 +338,7 @@ Each app needs an AndroidManifest.xml in `src/main/`:
    - `SkillTreeScreen.kt` - Tree visualization
    - `LessonScreen.kt` - Content display
    - `ExerciseRunner.kt` - WASM sandbox
-   - `BonsaiTutorChat.kt` - Integrated tutoring
+   - `OmnisystemTutorChat.kt` - Integrated tutoring
 
 3. **Key Features:**
    - Skill tree progression
@@ -436,7 +436,7 @@ fun DeveloperSuiteApp() {
 **Location:** `/android-runtime/app-ai-power-user/`
 
 **Composition:**
-- Bonsai Buddy (Tab 1) - Main chat
+- Omnisystem Buddy (Tab 1) - Main chat
 - Academy (Tab 2) - Learning
 - Workspace (Tab 3) - Editing
 
@@ -469,23 +469,23 @@ fun DeveloperSuiteApp() {
 
 ## Shared Infrastructure Setup
 
-### 1. BonsaiService Binding (All Apps)
+### 1. OmnisystemService Binding (All Apps)
 
 In each app's MainActivity or a base Activity:
 
 ```kotlin
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    private lateinit var bonsaiService: IBonsaiService
+    private lateinit var omnisystemService: IOmnisystemService
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Bind to BonsaiService
-        val intent = Intent(this, BonsaiService::class.java)
+        // Bind to OmnisystemService
+        val intent = Intent(this, OmnisystemService::class.java)
         bindService(intent, object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                bonsaiService = IBonsaiService.Stub.asInterface(service)
+                omnisystemService = IOmnisystemService.Stub.asInterface(service)
             }
             
             override fun onServiceDisconnected(name: ComponentName?) {}
@@ -496,18 +496,18 @@ class MainActivity : ComponentActivity() {
 
 ### 2. ContentProvider Setup
 
-All apps share data via BonsaiContentProvider:
+All apps share data via OmnisystemContentProvider:
 
 ```kotlin
 // Access models
-val uri = Uri.parse("content://ai.bonsai.shared.provider/models")
+val uri = Uri.parse("content://ai.omnisystem.shared.provider/models")
 val cursor = contentResolver.query(uri, null, null, null, null)
 
 // Access settings
-val settingsUri = Uri.parse("content://ai.bonsai.shared.provider/settings")
+val settingsUri = Uri.parse("content://ai.omnisystem.shared.provider/settings")
 
 // Access chat history
-val chatUri = Uri.parse("content://ai.bonsai.shared.provider/chat")
+val chatUri = Uri.parse("content://ai.omnisystem.shared.provider/chat")
 ```
 
 ### 3. Dependency Injection (Hilt)
@@ -516,7 +516,7 @@ All apps use Hilt for DI:
 
 ```kotlin
 @HiltAndroidApp
-class BonsaiApp : Application() {
+class OmnisystemApp : Application() {
     // Automatically initialized
 }
 ```
@@ -612,13 +612,13 @@ NavHost(navController, "start_destination") {
 ```
 
 **Problem:** Missing dependency
-- Ensure library-bonsai-shared is built
-- Run `./gradlew :library-bonsai-shared:build`
+- Ensure library-omnisystem-shared is built
+- Run `./gradlew :library-omnisystem-shared:build`
 
 ### Runtime Issues
 
-**Problem:** BonsaiService not available
-- Start BonsaiService: `startService(Intent(this, BonsaiService::class.java))`
+**Problem:** OmnisystemService not available
+- Start OmnisystemService: `startService(Intent(this, OmnisystemService::class.java))`
 - Check AndroidManifest.xml has service declaration
 
 **Problem:** ContentProvider access denied
@@ -631,7 +631,7 @@ NavHost(navController, "start_destination") {
 
 **Phase Completion:**
 - Phase 1 (Core Infrastructure): ✅ Complete
-- Phase 2 (Bonsai Buddy): ✅ Complete  
+- Phase 2 (Omnisystem Buddy): ✅ Complete  
 - Phase 3 (Remote Desktop): ✅ Complete
 - Phase 4a (Model Manager): ✅ Generated (needs minor manifest/res)
 - Phase 4b-f (5 standalone apps): 📝 Framework ready (needs implementation)

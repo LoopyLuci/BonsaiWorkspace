@@ -1,4 +1,4 @@
-# Usage Examples: Bonsai Adaptive Benchmarks
+# Usage Examples: Omnisystem Adaptive Benchmarks
 
 ## Example 1: Running Unit Tests
 
@@ -6,7 +6,7 @@
 ```rust
 #[test]
 fn test_layer_mask_skip_connections() {
-    use bonsai_adaptive_benchmarks::unit_tests::LayerMask;
+    use omnisystem_adaptive_benchmarks::unit_tests::LayerMask;
     
     let mask = LayerMask::with_pattern(100, &[0, 50, 99]);
     assert_eq!(mask.active_layers(), 3);
@@ -23,14 +23,14 @@ fn test_layer_mask_skip_connections() {
 
 ### Run Masking Tests
 ```bash
-cargo test -p bonsai-adaptive-benchmarks unit_tests::layer_masking_tests
+cargo test -p omnisystem-adaptive-benchmarks unit_tests::layer_masking_tests
 ```
 
 ## Example 2: Performance Benchmarking
 
 ### Basic Latency Benchmark
 ```rust
-use bonsai_adaptive_benchmarks::performance::{
+use omnisystem_adaptive_benchmarks::performance::{
     PerformanceBenchmark, PerformanceMetrics
 };
 
@@ -59,14 +59,14 @@ async fn main() -> anyhow::Result<()> {
 
 ### Run Performance Benchmarks
 ```bash
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
 ```
 
 ## Example 3: Correctness Testing
 
 ### Test Subset Validity
 ```rust
-use bonsai_adaptive_benchmarks::correctness::CorrectnessTest;
+use omnisystem_adaptive_benchmarks::correctness::CorrectnessTest;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Detect Regressions Between Versions
 ```rust
-use bonsai_adaptive_benchmarks::regression::RegressionDetector;
+use omnisystem_adaptive_benchmarks::regression::RegressionDetector;
 use std::collections::HashMap;
 
 fn main() {
@@ -153,7 +153,7 @@ fn main() {
 
 ### Run Benchmark on Standard Dataset
 ```rust
-use bonsai_adaptive_benchmarks::test_fixtures::TestFixture;
+use omnisystem_adaptive_benchmarks::test_fixtures::TestFixture;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Create Custom Fixture
 ```rust
-use bonsai_adaptive_benchmarks::test_fixtures::{TestDataset, TestFixture};
+use omnisystem_adaptive_benchmarks::test_fixtures::{TestDataset, TestFixture};
 
 fn main() {
     let mut custom = TestFixture::new("my_custom_benchmark".to_string(), 42);
@@ -195,7 +195,7 @@ fn main() {
 
 ### Run Comprehensive Benchmark Suite
 ```rust
-use bonsai_adaptive_benchmarks::benchmarking::{BenchmarkConfig, BenchmarkRunner};
+use omnisystem_adaptive_benchmarks::benchmarking::{BenchmarkConfig, BenchmarkRunner};
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -245,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Verify Critical Properties
 ```rust
-use bonsai_adaptive_benchmarks::formal_verification::FormalVerifier;
+use omnisystem_adaptive_benchmarks::formal_verification::FormalVerifier;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -276,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Record and Export Metrics
 ```rust
-use bonsai_adaptive_benchmarks::observability::{
+use omnisystem_adaptive_benchmarks::observability::{
     MetricsCollector, BenchmarkLogger
 };
 use std::collections::HashMap;
@@ -322,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Add Metrics to InferenceEngine
 ```rust
-use bonsai_adaptive_benchmarks::observability::MetricsCollector;
+use omnisystem_adaptive_benchmarks::observability::MetricsCollector;
 use std::sync::Arc;
 
 pub struct InferenceEngineWithMetrics {
@@ -381,21 +381,21 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p bonsai-adaptive-benchmarks --lib
+      - run: cargo test -p omnisystem-adaptive-benchmarks --lib
       
   benchmarks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
+      - run: cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
       
   regression:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p bonsai-adaptive-benchmarks regression::
+      - run: cargo test -p omnisystem-adaptive-benchmarks regression::
 ```
 
 ## Troubleshooting Examples
@@ -426,13 +426,13 @@ let report = detector.detect_all_regressions(&baseline, &current);
 # Problem: Memory growing unbounded
 # Solution: Profile with valgrind
 
-valgrind --leak-check=full cargo test -p bonsai-adaptive-benchmarks
+valgrind --leak-check=full cargo test -p omnisystem-adaptive-benchmarks
 ```
 
 ## Complete Example: Full Workflow
 
 ```rust
-use bonsai_adaptive_benchmarks::{
+use omnisystem_adaptive_benchmarks::{
     benchmarking::*, correctness::*, regression::*,
     observability::*, formal_verification::*,
     test_fixtures::*,

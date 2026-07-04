@@ -10,11 +10,11 @@ import {
     State,
 } from 'vscode-languageclient/node';
 import { OmnisystemExplorerProvider } from './providers/OmnisystemExplorer';
-import { BonsaiExplorerProvider } from './providers/BonsaiExplorer';
+import { DesktopExplorerProvider } from './providers/DesktopExplorer';
 import { OmniPMExplorerProvider } from './providers/OmniPMExplorer';
 import { OmniOSExplorerProvider } from './providers/OmniOSExplorer';
 import { OmnisystemTaskProvider } from './providers/TaskProvider';
-import { BonsaiDashboardPanel } from './webviews/BonsaiDashboard';
+import { OmnisystemDashboardPanel } from './webviews/OmnisystemDashboard';
 import { BuildDashboardPanel } from './webviews/BuildDashboard';
 import { MlStudioPanel } from './webviews/MlStudio';
 import { ShaderPreviewPanel } from './webviews/ShaderPreview';
@@ -48,14 +48,14 @@ const OMNI_DOC_SELECTORS: vscode.DocumentSelector = OMNI_LANGUAGES.map((lang) =>
 
 // ─── Workspace type detection ─────────────────────────────────────────────────
 
-type WorkspaceKind = 'omnisystem' | 'bonsai' | 'omnios' | 'titan' | 'unknown';
+type WorkspaceKind = 'omnisystem' | 'desktop' | 'omnios' | 'titan' | 'unknown';
 
 interface WorkspaceInfo {
     kind: WorkspaceKind;
     root: vscode.Uri | undefined;
-    hasBonsai: boolean;
+    hasDesktop: boolean;
     hasOmniOS: boolean;
-    bonsaiRoot: vscode.Uri | undefined;
+    desktopRoot: vscode.Uri | undefined;
 }
 
 // App manifest filename: primary (de-branded) name first, then legacy fallback.
@@ -72,7 +72,7 @@ let statusBarBuild: vscode.StatusBarItem;
 let extensionContext: vscode.ExtensionContext;
 
 let explorerProvider: OmnisystemExplorerProvider;
-let bonsaiProvider: BonsaiExplorerProvider;
+let desktopProvider: DesktopExplorerProvider;
 let omnipmProvider: OmniPMExplorerProvider;
 let omniosProvider: OmniOSExplorerProvider;
 let harnessProvider: OmniHarnessViewProvider;
@@ -99,14 +99,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
     // Instantiate real providers immediately (constructors are sync and safe)
     explorerProvider = new OmnisystemExplorerProvider();
-    bonsaiProvider   = new BonsaiExplorerProvider(undefined);
+    desktopProvider   = new DesktopExplorerProvider(undefined);
     omnipmProvider   = new OmniPMExplorerProvider();
     omniosProvider   = new OmniOSExplorerProvider(undefined);
 
     // Register once — VS Code only accepts the first registration per view ID
     ctx.subscriptions.push(
         vscode.window.registerTreeDataProvider('omnisystemExplorer', explorerProvider),
-        vscode.window.registerTreeDataProvider('bonsaiExplorer',     bonsaiProvider),
+        vscode.window.registerTreeDataProvider('desktopExplorer',     desktopProvider),
         vscode.window.registerTreeDataProvider('omnipmExplorer',     omnipmProvider),
         vscode.window.registerTreeDataProvider('omniOsExplorer',     omniosProvider),
     );
@@ -148,8 +148,8 @@ async function activateCore(ctx: vscode.ExtensionContext): Promise<void> {
 
     const wsInfo = await detectWorkspace();
     outputChannel.appendLine(`Workspace kind: ${wsInfo.kind}`);
-    if (wsInfo.hasBonsai) {
-        outputChannel.appendLine(`Bonsai root: ${wsInfo.bonsaiRoot?.fsPath ?? 'unknown'}`);
+    if (wsInfo.hasDesktop) {
+        outputChannel.appendLine(`Desktop root: ${wsInfo.desktopRoot?.fsPath ?? 'unknown'}`);
     }
     if (wsInfo.hasOmniOS) {
         outputChannel.appendLine('OmniOS detected in workspace.');
@@ -165,7 +165,7 @@ async function activateCore(ctx: vscode.ExtensionContext): Promise<void> {
     registerStatusBar(ctx);
 
     // Update providers with resolved workspace root (they were pre-registered in activate())
-    bonsaiProvider.refresh(wsInfo.bonsaiRoot);
+    desktopProvider.refresh(wsInfo.desktopRoot);
     omniosProvider.refresh(wsInfo.root);
 
     // Task provider
@@ -276,12 +276,12 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
     const root    = folders?.[0]?.uri;
 
     let kind: WorkspaceKind    = 'unknown';
-    let hasBonsai              = false;
+    let hasDesktop              = false;
     let hasOmniOS              = false;
-    let bonsaiRoot: vscode.Uri | undefined;
+    let desktopRoot: vscode.Uri | undefined;
 
     if (!root) {
-        return { kind, root, hasBonsai, hasOmniOS, bonsaiRoot };
+        return { kind, root, hasDesktop, hasOmniOS, desktopRoot };
     }
 
     if (
@@ -308,19 +308,19 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
     }
 
     // 1. Honour explicit setting
-    const settingPath = vscode.workspace.getConfiguration('omnisystem').get<string>('bonsaiPath');
+    const settingPath = vscode.workspace.getConfiguration('omnisystem').get<string>('desktopPath');
     if (settingPath && fs.existsSync(settingPath)) {
-        hasBonsai  = true;
-        bonsaiRoot = vscode.Uri.file(settingPath);
-        if (kind === 'unknown') { kind = 'bonsai'; }
+        hasDesktop  = true;
+        desktopRoot = vscode.Uri.file(settingPath);
+        if (kind === 'unknown') { kind = 'desktop'; }
     }
 
     // 2. Well-known deep path inside an Omnisystem monorepo
-    if (!hasBonsai) {
+    if (!hasDesktop) {
         // The desktop ecosystem was absorbed into Omnisystem at src/systems/desktop
-        // (formerly src/systems/modules/base-modules/applications/bonsai-ecosystem).
+        // (formerly src/systems/modules/base-modules/applications/desktop-ecosystem).
         const ecoRelative = path.join('src', 'systems', 'desktop');
-        const legacyRelative = path.join('src', 'systems', 'modules', 'base-modules', 'applications', 'bonsai-ecosystem');
+        const legacyRelative = path.join('src', 'systems', 'modules', 'base-modules', 'applications', 'desktop-ecosystem');
         const candidates = [
             path.join(root.fsPath, ecoRelative),
             path.join(root.fsPath, 'Omnisystem', ecoRelative),
@@ -329,9 +329,9 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
         ];
         for (const knownEcoPath of candidates) {
             if (fs.existsSync(knownEcoPath)) {
-                hasBonsai  = true;
-                bonsaiRoot = vscode.Uri.file(knownEcoPath);
-                if (kind === 'unknown') { kind = 'bonsai'; }
+                hasDesktop  = true;
+                desktopRoot = vscode.Uri.file(knownEcoPath);
+                if (kind === 'unknown') { kind = 'desktop'; }
                 break;
             }
         }
@@ -339,12 +339,12 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
 
     // 3. Shallow scan (workspace root and one level deep) for the app manifest.
     //    Primary name is app.omnisystem.toml; app.bonsai.toml is the legacy name.
-    if (!hasBonsai) {
-        const bonsaiCandidates: string[] = [];
+    if (!hasDesktop) {
+        const desktopCandidates: string[] = [];
         if (folders) {
             for (const f of folders) {
                 for (const name of APP_MANIFEST_NAMES) {
-                    bonsaiCandidates.push(vscode.Uri.joinPath(f.uri, name).fsPath);
+                    desktopCandidates.push(vscode.Uri.joinPath(f.uri, name).fsPath);
                 }
             }
         }
@@ -353,21 +353,21 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
             for (const entry of entries) {
                 if (entry.isDirectory()) {
                     for (const name of APP_MANIFEST_NAMES) {
-                        bonsaiCandidates.push(path.join(root.fsPath, entry.name, name));
+                        desktopCandidates.push(path.join(root.fsPath, entry.name, name));
                     }
                 }
             }
         } catch { /* ignore */ }
 
-        for (const c of bonsaiCandidates) {
+        for (const c of desktopCandidates) {
             if (fs.existsSync(c)) {
-                hasBonsai  = true;
+                hasDesktop  = true;
                 // Use the parent (ecosystem root), not the launcher subdirectory
                 const dir = path.dirname(c);
                 const parent = path.dirname(dir);
                 const parentHasEco = fs.existsSync(path.join(parent, 'control-panel'));
-                bonsaiRoot = vscode.Uri.file(parentHasEco ? parent : dir);
-                if (kind === 'unknown') { kind = 'bonsai'; }
+                desktopRoot = vscode.Uri.file(parentHasEco ? parent : dir);
+                if (kind === 'unknown') { kind = 'desktop'; }
                 break;
             }
         }
@@ -380,7 +380,7 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
         } catch { /* ignore */ }
     }
 
-    return { kind, root, hasBonsai, hasOmniOS, bonsaiRoot };
+    return { kind, root, hasDesktop, hasOmniOS, desktopRoot };
 }
 
 // ─── Status bar ───────────────────────────────────────────────────────────────
@@ -555,7 +555,7 @@ function buildServerOptions(lspPath: string, _config: vscode.WorkspaceConfigurat
 function registerFileWatchers(ctx: vscode.ExtensionContext): void {
     const omniWatcher   = vscode.workspace.createFileSystemWatcher('**/*.{titan,vera,helix,aether,axiom,sylva,nexus}');
     const buildWatcher  = vscode.workspace.createFileSystemWatcher('**/BUILD.omnisystem');
-    const bonsaiWatcher = vscode.workspace.createFileSystemWatcher('**/app.{omnisystem,bonsai}.toml');
+    const desktopWatcher = vscode.workspace.createFileSystemWatcher('**/app.{omnisystem,desktop}.toml');
 
     omniWatcher.onDidCreate(() => { explorerProvider.refresh(); });
     omniWatcher.onDidDelete(() => { explorerProvider.refresh(); });
@@ -564,16 +564,16 @@ function registerFileWatchers(ctx: vscode.ExtensionContext): void {
     buildWatcher.onDidCreate(() => refreshAllTreeViews());
     buildWatcher.onDidDelete(() => refreshAllTreeViews());
 
-    bonsaiWatcher.onDidCreate(() => refreshAllTreeViews());
-    bonsaiWatcher.onDidDelete(() => refreshAllTreeViews());
-    bonsaiWatcher.onDidChange(() => bonsaiProvider.refresh());
+    desktopWatcher.onDidCreate(() => refreshAllTreeViews());
+    desktopWatcher.onDidDelete(() => refreshAllTreeViews());
+    desktopWatcher.onDidChange(() => desktopProvider.refresh());
 
-    ctx.subscriptions.push(omniWatcher, buildWatcher, bonsaiWatcher);
+    ctx.subscriptions.push(omniWatcher, buildWatcher, desktopWatcher);
 }
 
 function refreshAllTreeViews(): void {
     explorerProvider.refresh();
-    bonsaiProvider.refresh();
+    desktopProvider.refresh();
     omnipmProvider.refresh();
     omniosProvider.refresh();
 }
@@ -1148,50 +1148,50 @@ function cmdOmniPMAudit(): void {
     runInTerminal(['pm', 'audit'], 'Omnisystem: pm audit');
 }
 
-// ─── Bonsai commands ──────────────────────────────────────────────────────────
+// ─── Desktop commands ──────────────────────────────────────────────────────────
 
-// Bonsai is a separate app ecosystem — it has its own CLI, not an omnicc subcommand.
-// All Bonsai commands use runRawInTerminal or open the Bonsai Dashboard webview.
+// Desktop is a separate app ecosystem — it has its own CLI, not an omnicc subcommand.
+// All Desktop commands use runRawInTerminal or open the Desktop Dashboard webview.
 
-function cmdBonsaiLaunch(): void {
-    // Primary: open the Bonsai Dashboard webview inside VS Code.
-    // Secondary: also try launching via npm/bonsai CLI if in a Bonsai workspace.
-    BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
+function cmdDesktopLaunch(): void {
+    // Primary: open the Desktop Dashboard webview inside VS Code.
+    // Secondary: also try launching via npm/desktop CLI if in a Desktop workspace.
+    OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
     const root = workspaceRoot();
     if (root && APP_MANIFEST_NAMES.some((n) => fs.existsSync(path.join(root, n)))) {
         runRawInTerminal('npm run dev', 'Desktop: Dev Server');
     }
 }
 
-function cmdBonsaiBuddyConnect(): void {
-    runRawInTerminal('npx bonsai-buddy connect', 'Bonsai: Buddy Connect');
+function cmdDesktopBuddyConnect(): void {
+    runRawInTerminal('npx desktop-buddy connect', 'Desktop: Buddy Connect');
 }
 
-async function cmdBonsaiBuddyBuild(): Promise<void> {
-    BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
-    runRawInTerminal('npm run build:android', 'Bonsai: Android Build');
+async function cmdDesktopBuddyBuild(): Promise<void> {
+    OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
+    runRawInTerminal('npm run build:android', 'Desktop: Android Build');
 }
 
-function cmdBonsaiBrowserExtBuild(): void {
-    runRawInTerminal('npm run build:extension', 'Bonsai: Browser Extension Build');
+function cmdDesktopBrowserExtBuild(): void {
+    runRawInTerminal('npm run build:extension', 'Desktop: Browser Extension Build');
 }
 
-function cmdBonsaiBrowserExtInstall(): void {
-    runRawInTerminal('npm run build:extension && npx web-ext run', 'Bonsai: Browser Extension Dev');
+function cmdDesktopBrowserExtInstall(): void {
+    runRawInTerminal('npm run build:extension && npx web-ext run', 'Desktop: Browser Extension Dev');
 }
 
-function cmdBonsaiControlPanel(): void {
+function cmdDesktopControlPanel(): void {
     // Control Panel Titan server runs on port 12345 (see control-panel/api_server.ti)
     vscode.env.openExternal(vscode.Uri.parse('http://localhost:12345'));
 }
 
-function cmdBonsaiNotifications(): void {
-    BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
-    outputChannel.appendLine('[Bonsai] Opening Notification System panel...');
+function cmdDesktopNotifications(): void {
+    OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
+    outputChannel.appendLine('[Desktop] Opening Notification System panel...');
     outputChannel.show(true);
 }
 
-function cmdBonsaiSystemTray(): void {
+function cmdDesktopSystemTray(): void {
     outputChannel.appendLine('[Desktop] System Tray module: src/systems/desktop/system-tray/core.ti');
     outputChannel.show(true);
     // Open the system-tray source file
@@ -1204,31 +1204,31 @@ function cmdBonsaiSystemTray(): void {
     }
 }
 
-async function cmdBonsaiInit(): Promise<void> {
+async function cmdDesktopInit(): Promise<void> {
     const pick = await vscode.window.showQuickPick(
         ['Full Initialization', 'Diagnostics Mode', 'Repair Mode', 'Graceful Shutdown'],
-        { placeHolder: 'Select Bonsai Ecosystem operation', title: 'Bonsai Initialization' }
+        { placeHolder: 'Select Desktop Ecosystem operation', title: 'Desktop Initialization' }
     );
     if (!pick) { return; }
-    outputChannel.appendLine(`[Bonsai Init] ${pick} → INITIALIZATION.ti`);
+    outputChannel.appendLine(`[Desktop Init] ${pick} → INITIALIZATION.ti`);
     outputChannel.show(true);
-    vscode.window.showInformationMessage(`Bonsai Ecosystem: ${pick} triggered.`);
+    vscode.window.showInformationMessage(`Desktop Ecosystem: ${pick} triggered.`);
 }
 
-async function cmdBonsaiDeploy(): Promise<void> {
-    runRawInTerminal('npm run deploy', 'Bonsai: Deploy');
+async function cmdDesktopDeploy(): Promise<void> {
+    runRawInTerminal('npm run deploy', 'Desktop: Deploy');
 }
 
-function cmdBonsaiModelManager(): void {
+function cmdDesktopModelManager(): void {
     MlStudioPanel.createOrShow(extensionContext.extensionUri);
 }
 
-function cmdBonsaiWorkspace(): void {
-    BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
+function cmdDesktopWorkspace(): void {
+    OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
 }
 
-function cmdOpenBonsaiDashboard(): void {
-    BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
+function cmdOpenDesktopDashboard(): void {
+    OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
 }
 
 // ─── New file scaffolding ─────────────────────────────────────────────────────
@@ -1377,10 +1377,10 @@ async function scaffoldFile(lang: OmniLanguage): Promise<void> {
     }
 }
 
-async function scaffoldBonsaiApp(): Promise<void> {
+async function scaffoldDesktopApp(): Promise<void> {
     const name = await vscode.window.showInputBox({
-        prompt: 'Bonsai app name',
-        placeHolder: 'my-bonsai-app',
+        prompt: 'Desktop app name',
+        placeHolder: 'my-desktop-app',
         validateInput: (v) => v.trim() ? null : 'Name is required',
     });
     if (!name) { return; }
@@ -1405,11 +1405,11 @@ async function scaffoldBonsaiApp(): Promise<void> {
         );
         const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(appDir, `${name.trim()}.titan`));
         await vscode.window.showTextDocument(doc);
-        bonsaiProvider.refresh();
+        desktopProvider.refresh();
         explorerProvider.refresh();
-        vscode.window.showInformationMessage(`Omnisystem: Bonsai app "${name.trim()}" created.`);
+        vscode.window.showInformationMessage(`Omnisystem: Desktop app "${name.trim()}" created.`);
     } catch (err) {
-        vscode.window.showErrorMessage(`Omnisystem: Failed to scaffold Bonsai app: ${err}`);
+        vscode.window.showErrorMessage(`Omnisystem: Failed to scaffold Desktop app: ${err}`);
     }
 }
 
@@ -1556,7 +1556,7 @@ async function _omniccConvertDocument(doc: vscode.TextDocument, targetLangId?: s
 export function broadcastTheme(themeId: string): void {
     const msg = { type: 'owThemeSync', theme: themeId };
     const senders = [
-        () => BonsaiDashboardPanel.postMessage(msg),
+        () => OmnisystemDashboardPanel.postMessage(msg),
         () => BuildDashboardPanel.postMessage(msg),
         () => MlStudioPanel.postMessage(msg),
         () => ShaderPreviewPanel.postMessage(msg),
@@ -1666,20 +1666,20 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
     reg('omnisystem.omnipmSearch',   () => cmdOmniPMSearch());
     reg('omnisystem.omnipmAudit',    () => cmdOmniPMAudit());
 
-    // Bonsai
-    reg('omnisystem.bonsaiLaunch',           () => cmdBonsaiLaunch());
-    reg('omnisystem.bonsaiBuddyConnect',     () => cmdBonsaiBuddyConnect());
-    reg('omnisystem.bonsaiBuddyBuild',       () => cmdBonsaiBuddyBuild());
-    reg('omnisystem.bonsaiBrowserExtBuild',  () => cmdBonsaiBrowserExtBuild());
-    reg('omnisystem.bonsaiBrowserExtInstall',() => cmdBonsaiBrowserExtInstall());
-    reg('omnisystem.bonsaiControlPanel',     () => cmdBonsaiControlPanel());
-    reg('omnisystem.bonsaiDeploy',           () => cmdBonsaiDeploy());
-    reg('omnisystem.bonsaiModelManager',     () => cmdBonsaiModelManager());
-    reg('omnisystem.bonsaiWorkspace',        () => cmdBonsaiWorkspace());
-    reg('omnisystem.bonsaiNotifications',    () => cmdBonsaiNotifications());
-    reg('omnisystem.bonsaiSystemTray',       () => cmdBonsaiSystemTray());
-    reg('omnisystem.bonsaiInit',             () => { cmdBonsaiInit().catch(e => outputChannel.appendLine(`[Bonsai Init] ${e}`)); });
-    reg('omnisystem.openBonsaiDashboard',    () => cmdOpenBonsaiDashboard());
+    // Desktop
+    reg('omnisystem.desktopLaunch',           () => cmdDesktopLaunch());
+    reg('omnisystem.desktopBuddyConnect',     () => cmdDesktopBuddyConnect());
+    reg('omnisystem.desktopBuddyBuild',       () => cmdDesktopBuddyBuild());
+    reg('omnisystem.desktopBrowserExtBuild',  () => cmdDesktopBrowserExtBuild());
+    reg('omnisystem.desktopBrowserExtInstall',() => cmdDesktopBrowserExtInstall());
+    reg('omnisystem.desktopControlPanel',     () => cmdDesktopControlPanel());
+    reg('omnisystem.desktopDeploy',           () => cmdDesktopDeploy());
+    reg('omnisystem.desktopModelManager',     () => cmdDesktopModelManager());
+    reg('omnisystem.desktopWorkspace',        () => cmdDesktopWorkspace());
+    reg('omnisystem.desktopNotifications',    () => cmdDesktopNotifications());
+    reg('omnisystem.desktopSystemTray',       () => cmdDesktopSystemTray());
+    reg('omnisystem.desktopInit',             () => { cmdDesktopInit().catch(e => outputChannel.appendLine(`[Desktop Init] ${e}`)); });
+    reg('omnisystem.openDesktopDashboard',    () => cmdOpenDesktopDashboard());
 
     // New file scaffolding (all 9 types)
     reg('omnisystem.newTitanFile',       () => scaffoldFile('titan'));
@@ -1689,7 +1689,7 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
     reg('omnisystem.newAxiomTheorem',    () => scaffoldFile('axiom'));
     reg('omnisystem.newSylvaModel',      () => scaffoldFile('sylva'));
     reg('omnisystem.newNexusLayout',     () => scaffoldFile('nexus'));
-    reg('omnisystem.newBonsaiApp',       () => scaffoldBonsaiApp());
+    reg('omnisystem.newDesktopApp',       () => scaffoldDesktopApp());
     reg('omnisystem.newOmniOsService',   () => scaffoldOmniOsService());
 
     // Dashboard panels
@@ -1721,8 +1721,8 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
     reg('omnisystem.harnessFocus',       () => vscode.commands.executeCommand('omniharnessChat.focus'));
     reg('omnisystem.harnessNewSession',  () => { vscode.commands.executeCommand('omniharnessChat.focus'); harnessProvider?.newSession(); });
     reg('omnisystem.harnessSettings',    () => vscode.commands.executeCommand('workbench.action.openSettings', 'omnisystem.harness'));
-    reg('omnisystem.harnessStartServer', async () => { await harnessProvider?.startServerCommand(); bonsaiProvider.refresh(); });
-    reg('omnisystem.harnessStopServer',  () => { harnessProvider?.stopServerCommand(); bonsaiProvider.refresh(); });
+    reg('omnisystem.harnessStartServer', async () => { await harnessProvider?.startServerCommand(); desktopProvider.refresh(); });
+    reg('omnisystem.harnessStopServer',  () => { harnessProvider?.stopServerCommand(); desktopProvider.refresh(); });
     reg('omnisystem.harnessAddSelection',() => { vscode.commands.executeCommand('omniharnessChat.focus'); harnessProvider?.addSelectionCommand(); });
     reg('omnisystem.harnessUndoLast',    () => harnessProvider?.undoLastCommand());
     reg('omnisystem.harnessExportConfig',() => harnessProvider?.exportConfigCommand());
@@ -1731,7 +1731,7 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
 
     // Tree view refresh
     reg('omnisystem.refreshExplorer', () => explorerProvider.refresh());
-    reg('omnisystem.refreshBonsai',   () => bonsaiProvider.refresh());
+    reg('omnisystem.refreshDesktop',   () => desktopProvider.refresh());
     reg('omnisystem.refreshOmnipm',   () => omnipmProvider.refresh());
     reg('omnisystem.refreshOmniOs',   () => omniosProvider.refresh());
 
@@ -1755,12 +1755,12 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
 
     // Legacy aliases (keep existing callers working)
     reg('omnisystem.buildDashboard',  () => cmdOpenBuildDashboard());
-    reg('omnisystem.bonsaiDashboard', () => cmdOpenBonsaiDashboard());
+    reg('omnisystem.desktopDashboard', () => cmdOpenDesktopDashboard());
     reg('omnisystem.selectPlatform',  () => cmdOmniOsSelectPlatform());
     reg('omnisystem.check',           async () => { if (await requireOmnicc()) { runInTerminal(['check']); } });
     reg('omnisystem.format',          async () => { if (await requireOmnicc()) { runInTerminal(['fmt', '--all']); } });
-    reg('omnisystem.bonsaiBuild',     () => runRawInTerminal('npm run build', 'Bonsai: Build'));
-    reg('omnisystem.bonsaiBuildApk',  () => runRawInTerminal('npm run build:android', 'Bonsai: Android Build'));
+    reg('omnisystem.desktopBuild',     () => runRawInTerminal('npm run build', 'Desktop: Build'));
+    reg('omnisystem.desktopBuildApk',  () => runRawInTerminal('npm run build:android', 'Desktop: Android Build'));
     // Old stub names remapped to correct handlers
     reg('omnisystem.newAetherService',() => scaffoldFile('aether'));
     reg('omnisystem.newAxiomModule',  () => scaffoldFile('axiom'));

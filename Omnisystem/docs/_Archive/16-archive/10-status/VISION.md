@@ -21,7 +21,7 @@ This fragmentation creates:
 
 ## The Solution: Omni-Languages
 
-We rebuild the **entire Bonsai Ecosystem and USOS** using just **four carefully designed languages**:
+We rebuild the **entire Omnisystem Ecosystem and USOS** using just **four carefully designed languages**:
 
 | Language | Domain | Replaces |
 |----------|--------|----------|
@@ -130,10 +130,10 @@ For existing codebases, we provide **transpilers** that convert code from legacy
 Example: `build import --from cpp --file my_library.cpp` generates equivalent Titan code.
 
 ### Phase B: Migration (2026-2027)
-All new code in Bonsai is written in Omni-languages. Legacy transpilers still available for old code.
+All new code in Omnisystem is written in Omni-languages. Legacy transpilers still available for old code.
 
 ### Phase C: Stabilization (2027+)
-Omni-languages are the **sole platform** for Bonsai development. Legacy languages are archived for reference.
+Omni-languages are the **sole platform** for Omnisystem development. Legacy languages are archived for reference.
 
 ---
 
@@ -279,7 +279,7 @@ If you believe in this vision, join us. The future of computing is Omni.
 
 ---
 
-**"In the beginning there was Bonsai. Now there is Omni."** 🌍
+**"In the beginning there was Omnisystem. Now there is Omni."** 🌍
 
 ---
 

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Bonsai bootstrap invariant checker.
+    Omnisystem bootstrap invariant checker.
     Run this after every build to verify the system can self-host and all
     Omnisystem integration contracts hold.
 
@@ -11,7 +11,7 @@
     Phase 2 = Actor system + CRDT sanity.
 
 .PARAMETER Workspace
-    Path to the Bonsai workspace root. Defaults to the parent of this script.
+    Path to the Omnisystem workspace root. Defaults to the parent of this script.
 
 .PARAMETER LogFile
     Optional path to write results as NDJSON. If omitted, results go to stdout only.
@@ -124,7 +124,7 @@ function Invoke-Phase0 {
     # Invariant 0-B: UCR startup validation log contains no MISSING entries
     # We check the source code for the validation block rather than running the binary,
     # since we can't start the GUI in CI.
-    $ucr_src = Join-Path $Workspace "bonsai-workspace\src-tauri\src\lib.rs"
+    $ucr_src = Join-Path $Workspace "omnisystem-workspace\src-tauri\src\lib.rs"
     if (Test-Path $ucr_src) {
         $content = Get-Content $ucr_src -Raw
         if ($content -match "\[UCR\] startup validation") {
@@ -137,7 +137,7 @@ function Invoke-Phase0 {
     }
 
     # Invariant 0-C: TrustGuard::global() is defined
-    $effects_src = Join-Path $Workspace "crates\bonsai-ir\src\effects.rs"
+    $effects_src = Join-Path $Workspace "crates\omnisystem-ir\src\effects.rs"
     if (Test-Path $effects_src) {
         $content = Get-Content $effects_src -Raw
         if ($content -match "TrustGuard") {
@@ -150,7 +150,7 @@ function Invoke-Phase0 {
     }
 
     # Invariant 0-D: EffectRow on ToolDef
-    $tools_src = Join-Path $Workspace "bonsai-workspace\src-tauri\src\tools.rs"
+    $tools_src = Join-Path $Workspace "omnisystem-workspace\src-tauri\src\tools.rs"
     if (Test-Path $tools_src) {
         $content = Get-Content $tools_src -Raw
         if ($content -match "effect_row") {
@@ -173,7 +173,7 @@ function Invoke-Phase0 {
     }
 
     # Invariant 0-F: no hardcoded "run_command" for specs injection
-    $commands_src = Join-Path $Workspace "bonsai-workspace\src-tauri\src\commands.rs"
+    $commands_src = Join-Path $Workspace "omnisystem-workspace\src-tauri\src\commands.rs"
     if (Test-Path $commands_src) {
         $content = Get-Content $commands_src -Raw
         # It's OK to reference run_command, but "MUST call run_command" is the bad pattern
@@ -191,7 +191,7 @@ function Invoke-Phase1 {
     Write-Host "`n=== Phase 1: Content-Addressed Storage ===" -ForegroundColor Cyan
 
     # Invariant 1-A: CasStore is defined
-    $cas_src = Join-Path $Workspace "crates\bonsai-cas\src\lib.rs"
+    $cas_src = Join-Path $Workspace "crates\omnisystem-cas\src\lib.rs"
     if (Test-Path $cas_src) {
         $content = Get-Content $cas_src -Raw
         if ($content -match "struct CasStore") {
@@ -242,7 +242,7 @@ function Invoke-Phase2 {
     Write-Host "`n=== Phase 2: UniIR + Actor Model + CRDT ===" -ForegroundColor Cyan
 
     # Invariant 2-A: IrOp enum exists
-    $ops_src = Join-Path $Workspace "crates\bonsai-ir\src\ops.rs"
+    $ops_src = Join-Path $Workspace "crates\omnisystem-ir\src\ops.rs"
     if (Test-Path $ops_src) {
         $content = Get-Content $ops_src -Raw
         if ($content -match "enum IrOp" -and $content -match "enum IrType") {
@@ -265,7 +265,7 @@ function Invoke-Phase2 {
     }
 
     # Invariant 2-C: ActorSystem::spawn defined
-    $actors_src = Join-Path $Workspace "crates\bonsai-actors\src\lib.rs"
+    $actors_src = Join-Path $Workspace "crates\omnisystem-actors\src\lib.rs"
     if (Test-Path $actors_src) {
         $content = Get-Content $actors_src -Raw
         if ($content -match "pub fn spawn" -and $content -match "trait Actor") {
@@ -274,11 +274,11 @@ function Invoke-Phase2 {
             Write-Fail "2-C: ActorSystem and Actor trait defined"
         }
     } else {
-        Write-Fail "2-C: ActorSystem and Actor trait defined" "bonsai-actors/src/lib.rs not found"
+        Write-Fail "2-C: ActorSystem and Actor trait defined" "omnisystem-actors/src/lib.rs not found"
     }
 
     # Invariant 2-D: CRDT GCounter, LwwRegister, OrSet
-    $crdt_src = Join-Path $Workspace "crates\bonsai-crdt\src\lib.rs"
+    $crdt_src = Join-Path $Workspace "crates\omnisystem-crdt\src\lib.rs"
     if (Test-Path $crdt_src) {
         $content = Get-Content $crdt_src -Raw
         $types = @("struct GCounter", "struct LwwRegister", "struct OrSet")
@@ -289,7 +289,7 @@ function Invoke-Phase2 {
             Write-Fail "2-D: All CRDT types present" "Missing: $($missing -join ', ')"
         }
     } else {
-        Write-Fail "2-D: All CRDT types present" "bonsai-crdt/src/lib.rs not found"
+        Write-Fail "2-D: All CRDT types present" "omnisystem-crdt/src/lib.rs not found"
     }
 
     # Invariant 2-E: CRDT merge() semantics have test coverage
@@ -349,7 +349,7 @@ function Write-Summary {
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║  Bonsai × Omnisystem Bootstrap Invariant Check  ║" -ForegroundColor Cyan
+Write-Host "║  Omnisystem × Omnisystem Bootstrap Invariant Check  ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host "  Workspace : $Workspace"
 Write-Host "  Phase     : $Phase"

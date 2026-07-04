@@ -1,4 +1,4 @@
-# Integration Guide: Bonsai Adaptive Benchmarks
+# Integration Guide: Omnisystem Adaptive Benchmarks
 
 ## Quick Start
 
@@ -8,38 +8,38 @@ Already added to `Cargo.toml` workspace members:
 [workspace]
 members = [
   ...
-  "crates/bonsai-adaptive-benchmarks",
+  "crates/omnisystem-adaptive-benchmarks",
 ]
 ```
 
 ### 2. Run Tests
 ```bash
 # Unit tests only
-cargo test -p bonsai-adaptive-benchmarks --lib
+cargo test -p omnisystem-adaptive-benchmarks --lib
 
 # Integration tests
-cargo test -p bonsai-adaptive-benchmarks --test integration
+cargo test -p omnisystem-adaptive-benchmarks --test integration
 
 # All tests
-cargo test -p bonsai-adaptive-benchmarks
+cargo test -p omnisystem-adaptive-benchmarks
 ```
 
 ### 3. Run Benchmarks
 ```bash
 # Adaptive scaling benchmarks
-cargo bench -p bonsai-adaptive-benchmarks --bench adaptive_scale_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench adaptive_scale_bench
 
 # Performance benchmarks
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
 
 # Correctness benchmarks
-cargo bench -p bonsai-adaptive-benchmarks --bench correctness_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench correctness_bench
 
 # Regression benchmarks
-cargo bench -p bonsai-adaptive-benchmarks --bench regression_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench regression_bench
 
 # All benchmarks
-cargo bench -p bonsai-adaptive-benchmarks
+cargo bench -p omnisystem-adaptive-benchmarks
 ```
 
 ## Integration with Existing Code
@@ -47,8 +47,8 @@ cargo bench -p bonsai-adaptive-benchmarks
 ### 1. Integrate with InferenceEngine
 
 ```rust
-// In bonsai-inference/src/lib.rs
-use bonsai_adaptive_benchmarks::{
+// In omnisystem-inference/src/lib.rs
+use omnisystem_adaptive_benchmarks::{
     PerformanceBenchmark, BenchmarkConfig, 
     MetricsCollector, BenchmarkLogger
 };
@@ -94,8 +94,8 @@ impl InferenceEngine {
 ### 2. Integrate with SystemEventBus
 
 ```rust
-// In bonsai-workspace/src-tauri/src/system_event_bus.rs
-use bonsai_adaptive_benchmarks::{
+// In omnisystem-workspace/src-tauri/src/system_event_bus.rs
+use omnisystem_adaptive_benchmarks::{
     RegressionDetector, RollbackManager,
     MetricsCollector
 };
@@ -154,14 +154,14 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test -p bonsai-adaptive-benchmarks --lib
+      - run: cargo test -p omnisystem-adaptive-benchmarks --lib
 
   benchmarks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
+      - run: cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
@@ -176,11 +176,11 @@ jobs:
       - uses: actions/checkout@v3
       - uses: dtolnay/rust-toolchain@stable
       - run: |
-          cargo test -p bonsai-adaptive-benchmarks regression::
+          cargo test -p omnisystem-adaptive-benchmarks regression::
       - name: Run regression detection
         if: success()
         run: |
-          cargo test -p bonsai-adaptive-benchmarks regression_bench --release
+          cargo test -p omnisystem-adaptive-benchmarks regression_bench --release
 ```
 
 ### 4. Add Metrics Recording to Key Paths
@@ -312,13 +312,13 @@ std::fs::write("logs.json", logs)?;
 ```bash
 #!/bin/bash
 # .git/hooks/pre-commit
-cargo test -p bonsai-adaptive-benchmarks --lib
+cargo test -p omnisystem-adaptive-benchmarks --lib
 if [ $? -ne 0 ]; then
     echo "Unit tests failed!"
     exit 1
 fi
 
-cargo clippy -p bonsai-adaptive-benchmarks -- -D warnings
+cargo clippy -p omnisystem-adaptive-benchmarks -- -D warnings
 if [ $? -ne 0 ]; then
     echo "Clippy checks failed!"
     exit 1
@@ -331,7 +331,7 @@ Create `scripts/nightly_regression_check.sh`:
 ```bash
 #!/bin/bash
 # Run comprehensive regression detection
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench --release
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench --release
 
 # Compare against baseline
 BASELINE="baselines/v0.1.0.json"
@@ -368,7 +368,7 @@ let config = BenchmarkConfig {
 ### Issue: Memory Leak Detected
 **Solution**: Use `valgrind` or `heaptrack`
 ```bash
-valgrind cargo test -p bonsai-adaptive-benchmarks --lib
+valgrind cargo test -p omnisystem-adaptive-benchmarks --lib
 ```
 
 ### Issue: Regression Threshold Too Strict
@@ -381,7 +381,7 @@ let detector = RegressionDetector::new(10.0);  // 10% instead of 5%
 
 1. **Run Benchmarks in Release Mode**:
    ```bash
-   cargo bench -p bonsai-adaptive-benchmarks --release
+   cargo bench -p omnisystem-adaptive-benchmarks --release
    ```
 
 2. **Reduce System Noise**:
@@ -391,13 +391,13 @@ let detector = RegressionDetector::new(10.0);  // 10% instead of 5%
 
 3. **Use Profiling Tools**:
    ```bash
-   cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench -- --profile-time=10
+   cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench -- --profile-time=10
    ```
 
 4. **Cache Baseline Locally**:
    ```bash
-   cargo bench -p bonsai-adaptive-benchmarks -- --save-baseline my_baseline
-   cargo bench -p bonsai-adaptive-benchmarks -- --baseline my_baseline
+   cargo bench -p omnisystem-adaptive-benchmarks -- --save-baseline my_baseline
+   cargo bench -p omnisystem-adaptive-benchmarks -- --baseline my_baseline
    ```
 
 ## Next Steps

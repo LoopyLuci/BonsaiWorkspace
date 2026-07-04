@@ -1,4 +1,4 @@
-# Bonsai Workspace Live Feature Audit
+# Omnisystem Workspace Live Feature Audit
 
 Generated: 2026-04-17T22:21:30.062Z
 UI Base: http://localhost:1420

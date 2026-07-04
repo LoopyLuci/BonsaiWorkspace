@@ -158,7 +158,7 @@ applications/my-desktop-app/
 
 **src/main.vera**:
 ```vera
-import { BonsaiEcosystem } from '@omnisystem/applications/bonsai-ecosystem';
+import { OmnisystemEcosystem } from '@omnisystem/applications/omnisystem-ecosystem';
 import { SystemServices } from '@omnisystem/system';
 
 export default function App() {
@@ -166,7 +166,7 @@ export default function App() {
   
   useEffect(() => {
     // Register with launcher
-    BonsaiEcosystem.registerApp({
+    OmnisystemEcosystem.registerApp({
       name: "My App",
       icon: "assets/icon.png",
       category: "Utilities"
@@ -380,7 +380,7 @@ pub fn add_tray_icon(icon_path: &str) -> Result<(), String> {
 
 1. Create `manifest.json` in your app directory
 2. Include app metadata (name, version, icon)
-3. BonsaiEcosystem automatically discovers and registers it
+3. OmnisystemEcosystem automatically discovers and registers it
 
 ### Manual Registration
 
@@ -489,7 +489,7 @@ omnisystem package my-app \
 
 - ✅ Follow the 3-layer architecture
 - ✅ Use system services rather than reimplementing
-- ✅ Register with BonsaiEcosystem launcher
+- ✅ Register with OmnisystemEcosystem launcher
 - ✅ Use cross-platform languages (VERA, HELIX, NEXUS)
 - ✅ Write tests for your code
 - ✅ Document your API
@@ -555,7 +555,7 @@ impl MyService {
 
 ### Plugin Architecture
 
-BonsaiEcosystem supports plugins. Create a plugin:
+OmnisystemEcosystem supports plugins. Create a plugin:
 
 ```ti
 pub trait Plugin {
@@ -583,7 +583,7 @@ impl Plugin for MyPlugin {
 - [VERA Language Guide](../languages/VERA/README.md)
 - [SYLVA Language Guide](../languages/SYLVA/README.md)
 - [AETHER Language Guide](../languages/AETHER/README.md)
-- [BonsaiEcosystem Documentation](./bonsai-ecosystem/README.md)
+- [OmnisystemEcosystem Documentation](./omnisystem-ecosystem/README.md)
 
 ---
 

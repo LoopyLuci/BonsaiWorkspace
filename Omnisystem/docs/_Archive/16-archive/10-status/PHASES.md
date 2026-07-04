@@ -1,6 +1,6 @@
 # Implementation Phases
 
-This document outlines the complete roadmap for rebuilding the Bonsai Ecosystem and USOS as the Omnisystem, written exclusively in the four Omni-languages (Titan, Sylva, Aether, Axiom).
+This document outlines the complete roadmap for rebuilding the Omnisystem Ecosystem and USOS as the Omnisystem, written exclusively in the four Omni-languages (Titan, Sylva, Aether, Axiom).
 
 ---
 
@@ -276,7 +276,7 @@ Implement the minimal USOS kernel and the `build` build tool.
 ## Phase 2: Core Services (Weeks 9-12)
 
 ### Objective
-Rebuild the four most critical Bonsai services in Omni-languages.
+Rebuild the four most critical Omnisystem services in Omni-languages.
 
 ### 2.1 build-p2p (TransferDaemon Replacement) - Weeks 9-10
 
@@ -480,7 +480,7 @@ Make the system entirely self-hosting and optimize performance.
    - Lock-free data structures where applicable
 
 5. **Benchmarking**
-   - Compare Omnisystem services to original Bonsai
+   - Compare Omnisystem services to original Omnisystem
    - Goal: 2-5x faster or equal in all categories
    - Publish benchmark results
 
@@ -504,7 +504,7 @@ Provide a smooth transition path for legacy code.
    - Phase D: 750+ languages archived; Omnisystem is the sole platform
 
 3. **Migration Guide**
-   - How to convert existing Bonsai code to Omnisystem
+   - How to convert existing Omnisystem code to Omnisystem
    - Idiom translation (for each old language → Omni-language)
    - Performance tips and best practices
 

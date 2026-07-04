@@ -288,18 +288,81 @@ module OmniMarkdownConverter {
     }
 
     fn parse_list(content: &str) -> Option<(MarkdownElement, usize)> {
-      // TODO: Implement list parsing
-      None
+      // Detect unordered (- / * / +) or ordered (1.) list items
+      let line_end = content.find('\n').unwrap_or(content.len())
+      let first = &content[..line_end]
+      let is_unordered = first.starts_with("- ") || first.starts_with("* ") || first.starts_with("+ ")
+      let is_ordered = first.len() >= 3 && first.as_bytes()[0].is_ascii_digit() && first.as_bytes()[1] == b'.' && first.as_bytes()[2] == b' '
+      if !is_unordered && !is_ordered { return None }
+      let mut items: Vec<ListItem> = Vec::new()
+      let mut consumed = 0usize
+      let mut rest = content
+      loop {
+        let le = rest.find('\n').unwrap_or(rest.len())
+        let line = &rest[..le]
+        let is_ul = line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ")
+        let is_ol = line.len() >= 3 && line.as_bytes()[0].is_ascii_digit() && line.as_bytes()[1] == b'.' && line.as_bytes()[2] == b' '
+        if !is_ul && !is_ol { break }
+        let text = if is_ul { line[2..].to_string() } else { line[3..].to_string() }
+        items.push(ListItem { text, checked: None, sub_items: vec![] })
+        consumed += le + if rest.len() > le { 1 } else { 0 }
+        if rest.len() <= le { break }
+        rest = &rest[le + 1..]
+      }
+      if items.is_empty() { return None }
+      Some((MarkdownElement::List(ListElement { items, ordered: is_ordered }), consumed))
     }
 
     fn parse_table(content: &str) -> Option<(MarkdownElement, usize)> {
-      // TODO: Implement table parsing
-      None
+      // Tables start with a | column | row | line followed by a |---|---| separator
+      let first_nl = content.find('\n')?
+      let first_line = &content[..first_nl]
+      if !first_line.starts_with('|') { return None }
+      let rest_after_first = &content[first_nl + 1..]
+      let second_nl = rest_after_first.find('\n').unwrap_or(rest_after_first.len())
+      let sep_line = &rest_after_first[..second_nl]
+      let is_sep = sep_line.contains("---") || sep_line.contains(":--") || sep_line.contains("--:")
+      if !is_sep { return None }
+      let headers: Vec<String> = first_line.split('|').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()).collect()
+      let alignments: Vec<Alignment> = sep_line.split('|').filter(|s| !s.trim().is_empty()).map(|s| {
+        let t = s.trim()
+        if t.starts_with(':') && t.ends_with(':') { Alignment::Center }
+        else if t.ends_with(':') { Alignment::Right }
+        else { Alignment::Left }
+      }).collect()
+      let mut rows: Vec<TableRow> = Vec::new()
+      let mut consumed = first_nl + 1 + second_nl + if rest_after_first.len() > second_nl { 1 } else { 0 }
+      let mut rest = if rest_after_first.len() > second_nl { &rest_after_first[second_nl + 1..] } else { "" }
+      loop {
+        if rest.is_empty() || !rest.starts_with('|') { break }
+        let le = rest.find('\n').unwrap_or(rest.len())
+        let row_line = &rest[..le]
+        let cells: Vec<String> = row_line.split('|').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string()).collect()
+        rows.push(TableRow { cells })
+        consumed += le + if rest.len() > le { 1 } else { 0 }
+        if rest.len() <= le { break }
+        rest = &rest[le + 1..]
+      }
+      Some((MarkdownElement::Table(TableElement { headers, alignments, rows }), consumed))
     }
 
     fn parse_quote(content: &str) -> Option<(MarkdownElement, usize)> {
-      // TODO: Implement quote parsing
-      None
+      if !content.starts_with("> ") && !content.starts_with(">") { return None }
+      let mut lines: Vec<String> = Vec::new()
+      let mut consumed = 0usize
+      let mut rest = content
+      loop {
+        let le = rest.find('\n').unwrap_or(rest.len())
+        let line = &rest[..le]
+        if !line.starts_with('>') { break }
+        let text = if line.starts_with("> ") { line[2..].to_string() } else { line[1..].to_string() }
+        lines.push(text)
+        consumed += le + if rest.len() > le { 1 } else { 0 }
+        if rest.len() <= le { break }
+        rest = &rest[le + 1..]
+      }
+      if lines.is_empty() { return None }
+      Some((MarkdownElement::Quote(QuoteElement { lines, citation: None }), consumed))
     }
 
     fn parse_paragraph(content: &str) -> Option<(MarkdownElement, usize)> {
@@ -344,8 +407,48 @@ module OmniMarkdownConverter {
         }
       }
 
-      // Build OMNI file with document content
-      Err("Not fully implemented yet")
+      // Serialize all sections as a single Markdown content string
+      let mut md_content = String::new()
+      for s in &sections { md_content.push_str(s); md_content.push_str("\n\n") }
+      let now = md_now_ns()
+      Ok(OmniFile {
+        header: OmniHeader {
+          magic: 0x4F4D4E49, version: 0x0100, revision: 0, endianness: 1,
+          compression_type: CompressionType::None, encryption_type: EncryptionType::None,
+          checksum_algo: ChecksumAlgorithm::Crc32,
+          total_file_size: 0, content_payload_size: md_content.len() as u32,
+          metadata_offset: 0, schema_offset: 0, content_offset: 0,
+          attachments_offset: 0, history_offset: 0, compatibility_offset: 0, footer_offset: 0,
+          created_at: now, modified_at: now,
+          master_checksum: [0u8;32], file_id: [0u8;16], author_signature: [0u8;32],
+          reserved: [0u8;32], custom_header: [0u8;80],
+        },
+        metadata: OmniMetadata {
+          version: "1.0".to_string(), created_at: now, modified_at: now,
+          author: "OmniMarkdownConverter".to_string(),
+          title: doc.title.clone().unwrap_or_default(),
+          description: "Converted from Markdown".to_string(),
+          keywords: vec![], language: "en".to_string(), encoding: "UTF-8".to_string(),
+          source_format: SourceFormatInfo { original_format: "text/markdown".to_string(), original_version: "1.0".to_string(), original_app: "Markdown Parser".to_string(), conversion_date: now, conversion_tool: "OmniMarkdownConverter v1.0".to_string() },
+          compression_info: CompressionInfo { algorithm: "none".to_string(), level: 0, original_size: 0, compressed_size: 0 },
+          encryption_info: EncryptionInfo { algorithm: "none".to_string(), key_derivation: "".to_string(), salt: vec![], iv: vec![], tag: vec![] },
+          validation_info: ValidationInfo { checksum_algorithm: "crc32".to_string(), master_checksum: "".to_string(), section_checksums: Map::new() },
+          digital_signature: DigitalSignatureInfo { algorithm: "".to_string(), signer: "".to_string(), timestamp: 0, signature: "".to_string() },
+          compatibility_info: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["markdown".to_string()] },
+        },
+        schema: OmniSchema { types: Map::new(), validations: vec![], format_mappings: Map::new() },
+        content: Value::String(md_content),
+        attachments: OmniAttachments { files: vec![], embedded_data: vec![] },
+        history: OmniHistory { versions: vec![], change_log: vec![] },
+        compatibility: CompatibilityInfo { min_reader_version: "1.0".to_string(), backward_compatible: true, forward_compatible: false, can_convert_to: vec!["markdown".to_string()] },
+        footer: OmniFooter {
+          content_integrity: 0, section_hash_tree: [0u8;32], master_signature: [0u8;32],
+          timestamp: (now / 1_000_000_000) as u32, sequence_number: 1, public_key: [0u8;32],
+          reserved_field_1: 0, reserved_field_2: 0, reserved_field_3: 0,
+          magic_end: 0x4944454E, footer_version: 1, footer_size: 256,
+          checksum_verification: 0, reserved: [0u8;32], file_terminator: 0xFFFFFFFF,
+        },
+      })
     }
   }
 
@@ -367,7 +470,34 @@ module OmniMarkdownConverter {
         markdown.push_str(&format!("{}\n\n", desc));
       }
 
-      // TODO: Convert OMNI sections to Markdown
+      // Convert OMNI content value to Markdown
+      match &omni_file.content {
+        Value::String(s) => {
+          if !s.is_empty() { markdown.push_str(s); markdown.push_str("\n\n") }
+        }
+        Value::Array(arr) => {
+          for item in arr {
+            match item {
+              Value::String(s) => { markdown.push_str("- "); markdown.push_str(s); markdown.push('\n') }
+              _ => {}
+            }
+          }
+          markdown.push('\n')
+        }
+        Value::Object(obj) => {
+          for (k, v) in obj.iter() {
+            markdown.push_str("**"); markdown.push_str(k); markdown.push_str("**: ")
+            match v {
+              Value::String(s) => markdown.push_str(s),
+              Value::Number(n) => markdown.push_str(&n.to_string()),
+              Value::Boolean(b) => markdown.push_str(if *b { "true" } else { "false" }),
+              _ => markdown.push_str("[complex]"),
+            }
+            markdown.push_str("\n\n")
+          }
+        }
+        _ => {}
+      }
       Ok(markdown)
     }
 
@@ -421,6 +551,16 @@ module OmniMarkdownConverter {
 
     result
   }
+}
+
+extern "Win32"  { fn GetSystemTimeAsFileTime_md(out: *mut u64) }
+extern "POSIX"  { fn clock_gettime_real_md(sec: *mut i64, nsec: *mut i64) -> i32 }
+
+fn md_now_ns() -> u64 {
+    #[cfg(target_os = "windows")]
+    unsafe { let mut ft=0u64; GetSystemTimeAsFileTime_md(&mut ft); (ft.saturating_sub(116444736000000000))*100 }
+    #[cfg(not(target_os = "windows"))]
+    unsafe { let mut s=0i64; let mut n=0i64; clock_gettime_real_md(&mut s,&mut n); s as u64*1_000_000_000+n as u64 }
 }
 
 pub use OmniMarkdownConverter::*;

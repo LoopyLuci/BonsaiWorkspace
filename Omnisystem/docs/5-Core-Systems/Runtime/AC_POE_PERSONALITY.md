@@ -44,14 +44,14 @@ blueprints/
 └── pendant-anchor-ac-poe.bp  # Deployment blueprint with personality config
 ```
 
-### Rust Layer (`crates/poe-core` + `crates/poe-bonsai-bridge`)
+### Rust Layer (`crates/poe-core` + `crates/poe-omnisystem-bridge`)
 
 ```
 crates/poe-core/src/
 ├── config.rs                 # Rust PersonalityConfig struct
 └── personality.rs            # Rust PersonalityLayer with name mapping
 
-crates/poe-bonsai-bridge/src/
+crates/poe-omnisystem-bridge/src/
 └── personality_tool.rs       # MCP tool: set_narrative_mode
 ```
 
@@ -316,7 +316,7 @@ Used for:
 
 ---
 
-## Integration with Bonsai Ecosystem
+## Integration with Omnisystem Ecosystem
 
 ### BPCF (Compilation)
 - Empathy model compiled with hot-reload capability
@@ -359,7 +359,7 @@ Used for:
 
 ### Verify Compilation
 ```bash
-cd Z:\Projects\BonsaiWorkspace\poe-ai
+cd Z:\Projects\OmnisystemWorkspace\poe-ai
 npx tsc --noEmit
 ```
 
@@ -383,9 +383,9 @@ npx ts-node tests/chaos_cataclysm_simulation.ts
 npx tsc
 ```
 
-### Deploy via Bonsai
+### Deploy via Omnisystem
 ```bash
-bonsai container deploy --blueprint blueprints/pendant-anchor-ac-poe.bp --name poe-ac-test
+omnisystem container deploy --blueprint blueprints/pendant-anchor-ac-poe.bp --name poe-ac-test
 ```
 
 ---

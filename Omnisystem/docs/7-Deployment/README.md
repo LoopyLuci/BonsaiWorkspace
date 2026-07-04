@@ -35,9 +35,9 @@ This is the **Applications & User Experience** layer of Omnisystem — where use
 
 ## What's in This Layer?
 
-### 🎯 BonsaiEcosystem (Primary Framework)
+### 🎯 OmnisystemEcosystem (Primary Framework)
 
-The central application framework and launcher. BonsaiEcosystem provides:
+The central application framework and launcher. OmnisystemEcosystem provides:
 
 - **Desktop Launcher** - Beautiful app launcher with quick search
 - **Control Panel** - Centralized system settings and configuration
@@ -49,7 +49,7 @@ The central application framework and launcher. BonsaiEcosystem provides:
 - **Runtime Management** - App environment configuration
 
 **Status**: ✅ Production-Ready  
-**Location**: `applications/bonsai-ecosystem/`
+**Location**: `applications/omnisystem-ecosystem/`
 
 ---
 
@@ -120,10 +120,10 @@ Backend services and microservices:
 
 ## Quick Start
 
-### Running BonsaiEcosystem (The Launcher)
+### Running OmnisystemEcosystem (The Launcher)
 
 ```bash
-cd applications/bonsai-ecosystem
+cd applications/omnisystem-ecosystem
 cargo run
 ```
 
@@ -159,7 +159,7 @@ This starts the main application launcher where you can access all other applica
    cargo run
    ```
 
-5. **It automatically registers** with BonsaiEcosystem launcher
+5. **It automatically registers** with OmnisystemEcosystem launcher
 
 ---
 
@@ -169,7 +169,7 @@ This starts the main application launcher where you can access all other applica
 
 ```
 applications/
-├── bonsai-ecosystem/        ← Primary framework
+├── omnisystem-ecosystem/        ← Primary framework
 │   ├── launcher/            ← Desktop app launcher
 │   ├── control-panel/       ← Settings management
 │   ├── installer/           ← Installation infrastructure
@@ -368,7 +368,7 @@ cargo test -- --nocapture --test-threads=1
 
 ### For Users
 - [Getting Started](../docs/01-getting-started/)
-- [System Configuration](./bonsai-ecosystem/README.md)
+- [System Configuration](./omnisystem-ecosystem/README.md)
 - [Installed Applications](./README.md)
 
 ### For Developers
@@ -379,7 +379,7 @@ cargo test -- --nocapture --test-threads=1
 
 ### For System Administrators
 - [Deployment Guide](../docs/09-operations/)
-- [Configuration](./bonsai-ecosystem/)
+- [Configuration](./omnisystem-ecosystem/)
 - [Monitoring](../monitoring/)
 
 ---
@@ -392,7 +392,7 @@ cargo test -- --nocapture --test-threads=1
 pub struct ApplicationLayer {
     pub layer_name: String,              // "Applications & User Experience"
     pub layer_level: i32,                // 3
-    pub bonsai_ecosystem: String,
+    pub omnisystem_ecosystem: String,
     pub core_app: String,
     pub web_app: String,
     pub mobile_app: String,
@@ -433,7 +433,7 @@ impl ApplicationRegistry {
 
 ### Launch Times
 
-- BonsaiEcosystem launcher: < 1 second
+- OmnisystemEcosystem launcher: < 1 second
 - Average app launch: < 2 seconds
 - UI response time: < 100ms
 
@@ -475,7 +475,7 @@ impl ApplicationRegistry {
 4. Add documentation
 5. Commit with PR
 
-### Contributing to BonsaiEcosystem
+### Contributing to OmnisystemEcosystem
 
 1. Fork the project
 2. Create feature branch
@@ -492,7 +492,7 @@ impl ApplicationRegistry {
 - [x] Layer 3 architecture defined
 - [x] Master initialization created
 - [x] 6 application platforms ready
-- [x] BonsaiEcosystem as primary framework
+- [x] OmnisystemEcosystem as primary framework
 - [x] System service integration
 - [x] Desktop integration complete
 - [x] Multi-platform support
@@ -539,7 +539,7 @@ See `applications/services/` for a complete example of a backend service.
 
 | App | Type | Status | Files |
 |-----|------|--------|-------|
-| BonsaiEcosystem | Framework | ✅ Production | 744 |
+| OmnisystemEcosystem | Framework | ✅ Production | 744 |
 | Core | System | ✅ Production | 76 |
 | Web | Platform | ✅ Production | 17,797 |
 | Mobile | Platform | ✅ Production | 43 |

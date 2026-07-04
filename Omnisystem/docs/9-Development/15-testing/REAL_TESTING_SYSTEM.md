@@ -14,7 +14,7 @@
 This is a **real, production-grade testing system** written entirely in **pure Titan**. It executes actual models from disk against comprehensive test suites with persistent data collection. **No simulation. All results are genuine execution data.**
 
 ```
-Real Models on Disk (Z:\Projects\BonsaiWorkspace\models\trained-models\)
+Real Models on Disk (Z:\Projects\OmnisystemWorkspace\models\trained-models\)
     ↓
 Titan Test Harness (model_test_harness.ti)
     ↓
@@ -150,15 +150,15 @@ cd Omnisystem
 cargo test --release --test model_evaluator
 ```
 
-### Option 3: Combined Bonsai + Omnisystem
+### Option 3: Combined Omnisystem + Omnisystem
 
 ```bash
 # Run from workspace root
 python Omnisystem/testing/model_executor.py \
     --models octopus poe \
-    --bonsai-ecosystem \
+    --omnisystem-ecosystem \
     --output results/ \
-    --save-bonsai-results
+    --save-omnisystem-results
 ```
 
 ---
@@ -242,43 +242,43 @@ Octopus,2,What is the next number...,234,2145.6,true,2026-06-05T14:32:48Z
 
 ---
 
-## Integration with Bonsai Ecosystem
+## Integration with Omnisystem Ecosystem
 
-### Setup in Bonsai
+### Setup in Omnisystem
 
 ```bash
-# 1. Copy testing framework to Bonsai
-cp -r Omnisystem/testing Bonsai/testing
+# 1. Copy testing framework to Omnisystem
+cp -r Omnisystem/testing Omnisystem/testing
 
-# 2. Add to Bonsai Cargo.toml
+# 2. Add to Omnisystem Cargo.toml
 [workspace]
 members = ["...", "testing"]
 
-# 3. Run from Bonsai workspace
-cd Bonsai
+# 3. Run from Omnisystem workspace
+cd Omnisystem
 cargo run --release --bin model_evaluator
 ```
 
-### Bonsai-Specific Test Results
+### Omnisystem-Specific Test Results
 
 Results are stored in both locations:
 - **Omnisystem**: `Omnisystem/testing/results/`
-- **Bonsai**: `Bonsai/testing/results/`
+- **Omnisystem**: `Omnisystem/testing/results/`
 
 Both reference the same actual models at `D:\Models\Custom\`.
 
 ### Integration Points
 
 ```rust
-// In bonsai/src/model_integration.rs
+// In omnisystem/src/model_integration.rs
 use omnisystem_testing::OmnisystemModelEvaluator;
 use omnisystem_testing::evaluators::{OctopusExecutor, PoeExecutor};
 
-pub struct BonsaiModelIntegration {
+pub struct OmnisystemModelIntegration {
     evaluator: OmnisystemModelEvaluator,
 }
 
-impl BonsaiModelIntegration {
+impl OmnisystemModelIntegration {
     pub fn run_evaluation() -> Result<()> {
         // Executes real models from both contexts
     }
@@ -376,12 +376,12 @@ ls -la Omnisystem/build-ai/poe/
 - [ ] Integration into CI/CD pipeline
 - [ ] Real execution against Octopus + Poe
 
-### Bonsai Ecosystem
-- [ ] Copy `testing/` to Bonsai workspace
+### Omnisystem Ecosystem
+- [ ] Copy `testing/` to Omnisystem workspace
 - [ ] Add Cargo workspace member
 - [ ] Link to shared model storage
-- [ ] Integration with Bonsai test harness
-- [ ] Results storage in Bonsai directory
+- [ ] Integration with Omnisystem test harness
+- [ ] Results storage in Omnisystem directory
 
 ---
 
@@ -410,7 +410,7 @@ cat Omnisystem/testing/results/evaluation_summary.json
 2. **Collect**: Gather 100×2 = 200 real data points
 3. **Analyze**: Compute metrics and performance profiles
 4. **Compare**: Side-by-side model comparison
-5. **Integrate**: Merge results into both Omnisystem + Bonsai
+5. **Integrate**: Merge results into both Omnisystem + Omnisystem
 6. **Report**: Generate final evaluation report
 
 ---

@@ -1,4 +1,4 @@
-# Bonsai Workspace Live Feature Audit
+# Omnisystem Workspace Live Feature Audit
 
 Generated: 2026-04-17T04:21:47.259Z
 UI Base: http://localhost:1420
@@ -42,10 +42,10 @@ Auxiliary evidence: disabled
 | Agent Vision panel open/close | partial | Skipped in fast smoke profile. Run full evidence profile for complete coverage. |
 | Swarm result slot-order rendering | covered | Swarm worker messages rendered in slot order without tool-call leakage. |
 | Status bar presence and live indicators | covered | Status bar rendered during shell scenario. |
-| Android USB lab workflows | partial | USB regression script exists; run with BONSAI_AUDIT_RUN_AUX=1 on device-capable machine. |
-| Launcher preflight workflow | partial | Launcher and preflight scripts detected; run with BONSAI_AUDIT_RUN_AUX=1 for evidence execution. |
-| VSCode extension unit tests | partial | Unit tests present in vscode-extension/src/test; run with BONSAI_AUDIT_RUN_AUX=1 for evidence execution. |
-| Frontend store/unit tests | partial | Frontend unit tests present in src/lib stores/utils; run with BONSAI_AUDIT_RUN_AUX=1 for evidence execution. |
+| Android USB lab workflows | partial | USB regression script exists; run with OMNISYSTEM_AUDIT_RUN_AUX=1 on device-capable machine. |
+| Launcher preflight workflow | partial | Launcher and preflight scripts detected; run with OMNISYSTEM_AUDIT_RUN_AUX=1 for evidence execution. |
+| VSCode extension unit tests | partial | Unit tests present in vscode-extension/src/test; run with OMNISYSTEM_AUDIT_RUN_AUX=1 for evidence execution. |
+| Frontend store/unit tests | partial | Frontend unit tests present in src/lib stores/utils; run with OMNISYSTEM_AUDIT_RUN_AUX=1 for evidence execution. |
 
 ## Gap Analysis
 

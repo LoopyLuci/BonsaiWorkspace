@@ -173,7 +173,7 @@ omnisystem/
 │   │   ├── monitoring/
 │   │   └── cicd/
 │   ├── omnisystem/          # Core OS modules
-│   ├── bonsai-ecosystem/    # Applications
+│   ├── omnisystem-ecosystem/    # Applications
 │   └── uosc/               # Microkernel
 ├── src/
 │   ├── main.rs            # Rust HAL

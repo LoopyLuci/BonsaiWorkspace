@@ -77,7 +77,7 @@
 │  ████████████████████░ 1,497/1,500 (99.8%)                │
 │  Failed: test_config_merge, test_permission_check (x1)     │
 │                                                              │
-│  BonsaiEcosystem (1,500 tests)                             │
+│  OmnisystemEcosystem (1,500 tests)                             │
 │  ████████████████████░ 1,500/1,500 (100%)                 │
 │  All passing                                                │
 │                                                              │
@@ -114,7 +114,7 @@
 │ ├─ p99:   4.8ms    ✅                                       │
 │ └─ max:   5.2ms    ⚠️ (Above target)                       │
 │                                                              │
-│ BonsaiEcosystem File Operations                             │
+│ OmnisystemEcosystem File Operations                             │
 │ ├─ p50:   3.2ms    ✅ (Target: <10ms)                      │
 │ ├─ p95:   7.8ms    ✅                                       │
 │ ├─ p99:   9.2ms    ✅                                       │
@@ -382,7 +382,7 @@
 │    ETA:         2026-06-17                                 │
 │    Workaround:  Use p95 SLA instead                         │
 │                                                              │
-│ 3. test_concurrent_connections [BonsaiEcosystem]           │
+│ 3. test_concurrent_connections [OmnisystemEcosystem]           │
 │    Expected:    10,000 connections                         │
 │    Got:         8,420 connections                          │
 │    Status:      In Progress (resource limits)              │

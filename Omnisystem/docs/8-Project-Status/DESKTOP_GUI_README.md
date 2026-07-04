@@ -14,7 +14,7 @@ The Omnisystem Desktop GUI is a professional, enterprise-grade graphical user in
 ```
 ================================================================================
   OMNISYSTEM v29.0.0
-  Enterprise Operating System | BonsaiEcosystem Launcher
+  Enterprise Operating System | OmnisystemEcosystem Launcher
   Status: OPERATIONAL
 ================================================================================
 [Text-based system information display...]

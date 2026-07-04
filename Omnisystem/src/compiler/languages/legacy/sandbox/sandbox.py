@@ -76,7 +76,7 @@ def run_axiom_pong():
 
 if __name__ == '__main__':
     print("╔════════════════════════════════════════════════════════════╗")
-    print("║  Bonsai Omnisystem Languages – Sandbox Test Suite          ║")
+    print("║  Omnisystem Omnisystem Languages – Sandbox Test Suite          ║")
     print("╚════════════════════════════════════════════════════════════╝")
 
     results = {}

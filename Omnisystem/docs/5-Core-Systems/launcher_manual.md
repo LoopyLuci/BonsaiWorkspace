@@ -1,14 +1,14 @@
-# Bonsai Workspace Launch Manual
+# Omnisystem Workspace Launch Manual
 
-This manual is the authoritative, step-by-step guide for launching Bonsai Workspace correctly.
+This manual is the authoritative, step-by-step guide for launching Omnisystem Workspace correctly.
 It is written so a first-time user can start the app without guessing.
 
 ## 1) What You Are Launching
 
-Bonsai Workspace is a Tauri desktop app with:
+Omnisystem Workspace is a Tauri desktop app with:
 
-- Frontend in `bonsai-workspace/src`
-- Rust backend in `bonsai-workspace/src-tauri`
+- Frontend in `omnisystem-workspace/src`
+- Rust backend in `omnisystem-workspace/src-tauri`
 
 Most command mistakes come from running commands in the wrong folder.
 
@@ -28,29 +28,29 @@ If unsure, always use Mode 1.
 Fastest Windows one-click entrypoint from workspace root:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace"
-.\Launch-BonsaiWorkspace.cmd
+Set-Location "z:\Projects\OmnisystemWorkspace"
+.\Launch-OmnisystemWorkspace.cmd
 ```
 
 Examples:
 
 ```powershell
 # Checks only
-.\Launch-BonsaiWorkspace.cmd -PreflightOnly
+.\Launch-OmnisystemWorkspace.cmd -PreflightOnly
 
 # Desktop + USB strict validation
-.\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -StrictApp -ApkPath "C:\path\to\app.apk" -Serial "DEVICE_SERIAL"
+.\Launch-OmnisystemWorkspace.cmd -Mode desktop+usb -StrictApp -ApkPath "C:\path\to\app.apk" -Serial "DEVICE_SERIAL"
 
 # Desktop + USB with remote-surface fallback/trampoline smoke
-.\Launch-BonsaiWorkspace.cmd -Mode desktop+usb -RemoteSurfaceSmoke -Serial "DEVICE_SERIAL"
+.\Launch-OmnisystemWorkspace.cmd -Mode desktop+usb -RemoteSurfaceSmoke -Serial "DEVICE_SERIAL"
 ```
 
-This wrapper automatically switches into `bonsai-workspace/src` and runs the unified launcher.
+This wrapper automatically switches into `omnisystem-workspace/src` and runs the unified launcher.
 
-Run from `bonsai-workspace/src`:
+Run from `omnisystem-workspace/src`:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src"
 
 # Checks only
 npm run launch:preflight
@@ -79,19 +79,19 @@ npm run launch:all -- --mode desktop+usb --strict-app --apk-path "C:\path\to\app
 
 Launcher notes:
 
-1. If port `11369` is already used by a healthy Bonsai runtime, launcher will attach to the existing runtime rather than start a duplicate.
+1. If port `11369` is already used by a healthy Omnisystem runtime, launcher will attach to the existing runtime rather than start a duplicate.
 2. Every launcher run writes a JSON report to `tool_test/launcher/latest.json` (or custom `--report-path`).
 3. On launcher failure, the JSON report is still written and includes the error text.
 4. When `-RemoteSurfaceSmoke` / `--remote-surface-smoke` is enabled in `desktop+usb` mode, report output includes `remote_surface_smoke_ran`, `remote_surface_smoke_ok`, and a `remote_surface_smoke` phase.
 
 ## 2.2) Exit Code and Report Triage (Important)
 
-If `Launch-BonsaiWorkspace.cmd` returns exit code `1`, do not assume the app failed.
+If `Launch-OmnisystemWorkspace.cmd` returns exit code `1`, do not assume the app failed.
 
 Run this check first:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace"
+Set-Location "z:\Projects\OmnisystemWorkspace"
 Get-Content ".\tool_test\launcher\latest.json"
 ```
 
@@ -99,7 +99,7 @@ Interpretation rules:
 
 1. If `ok` is `true`, launch succeeded even if the shell command returned `1`.
 2. If `ok` is `false`, use `error` and `phases` fields to identify failure stage.
-3. If API health phase completed, verify Bonsai window/API before retrying.
+3. If API health phase completed, verify Omnisystem window/API before retrying.
 
 ## 3) Prerequisites (Required)
 
@@ -133,23 +133,23 @@ cargo install tauri-cli --version "^2"
 From workspace root:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src"
 npm install
 ```
 
 Optional but recommended backend compile check:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace"
-cargo check --manifest-path "bonsai-workspace\src-tauri\Cargo.toml"
+Set-Location "z:\Projects\OmnisystemWorkspace"
+cargo check --manifest-path "omnisystem-workspace\src-tauri\Cargo.toml"
 ```
 
 ## 5) Correct Full Launch Procedure (Manual Mode)
 
-This is the default way to run Bonsai.
+This is the default way to run Omnisystem.
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src-tauri"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src-tauri"
 cargo tauri dev
 ```
 
@@ -159,14 +159,14 @@ Expected behavior:
 2. Tauri desktop window opens.
 3. You can open Settings and interact with the app.
 
-Do not run `npm run dev` at workspace root. It will fail because frontend scripts live in `bonsai-workspace/src`.
+Do not run `npm run dev` at workspace root. It will fail because frontend scripts live in `omnisystem-workspace/src`.
 
 ## 6) Frontend-Only Launch (Mode 3)
 
 Use this only when you intentionally do UI-only work.
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src"
 npm run dev
 ```
 
@@ -174,14 +174,14 @@ This does not launch the full Tauri desktop runtime.
 
 ## 7) Smoke and Regression Commands (Mode 4)
 
-Run from `bonsai-workspace/src` unless noted.
+Run from `omnisystem-workspace/src` unless noted.
 
 Core tests:
 
 ```powershell
 npm run test:agent-routing-ci
 npm run test:agent-orchestrated
-npm run test:bonsai-live-testing-feature:watch
+npm run test:omnisystem-live-testing-feature:watch
 ```
 
 Android USB regression:
@@ -200,7 +200,7 @@ npm run evidence:append-usb-ledger
 
 When a tablet is connected over USB debugging:
 
-1. Launch Bonsai with Mode 1.
+1. Launch Omnisystem with Mode 1.
 2. Open Settings.
 3. Use Android USB Lab:
 	- Refresh USB Devices
@@ -231,7 +231,7 @@ After startup, confirm all are true:
 ## 10) Common Failures and Exact Fixes
 
 1. Error: `npm run dev` fails at workspace root
-	- Fix: run it from `bonsai-workspace/src`.
+	- Fix: run it from `omnisystem-workspace/src`.
 
 2. Error: `cargo tauri dev` fails with missing toolchain/components
 	- Fix: install Visual Studio Build Tools C++ workload and WebView2 runtime.
@@ -255,14 +255,14 @@ After startup, confirm all are true:
 If dependencies are already installed, this is the fastest repeatable start:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src"
 npm run launch:desktop
 ```
 
 Then for USB tablet validation in a second terminal:
 
 ```powershell
-Set-Location "z:\Projects\BonsaiWorkspace\bonsai-workspace\src"
+Set-Location "z:\Projects\OmnisystemWorkspace\omnisystem-workspace\src"
 npm run launch:desktop+usb
 ```
 

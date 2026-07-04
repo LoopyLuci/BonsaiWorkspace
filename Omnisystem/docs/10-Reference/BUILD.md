@@ -1,4 +1,4 @@
-# BonsaiEcosystem Desktop - Build Guide
+# OmnisystemEcosystem Desktop - Build Guide
 
 Complete guide to building the real GUI application from source.
 
@@ -33,7 +33,7 @@ Complete guide to building the real GUI application from source.
 
 ### Main Application
 ```
-Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\
+Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\
 ├── src\
 │   ├── main.rs              # Real GUI implementation (Windows APIs)
 │   ├── launcher/
@@ -41,7 +41,7 @@ Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\
 │   │   ├── ApplicationLauncher.vera
 │   │   └── Omnisystem.rs    # Legacy version
 │   └── [other components]   # VERA modules (UI, widgets, systems)
-├── BonsaiDesktopGUI.hlx     # HELIX graphics specification
+├── OmnisystemDesktopGUI.hlx     # HELIX graphics specification
 ├── Cargo.toml               # Build configuration
 └── Cargo.lock               # Dependency lock file
 ```
@@ -51,7 +51,7 @@ Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\
 | File | Purpose |
 |------|---------|
 | `src/main.rs` | Real GUI window creation |
-| `BonsaiDesktopGUI.hlx` | Graphics engine specification |
+| `OmnisystemDesktopGUI.hlx` | Graphics engine specification |
 | `Cargo.toml` | Rust package manifest |
 
 ---
@@ -73,7 +73,7 @@ cargo --version
 ### Step 2: Navigate to Project
 
 ```powershell
-cd Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment
+cd Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment
 ```
 
 ### Step 3: Debug Build
@@ -85,7 +85,7 @@ For development/testing:
 cargo build
 
 # Output location
-# Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\target\debug\Omnisystem.exe
+# Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\target\debug\Omnisystem.exe
 ```
 
 ### Step 4: Release Build
@@ -97,7 +97,7 @@ For production:
 cargo build --release
 
 # Output location
-# Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\target\release\Omnisystem.exe
+# Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\target\release\Omnisystem.exe
 ```
 
 ### Step 5: Install to Launchers
@@ -105,7 +105,7 @@ cargo build --release
 ```powershell
 # Copy to launchers directory
 Copy-Item `
-  "Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\target\release\Omnisystem.exe" `
+  "Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\target\release\Omnisystem.exe" `
   "Z:\Projects\Omnisystem\Omnisystem\launchers\Omnisystem.exe" `
   -Force
 ```
@@ -119,10 +119,10 @@ Copy-Item `
 ```powershell
 # build-desktop.ps1
 
-$ProjectDir = "Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment"
+$ProjectDir = "Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment"
 $LaunchersDir = "Z:\Projects\Omnisystem\Omnisystem\launchers"
 
-Write-Host "Building BonsaiEcosystem Desktop GUI..." -ForegroundColor Cyan
+Write-Host "Building OmnisystemEcosystem Desktop GUI..." -ForegroundColor Cyan
 
 # Navigate to project
 cd $ProjectDir
@@ -186,7 +186,7 @@ The build process compiles all 7 languages:
 
 ```toml
 [package]
-name = "bonsai-desktop"
+name = "omnisystem-desktop"
 version = "29.0.0"
 edition = "2021"
 
@@ -388,7 +388,7 @@ cargo build --release
 ### GitHub Actions Example
 
 ```yaml
-name: Build BonsaiEcosystem Desktop
+name: Build OmnisystemEcosystem Desktop
 
 on: [push, pull_request]
 
@@ -403,12 +403,12 @@ jobs:
           override: true
       - name: Build
         run: cargo build --release
-        working-directory: ./Omnisystem/applications/bonsai-desktop-environment
+        working-directory: ./Omnisystem/applications/omnisystem-desktop-environment
       - name: Upload artifact
         uses: actions/upload-artifact@v2
         with:
           name: Omnisystem.exe
-          path: ./Omnisystem/applications/bonsai-desktop-environment/target/release/Omnisystem.exe
+          path: ./Omnisystem/applications/omnisystem-desktop-environment/target/release/Omnisystem.exe
 ```
 
 ---
@@ -491,4 +491,4 @@ After build completion, performance should be:
 ---
 
 **Build Guide v29.0.0**  
-BonsaiEcosystem Desktop | Omnisystem Native | Production Ready
+OmnisystemEcosystem Desktop | Omnisystem Native | Production Ready

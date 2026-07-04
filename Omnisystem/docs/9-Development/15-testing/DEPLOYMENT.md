@@ -42,21 +42,21 @@ For optimal performance, enable hardware encoding:
 
 ```bash
 # Clone repository
-git clone https://github.com/bonsai-ai/bonsai
-cd bonsai
+git clone https://github.com/omnisystem-ai/omnisystem
+cd omnisystem
 
 # Build release
-cargo build -p bonsai-remote-desktop --release
+cargo build -p omnisystem-remote-desktop --release
 
 # Binary location
-./target/release/bonsai-remote-desktop
+./target/release/omnisystem-remote-desktop
 ```
 
 ### Environment Variables
 
 ```bash
 # Enable debug logging
-export RUST_LOG=debug,bonsai_remote_desktop=trace
+export RUST_LOG=debug,omnisystem_remote_desktop=trace
 
 # Hardware acceleration (Windows)
 export NVENC_PATH=/path/to/nvidia-codec-sdk
@@ -67,8 +67,8 @@ export BRDF_RELAY_ADDR=0.0.0.0:3389
 export BRDF_MDNS_PORT=5353
 
 # TLS certificates
-export BRDF_CERT_PATH=/etc/bonsai-rd/certs
-export BRDF_KEY_PATH=/etc/bonsai-rd/keys
+export BRDF_CERT_PATH=/etc/omnisystem-rd/certs
+export BRDF_KEY_PATH=/etc/omnisystem-rd/keys
 ```
 
 ## Configuration
@@ -106,8 +106,8 @@ min_bitrate_mbps = 0.5
 # Token settings
 token_lifetime_hours = 24
 require_https = true
-tls_cert_path = "/etc/bonsai-rd/certs/server.pem"
-tls_key_path = "/etc/bonsai-rd/keys/server.key"
+tls_cert_path = "/etc/omnisystem-rd/certs/server.pem"
+tls_key_path = "/etc/omnisystem-rd/keys/server.key"
 
 # Session settings
 max_sessions_per_peer = 10
@@ -116,7 +116,7 @@ require_capability_token = true
 
 [telemetry]
 # Universe integration
-universe_db_path = "/var/lib/bonsai-rd/universe.db"
+universe_db_path = "/var/lib/omnisystem-rd/universe.db"
 event_retention_days = 30
 enable_event_logging = true
 
@@ -173,10 +173,10 @@ netstat -tlnp | grep 3389
 
 ```bash
 # For relay discovery, configure DNS:
-_bonsai-rd._tcp.local.    SRV    0 0 3389 your-device.local.
+_omnisystem-rd._tcp.local.    SRV    0 0 3389 your-device.local.
 
 # Or use fixed IP
-relay.bonsai-rd.internal  A      192.168.1.100
+relay.omnisystem-rd.internal  A      192.168.1.100
 ```
 
 ## Security Hardening
@@ -210,8 +210,8 @@ PEER_ID="peer-abc123def456"
 CAPABILITIES="connect,capture,input"
 DURATION="24h"
 
-# Use bonsai-cli or SDK to create token
-bonsai-rd token create \
+# Use omnisystem-cli or SDK to create token
+omnisystem-rd token create \
     --peer "$PEER_ID" \
     --capabilities "$CAPABILITIES" \
     --duration "$DURATION" \
@@ -222,10 +222,10 @@ bonsai-rd token create \
 
 ```bash
 # Create policy for BRDF
-sudo semanage fcontext -a -t bin_t "/usr/local/bin/bonsai-rd"
+sudo semanage fcontext -a -t bin_t "/usr/local/bin/omnisystem-rd"
 sudo semanage port -a -t http_port_t -p tcp 3389
 sudo semanage port -a -t http_port_t -p udp 5353
-restorecon -Rv /usr/local/bin/bonsai-rd
+restorecon -Rv /usr/local/bin/omnisystem-rd
 ```
 
 ## Monitoring & Observability
@@ -237,24 +237,24 @@ restorecon -Rv /usr/local/bin/bonsai-rd
 curl http://localhost:9090/metrics
 
 # Key metrics:
-# - bonsai_rd_peers_total          # Registered peers
-# - bonsai_rd_sessions_active      # Active sessions
-# - bonsai_rd_bitrate_mbps         # Current bitrate
-# - bonsai_rd_packet_loss_percent  # Network quality
-# - bonsai_rd_relay_latency_ms     # Relay latency
+# - omnisystem_rd_peers_total          # Registered peers
+# - omnisystem_rd_sessions_active      # Active sessions
+# - omnisystem_rd_bitrate_mbps         # Current bitrate
+# - omnisystem_rd_packet_loss_percent  # Network quality
+# - omnisystem_rd_relay_latency_ms     # Relay latency
 ```
 
 ### Log Monitoring
 
 ```bash
 # Enable structured logging
-export RUST_LOG=bonsai_remote_desktop=debug
+export RUST_LOG=omnisystem_remote_desktop=debug
 
 # View logs
-journalctl -u bonsai-remote-desktop -f
+journalctl -u omnisystem-remote-desktop -f
 
 # Log file rotation
-logrotate -f /etc/logrotate.d/bonsai-remote-desktop
+logrotate -f /etc/logrotate.d/omnisystem-remote-desktop
 
 # Key log events to monitor:
 # - Token verification failures
@@ -267,17 +267,17 @@ logrotate -f /etc/logrotate.d/bonsai-remote-desktop
 
 ```bash
 # Query Universe store
-bonsai-cli universe query \
+omnisystem-cli universe query \
     --filter "source=RemoteDesktop" \
     --limit 100
 
 # Monitor security events
-bonsai-cli universe query \
+omnisystem-cli universe query \
     --filter "category=SecurityEvent" \
     --since "1 hour ago"
 
 # Session analytics
-bonsai-cli universe analytics \
+omnisystem-cli universe analytics \
     --metric "session_duration" \
     --group-by "peer_id"
 ```
@@ -288,7 +288,7 @@ bonsai-cli universe analytics \
 
 ```bash
 # Test peer discovery
-ping _bonsai-rd._tcp.local
+ping _omnisystem-rd._tcp.local
 
 # Check relay connectivity
 telnet relay.yourdomain.com 3389
@@ -304,13 +304,13 @@ sudo iptables -L | grep 3389
 
 ```bash
 # Check CPU usage
-top -p $(pgrep bonsai-rd)
+top -p $(pgrep omnisystem-rd)
 
 # Monitor memory
-ps aux | grep bonsai-rd | grep -v grep
+ps aux | grep omnisystem-rd | grep -v grep
 
 # Check network statistics
-ss -tlnp | grep bonsai-rd
+ss -tlnp | grep omnisystem-rd
 
 # Enable profiling
 export BRDF_PROFILE=1
@@ -320,13 +320,13 @@ export BRDF_PROFILE=1
 
 ```bash
 # List available codecs
-bonsai-rd codecs --list
+omnisystem-rd codecs --list
 
 # Test encoding
-bonsai-rd encode --test --codec h265 --bitrate 5.0
+omnisystem-rd encode --test --codec h265 --bitrate 5.0
 
 # Check hardware acceleration
-bonsai-rd encode --test --use-hwaccel
+omnisystem-rd encode --test --use-hwaccel
 
 # Fall back to software encoding
 export BRDF_DISABLE_HWACCEL=1
@@ -371,12 +371,12 @@ rebalance_threshold = 0.8   # Rebalance if >80% loaded
 
 ```bash
 # Export events
-bonsai-cli universe export \
+omnisystem-cli universe export \
     --output "/backup/universe-$(date +%Y%m%d).json" \
     --format json
 
 # Schedule daily backup
-0 2 * * * bonsai-cli universe export \
+0 2 * * * omnisystem-cli universe export \
     --output "/backup/universe-$(date +\%Y\%m\%d).json"
 ```
 
@@ -384,13 +384,13 @@ bonsai-cli universe export \
 
 ```bash
 # Force-close stale sessions
-bonsai-rd admin gc --force
+omnisystem-rd admin gc --force
 
 # Recover from relay crash
-bonsai-rd admin repair --recover-sessions
+omnisystem-rd admin repair --recover-sessions
 
 # Verify integrity
-bonsai-rd admin verify
+omnisystem-rd admin verify
 ```
 
 ## Compliance
@@ -407,7 +407,7 @@ cipher_suites = ["TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"]
 
 # Audit logging
 [telemetry]
-audit_log_path = "/var/log/bonsai-rd/audit.log"
+audit_log_path = "/var/log/omnisystem-rd/audit.log"
 audit_log_retention_days = 365
 ```
 
@@ -470,26 +470,26 @@ max_bitrate_mbps = 2
 
 ```bash
 # 1. Backup configuration and universe events
-cp /etc/bonsai-rd/config.toml /backup/config-$(date +%Y%m%d).toml
-bonsai-cli universe export --output /backup/universe-$(date +%Y%m%d).json
+cp /etc/omnisystem-rd/config.toml /backup/config-$(date +%Y%m%d).toml
+omnisystem-cli universe export --output /backup/universe-$(date +%Y%m%d).json
 
 # 2. Stop service
-sudo systemctl stop bonsai-remote-desktop
+sudo systemctl stop omnisystem-remote-desktop
 
 # 3. Build new version
-cargo build -p bonsai-remote-desktop --release
+cargo build -p omnisystem-remote-desktop --release
 
 # 4. Backup old binary
-cp /usr/local/bin/bonsai-rd /usr/local/bin/bonsai-rd.old
+cp /usr/local/bin/omnisystem-rd /usr/local/bin/omnisystem-rd.old
 
 # 5. Install new binary
-sudo cp target/release/bonsai-remote-desktop /usr/local/bin/bonsai-rd
+sudo cp target/release/omnisystem-remote-desktop /usr/local/bin/omnisystem-rd
 
 # 6. Run migrations (if any)
-bonsai-rd migrate --from 0.1.0
+omnisystem-rd migrate --from 0.1.0
 
 # 7. Start service
-sudo systemctl start bonsai-remote-desktop
+sudo systemctl start omnisystem-remote-desktop
 
 # 8. Verify
 sleep 5 && curl http://localhost:9090/metrics | head -20
@@ -499,23 +499,23 @@ sleep 5 && curl http://localhost:9090/metrics | head -20
 
 ```ini
 [Unit]
-Description=Bonsai Remote Desktop Fabric
+Description=Omnisystem Remote Desktop Fabric
 After=network.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bonsai-rd --config /etc/bonsai-rd/config.toml
+ExecStart=/usr/local/bin/omnisystem-rd --config /etc/omnisystem-rd/config.toml
 Restart=on-failure
 RestartSec=5
-User=bonsai-rd
-Group=bonsai-rd
+User=omnisystem-rd
+Group=omnisystem-rd
 
 # Security hardening
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/bonsai-rd /var/log/bonsai-rd
+ReadWritePaths=/var/lib/omnisystem-rd /var/log/omnisystem-rd
 
 # Resource limits
 LimitNOFILE=65536
@@ -524,7 +524,7 @@ LimitNPROC=4096
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bonsai-rd
+SyslogIdentifier=omnisystem-rd
 
 [Install]
 WantedBy=multi-user.target

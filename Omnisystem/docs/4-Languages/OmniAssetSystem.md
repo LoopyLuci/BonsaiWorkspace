@@ -212,9 +212,9 @@ User Interface (TITAN)
 - ✅ Graceful shutdown
 - ✅ Cross-platform terminal support
 
-## Integration with BonsaiEcosystem
+## Integration with OmnisystemEcosystem
 
-Both launchers integrate with the 5-phase BonsaiEcosystem startup:
+Both launchers integrate with the 5-phase OmnisystemEcosystem startup:
 
 ```
 Phase 1: Omnisystem Registration
@@ -275,7 +275,7 @@ Phase 5: Health Checks
 
 - TITAN Compiler: v28.0.0+
 - Omnisystem Runtime: v28.0.0+
-- BonsaiEcosystem Services: All 5 phases initialized
+- OmnisystemEcosystem Services: All 5 phases initialized
 - System Libraries: Standard TITAN runtime libraries
 
 ## Migration from Rust GUI

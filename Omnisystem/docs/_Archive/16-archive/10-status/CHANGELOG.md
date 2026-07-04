@@ -38,9 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **750+ language connectors** (auto-generated via connector factory)
 - **6 deployment modes** (Co-OS, VM, container, library OS, bare-metal, cloud)
 
-#### Bonsai Ecosystem Application Layer (Layer 3)
-- **Bonsai Workspace** - Complete IDE and desktop environment
-- **Bonsai Buddy** - Universal assistant available on ALL devices and ALL operating systems
+#### Omnisystem Ecosystem Application Layer (Layer 3)
+- **Omnisystem Workspace** - Complete IDE and desktop environment
+- **Omnisystem Buddy** - Universal assistant available on ALL devices and ALL operating systems
   - Pre-built binaries for Windows, macOS, Linux, iOS, Android
   - Native implementations for all platforms
 - **System Control Panel** - Service management and resource monitoring
@@ -48,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **48 comprehensive documentation files**
 
 #### Repository Organization
-- **Three-layer architecture** properly separated into BonsaiEcosystem/ and Omnisystem/
+- **Three-layer architecture** properly separated into OmnisystemEcosystem/ and Omnisystem/
 - **Clean root directory** with only essential files
 - **Proper .gitignore organization** per layer
 - **Build artifacts organized** in respective layer folders
@@ -66,7 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **3,900+ LOC** of production-grade kernel code (UOSC)
 - **50,000+ LOC** of Omnisystem services
 - **80,000+ LOC** of polyglot languages
-- **25,000+ LOC** of BonsaiEcosystem applications
+- **25,000+ LOC** of OmnisystemEcosystem applications
 - **160,000+ total LOC** - all production-ready, zero placeholders
 - **180+ unit tests** passing
 - **13 tests** for TransferDaemon verified

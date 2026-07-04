@@ -1,6 +1,6 @@
 # Launchers
 
-Quick-launch scripts for running BonsaiWorkspace applications.
+Quick-launch scripts for running OmnisystemWorkspace applications.
 
 ## Location
 
@@ -8,14 +8,14 @@ Quick-launch scripts for running BonsaiWorkspace applications.
 
 ## Quick Launch Commands
 
-### Launch Bonsai Workspace IDE
+### Launch Omnisystem Workspace IDE
 
-**Script**: `Launch-BonsaiWorkspace.ps1`  
+**Script**: `Launch-OmnisystemWorkspace.ps1`  
 **Platform**: Windows (PowerShell)  
-**Purpose**: Start the Bonsai Workspace IDE  
+**Purpose**: Start the Omnisystem Workspace IDE  
 **Usage**:
 ```powershell
-.\scripts\launchers\Launch-BonsaiWorkspace.ps1
+.\scripts\launchers\Launch-OmnisystemWorkspace.ps1
 ```
 
 **What it does**:
@@ -50,7 +50,7 @@ bash scripts/launchers/START_UACS.sh
 
 | Script | Platform | Purpose | Command |
 |--------|----------|---------|---------|
-| Launch-BonsaiWorkspace.ps1 | Windows | IDE | `.\scripts\launchers\Launch-BonsaiWorkspace.ps1` |
+| Launch-OmnisystemWorkspace.ps1 | Windows | IDE | `.\scripts\launchers\Launch-OmnisystemWorkspace.ps1` |
 | START_UACS.ps1 | Windows | UACS system | `.\scripts\launchers\START_UACS.ps1` |
 | START_UACS.sh | Linux/macOS | UACS system | `bash scripts/launchers/START_UACS.sh` |
 
@@ -62,20 +62,20 @@ Add shortcuts to these commands on your desktop or taskbar for quick access:
 
 **Windows Desktop Shortcut**:
 1. Right-click desktop → New → Shortcut
-2. Location: `powershell -NoProfile -ExecutionPolicy Bypass -File "Z:\Projects\BonsaiWorkspace\scripts\launchers\Launch-BonsaiWorkspace.ps1"`
-3. Name: "Bonsai Workspace"
+2. Location: `powershell -NoProfile -ExecutionPolicy Bypass -File "Z:\Projects\OmnisystemWorkspace\scripts\launchers\Launch-OmnisystemWorkspace.ps1"`
+3. Name: "Omnisystem Workspace"
 
 **Windows Taskbar**:
 1. Pin PowerShell to taskbar
 2. Right-click → Properties
 3. Target: Same as above
-4. Start in: `Z:\Projects\BonsaiWorkspace`
+4. Start in: `Z:\Projects\OmnisystemWorkspace`
 
 ## Application Ports
 
 | Application | Port | URL |
 |------------|------|-----|
-| Bonsai Workspace IDE | 1420 | `http://localhost:1420` |
+| Omnisystem Workspace IDE | 1420 | `http://localhost:1420` |
 | UACS System | 3000 | `http://localhost:3000` |
 
 ## Pre-Launch Checklist
@@ -119,7 +119,7 @@ To add a new launcher script:
 2. Add to this README
 3. Follow naming convention: `[APP]-[ACTION].ps1`
 4. Examples:
-   - `Launch-BonsaiWorkspace.ps1`
+   - `Launch-OmnisystemWorkspace.ps1`
    - `Launch-BMF-Server.ps1`
    - `Start-KDB-Indexer.ps1`
 
@@ -171,14 +171,14 @@ When adding new launchable components:
 
 ```powershell
 # Launch with debug output
-.\scripts\launchers\Launch-BonsaiWorkspace.ps1 -Verbose
+.\scripts\launchers\Launch-OmnisystemWorkspace.ps1 -Verbose
 
 # Launch and wait for completion
 $process = Start-Process -FilePath powershell -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy Bypass",
     "-File",
-    "Z:\Projects\BonsaiWorkspace\scripts\launchers\Launch-BonsaiWorkspace.ps1"
+    "Z:\Projects\OmnisystemWorkspace\scripts\launchers\Launch-OmnisystemWorkspace.ps1"
 ) -PassThru
 
 $process.WaitForExit()
@@ -189,11 +189,11 @@ $process.WaitForExit()
 Create Windows Task Scheduler job:
 ```powershell
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File Z:\Projects\BonsaiWorkspace\scripts\launchers\Launch-BonsaiWorkspace.ps1"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File Z:\Projects\OmnisystemWorkspace\scripts\launchers\Launch-OmnisystemWorkspace.ps1"
 
 $trigger = New-ScheduledTaskTrigger -AtStartup
 
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "Launch Bonsai Workspace"
+Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "Launch Omnisystem Workspace"
 ```
 
 ## Monitoring Launched Applications
@@ -211,7 +211,7 @@ Get-Content logs/build-launch.log -Tail 50
 ### Stop Applications
 ```powershell
 # Stop by name
-Stop-Process -Name "bonsai-workspace" -Force
+Stop-Process -Name "omnisystem-workspace" -Force
 
 # Stop by port
 $pid = (Get-NetTCPConnection -LocalPort 1420).OwningProcess
@@ -229,7 +229,7 @@ Stop-Process -Id $pid -Force
 
 **Recommended Workflow**:
 1. Build system: `.\scripts\build-scripts\build-complete-system.ps1`
-2. Launch IDE: `.\scripts\launchers\Launch-BonsaiWorkspace.ps1`
+2. Launch IDE: `.\scripts\launchers\Launch-OmnisystemWorkspace.ps1`
 
 **Or in one command**:
 ```powershell
@@ -246,7 +246,7 @@ scripts/
 │   └── [13+ build scripts]
 │
 ├── launchers/              # Quick application launch
-│   ├── Launch-BonsaiWorkspace.ps1
+│   ├── Launch-OmnisystemWorkspace.ps1
 │   ├── START_UACS.ps1
 │   ├── START_UACS.sh
 │   └── LAUNCHERS_README.md (this file)
@@ -262,10 +262,10 @@ scripts/
 
 ```
 ┌─────────────────────────────────────────────┐
-│      BONSAI WORKSPACE QUICK LAUNCH          │
+│      OMNISYSTEM WORKSPACE QUICK LAUNCH          │
 ├─────────────────────────────────────────────┤
 │ IDE Launch:                                 │
-│ .\scripts\launchers\Launch-BonsaiWorkspace  │
+│ .\scripts\launchers\Launch-OmnisystemWorkspace  │
 │                                             │
 │ UACS System:                                │
 │ .\scripts\launchers\START_UACS.ps1          │

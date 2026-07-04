@@ -288,7 +288,7 @@ Omnisystem/
 - Extensible design patterns
 
 🏆 **Integration**
-- BonsaiEcosystem moved to base-modules
+- OmnisystemEcosystem moved to base-modules
 - Full Omnisystem module hierarchy
 - ULL bridge designed
 - Multi-language support documented
@@ -298,8 +298,8 @@ Omnisystem/
 ## COMMITS CREATED
 
 ```
-f7ca535b6 - refactor: Copy BonsaiEcosystem to base-modules/applications structure
-40ce75aea - restore: Recover complete BonsaiEcosystem module (760 files, 25,000+ LOC)
+f7ca535b6 - refactor: Copy OmnisystemEcosystem to base-modules/applications structure
+40ce75aea - restore: Recover complete OmnisystemEcosystem module (760 files, 25,000+ LOC)
 d79759514 - docs: Complete migration documentation...
 7d1b46721 - docs: Complete all 7 layer designs for Neural Network Framework
 19749bbf7 - feat: Phase 1 Foundation - Neural Network Framework core implementation

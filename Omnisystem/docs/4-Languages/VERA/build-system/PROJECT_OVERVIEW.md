@@ -12,7 +12,7 @@ Comprehensive guide to each project that the build system compiles.
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  1. Desktop Environment (✅ Ready)                          │
-│     Location: applications/bonsai-desktop-environment/      │
+│     Location: applications/omnisystem-desktop-environment/      │
 │     Type: Rust console application                          │
 │     Binary: Omnisystem.exe (146 KB)                        │
 │                                                              │
@@ -24,19 +24,19 @@ Comprehensive guide to each project that the build system compiles.
 │  3. App Launcher (🔄 Building)                             │
 │     Location: modules/base-modules/applications/.../       │
 │     Type: Tauri application                                │
-│     Binary: BonsaiLauncher.exe (TBD)                      │
+│     Binary: OmnisystemLauncher.exe (TBD)                      │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Project 1: BonsaiEcosystem Desktop Environment
+## Project 1: OmnisystemEcosystem Desktop Environment
 
 ### Basic Information
 
 ```
-Name:           BonsaiEcosystem Desktop Environment
+Name:           OmnisystemEcosystem Desktop Environment
 Version:        29.0.0
 Type:           Rust console application
 Build System:   Cargo
@@ -61,10 +61,10 @@ The desktop environment is the **core user interface** for Omnisystem. When user
 ### Project Structure
 
 ```
-Omnisystem/applications/bonsai-desktop-environment/
+Omnisystem/applications/omnisystem-desktop-environment/
 ├── Cargo.toml                              [Project Config]
 │   ├── [package]
-│   │   ├── name = "bonsai-desktop"
+│   │   ├── name = "omnisystem-desktop"
 │   │   ├── version = "29.0.0"
 │   │   ├── edition = "2021"
 │   │   └── [workspace] (standalone)
@@ -109,7 +109,7 @@ Omnisystem/applications/bonsai-desktop-environment/
 ```rust
 fn main() {
     // Display splash screen
-    println!("BONSAI ECOSYSTEM DESKTOP ENVIRONMENT");
+    println!("OMNISYSTEM ECOSYSTEM DESKTOP ENVIRONMENT");
     
     // Boot sequence (9 stages)
     // Stage 1: Kernel
@@ -157,7 +157,7 @@ Contains the actual boot logic with:
 
 ```
 1. Cargo reads Cargo.toml
-   ├─ Finds package: bonsai-desktop
+   ├─ Finds package: omnisystem-desktop
    ├─ Finds [[bin]]: path = "src/launcher/main.rs"
    └─ Type: standalone Rust application
    
@@ -309,7 +309,7 @@ println!("New message here");
 
 # Expected output:
 # ╔════════════════════════════════════════════════════════════════════════╗
-# ║                    BONSAI ECOSYSTEM DESKTOP ENVIRONMENT                ║
+# ║                    OMNISYSTEM ECOSYSTEM DESKTOP ENVIRONMENT                ║
 # ...
 # [SYSTEM STATUS]
 #   Status: READY
@@ -451,15 +451,15 @@ Tauri is a **lightweight framework** for building desktop apps using web technol
 
 ---
 
-## Project 3: BonsaiEcosystem Launcher
+## Project 3: OmnisystemEcosystem Launcher
 
 ### Basic Information
 
 ```
-Name:           BonsaiEcosystem Launcher
+Name:           OmnisystemEcosystem Launcher
 Type:           Tauri application
 Framework:      Tauri 2.0 (newer version)
-Binary:         BonsaiLauncher.exe (TBD)
+Binary:         OmnisystemLauncher.exe (TBD)
 Build Time:     60-120 seconds (first build)
 Status:         🔄 Building (Tauri deps)
 Purpose:        App menu, launcher, control center
@@ -471,7 +471,7 @@ Similar to Project 2 (Tauri-based):
 
 ```
 Omnisystem/modules/base-modules/applications/
-bonsai-ecosystem/launcher/
+omnisystem-ecosystem/launcher/
 ├── Cargo.toml                          [Config - Tauri 2.0]
 ├── src-tauri/src/                     [Rust code]
 │   ├── main.rs
@@ -567,8 +567,8 @@ thread::sleep(Duration::from_millis(300));  // Increased from 150
 ### How Projects Connect to Build System
 
 1. **Desktop Environment**
-   - Located: `Omnisystem/applications/bonsai-desktop-environment`
-   - Cargo.toml: Defines bonsai-desktop package
+   - Located: `Omnisystem/applications/omnisystem-desktop-environment`
+   - Cargo.toml: Defines omnisystem-desktop package
    - Binary name: Omnisystem
    - No dependencies (fast build)
 
@@ -579,8 +579,8 @@ thread::sleep(Duration::from_millis(300));  // Increased from 150
    - First build: downloads ~439 packages
 
 3. **App Launcher**
-   - Located: `Omnisystem/modules/base-modules/applications/bonsai-ecosystem/launcher`
-   - Cargo.toml: Defines bonsai-launcher package
+   - Located: `Omnisystem/modules/base-modules/applications/omnisystem-ecosystem/launcher`
+   - Cargo.toml: Defines omnisystem-launcher package
    - Dependencies: Tauri 2.0 ecosystem
    - First build: downloads dependencies
 
@@ -690,7 +690,7 @@ Total: ~10-15s
 .\Quick-Build.ps1 -Target launcher
 
 # Run (when built)
-.\build\output\BonsaiLauncher.exe
+.\build\output\OmnisystemLauncher.exe
 # Should display launcher interface
 ```
 

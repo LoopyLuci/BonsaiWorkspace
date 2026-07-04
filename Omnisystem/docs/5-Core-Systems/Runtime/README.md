@@ -1,7 +1,7 @@
 Python runtime worker (prototype)
 
 This simple worker is a prototype for the Python runtime. It exposes a
-minimal HTTP `/health` endpoint and can be used with `bonsai-runtime`'s
+minimal HTTP `/health` endpoint and can be used with `omnisystem-runtime`'s
 `start_python_worker` to validate process spawning and health checks.
 
 Run locally:

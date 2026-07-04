@@ -113,14 +113,14 @@ TypeScript modules → npm test → Bootstrap orchestrator → Local simulation
 ```
 TypeScript → Compile to WASM (for portability)
          → Train empathy model (BonsAI V2)
-         → Package as .bkp (Bonsai package)
+         → Package as .bkp (Omnisystem package)
          → Deploy to anchor via Echo mesh
          → Verify signature on startup
          → Initialize identity from TPM
          → Run indefinitely with self-healing
 ```
 
-### Integration with Bonsai Ecosystem
+### Integration with Omnisystem Ecosystem
 - **Compilation:** Empathy model compiled via BPCF (function-level, hot-reloadable)
 - **Emulation:** Tested on BUSH emulator (RISC-V pendant simulation)
 - **Storage:** Model and config stored in Content-Addressed Store (CAS)

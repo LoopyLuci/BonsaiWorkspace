@@ -64,7 +64,7 @@ Currently empty - placeholders for:
 **Ecosystem** (`ecosystem/`)
 ```
 ✅ Organized modules:
-└── BonsaiEcosystem/                   (Advanced ecosystem framework)
+└── OmnisystemEcosystem/                   (Advanced ecosystem framework)
     └── [launcher, shared-ui, node_modules, etc.]
 ```
 
@@ -148,7 +148,7 @@ Placeholder for:
 
 | Module | Destination | Category | Purpose |
 |--------|-------------|----------|---------|
-| BonsaiEcosystem | `ecosystem/` | Ecosystem | Advanced ecosystem |
+| OmnisystemEcosystem | `ecosystem/` | Ecosystem | Advanced ecosystem |
 | omnisystem-marketplace | `legacy-modules/` | Legacy | Module marketplace |
 
 ---
@@ -164,7 +164,7 @@ Placeholder for:
 **Total Base Modules**: 9 organized modules + placeholders for 8 core modules
 
 ### Universal Modules
-- **ecosystem/**: BonsaiEcosystem (83,000+ files, advanced ecosystem)
+- **ecosystem/**: OmnisystemEcosystem (83,000+ files, advanced ecosystem)
 - **legacy-modules/**: omnisystem-marketplace + placeholders for 30+ modules
 - **phase-19-23/**: 20 placeholder directories ready for phase extensions
 
@@ -286,7 +286,7 @@ Z:\Projects\Omnisystem\Omnisystem\modules\
 │   ├── conductor_universal_modules.titan
 │   │
 │   ├── ecosystem/
-│   │   └── BonsaiEcosystem/
+│   │   └── OmnisystemEcosystem/
 │   │
 │   ├── phase-19-extensions/         (Empty, ready for 6 modules)
 │   ├── phase-20-prompt-system/      (Empty, ready for 4 modules)
@@ -318,7 +318,7 @@ Z:\Projects\Omnisystem\Omnisystem\modules\
 
 ## Known Issues
 
-⚠️ **BonsaiEcosystem Duplication**
+⚠️ **OmnisystemEcosystem Duplication**
 - Top-level copy (83K files) exists alongside organized copy (4.4K files)
 - Caused by deep node_modules paths during move operation
 - Recommendation: Keep organized copy in `universal-modules/ecosystem/`

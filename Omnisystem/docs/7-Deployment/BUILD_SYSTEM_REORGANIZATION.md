@@ -223,7 +223,7 @@ Result: Both executables in Omnisystem/launchers/
 **Features**:
 - Beautiful graphical user interface
 - Application launcher and discovery
-- BonsaiEcosystem integration
+- OmnisystemEcosystem integration
 - System settings management
 - Desktop environment
 - Startup time: < 1 second

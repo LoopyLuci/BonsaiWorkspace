@@ -365,7 +365,7 @@ aether-dns/
 - **Sandboxing**: Capability-based isolation
 - **Execution**: Hypervisor-abstracted (KVM/Hyper-V/VirtualizationFramework)
 - **Control**: System tray panel integration
-- **Service Orchestration**: BonsaiEcosystem coordination
+- **Service Orchestration**: OmnisystemEcosystem coordination
 
 ---
 

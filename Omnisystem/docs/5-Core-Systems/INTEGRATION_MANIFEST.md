@@ -18,7 +18,7 @@
 
 ### Application Modules
 - [x] Core (83 Titan files, wired)
-- [x] BonsaiEcosystem (integrated)
+- [x] OmnisystemEcosystem (integrated)
 - [ ] Web Applications (needs Vera GUI)
 - [ ] Mobile Applications (needs Nexus GUI)
 - [ ] Game Applications (needs Helix GUI)
@@ -202,7 +202,7 @@ Omnisystem/
 │       │   ├── web/        ⚠️ Needs Vera wiring
 │       │   ├── mobile/     ⚠️ Needs Nexus wiring
 │       │   ├── ai/         ⚠️ Needs Sylva wiring
-│       │   └── bonsai-ecosystem/ ✅ Wired
+│       │   └── omnisystem-ecosystem/ ✅ Wired
 │       │
 │       ├── frameworks/
 │       │   ├── web/        ⚠️ Vera-based
