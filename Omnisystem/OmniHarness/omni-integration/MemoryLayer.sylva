@@ -1,0 +1,347 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS MEMORY LAYER — Sylva ML-Powered Semantic Memory
+// Vector embeddings, semantic search, knowledge distillation, memory graphs
+// 100% SYLVA — Machine learning memory for AI harness
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, f64, bool}
+
+// ── Embedding model definition ────────────────────────────────────────────────
+
+layer EmbeddingEncoder {
+    input:   [512]     // token sequence
+    hidden:  [256, 128]
+    output:  [128]     // 128-dim embedding
+    activation: relu
+    pooling: mean
+}
+
+layer SemanticCompressor {
+    input:   [128]
+    hidden:  [64]
+    output:  [32]      // compressed for fast search
+    activation: tanh
+}
+
+model SemanticEmbedder {
+    architecture: [EmbeddingEncoder, SemanticCompressor]
+    loss:       contrastive
+    optimizer:  adam(lr=0.001)
+    batch_size: 32
+}
+
+// ── Memory structures ─────────────────────────────────────────────────────────
+
+pub struct MemoryRecord {
+    pub id:         String,
+    pub collection: String,
+    pub content:    String,
+    pub embedding:  Vec<f32>,      // 128-dim from EmbeddingEncoder
+    pub compressed: Vec<f32>,      // 32-dim from SemanticCompressor
+    pub metadata:   HashMap<String, String>,
+    pub importance: f32,           // 0.0 - 1.0 decay factor
+    pub access_count: i32,
+    pub created_at: i64,
+    pub last_accessed: i64,
+}
+
+pub struct SearchResult {
+    pub record:     MemoryRecord,
+    pub score:      f32,
+    pub rank:       i32,
+}
+
+pub struct MemoryStats {
+    pub total_records: i64,
+    pub collections:   i32,
+    pub avg_importance: f32,
+    pub hot_records:   i32,   // accessed > 10 times
+}
+
+// ── Hash-based embedding (deterministic, no model needed for bootstrap) ───────
+
+fn text_to_embedding(text: &str) -> Vec<f32> {
+    let mut embedding = vec![0.0f32; 128]
+    let bytes = text.as_bytes()
+
+    // FNV-1a scatter into 128 dimensions
+    const FNV_PRIME: u64 = 1_099_511_628_211
+    const FNV_BASIS: u64 = 14_695_981_039_346_656_037
+
+    for (i, &b) in bytes.iter().enumerate() {
+        let h1 = (FNV_BASIS ^ b as u64).wrapping_mul(FNV_PRIME)
+        let h2 = (h1 ^ i as u64).wrapping_mul(FNV_PRIME)
+        let slot = (h2 % 128) as usize
+        embedding[slot] += (b as f32 - 128.0) / 128.0
+    }
+
+    // Also scatter bigrams
+    for w in bytes.windows(2) {
+        let bigram = (w[0] as u64) << 8 | w[1] as u64
+        let h = (FNV_BASIS ^ bigram).wrapping_mul(FNV_PRIME)
+        let slot = (h % 128) as usize
+        embedding[slot] += 0.5
+    }
+
+    // L2 normalize
+    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt()
+    if norm > 0.0 {
+        for x in &mut embedding { *x /= norm }
+    }
+    embedding
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let n   = a.len().min(b.len())
+    let dot: f32 = a[..n].iter().zip(&b[..n]).map(|(x, y)| x * y).sum()
+    let na:  f32 = a[..n].iter().map(|x| x * x).sum::<f32>().sqrt()
+    let nb:  f32 = b[..n].iter().map(|x| x * x).sum::<f32>().sqrt()
+    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+}
+
+// ── Semantic Memory Store ────────────────────────────────────────────────────
+
+pub struct SemanticMemory {
+    records:    Arc<Mutex<HashMap<String, Vec<MemoryRecord>>>>,
+    model:      SemanticEmbedder,
+    use_model:  bool,
+    total_count: i64,
+}
+
+impl SemanticMemory {
+    pub fn new() -> Self {
+        SemanticMemory {
+            records:     Arc::new(Mutex::new(HashMap::new())),
+            model:       SemanticEmbedder::new(),
+            use_model:   false,   // use hash embedding until model trained
+            total_count: 0,
+        }
+    }
+
+    pub fn store(
+        &mut self,
+        collection: String,
+        content:    String,
+        metadata:   HashMap<String, String>,
+    ) -> String {
+        let id        = memory_new_id()
+        let embedding = text_to_embedding(&content)
+        let now       = memory_now()
+
+        let record = MemoryRecord {
+            id:            id.clone(),
+            collection:    collection.clone(),
+            content,
+            embedding,
+            compressed:    vec![0.0f32; 32],
+            metadata,
+            importance:    1.0,
+            access_count:  0,
+            created_at:    now,
+            last_accessed: now,
+        }
+
+        self.records
+            .lock().unwrap()
+            .entry(collection)
+            .or_insert_with(Vec::new)
+            .push(record)
+
+        self.total_count += 1
+        id
+    }
+
+    pub fn search(
+        &self,
+        collection: String,
+        query:      String,
+        top_k:      i32,
+        threshold:  f32,
+    ) -> Vec<SearchResult> {
+        let q_emb   = text_to_embedding(&query)
+        let records = self.records.lock().unwrap()
+        let entries = match records.get(&collection) {
+            Some(e) => e,
+            None    => return Vec::new(),
+        }
+
+        let k = if top_k <= 0 { 5 } else { top_k as usize }
+
+        let mut scored: Vec<(usize, f32)> = entries.iter().enumerate()
+            .filter_map(|(i, r)| {
+                let sim = cosine_similarity(&q_emb, &r.embedding)
+                // Boost by importance and recency
+                let score = sim * r.importance * (1.0 + r.access_count as f32 * 0.01)
+                if score >= threshold { Some((i, score)) } else { None }
+            })
+            .collect()
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+        scored.truncate(k)
+
+        scored.into_iter().enumerate().map(|(rank, (idx, score))| {
+            SearchResult {
+                record: entries[idx].clone(),
+                score,
+                rank: rank as i32,
+            }
+        }).collect()
+    }
+
+    pub fn retrieve(&self, collection: &str, id: &str) -> Option<MemoryRecord> {
+        self.records.lock().unwrap()
+            .get(collection)?
+            .iter().find(|r| r.id == id)
+            .cloned()
+    }
+
+    pub fn delete(&self, collection: &str, id: &str) -> bool {
+        let mut records = self.records.lock().unwrap()
+        if let Some(entries) = records.get_mut(collection) {
+            let before = entries.len()
+            entries.retain(|r| r.id != id)
+            return entries.len() < before
+        }
+        false
+    }
+
+    pub fn update_importance(&self, collection: &str, id: &str, factor: f32) {
+        let mut records = self.records.lock().unwrap()
+        if let Some(entries) = records.get_mut(collection) {
+            if let Some(record) = entries.iter_mut().find(|r| r.id == id) {
+                record.importance = (record.importance * factor).max(0.0).min(1.0)
+                record.access_count += 1
+                record.last_accessed = memory_now()
+            }
+        }
+    }
+
+    pub fn decay_importance(&self, decay_factor: f32) {
+        let mut records = self.records.lock().unwrap()
+        for entries in records.values_mut() {
+            for r in entries.iter_mut() {
+                r.importance *= decay_factor
+            }
+        }
+    }
+
+    pub fn prune_unimportant(&self, min_importance: f32) -> i64 {
+        let mut records = self.records.lock().unwrap()
+        let mut pruned  = 0i64
+        for entries in records.values_mut() {
+            let before = entries.len()
+            entries.retain(|r| r.importance >= min_importance)
+            pruned += (before - entries.len()) as i64
+        }
+        pruned
+    }
+
+    pub fn list_collections(&self) -> Vec<String> {
+        self.records.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn stats(&self) -> MemoryStats {
+        let records = self.records.lock().unwrap()
+        let total:    i64 = records.values().map(|v| v.len() as i64).sum()
+        let avg_imp:  f32 = if total == 0 { 0.0 } else {
+            records.values().flat_map(|v| v.iter()).map(|r| r.importance).sum::<f32>() / total as f32
+        }
+        let hot: i32 = records.values().flat_map(|v| v.iter()).filter(|r| r.access_count > 10).count() as i32
+
+        MemoryStats {
+            total_records: total,
+            collections:   records.len() as i32,
+            avg_importance: avg_imp,
+            hot_records:   hot,
+        }
+    }
+
+    pub fn export_collection(&self, collection: &str) -> Vec<HashMap<String, String>> {
+        self.records.lock().unwrap()
+            .get(collection)
+            .map(|entries| entries.iter().map(|r| {
+                let mut m = HashMap::new()
+                m.insert("id".to_string(),        r.id.clone())
+                m.insert("content".to_string(),   r.content.clone())
+                m.insert("importance".to_string(), r.importance.to_string())
+                m
+            }).collect())
+            .unwrap_or_default()
+    }
+}
+
+// ── Distillation engine — compress memories into summaries ────────────────────
+
+pub struct MemoryDistiller {
+    memory: Arc<Mutex<SemanticMemory>>,
+}
+
+impl MemoryDistiller {
+    pub fn new(memory: Arc<Mutex<SemanticMemory>>) -> Self {
+        MemoryDistiller { memory }
+    }
+
+    pub fn distill_collection(&self, collection: &str, max_records: i32) -> String {
+        let mem     = self.memory.lock().unwrap()
+        let records = mem.records.lock().unwrap()
+        let entries = match records.get(collection) {
+            Some(e) => e,
+            None    => return String::new(),
+        }
+
+        // Sort by importance × access_count descending
+        let mut sorted: Vec<&MemoryRecord> = entries.iter().collect()
+        sorted.sort_by(|a, b| {
+            let sa = a.importance * (1.0 + a.access_count as f32)
+            let sb = b.importance * (1.0 + b.access_count as f32)
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        })
+
+        let top = sorted.iter().take(max_records as usize)
+        let summary = top.map(|r| format!("- {}", r.content)).collect::<Vec<_>>().join("\n")
+        format!("Memory distillation ({} records):\n{}", sorted.len(), summary)
+    }
+
+    pub fn find_contradictions(&self, collection: &str) -> Vec<(String, String)> {
+        // Simple heuristic: find pairs with very high similarity (likely duplicates)
+        // or that contain opposing words
+        let mem     = self.memory.lock().unwrap()
+        let records = mem.records.lock().unwrap()
+        let entries = match records.get(collection) {
+            Some(e) => e,
+            None    => return Vec::new(),
+        }
+
+        let mut pairs = Vec::new()
+        for i in 0..entries.len() {
+            for j in i+1..entries.len() {
+                let sim = cosine_similarity(&entries[i].embedding, &entries[j].embedding)
+                if sim > 0.95 {
+                    // Very similar — potential duplicate
+                    pairs.push((entries[i].id.clone(), entries[j].id.clone()))
+                }
+            }
+        }
+        pairs
+    }
+}
+
+fn memory_new_id() -> String {
+    const FNV_PRIME: u64 = 1_099_511_628_211
+    const FNV_BASIS: u64 = 14_695_981_039_346_656_037
+    let t = memory_now() as u64
+    let h = (FNV_BASIS ^ t).wrapping_mul(FNV_PRIME)
+    format!("mem_{:016x}", h)
+}
+
+fn memory_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+pub mod HarnessMemory {
+    pub use super::{SemanticMemory, MemoryRecord, SearchResult, MemoryStats, MemoryDistiller}
+
+    pub fn create() -> SemanticMemory {
+        SemanticMemory::new()
+    }
+}

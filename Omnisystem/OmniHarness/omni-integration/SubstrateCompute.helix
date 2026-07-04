@@ -1,0 +1,97 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS SUBSTRATE COMPUTE — Helix GPU Pipeline
+// GPU-accelerated substrate kernels: batch embeddings for RAG, cosine retrieval,
+// ensemble answer scoring, and distillation KL/softmax over teacher logits.
+// 100% HELIX — High-performance GPU compute for the AI substrate
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Batched embedding: hash-projection of token buckets → normalized vectors ──
+
+pipeline BatchEmbed {
+    inputs {
+        tokens:  buffer<u32>   @binding(0)   // packed token buckets per doc
+        offsets: buffer<u32>   @binding(1)   // doc start offsets
+        dim:     u32           @uniform
+    }
+    outputs {
+        embeddings: buffer<f32> @binding(2)  // [num_docs * dim], L2-normalized
+    }
+    compute @workgroup(64) {
+        let doc = global_id.x
+        var acc: array<f32, 256>
+        let start = offsets[doc]
+        let end   = offsets[doc + 1u]
+        for (var i = start; i < end; i = i + 1u) {
+            let slot = tokens[i] % dim
+            acc[slot] = acc[slot] + 1.0
+        }
+        var norm: f32 = 0.0
+        for (var d = 0u; d < dim; d = d + 1u) { norm = norm + acc[d] * acc[d] }
+        norm = sqrt(max(norm, 1e-8))
+        for (var d = 0u; d < dim; d = d + 1u) {
+            embeddings[doc * dim + d] = acc[d] / norm
+        }
+    }
+}
+
+// ── Cosine retrieval: score a query vector against all chunk vectors ──────────
+
+pipeline CosineRetrieve {
+    inputs {
+        query:  buffer<f32>  @binding(0)   // [dim]
+        chunks: buffer<f32>  @binding(1)   // [num_chunks * dim]
+        dim:    u32          @uniform
+    }
+    outputs {
+        scores: buffer<f32>  @binding(2)   // [num_chunks]
+    }
+    compute @workgroup(128) {
+        let idx = global_id.x
+        var dot: f32 = 0.0
+        for (var d = 0u; d < dim; d = d + 1u) {
+            dot = dot + query[d] * chunks[idx * dim + d]
+        }
+        scores[idx] = dot        // vectors are pre-normalized → cosine == dot
+    }
+}
+
+// ── Ensemble scoring: softmax over per-model judge scores for weighting ───────
+
+pipeline EnsembleSoftmax {
+    inputs {
+        logits: buffer<f32> @binding(0)   // [num_models]
+        n:      u32         @uniform
+    }
+    outputs {
+        weights: buffer<f32> @binding(1)  // [num_models], sums to 1
+    }
+    compute @workgroup(64) {
+        var maxv: f32 = -1e30
+        for (var i = 0u; i < n; i = i + 1u) { maxv = max(maxv, logits[i]) }
+        var sum: f32 = 0.0
+        for (var i = 0u; i < n; i = i + 1u) { sum = sum + exp(logits[i] - maxv) }
+        let idx = global_id.x
+        weights[idx] = exp(logits[idx] - maxv) / sum
+    }
+}
+
+// ── Distillation: temperature-scaled KL between student & teacher soft targets ─
+
+pipeline DistillKL {
+    inputs {
+        student: buffer<f32> @binding(0)   // [vocab] logits
+        teacher: buffer<f32> @binding(1)   // [vocab] logits
+        vocab:   u32         @uniform
+        temp:    f32         @uniform
+    }
+    outputs {
+        loss: buffer<f32> @binding(2)      // [1] accumulated KL
+    }
+    compute @workgroup(256) {
+        // Soft targets: p_teacher = softmax(teacher/T), q_student = softmax(student/T)
+        let i = global_id.x
+        let pt = softmax_at(teacher, i, vocab, temp)
+        let qs = softmax_at(student, i, vocab, temp)
+        atomic_add(loss[0], pt * (log(pt) - log(qs)) * temp * temp)
+    }
+}

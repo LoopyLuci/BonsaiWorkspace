@@ -1,0 +1,375 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS CORE — Titan Integration Layer
+// Deep integration with Omnisystem runtime, compiler, event bus, and kernel
+// 100% TITAN — Enterprise-grade polyglot AI harness bridge
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, f64, bool, u8, u64}
+
+// ── Win32 / POSIX HTTP externs ────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+extern "C" {
+    fn WinHttpOpen(agent: *const u8, access_type: u32, proxy: *const u8, bypass: *const u8, flags: u32) -> *mut u8
+    fn WinHttpConnect(session: *mut u8, host: *const u8, port: u16, reserved: u32) -> *mut u8
+    fn WinHttpOpenRequest(conn: *mut u8, verb: *const u8, path: *const u8, version: *const u8, referrer: *const u8, accept: *const *const u8, flags: u32) -> *mut u8
+    fn WinHttpSendRequest(req: *mut u8, headers: *const u8, headers_len: u32, body: *mut u8, body_len: u32, total_len: u32, ctx: u64) -> bool
+    fn WinHttpReceiveResponse(req: *mut u8, reserved: *mut u8) -> bool
+    fn WinHttpReadData(req: *mut u8, buf: *mut u8, len: u32, read: *mut u32) -> bool
+    fn WinHttpCloseHandle(h: *mut u8) -> bool
+}
+
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn harness_http_post(url: *const u8, body: *const u8, body_len: i32, out: *mut u8, out_len: i32) -> i32
+}
+
+// ── Kernel HTTP client (simple synchronous) ───────────────────────────────────
+
+fn harness_post_json(url: String, body: String) -> Result<String, String> {
+    // Use reqwest-style call via Omnisystem native HTTP layer
+    let result = omnisystem::net::http_post(&url, &body, "application/json")
+    result.map_err(|e| format!("HTTP POST failed: {}", e))
+}
+
+fn harness_get_json(url: String) -> Result<String, String> {
+    let result = omnisystem::net::http_get(&url)
+    result.map_err(|e| format!("HTTP GET failed: {}", e))
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+pub struct HarnessChatMessage {
+    pub role:    String,
+    pub content: String,
+}
+
+pub struct HarnessChatRequest {
+    pub model_id:    String,
+    pub messages:    Vec<HarnessChatMessage>,
+    pub temperature: f32,
+    pub max_tokens:  i32,
+    pub system:      Option<String>,
+    pub session_id:  String,
+}
+
+pub struct HarnessChatResponse {
+    pub content:       String,
+    pub model_used:    String,
+    pub finish_reason: String,
+    pub input_tokens:  i32,
+    pub output_tokens: i32,
+    pub latency_ms:    f64,
+}
+
+pub struct HarnessMemoryEntry {
+    pub id:         String,
+    pub collection: String,
+    pub content:    String,
+    pub score:      f32,
+}
+
+pub struct HarnessEvent {
+    pub id:           String,
+    pub event_type:   String,
+    pub payload_json: String,
+    pub timestamp:    i64,
+}
+
+pub struct HarnessConfig {
+    pub kernel_host:  String,
+    pub kernel_port:  i32,
+    pub python_host:  String,
+    pub python_port:  i32,
+    pub default_model: String,
+}
+
+// ── Main Harness Core struct ──────────────────────────────────────────────────
+
+pub struct HarnessCore {
+    config:         HarnessConfig,
+    session_id:     String,
+    event_log:      Arc<Mutex<Vec<HarnessEvent>>>,
+    chat_history:   Arc<Mutex<Vec<HarnessChatMessage>>>,
+    request_count:  i64,
+    total_tokens:   i64,
+}
+
+impl HarnessCore {
+    pub fn new(config: HarnessConfig) -> Self {
+        let session_id = harness_new_uuid()
+        HarnessCore {
+            config,
+            session_id,
+            event_log:     Arc::new(Mutex::new(Vec::new())),
+            chat_history:  Arc::new(Mutex::new(Vec::new())),
+            request_count: 0,
+            total_tokens:  0,
+        }
+    }
+
+    pub fn from_env() -> Self {
+        let config = HarnessConfig {
+            kernel_host:   harness_env("OMNIHARNESS_HOST", "localhost"),
+            kernel_port:   harness_env_int("OMNIHARNESS_GRPC_PORT", 50051),
+            python_host:   harness_env("OMNIHARNESS_PYTHON_HOST", "localhost"),
+            python_port:   harness_env_int("OMNIHARNESS_PYTHON_PORT", 8080),
+            default_model: harness_env("OMNIHARNESS_DEFAULT_MODEL", "claude-sonnet-4-6"),
+        }
+        Self::new(config)
+    }
+
+    // ── Chat via Python REST API ───────────────────────────────────
+
+    pub fn chat(&mut self, user_message: String) -> Result<HarnessChatResponse, String> {
+        self.chat_with_model(user_message, self.config.default_model.clone())
+    }
+
+    pub fn chat_with_model(&mut self, user_message: String, model_id: String) -> Result<HarnessChatResponse, String> {
+        // Add to history
+        let user_msg = HarnessChatMessage { role: "user".to_string(), content: user_message.clone() }
+        self.chat_history.lock().unwrap().push(user_msg)
+
+        // Build request JSON
+        let messages_json = self.build_messages_json()
+        let request_json = format!(
+            r#"{{"model_id":"{}","messages":{},"temperature":0.7,"max_tokens":4096,"session_id":"{}"}}"#,
+            model_id, messages_json, self.session_id
+        )
+
+        let url = format!("http://{}:{}/api/chat", self.config.python_host, self.config.python_port)
+        let resp_str = harness_post_json(url, request_json)?
+
+        // Parse response
+        let resp = harness_parse_chat_response(resp_str)?
+        self.total_tokens += (resp.input_tokens + resp.output_tokens) as i64
+        self.request_count += 1
+
+        // Add assistant reply to history
+        let assistant_msg = HarnessChatMessage {
+            role: "assistant".to_string(),
+            content: resp.content.clone(),
+        }
+        self.chat_history.lock().unwrap().push(assistant_msg)
+
+        // Log event
+        self.log_event("ChatComplete", format!(
+            r#"{{"model":"{}","tokens":{}}}"#,
+            resp.model_used, resp.output_tokens
+        ))
+
+        Ok(resp)
+    }
+
+    // ── Memory operations ─────────────────────────────────────────
+
+    pub fn remember(&self, collection: String, content: String) -> Result<String, String> {
+        let url     = format!("http://{}:{}/api/memory/store", self.config.python_host, self.config.python_port)
+        let body    = format!(r#"{{"collection":"{}","content":"{}","metadata":{{"source":"omnisystem"}}}}"#,
+            collection, content.replace("\"", "\\\""))
+        let resp    = harness_post_json(url, body)?
+        harness_extract_json_field(resp, "id")
+    }
+
+    pub fn recall(&self, collection: String, query: String, top_k: i32) -> Result<Vec<HarnessMemoryEntry>, String> {
+        let url  = format!("http://{}:{}/api/memory/search", self.config.python_host, self.config.python_port)
+        let body = format!(r#"{{"collection":"{}","query":"{}","top_k":{}}}"#,
+            collection, query.replace("\"", "\\\""), top_k)
+        let resp = harness_post_json(url, body)?
+        harness_parse_memory_results(resp)
+    }
+
+    // ── Agent / ReAct ─────────────────────────────────────────────
+
+    pub fn run_agent(&self, objective: String) -> Result<String, String> {
+        let url  = format!("http://{}:{}/api/agent/run", self.config.python_host, self.config.python_port)
+        let body = format!(
+            r#"{{"objective":"{}","model_id":"{}","max_steps":20}}"#,
+            objective.replace("\"", "\\\""), self.config.default_model
+        )
+        let resp = harness_post_json(url, body)?
+        harness_extract_json_field(resp, "answer")
+    }
+
+    // ── Tool execution ────────────────────────────────────────────
+
+    pub fn execute_tool(&self, tool_name: String, arguments_json: String) -> Result<String, String> {
+        let url  = format!("http://{}:{}/api/tools/execute", self.config.python_host, self.config.python_port)
+        let body = format!(r#"{{"name":"{}","arguments":{}}}"#, tool_name, arguments_json)
+        let resp = harness_post_json(url, body)?
+        harness_extract_json_field(resp, "result")
+    }
+
+    // ── Compile Omni-Language source via OmniCC ───────────────────
+
+    pub fn compile_omni_source(&self, source: String, language: String) -> Result<String, String> {
+        // Writes source to temp file and calls OmniCC
+        let tmp_path = format!("/tmp/omniharness_compile_{}.{}", harness_new_uuid(), language.to_lowercase())
+        harness_write_file(tmp_path.clone(), source)?
+        let output = harness_shell_cmd(format!("omnicc compile {}", tmp_path))?
+        Ok(output)
+    }
+
+    // ── Kernel health ─────────────────────────────────────────────
+
+    pub fn health(&self) -> Result<bool, String> {
+        let url  = format!("http://{}:{}/api/health", self.config.python_host, self.config.python_port)
+        let resp = harness_get_json(url)?
+        Ok(resp.contains("\"status\":\"ok\""))
+    }
+
+    // ── Stats ─────────────────────────────────────────────────────
+
+    pub fn stats(&self) -> HashMap<String, i64> {
+        let mut m = HashMap::new()
+        m.insert("request_count".to_string(), self.request_count)
+        m.insert("total_tokens".to_string(),  self.total_tokens)
+        m.insert("history_len".to_string(),   self.chat_history.lock().unwrap().len() as i64)
+        m.insert("event_count".to_string(),   self.event_log.lock().unwrap().len() as i64)
+        m
+    }
+
+    pub fn clear_history(&mut self) {
+        self.chat_history.lock().unwrap().clear()
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────
+
+    fn log_event(&self, event_type: &str, payload: String) {
+        let event = HarnessEvent {
+            id:           harness_new_uuid(),
+            event_type:   event_type.to_string(),
+            payload_json: payload,
+            timestamp:    harness_now_secs(),
+        }
+        self.event_log.lock().unwrap().push(event)
+    }
+
+    fn build_messages_json(&self) -> String {
+        let history = self.chat_history.lock().unwrap()
+        let parts: Vec<String> = history.iter().map(|m| {
+            format!(r#"{{"role":"{}","content":"{}"}}"#,
+                m.role, m.content.replace("\"", "\\\"").replace("\n", "\\n"))
+        }).collect()
+        format!("[{}]", parts.join(","))
+    }
+}
+
+// ── JSON parsing helpers (no external deps) ───────────────────────────────────
+
+fn harness_extract_json_field(json: String, field: &str) -> Result<String, String> {
+    let key = format!("\"{}\":\"", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        if let Some(end) = after.find('"') {
+            return Ok(after[..end].to_string())
+        }
+    }
+    // Try numeric
+    let key2 = format!("\"{}\":", field)
+    if let Some(start) = json.find(&key2) {
+        let after = &json[start + key2.len()..]
+        let end   = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len())
+        return Ok(after[..end].to_string())
+    }
+    Err(format!("Field '{}' not found in response", field))
+}
+
+fn harness_parse_chat_response(json: String) -> Result<HarnessChatResponse, String> {
+    let content       = harness_extract_json_field(json.clone(), "content").unwrap_or_default()
+    let model_used    = harness_extract_json_field(json.clone(), "model_used").unwrap_or("unknown".to_string())
+    let finish_reason = harness_extract_json_field(json.clone(), "finish_reason").unwrap_or("stop".to_string())
+    let input_tokens  = harness_extract_json_field(json.clone(), "input_tokens").unwrap_or("0".to_string()).parse::<i32>().unwrap_or(0)
+    let output_tokens = harness_extract_json_field(json.clone(), "output_tokens").unwrap_or("0".to_string()).parse::<i32>().unwrap_or(0)
+    let latency_ms    = harness_extract_json_field(json.clone(), "latency_ms").unwrap_or("0".to_string()).parse::<f64>().unwrap_or(0.0)
+    Ok(HarnessChatResponse { content, model_used, finish_reason, input_tokens, output_tokens, latency_ms })
+}
+
+fn harness_parse_memory_results(json: String) -> Result<Vec<HarnessMemoryEntry>, String> {
+    // Simple JSON array scanner
+    let mut results = Vec::new()
+    let mut pos     = 0usize
+    while let Some(id_start) = json[pos..].find("\"id\":\"") {
+        let abs  = pos + id_start + 6
+        let id_end = json[abs..].find('"').unwrap_or(0)
+        let id   = json[abs..abs+id_end].to_string()
+
+        let content = harness_extract_json_field(json[abs..].to_string(), "content").unwrap_or_default()
+        let score   = harness_extract_json_field(json[abs..].to_string(), "score")
+            .unwrap_or("0".to_string()).parse::<f32>().unwrap_or(0.0)
+
+        results.push(HarnessMemoryEntry {
+            id, collection: "default".to_string(), content, score,
+        })
+        pos = abs + id_end + 1
+        if pos >= json.len() { break }
+    }
+    Ok(results)
+}
+
+// ── OS helpers ────────────────────────────────────────────────────────────────
+
+fn harness_env(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn harness_env_int(key: &str, default: i32) -> i32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn harness_now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn harness_new_uuid() -> String {
+    // FNV-1a based UUID-like identifier
+    let t   = harness_now_secs() as u64
+    let pid = std::process::id() as u64
+    let h1  = fnv1a_hash(t.to_le_bytes().as_ref())
+    let h2  = fnv1a_hash(pid.to_le_bytes().as_ref())
+    format!("{:016x}-{:016x}", h1, h2)
+}
+
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 1_099_511_628_211
+    const BASIS: u64 = 14_695_981_039_346_656_037
+    let mut h = BASIS
+    for &b in bytes {
+        h ^= b as u64
+        h  = h.wrapping_mul(PRIME)
+    }
+    h
+}
+
+fn harness_write_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, &content).map_err(|e| e.to_string())
+}
+
+fn harness_shell_cmd(cmd: String) -> Result<String, String> {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", &cmd])
+        .output()
+        .map_err(|e| e.to_string())?
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// ── Public module interface ───────────────────────────────────────────────────
+
+pub mod OmniHarness {
+    pub use super::{HarnessCore, HarnessConfig, HarnessChatMessage, HarnessChatRequest,
+                    HarnessChatResponse, HarnessMemoryEntry, HarnessEvent}
+
+    pub fn create() -> HarnessCore {
+        HarnessCore::from_env()
+    }
+
+    pub fn create_with(host: String, port: i32) -> HarnessCore {
+        HarnessCore::new(HarnessConfig {
+            kernel_host:   host.clone(),
+            kernel_port:   50051,
+            python_host:   host,
+            python_port:   port,
+            default_model: "claude-sonnet-4-6".to_string(),
+        })
+    }
+}

@@ -1,0 +1,183 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS SUBSTRATE CORE — Titan Systems Layer
+// The universal substrate coordinator: governs and dispatches swarm, RAG,
+// ensemble, and evolution runs. Binds the polyglot engines into one runtime.
+// 100% TITAN — Enterprise-grade systems glue for safe autonomous AI
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, f64, bool, u64}
+
+// ── Governed run context (mirrors substrate.governance in Python) ─────────────
+
+struct Budget {
+    max_model_calls: i32,
+    max_tokens:      i64,
+    max_cost_usd:    f64,
+    max_steps:       i32,
+    max_wallclock_s: f64,
+    max_parallel:    i32,
+}
+
+struct Usage {
+    model_calls: i32,
+    tokens:      i64,
+    cost_usd:    f64,
+    steps:       i32,
+    started_at:  i64,
+}
+
+struct CapabilityPolicy {
+    allowed_models: Vec<String>,   // empty = any
+    allowed_tools:  Vec<String>,   // empty = any
+    denied_tools:   Vec<String>,
+    allow_network:  bool,
+    allow_fs_write: bool,
+    max_agents:     i32,
+}
+
+enum SubstrateError {
+    BudgetExceeded(String),
+    PolicyViolation(String),
+    Aborted(String),
+}
+
+struct Governor {
+    budget:  Budget,
+    policy:  CapabilityPolicy,
+    usage:   Usage,
+    killed:  bool,
+    kill_reason: String,
+    audit:   Arc<Mutex<AuditChain>>,
+}
+
+impl Governor {
+    fn checkpoint(&mut self, note: String) -> Result<(), SubstrateError> {
+        if self.killed {
+            return Err(SubstrateError::Aborted(self.kill_reason.clone()))
+        }
+        self.usage.steps = self.usage.steps + 1
+        if self.budget.max_steps > 0 && self.usage.steps > self.budget.max_steps {
+            return Err(SubstrateError::BudgetExceeded("max_steps".to_string()))
+        }
+        let now = omnisystem::time::monotonic_ms()
+        let elapsed = ((now - self.usage.started_at) as f64) / 1000.0
+        if self.budget.max_wallclock_s > 0.0 && elapsed > self.budget.max_wallclock_s {
+            return Err(SubstrateError::BudgetExceeded("max_wallclock_s".to_string()))
+        }
+        Ok(())
+    }
+
+    fn check_model(&mut self, model: String) -> Result<(), SubstrateError> {
+        if self.policy.allowed_models.len() > 0 && !self.policy.allowed_models.contains(&model) {
+            return Err(SubstrateError::PolicyViolation(format!("model {} denied", model)))
+        }
+        if self.budget.max_model_calls > 0 && self.usage.model_calls >= self.budget.max_model_calls {
+            return Err(SubstrateError::BudgetExceeded("max_model_calls".to_string()))
+        }
+        Ok(())
+    }
+
+    fn record_call(&mut self, model: String, tokens: i64) -> Result<(), SubstrateError> {
+        self.usage.model_calls = self.usage.model_calls + 1
+        self.usage.tokens = self.usage.tokens + tokens
+        self.usage.cost_usd = self.usage.cost_usd + ((tokens as f64) / 1000.0) * 0.005
+        self.audit.lock().append("model_call", format!("{}:{}", model, tokens))
+        if self.budget.max_tokens > 0 && self.usage.tokens > self.budget.max_tokens {
+            return Err(SubstrateError::BudgetExceeded("max_tokens".to_string()))
+        }
+        Ok(())
+    }
+
+    fn parallelism(&self, requested: i32) -> i32 {
+        let mut n = requested
+        if n > self.budget.max_parallel { n = self.budget.max_parallel }
+        if n > self.policy.max_agents   { n = self.policy.max_agents }
+        if n < 1 { n = 1 }
+        n
+    }
+}
+
+// ── Tamper-evident audit chain (SHA-256 linked) ───────────────────────────────
+
+struct AuditEvent {
+    seq:       i64,
+    timestamp: i64,
+    kind:      String,
+    payload:   String,
+    prev_hash: String,
+    hash:      String,
+}
+
+struct AuditChain {
+    events: Vec<AuditEvent>,
+    head:   String,
+}
+
+impl AuditChain {
+    fn append(&mut self, kind: &str, payload: String) -> String {
+        let ts = omnisystem::time::unix_ms()
+        let material = format!("{}{}{}{}", self.head, ts, kind, payload)
+        let digest = omnisystem::crypto::sha256_hex(&material)
+        self.events.push(AuditEvent {
+            seq:       self.events.len() as i64,
+            timestamp: ts,
+            kind:      kind.to_string(),
+            payload:   payload,
+            prev_hash: self.head.clone(),
+            hash:      digest.clone(),
+        })
+        self.head = digest.clone()
+        digest
+    }
+
+    fn verify(&self) -> bool {
+        let mut head = "0".repeat(64)
+        for ev in &self.events {
+            let material = format!("{}{}{}{}", head, ev.timestamp, ev.kind, ev.payload)
+            let digest = omnisystem::crypto::sha256_hex(&material)
+            if digest != ev.hash || ev.prev_hash != head { return false }
+            head = digest
+        }
+        true
+    }
+}
+
+// ── Substrate dispatch — routes a governed request to a polyglot engine ───────
+
+enum SubstrateMode {
+    Swarm(String),      // topology
+    Ensemble(String),   // strategy
+    Rag,
+    Distill,
+    Evolve,
+}
+
+struct SubstrateRequest {
+    mode:      SubstrateMode,
+    task:      String,
+    models:    Vec<String>,
+    governor:  Governor,
+}
+
+struct SubstrateResult {
+    output:    String,
+    usage:     Usage,
+    audit_ok:  bool,
+}
+
+fn dispatch(req: SubstrateRequest) -> Result<SubstrateResult, SubstrateError> {
+    // Titan coordinates; the actual model calls flow through ModelBridge.aether,
+    // swarm topologies through SwarmActors.aether, embeddings through
+    // SubstrateCompute.helix, and safety proofs through SubstrateGovernance.axiom.
+    let mut gov = req.governor
+    gov.checkpoint("dispatch".to_string())?
+    let out = match req.mode {
+        SubstrateMode::Swarm(topology)    => omnisystem::substrate::run_swarm(&topology, &req.task, &req.models, &mut gov)?,
+        SubstrateMode::Ensemble(strategy) => omnisystem::substrate::run_ensemble(&strategy, &req.task, &req.models, &mut gov)?,
+        SubstrateMode::Rag                => omnisystem::substrate::run_rag(&req.task, &mut gov)?,
+        SubstrateMode::Distill            => omnisystem::substrate::run_distill(&req.task, &req.models, &mut gov)?,
+        SubstrateMode::Evolve             => omnisystem::substrate::run_evolve(&req.task, &mut gov)?,
+    }
+    let audit_ok = gov.audit.lock().verify()
+    Ok(SubstrateResult { output: out, usage: gov.usage, audit_ok: audit_ok })
+}
