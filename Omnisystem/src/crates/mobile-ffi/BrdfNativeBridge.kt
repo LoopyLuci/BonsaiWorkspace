@@ -1,5 +1,5 @@
 /**
- * BrdfNativeBridge - JNI Wrapper for Bonsai Mobile FFI Decoder
+ * BrdfNativeBridge - JNI Wrapper for Omnisystem Mobile FFI Decoder
  *
  * Provides safe Kotlin bindings to the Rust FFI layer for hardware-accelerated
  * video decoding on Android via MediaCodec.
@@ -23,7 +23,7 @@
  * ```
  */
 
-package com.bonsai.mobile.decoder
+package com.omnisystem.mobile.decoder
 
 import android.util.Log
 import java.nio.ByteBuffer
@@ -112,10 +112,10 @@ class BrdfNativeBridge(
 
         init {
             try {
-                System.loadLibrary("bonsai_mobile_ffi")
-                Log.i(TAG, "Successfully loaded bonsai_mobile_ffi native library")
+                System.loadLibrary("omnisystem_mobile_ffi")
+                Log.i(TAG, "Successfully loaded omnisystem_mobile_ffi native library")
             } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load bonsai_mobile_ffi native library: ${e.message}")
+                Log.e(TAG, "Failed to load omnisystem_mobile_ffi native library: ${e.message}")
                 throw e
             }
         }

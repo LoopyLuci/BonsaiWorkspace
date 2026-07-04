@@ -1,5 +1,5 @@
 """
-MultiStreamMoE: Production-grade LLM architecture for the Bonsai Ecosystem.
+MultiStreamMoE: Production-grade LLM architecture for the Omnisystem Ecosystem.
 
 Features:
 - Multi-stream residual mixing with learnable stream-coupling matrices

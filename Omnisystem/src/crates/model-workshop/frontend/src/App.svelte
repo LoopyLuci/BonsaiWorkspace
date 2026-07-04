@@ -29,7 +29,7 @@
 <div class="workshop">
   <header class="header">
     <div class="title">
-      <h1>🧬 Bonsai Model Workshop</h1>
+      <h1>🧬 Omnisystem Model Workshop</h1>
       <span class="subtitle">Design • Build • Train • Convert</span>
     </div>
     <div class="status">
