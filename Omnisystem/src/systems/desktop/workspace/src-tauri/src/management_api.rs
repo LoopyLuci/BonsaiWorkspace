@@ -59,7 +59,7 @@ pub struct MgmtState {
     >,
     pub app_handle: tauri::AppHandle,
     pub pair_token: String,
-    pub bonsai_core: Arc<crate::core::BonsaiCore>,
+    pub bonsai_core: Arc<crate::core::AgentCore>,
     pub telemetry: Arc<crate::telemetry::TelemetryStore>,
     pub dual_session: Arc<crate::dual_inference::SessionManager>,
     pub training_loop: Arc<crate::training_loop::TrainingLoopState>,
@@ -686,7 +686,7 @@ async fn mgmt_curator_flush(State(s): State<MgmtState>, headers: HeaderMap) -> i
     Json(json!({ "ok": true, "total_seen": total })).into_response()
 }
 
-// ── BonsaiCore process ────────────────────────────────────────────────────────
+// ── AgentCore process ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct BonsaiProcessBody {

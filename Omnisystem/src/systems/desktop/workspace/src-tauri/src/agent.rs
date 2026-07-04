@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +53,6 @@ pub trait Agent: Send + Sync {
         &self,
         ctx: AgentContext,
         msg: AgentMessage,
-    ) -> Result<AgentOutput, BonsaiError>;
+    ) -> Result<AgentOutput, AgentError>;
     async fn shutdown(&self);
 }

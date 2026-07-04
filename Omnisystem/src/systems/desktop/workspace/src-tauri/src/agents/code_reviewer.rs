@@ -4,13 +4,13 @@ use serde_json::json;
 use crate::agent::{
     Agent, AgentCapability, AgentContext, AgentMessage, AgentMetadata, AgentOutput,
 };
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 
 pub struct CodeReviewer;
 
 // ── Inference ─────────────────────────────────────────────────────────────────
 
-async fn call_model(model_url: &str, system: &str, user: &str) -> Result<String, BonsaiError> {
+async fn call_model(model_url: &str, system: &str, user: &str) -> Result<String, AgentError> {
     let url = format!("{}/v1/chat/completions", model_url.trim_end_matches('/'));
     let body = json!({
         "messages": [
@@ -25,19 +25,19 @@ async fn call_model(model_url: &str, system: &str, user: &str) -> Result<String,
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| BonsaiError::Network(e.to_string()))?;
+        .map_err(|e| AgentError::Network(e.to_string()))?;
 
     let resp = client
         .post(&url)
         .json(&body)
         .send()
         .await
-        .map_err(|e| BonsaiError::Network(format!("model request failed: {e}")))?;
+        .map_err(|e| AgentError::Network(format!("model request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(BonsaiError::Network(format!(
+        return Err(AgentError::Network(format!(
             "model returned {status}: {text}"
         )));
     }
@@ -45,12 +45,12 @@ async fn call_model(model_url: &str, system: &str, user: &str) -> Result<String,
     let json: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| BonsaiError::Serde(e.to_string()))?;
+        .map_err(|e| AgentError::Serde(e.to_string()))?;
 
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(str::to_owned)
-        .ok_or_else(|| BonsaiError::Internal("model response missing content".into()))
+        .ok_or_else(|| AgentError::Internal("model response missing content".into()))
 }
 
 // ── Agent impl ────────────────────────────────────────────────────────────────
@@ -73,9 +73,9 @@ impl Agent for CodeReviewer {
         &self,
         ctx: AgentContext,
         msg: AgentMessage,
-    ) -> Result<AgentOutput, BonsaiError> {
+    ) -> Result<AgentOutput, AgentError> {
         let model_url = ctx.model_url.as_deref().ok_or_else(|| {
-            BonsaiError::Orchestrator("No model slot is ready — load a model first".into())
+            AgentError::Orchestrator("No model slot is ready — load a model first".into())
         })?;
 
         // Optionally read a file supplied via metadata["file_path"]

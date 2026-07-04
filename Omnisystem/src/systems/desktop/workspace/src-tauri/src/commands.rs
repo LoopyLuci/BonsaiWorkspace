@@ -23,7 +23,7 @@ use crate::bootstrap;
 use crate::cluster_orchestrator::{
     ClusterNode, ClusterPolicy, ClusterWorkload, NodeRuntimeMetrics,
 };
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 use crate::model_orchestrator::InferStats;
 use crate::remote::RemoteManager;
 use crate::remote_input::RemoteInputEvent;
@@ -637,7 +637,7 @@ pub async fn submit_chat(
     messages: Vec<ChatMessagePayload>,
     workspace_path: Option<String>,
     enabled_tools: Option<Vec<String>>,
-) -> Result<ChatResponse, BonsaiError> {
+) -> Result<ChatResponse, AgentError> {
     state.chat_cancel.store(false, Ordering::Relaxed);
 
     let last_user_text = messages
@@ -668,10 +668,10 @@ pub async fn submit_chat(
 
     let mut sys_prompt =
         tools::system_prompt_for(&tools, workspace_path.as_deref(), Some(&last_user_text));
-    // Inject BONSAI.md when the feature is enabled
-    if crate::features::FeatureFlags::global().bonsai_md_enabled {
+    // Inject OMNISYSTEM.md when the feature is enabled
+    if crate::features::FeatureFlags::global().project_context_md_enabled {
         sys_prompt = crate::md::inject(&sys_prompt, workspace_path.as_deref());
-        // Ensure a BONSAI.md exists for the project (creates default if absent)
+        // Ensure a OMNISYSTEM.md exists for the project (creates default if absent)
         if let Some(ws) = workspace_path.as_deref() {
             crate::md::ensure_exists(ws);
         }
@@ -1390,7 +1390,7 @@ pub async fn resume_tool_call(
     approved: bool,
     workspace_path: Option<String>,
     enabled_tools: Option<Vec<String>>,
-) -> Result<ChatResponse, BonsaiError> {
+) -> Result<ChatResponse, AgentError> {
     let tool = tool_name_from_action(&action);
 
     if !approved {
@@ -2196,11 +2196,11 @@ pub async fn list_available_models(
 
 /// Load a specific model by registry ID into the orchestrator.
 #[tauri::command]
-pub async fn load_model(model_id: String, state: State<'_, AppState>) -> Result<(), BonsaiError> {
+pub async fn load_model(model_id: String, state: State<'_, AppState>) -> Result<(), AgentError> {
     let rx = state.orchestrator.load(model_id);
     rx.await
-        .map_err(|_| BonsaiError::Orchestrator("Orchestrator offline".to_string()))?
-        .map_err(BonsaiError::Orchestrator)
+        .map_err(|_| AgentError::Orchestrator("Orchestrator offline".to_string()))?
+        .map_err(AgentError::Orchestrator)
 }
 
 /// Unload a specific slot by index.
@@ -2215,11 +2215,11 @@ pub async fn unload_slot(slot: usize, state: State<'_, AppState>) -> Result<(), 
 pub async fn switch_model(
     model_id: String,
     state: State<'_, AppState>,
-) -> Result<String, BonsaiError> {
+) -> Result<String, AgentError> {
     let rx = state.orchestrator.load(model_id.clone());
     rx.await
-        .map_err(|_| BonsaiError::Orchestrator("Orchestrator offline".to_string()))?
-        .map_err(BonsaiError::Orchestrator)?;
+        .map_err(|_| AgentError::Orchestrator("Orchestrator offline".to_string()))?
+        .map_err(AgentError::Orchestrator)?;
 
     let models = state.orchestrator.list_models().await;
     let model_name = models
@@ -5529,15 +5529,15 @@ pub async fn submit_swarm_chat(
     workspace_path: Option<String>,
     enabled_tools: Option<Vec<String>>,
     swarm_settings: Option<SwarmRuntimeSettings>,
-) -> Result<SwarmChatResponse, BonsaiError> {
+) -> Result<SwarmChatResponse, AgentError> {
     if !crate::features::FeatureFlags::is_enabled("swarm") {
-        return Err(BonsaiError::Config("Swarm feature is disabled".into()));
+        return Err(AgentError::Config("Swarm feature is disabled".into()));
     }
     let resolved = state
         .agent_store
         .resolve_agents(&state.orchestrator)
         .await
-        .map_err(|e| BonsaiError::Orchestrator(e.to_string()))?;
+        .map_err(|e| AgentError::Orchestrator(e.to_string()))?;
     let leader = resolved
         .iter()
         .find(|a| a.config.slot_index == 0)
@@ -5573,7 +5573,7 @@ pub async fn submit_swarm_chat(
     // Resource gate
     let estimate = estimate_swarm_resources(state.clone()).await?;
     if !estimate.fits {
-        return Err(BonsaiError::Orchestrator(format!(
+        return Err(AgentError::Orchestrator(format!(
             "Not enough RAM: need {} MB, only {} MB available. Disable an agent or choose a smaller model.",
             estimate.total_ram_required_mb, estimate.free_ram_mb
         )));
@@ -6873,18 +6873,18 @@ pub async fn clear_gpu_crash_flag(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// ── BONSAI.md commands ────────────────────────────────────────────────────────
+// ── OMNISYSTEM.md commands ────────────────────────────────────────────────────────
 
-/// Read the BONSAI.md for a project workspace.
+/// Read the OMNISYSTEM.md for a project workspace.
 #[tauri::command]
-pub async fn get_bonsai_md(workspace_path: String) -> Result<String, String> {
-    Ok(crate::md::load(Some(&workspace_path)))
+pub async fn get_project_context_md(workspace_path: String) -> Result<String, String> {
+    Ok(crate::project_context::load(Some(&workspace_path)))
 }
 
-/// Write (overwrite) the BONSAI.md for a project workspace.
+/// Write (overwrite) the OMNISYSTEM.md for a project workspace.
 #[tauri::command]
-pub async fn set_bonsai_md(workspace_path: String, content: String) -> Result<(), String> {
-    crate::md::write(&workspace_path, &content).map_err(|e| format!("write failed: {e}"))
+pub async fn set_project_context_md(workspace_path: String, content: String) -> Result<(), String> {
+    crate::project_context::write(&workspace_path, &content).map_err(|e| format!("write failed: {e}"))
 }
 
 // ── Memory node commands ──────────────────────────────────────────────────────

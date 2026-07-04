@@ -256,7 +256,7 @@ pub enum ModelRole {
     VisionSpecialist,
     DocumentSpecialist,
     Critic,
-    MicroBonsai,
+    SmartRouter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1460,7 +1460,7 @@ impl UnifiedTrainingCollector {
                 if replay_succeeded == &Some(true) {
                     Some(UnifiedTrainingExample {
                         id,
-                        target_model: ModelRole::MicroBonsai,
+                        target_model: ModelRole::SmartRouter,
                         suitable_strategies: vec![TrainingStrategyType::Rl],
                         input: TrainingInput::Prompt {
                             text: format!("crash:{subsystem}:{error_class}"),

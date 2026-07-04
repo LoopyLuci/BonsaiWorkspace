@@ -1,6 +1,6 @@
 //! Unified error type for Bonsai Workspace Tauri commands.
 //!
-//! `BonsaiError` implements `serde::Serialize` so it can be returned directly
+//! `AgentError` implements `serde::Serialize` so it can be returned directly
 //! from `#[tauri::command]` functions as a structured JSON error payload
 //! instead of an opaque `String`.
 
@@ -10,7 +10,7 @@ use std::fmt;
 /// Structured error type for all Tauri command boundaries.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
-pub enum BonsaiError {
+pub enum AgentError {
     /// Filesystem or OS-level I/O failure.
     Io(String),
     /// JSON / TOML / YAML (de)serialization failure.
@@ -37,7 +37,7 @@ pub enum BonsaiError {
     Internal(String),
 }
 
-impl fmt::Display for BonsaiError {
+impl fmt::Display for AgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(m) => write!(f, "I/O error: {m}"),
@@ -56,37 +56,37 @@ impl fmt::Display for BonsaiError {
     }
 }
 
-impl std::error::Error for BonsaiError {}
+impl std::error::Error for AgentError {}
 
 // ── Conversions from standard error types ────────────────────────────────────
 
-impl From<std::io::Error> for BonsaiError {
+impl From<std::io::Error> for AgentError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e.to_string())
     }
 }
 
-impl From<serde_json::Error> for BonsaiError {
+impl From<serde_json::Error> for AgentError {
     fn from(e: serde_json::Error) -> Self {
         Self::Serde(e.to_string())
     }
 }
 
-impl From<reqwest::Error> for BonsaiError {
+impl From<reqwest::Error> for AgentError {
     fn from(e: reqwest::Error) -> Self {
         Self::Network(e.to_string())
     }
 }
 
 /// Convenience: promote any `String` error as `Internal`.
-impl From<String> for BonsaiError {
+impl From<String> for AgentError {
     fn from(s: String) -> Self {
         Self::Internal(s)
     }
 }
 
 /// Convenience: promote any `&str` error as `Internal`.
-impl From<&str> for BonsaiError {
+impl From<&str> for AgentError {
     fn from(s: &str) -> Self {
         Self::Internal(s.to_owned())
     }

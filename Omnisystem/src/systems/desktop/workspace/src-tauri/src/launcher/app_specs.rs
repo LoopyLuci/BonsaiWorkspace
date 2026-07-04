@@ -5,7 +5,7 @@ use super::component::ComponentSpec;
 
 /// Build the component specs from the actual bound ports.
 /// Call this after the API server and buddy server have started so the ports are known.
-pub fn bonsai_components(api_port: u16, buddy_port: u16) -> Vec<ComponentSpec> {
+pub fn app_components(api_port: u16, buddy_port: u16) -> Vec<ComponentSpec> {
     vec![
         ComponentSpec {
             name: "api_server".to_string(),

@@ -4,14 +4,14 @@ use serde_json::json;
 use crate::agent::{
     Agent, AgentAction, AgentCapability, AgentContext, AgentMessage, AgentMetadata, AgentOutput,
 };
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 
 pub struct CodeWriter;
 
 // ── Inference ─────────────────────────────────────────────────────────────────
 
 /// POST a chat-completions request to the local llama-server slot.
-async fn call_model(model_url: &str, prompt: &str) -> Result<String, BonsaiError> {
+async fn call_model(model_url: &str, prompt: &str) -> Result<String, AgentError> {
     let url = format!("{}/v1/chat/completions", model_url.trim_end_matches('/'));
     let body = json!({
         "messages": [
@@ -32,19 +32,19 @@ async fn call_model(model_url: &str, prompt: &str) -> Result<String, BonsaiError
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| BonsaiError::Network(e.to_string()))?;
+        .map_err(|e| AgentError::Network(e.to_string()))?;
 
     let resp = client
         .post(&url)
         .json(&body)
         .send()
         .await
-        .map_err(|e| BonsaiError::Network(format!("model request failed: {e}")))?;
+        .map_err(|e| AgentError::Network(format!("model request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(BonsaiError::Network(format!(
+        return Err(AgentError::Network(format!(
             "model returned {status}: {text}"
         )));
     }
@@ -52,12 +52,12 @@ async fn call_model(model_url: &str, prompt: &str) -> Result<String, BonsaiError
     let json: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| BonsaiError::Serde(e.to_string()))?;
+        .map_err(|e| AgentError::Serde(e.to_string()))?;
 
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(str::to_owned)
-        .ok_or_else(|| BonsaiError::Internal("model response missing content".into()))
+        .ok_or_else(|| AgentError::Internal("model response missing content".into()))
 }
 
 // ── Code block extraction ─────────────────────────────────────────────────────
@@ -117,24 +117,24 @@ fn extract_files(text: &str) -> Vec<ExtractedFile> {
 // ── Atomic write ──────────────────────────────────────────────────────────────
 
 /// Write `content` to `path` atomically: write to a temp file then rename.
-fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), BonsaiError> {
+fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), AgentError> {
     use std::io::Write;
 
     // Ensure parent directories exist
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| BonsaiError::Io(e.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|e| AgentError::Io(e.to_string()))?;
     }
 
     let tmp_path = path.with_extension("tmp");
     {
         let mut f = std::fs::File::create(&tmp_path)
-            .map_err(|e| BonsaiError::Io(format!("create tmp {}: {e}", tmp_path.display())))?;
+            .map_err(|e| AgentError::Io(format!("create tmp {}: {e}", tmp_path.display())))?;
         f.write_all(content.as_bytes())
-            .map_err(|e| BonsaiError::Io(format!("write tmp: {e}")))?;
-        f.flush().map_err(|e| BonsaiError::Io(e.to_string()))?;
+            .map_err(|e| AgentError::Io(format!("write tmp: {e}")))?;
+        f.flush().map_err(|e| AgentError::Io(e.to_string()))?;
     }
     std::fs::rename(&tmp_path, path)
-        .map_err(|e| BonsaiError::Io(format!("rename to {}: {e}", path.display())))?;
+        .map_err(|e| AgentError::Io(format!("rename to {}: {e}", path.display())))?;
 
     Ok(())
 }
@@ -160,9 +160,9 @@ impl Agent for CodeWriter {
         &self,
         ctx: AgentContext,
         msg: AgentMessage,
-    ) -> Result<AgentOutput, BonsaiError> {
+    ) -> Result<AgentOutput, AgentError> {
         let model_url = ctx.model_url.as_deref().ok_or_else(|| {
-            BonsaiError::Orchestrator("No model slot is ready — load a model first".into())
+            AgentError::Orchestrator("No model slot is ready — load a model first".into())
         })?;
 
         // Call the model

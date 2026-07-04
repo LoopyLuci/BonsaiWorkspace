@@ -78,7 +78,7 @@ mod assistant_policy;
 mod assistant_store;
 mod assistant_tools;
 mod avatar_validator;
-pub mod bonsai_core;
+pub mod agent_core;
 mod bootstrap;
 mod buddy_api_server;
 mod capability_commands;
@@ -155,7 +155,7 @@ mod fff_commands;
 mod gpu_controller;
 mod mcp_server;
 mod mcp_telemetry;
-mod micro_bonsai;
+mod smart_router;
 mod multimodal;
 mod music_engine;
 mod self_play;
@@ -204,7 +204,7 @@ use tokio::sync::Mutex;
 // Workstream modules (scaffolds)
 mod auth_commands;
 mod belief_reviser;
-mod bonsai_md;
+mod project_context;
 mod brain_metadata;
 mod continuous_training;
 mod crash_recovery;
@@ -332,7 +332,7 @@ pub struct AppState {
     /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
     pub agent_host: Arc<agent_host::AgentHost>,
     /// BonsAI-Core orchestrator — plan, execute, curate.
-    pub bonsai_core: Arc<core::BonsaiCore>,
+    pub bonsai_core: Arc<core::AgentCore>,
     /// Telemetry store — training runs + inference metrics.
     pub telemetry: Arc<telemetry::TelemetryStore>,
     /// Native llama.cpp Vulkan engine (AMD 7900 XTX GPU inference).
@@ -364,7 +364,7 @@ pub struct AppState {
     /// Zero-copy mmap-backed cross-model memory arena.
     pub shared_arena: Arc<shared_arena::SharedMemoryArena>,
     /// Micro BonsAI intelligent model monitor and selector.
-    pub micro_bonsai: Arc<micro_bonsai::MicroBonsai>,
+    pub smart_router: Arc<smart_router::SmartRouter>,
     /// Custom swarm configuration store (SQLite-backed).
     pub swarm_config_store: Arc<swarm_config::SwarmConfigStore>,
     /// Unified GPU controller — layer allocation, health, invisible crash recovery.
@@ -876,7 +876,7 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let bonsai_memory = core::CoreMemory::new(Some(memory_path));
             let bonsai_curator = data_curator::DataCurator::new(curator_path, prompt_template.clone());
-            let shared_bonsai_core = Arc::new(core::BonsaiCore::new(
+            let shared_bonsai_core = Arc::new(core::AgentCore::new(
                 None,
                 bonsai_inference_url,
                 bonsai_memory,
@@ -1015,7 +1015,7 @@ pub fn run() {
                 let ah         = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     use std::sync::Arc;
-                    let specs = launcher::specs::bonsai_components(api_port, buddy_port);
+                    let specs = launcher::specs::app_components(api_port, buddy_port);
                     let sup   = Arc::new(launcher::LaunchSupervisor::new(specs));
                     match sup.clone().probe_all(Some(ah.clone())).await {
                         Ok(()) => {
@@ -1082,7 +1082,7 @@ pub fn run() {
                 });
 
             // ── Micro BonsAI model monitor/selector ───────────────────────────
-            let micro_bonsai = micro_bonsai::MicroBonsai::new();
+            let smart_router = smart_router::SmartRouter::new();
 
             // ── Custom swarm configuration store ──────────────────────────────
             let swarm_config_store = tauri::async_runtime::block_on(
@@ -1099,7 +1099,7 @@ pub fn run() {
             let gpu_controller = gpu_controller::GpuController::new(
                 gpu_ctrl_inst.clone(),
                 Arc::clone(&shared_arena),
-                Arc::clone(&micro_bonsai),
+                Arc::clone(&smart_router),
             );
             // Run non-blocking startup health check.
             {
@@ -1401,7 +1401,7 @@ pub fn run() {
                 mcp_port,
                 tool_watcher: tool_watcher_state,
                 shared_arena,
-                micro_bonsai,
+                smart_router,
                 swarm_config_store,
                 gpu_controller: gpu_controller.clone(),
                 skill_registry,
@@ -2345,9 +2345,9 @@ pub fn run() {
             // Tool composition DSL
             tool_compose::validate_composed_skill,
             // Micro BonsAI model selector
-            micro_bonsai::micro_select_model,
-            micro_bonsai::micro_hardware_snapshot,
-            micro_bonsai::micro_perf_history,
+            smart_router::smart_router_select_model,
+            smart_router::smart_router_hardware_snapshot,
+            smart_router::smart_router_perf_history,
             // Custom swarm configurations
             swarm_config::create_swarm_config,
             swarm_config::list_swarm_configs,
@@ -2434,8 +2434,8 @@ pub fn run() {
             transfer_commands::transfer_store_put,
             transfer_commands::transfer_store_get,
             // ── BONSAI.md ─────────────────────────────────────────────────────
-            commands::get_bonsai_md,
-            commands::set_bonsai_md,
+            commands::get_project_context_md,
+            commands::set_project_context_md,
             // ── Memory nodes ──────────────────────────────────────────────────
             commands::record_memory_node,
             commands::get_memory_node_count,

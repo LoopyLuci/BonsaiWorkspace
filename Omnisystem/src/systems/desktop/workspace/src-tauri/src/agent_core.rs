@@ -1,11 +1,11 @@
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BonsaiPlan {
+pub struct AgentPlan {
     pub intent: String,
     pub reasoning: String,
     pub plan: Vec<PlanStep>,
@@ -32,8 +32,8 @@ pub struct MemoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BonsaiResponse {
-    pub plan: BonsaiPlan,
+pub struct AgentResponse {
+    pub plan: AgentPlan,
     pub tool_results: Vec<String>,
 }
 
@@ -61,7 +61,7 @@ impl CoreMemory {
         &self,
         _query: &str,
         limit: usize,
-    ) -> Result<Vec<MemoryEntry>, BonsaiError> {
+    ) -> Result<Vec<MemoryEntry>, AgentError> {
         let entries = self.entries.read().await;
         Ok(entries.iter().rev().take(limit).cloned().collect())
     }
@@ -69,9 +69,9 @@ impl CoreMemory {
     pub async fn record(
         &self,
         request: &str,
-        plan: &BonsaiPlan,
-        _result: &BonsaiResponse,
-    ) -> Result<(), BonsaiError> {
+        plan: &AgentPlan,
+        _result: &AgentResponse,
+    ) -> Result<(), AgentError> {
         let mut entries = self.entries.write().await;
         entries.push(MemoryEntry {
             request: request.to_string(),
@@ -141,20 +141,20 @@ impl KeywordRouter {
         }
     }
 
-    pub fn try_high_confidence(&self, request: &str) -> Option<BonsaiResponse> {
+    pub fn try_high_confidence(&self, request: &str) -> Option<AgentResponse> {
         let lower = request.to_lowercase();
         for (keywords, intent) in &self.rules {
             if keywords.iter().any(|k| lower.contains(k)) {
                 // Only bypass for simple greetings where no tool is needed
                 if *intent == "chat" {
-                    let plan = BonsaiPlan {
+                    let plan = AgentPlan {
                         intent: "chat".into(),
                         reasoning: "Keyword match".into(),
                         plan: vec![],
                         final_response: Some("Hello! How can I help?".into()),
                         confidence: 0.99,
                     };
-                    return Some(BonsaiResponse {
+                    return Some(AgentResponse {
                         plan,
                         tool_results: vec![],
                     });
@@ -165,7 +165,7 @@ impl KeywordRouter {
     }
 }
 
-pub struct BonsaiCore {
+pub struct AgentCore {
     adapter_path: RwLock<Option<PathBuf>>,
     inference_url: String,
     pub memory: CoreMemory,
@@ -182,7 +182,7 @@ pub struct BonsaiCore {
     request_count: RwLock<u64>,
 }
 
-impl BonsaiCore {
+impl AgentCore {
     pub fn new(
         adapter_path: Option<PathBuf>,
         inference_url: String,
@@ -219,7 +219,7 @@ impl BonsaiCore {
         &self,
         request: &str,
         history: &[ChatMessage],
-    ) -> Result<BonsaiResponse, BonsaiError> {
+    ) -> Result<AgentResponse, AgentError> {
         let start = std::time::Instant::now();
         *self.request_count.write().await += 1;
 
@@ -266,7 +266,7 @@ impl BonsaiCore {
         Ok(result)
     }
 
-    async fn infer_plan(&self, prompt: &str) -> Result<BonsaiPlan, BonsaiError> {
+    async fn infer_plan(&self, prompt: &str) -> Result<AgentPlan, AgentError> {
         let mut body = serde_json::json!({
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
@@ -285,21 +285,21 @@ impl BonsaiCore {
             .timeout(Duration::from_millis(1500))
             .send()
             .await
-            .map_err(|e| BonsaiError::Network(e.to_string()))?;
+            .map_err(|e| AgentError::Network(e.to_string()))?;
 
         let text = resp
             .text()
             .await
-            .map_err(|e| BonsaiError::Network(e.to_string()))?;
+            .map_err(|e| AgentError::Network(e.to_string()))?;
         let parsed: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| BonsaiError::Serde(e.to_string()))?;
+            serde_json::from_str(&text).map_err(|e| AgentError::Serde(e.to_string()))?;
         let content = parsed["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("");
 
         let json_str = extract_json(content)?;
-        let plan: BonsaiPlan = serde_json::from_str(&json_str)
-            .map_err(|_| BonsaiError::Internal("Invalid plan JSON from model".into()))?;
+        let plan: AgentPlan = serde_json::from_str(&json_str)
+            .map_err(|_| AgentError::Internal("Invalid plan JSON from model".into()))?;
         Ok(plan)
     }
 
@@ -323,7 +323,7 @@ impl BonsaiCore {
             .replace("{memory}", &memory_str)
     }
 
-    fn policy_validate(&self, plan: &BonsaiPlan) -> Result<(), BonsaiError> {
+    fn policy_validate(&self, plan: &AgentPlan) -> Result<(), AgentError> {
         for step in &plan.plan {
             match step.tool.as_str() {
                 "run_command" => {
@@ -333,14 +333,14 @@ impl BonsaiCore {
                         .iter()
                         .any(|c| cmd.starts_with(c.as_str()))
                     {
-                        return Err(BonsaiError::Tool(format!("Command not allowed: {cmd}")));
+                        return Err(AgentError::Tool(format!("Command not allowed: {cmd}")));
                     }
                 }
                 "write_file" | "read_file" => {
                     let path = step.args["path"].as_str().unwrap_or("");
                     let full = self.workspace_root.join(path);
                     if !full.starts_with(&self.workspace_root) {
-                        return Err(BonsaiError::Tool("Path escape attempted".into()));
+                        return Err(AgentError::Tool("Path escape attempted".into()));
                     }
                 }
                 _ => {}
@@ -349,7 +349,7 @@ impl BonsaiCore {
         Ok(())
     }
 
-    async fn execute_plan(&self, plan: &BonsaiPlan) -> Result<BonsaiResponse, BonsaiError> {
+    async fn execute_plan(&self, plan: &AgentPlan) -> Result<AgentResponse, AgentError> {
         let mut results = Vec::new();
         for step in &plan.plan {
             let result = crate::tools::execute_built_in(
@@ -361,7 +361,7 @@ impl BonsaiCore {
             .unwrap_or_else(|e| format!("tool error: {e}"));
             results.push(result);
         }
-        Ok(BonsaiResponse {
+        Ok(AgentResponse {
             plan: plan.clone(),
             tool_results: results,
         })
@@ -407,7 +407,7 @@ impl BonsaiCore {
     }
 }
 
-fn extract_json(s: &str) -> Result<String, BonsaiError> {
+fn extract_json(s: &str) -> Result<String, AgentError> {
     let s = s
         .trim()
         .trim_start_matches("```json")
@@ -415,9 +415,9 @@ fn extract_json(s: &str) -> Result<String, BonsaiError> {
         .trim();
     let start = s
         .find('{')
-        .ok_or_else(|| BonsaiError::Internal("No JSON object found in model output".into()))?;
+        .ok_or_else(|| AgentError::Internal("No JSON object found in model output".into()))?;
     let end = s
         .rfind('}')
-        .ok_or_else(|| BonsaiError::Internal("No JSON object end found in model output".into()))?;
+        .ok_or_else(|| AgentError::Internal("No JSON object end found in model output".into()))?;
     Ok(s[start..=end].to_string())
 }

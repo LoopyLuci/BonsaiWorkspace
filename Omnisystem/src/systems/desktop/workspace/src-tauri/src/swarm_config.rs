@@ -2,7 +2,7 @@
 //!
 //! Lets users define, name, and persist custom multi-agent topologies.
 //! Configurations are loaded by `swarm_orchestrator` at runtime and can be
-//! assembled dynamically by `micro_bonsai`.
+//! assembled dynamically by `smart_router`.
 
 use std::sync::Arc;
 

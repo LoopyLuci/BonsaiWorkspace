@@ -1,20 +1,37 @@
-//! Micro BonsAI — intelligent model monitor and selector.
+//! SmartRouter — intelligent, hardware-aware, self-adjusting model router.
+//! (Renamed from "Micro BonsAI"; logic preserved and extended, brand removed.)
 //!
 //! An always-warm lightweight system (heuristic today, pluggable tiny GGUF
 //! model tomorrow) that watches hardware resources and recent task context
 //! to select the best model slot for each incoming request.
 //!
 //! Responsibilities:
-//!  - Poll VRAM/RAM/CPU/GPU utilisation at 1 Hz.
+//!  - Poll VRAM/RAM/CPU/GPU utilisation at a configurable rate.
 //!  - Classify intent from the user prompt (maps to `TaskDomain`).
-//!  - Score each available model against the classified intent + hardware.
+//!  - Score each available model against the classified intent + hardware,
+//!    using scoring weights that adapt over time from recorded outcomes
+//!    (see `AdaptiveWeights`) rather than fixed constants.
 //!  - Recommend a primary model, optional draft, and optional adapter.
 //!  - Assemble custom `SwarmConfig` topologies on demand.
-//!  - Expose perf history per `(task_type, model_id)` pair.
+//!  - Persist perf history to disk (JSONL) so learned weights and recent
+//!    history survive a restart — the whole point of "self-adjusting" is lost
+//!    if every process restart resets it back to the static defaults.
+//!
+//! Longevity design notes (why this holds up as the system grows):
+//!  - Scoring is table-driven (`AdaptiveWeights`), not a hardcoded formula —
+//!    new signals can be added as new weighted terms without touching the
+//!    selection algorithm itself.
+//!  - No brand-specific heuristics (the old "id contains 'bonsai'" affinity
+//!    bonus is gone); model affinity is driven purely by observed
+//!    quality/speed history, so it works identically for any model family.
+//!  - Every decision records *why* (`reasoning`) and its outcome is fed back
+//!    via `record_perf`, so the router's own accuracy is auditable and
+//!    self-correcting rather than a black box.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
@@ -22,14 +39,14 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 
 use crate::critic::TaskDomain;
-use crate::model_registry::ModelRegistry;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TICK_HZ: u64 = 1;
-const HISTORY_CAP: usize = 200;
+const DEFAULT_TICK_SECS: u64 = 1;
+const HISTORY_CAP: usize = 500;
 const LOW_VRAM_THRESHOLD: u64 = 1024; // MiB — prefer smaller models below this
 const LOW_RAM_THRESHOLD: u64 = 2048; // MiB
+const WEIGHT_LEARNING_RATE: f32 = 0.05; // EMA rate for adaptive weight updates
 
 // ── Hardware snapshot ─────────────────────────────────────────────────────────
 
@@ -67,6 +84,61 @@ pub struct PerfRecord {
     pub quality_score: f32, // critic score 0–1, -1 if not available
     pub latency_ms: u32,
     pub succeeded: bool,
+    /// Was this the model SmartRouter actually recommended for the request?
+    /// Used to evaluate the router's own selection accuracy over time.
+    #[serde(default)]
+    pub was_recommended: bool,
+}
+
+// ── Adaptive scoring weights ───────────────────────────────────────────────────
+//
+// Replaces the old hardcoded score deltas (+2.0, +1.5, -3.0, ...) with named,
+// tunable weights. `update_from_outcome` nudges them via a simple EMA toward
+// whatever combination has recently correlated with high quality_score at
+// acceptable latency — a small, auditable, restart-safe learning loop instead
+// of a fixed-forever heuristic.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveWeights {
+    pub already_loaded_bonus: f32,
+    pub domain_match_bonus: f32,
+    pub low_resource_small_model_bonus: f32,
+    pub low_resource_large_model_penalty: f32,
+    pub power_saving_large_model_penalty: f32,
+    pub history_quality_weight: f32,
+    pub history_speed_weight: f32,
+}
+
+impl Default for AdaptiveWeights {
+    fn default() -> Self {
+        Self {
+            already_loaded_bonus: 2.0,
+            domain_match_bonus: 1.5,
+            low_resource_small_model_bonus: 1.0,
+            low_resource_large_model_penalty: 3.0,
+            power_saving_large_model_penalty: 5.0,
+            history_quality_weight: 2.0,
+            history_speed_weight: 1.0,
+        }
+    }
+}
+
+impl AdaptiveWeights {
+    /// Nudge weights toward better outcomes. Called after each `record_perf`.
+    /// `recommended_was_best`: did the model SmartRouter chose end up scoring
+    /// at/above the median quality of everything tried recently for this domain?
+    fn update_from_outcome(&mut self, recommended_was_best: bool) {
+        let lr = WEIGHT_LEARNING_RATE;
+        if recommended_was_best {
+            // Reinforce the signals that led to this pick.
+            self.history_quality_weight = (self.history_quality_weight * (1.0 + lr)).min(5.0);
+        } else {
+            // De-emphasise history slightly and lean more on domain/resource
+            // signals, which are cheaper to get right than a thin history.
+            self.history_quality_weight = (self.history_quality_weight * (1.0 - lr)).max(0.5);
+            self.domain_match_bonus = (self.domain_match_bonus * (1.0 + lr)).min(3.0);
+        }
+    }
 }
 
 // ── Selection result ──────────────────────────────────────────────────────────
@@ -98,22 +170,53 @@ pub struct SelectionRequest {
     pub available_models: Vec<String>,
 }
 
-// ── Micro BonsAI ─────────────────────────────────────────────────────────────
+// ── Persistence config ─────────────────────────────────────────────────────────
 
-pub struct MicroBonsai {
+#[derive(Debug, Clone)]
+pub struct SmartRouterConfig {
+    pub tick_secs: u64,
+    /// Where perf history + learned weights are persisted (JSONL + JSON
+    /// respectively). `None` disables persistence (in-memory only).
+    pub persist_dir: Option<PathBuf>,
+}
+
+impl Default for SmartRouterConfig {
+    fn default() -> Self {
+        Self {
+            tick_secs: DEFAULT_TICK_SECS,
+            persist_dir: dirs::home_dir().map(|h| h.join(".omnisystem").join("smart_router")),
+        }
+    }
+}
+
+// ── SmartRouter ────────────────────────────────────────────────────────────────
+
+pub struct SmartRouter {
     hw: Arc<RwLock<HardwareSnapshot>>,
     history: Arc<Mutex<VecDeque<PerfRecord>>>,
+    weights: Arc<RwLock<AdaptiveWeights>>,
+    persist_dir: Option<PathBuf>,
     _ticker: tokio::task::JoinHandle<()>,
 }
 
-impl MicroBonsai {
+impl SmartRouter {
     pub fn new() -> Arc<Self> {
+        Self::with_config(SmartRouterConfig::default())
+    }
+
+    pub fn with_config(config: SmartRouterConfig) -> Arc<Self> {
         let hw = Arc::new(RwLock::new(HardwareSnapshot::default()));
-        let history = Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAP)));
+
+        let history = load_history(&config.persist_dir).unwrap_or_default();
+        let history = Arc::new(Mutex::new(history));
+
+        let weights = load_weights(&config.persist_dir).unwrap_or_default();
+        let weights = Arc::new(RwLock::new(weights));
 
         let hw2 = Arc::clone(&hw);
+        let tick_secs = config.tick_secs.max(1);
         let ticker = tokio::spawn(async move {
-            let mut tick = interval(Duration::from_secs(1000 / TICK_HZ / 1000 + 1));
+            let mut tick = interval(Duration::from_secs(tick_secs));
             let mut sys = System::new_all();
             loop {
                 tick.tick().await;
@@ -136,6 +239,8 @@ impl MicroBonsai {
         Arc::new(Self {
             hw,
             history,
+            weights,
+            persist_dir: config.persist_dir,
             _ticker: ticker,
         })
     }
@@ -158,6 +263,7 @@ impl MicroBonsai {
     pub async fn select_model(&self, req: &SelectionRequest) -> ModelSelection {
         let hw = self.hw.read().await.clone();
         let hist = self.history.lock().await;
+        let weights = self.weights.read().await.clone();
         let domain = TaskDomain::classify(&req.prompt);
 
         // Score each candidate model
@@ -190,7 +296,7 @@ impl MicroBonsai {
         let mut reasoning_parts: Vec<String> = vec![];
 
         for model_id in &candidates {
-            let score = self.score_model(model_id, &domain, &hw, req, &hist);
+            let score = self.score_model(model_id, &domain, &hw, req, &hist, &weights);
             if score > best_score {
                 best_score = score;
                 best_id = model_id.clone();
@@ -235,12 +341,13 @@ impl MicroBonsai {
         hw: &HardwareSnapshot,
         req: &SelectionRequest,
         hist: &VecDeque<PerfRecord>,
+        weights: &AdaptiveWeights,
     ) -> f32 {
         let mut score = 0.0f32;
 
         // Prefer loaded models (avoid cold-swap latency)
         if req.loaded_models.contains(&model_id.to_string()) {
-            score += 2.0;
+            score += weights.already_loaded_bonus;
         }
 
         // Prefer domain-aligned models by name heuristic
@@ -248,17 +355,17 @@ impl MicroBonsai {
         match domain {
             TaskDomain::Code => {
                 if id_lower.contains("code") || id_lower.contains("coder") {
-                    score += 1.5;
+                    score += weights.domain_match_bonus;
                 }
             }
             TaskDomain::Math => {
                 if id_lower.contains("math") {
-                    score += 1.5;
+                    score += weights.domain_match_bonus;
                 }
             }
             TaskDomain::Creative => {
                 if id_lower.contains("creative") || id_lower.contains("story") {
-                    score += 1.0;
+                    score += weights.domain_match_bonus * 0.67;
                 }
             }
             _ => {}
@@ -267,19 +374,20 @@ impl MicroBonsai {
         // Penalise large models when resources are constrained
         if hw.ram_free_mb < LOW_RAM_THRESHOLD || hw.vram_free_mb() < LOW_VRAM_THRESHOLD {
             if is_large_model(model_id) {
-                score -= 3.0;
+                score -= weights.low_resource_large_model_penalty;
             }
             if is_small_model(model_id) {
-                score += 1.0;
+                score += weights.low_resource_small_model_bonus;
             }
         }
 
         // Power saving: heavily prefer small models
         if req.power_saving && is_large_model(model_id) {
-            score -= 5.0;
+            score -= weights.power_saving_large_model_penalty;
         }
 
-        // Historical quality and speed
+        // Historical quality and speed — this is the model's own track record,
+        // not a hardcoded name check, so it works identically for any family.
         let domain_str = format!("{:?}", domain);
         let relevant: Vec<&PerfRecord> = hist
             .iter()
@@ -293,27 +401,58 @@ impl MicroBonsai {
                 / relevant.len() as f32;
             let avg_tps =
                 relevant.iter().map(|r| r.tokens_per_sec).sum::<f32>() / relevant.len() as f32;
-            // blend quality and speed according to quality_bias
-            score += avg_q * req.quality_bias * 2.0;
-            score += (avg_tps / 50.0) * (1.0 - req.quality_bias);
-        }
-
-        // Bonsai native models get a small affinity bonus
-        if id_lower.contains("bonsai") {
-            score += 0.5;
+            score += avg_q * req.quality_bias * weights.history_quality_weight;
+            score += (avg_tps / 50.0) * (1.0 - req.quality_bias) * weights.history_speed_weight;
         }
 
         score
     }
 
-    // ── History recording ─────────────────────────────────────────────────────
+    // ── History recording + adaptive weight update ────────────────────────────
 
     pub async fn record_perf(&self, record: PerfRecord) {
+        // Evaluate whether this outcome supports the router's own choice,
+        // then nudge weights before persisting — this is the "self-adjusting"
+        // feedback loop: every recorded outcome slightly reshapes future scoring.
+        let was_best = {
+            let hist = self.history.lock().await;
+            let domain_peers: Vec<f32> = hist
+                .iter()
+                .filter(|r| r.task_domain == record.task_domain)
+                .map(|r| r.quality_score)
+                .collect();
+            let median_q = median(domain_peers);
+            record.was_recommended && record.quality_score >= median_q
+        };
+        self.weights.write().await.update_from_outcome(was_best);
+
         let mut hist = self.history.lock().await;
         if hist.len() >= HISTORY_CAP {
             hist.pop_front();
         }
         hist.push_back(record);
+        let snapshot: Vec<PerfRecord> = hist.iter().cloned().collect();
+        drop(hist);
+
+        if snapshot.len() % 20 == 0 {
+            self.persist(&snapshot).await;
+        }
+    }
+
+    async fn persist(&self, history: &[PerfRecord]) {
+        let Some(dir) = &self.persist_dir else { return };
+        let _ = std::fs::create_dir_all(dir);
+        if let Ok(mut out) = std::fs::File::create(dir.join("perf_history.jsonl")) {
+            use std::io::Write;
+            for e in history {
+                if let Ok(s) = serde_json::to_string(e) {
+                    let _ = writeln!(out, "{s}");
+                }
+            }
+        }
+        if let Ok(w) = serde_json::to_string_pretty(&*self.weights.read().await) {
+            let _ = std::fs::write(dir.join("weights.json"), w);
+        }
     }
 
     // ── Swarm assembly ────────────────────────────────────────────────────────
@@ -338,14 +477,43 @@ impl MicroBonsai {
         }
     }
 
-    // ── Perf history export ───────────────────────────────────────────────────
+    // ── Perf history + weights export (observability) ─────────────────────────
 
     pub async fn perf_history(&self) -> Vec<PerfRecord> {
         self.history.lock().await.iter().cloned().collect()
     }
+
+    pub async fn current_weights(&self) -> AdaptiveWeights {
+        self.weights.read().await.clone()
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn median(mut values: Vec<f32>) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values[values.len() / 2]
+}
+
+fn load_history(dir: &Option<PathBuf>) -> Option<VecDeque<PerfRecord>> {
+    let dir = dir.as_ref()?;
+    let content = std::fs::read_to_string(dir.join("perf_history.jsonl")).ok()?;
+    Some(
+        content
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect(),
+    )
+}
+
+fn load_weights(dir: &Option<PathBuf>) -> Option<AdaptiveWeights> {
+    let dir = dir.as_ref()?;
+    let content = std::fs::read_to_string(dir.join("weights.json")).ok()?;
+    serde_json::from_str(&content).ok()
+}
 
 fn is_small_model(id: &str) -> bool {
     let lower = id.to_lowercase();
@@ -383,7 +551,7 @@ pub struct ModelSelectionRequest {
 }
 
 #[tauri::command]
-pub async fn micro_select_model(
+pub async fn smart_router_select_model(
     req: ModelSelectionRequest,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<ModelSelection, String> {
@@ -407,20 +575,27 @@ pub async fn micro_select_model(
         available_models: available,
     };
 
-    let sel = state.micro_bonsai.select_model(&sel_req).await;
+    let sel = state.smart_router.select_model(&sel_req).await;
     Ok(sel)
 }
 
 #[tauri::command]
-pub async fn micro_hardware_snapshot(
+pub async fn smart_router_hardware_snapshot(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<HardwareSnapshot, String> {
-    Ok(state.micro_bonsai.snapshot().await)
+    Ok(state.smart_router.snapshot().await)
 }
 
 #[tauri::command]
-pub async fn micro_perf_history(
+pub async fn smart_router_perf_history(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<PerfRecord>, String> {
-    Ok(state.micro_bonsai.perf_history().await)
+    Ok(state.smart_router.perf_history().await)
+}
+
+#[tauri::command]
+pub async fn smart_router_weights(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<AdaptiveWeights, String> {
+    Ok(state.smart_router.current_weights().await)
 }

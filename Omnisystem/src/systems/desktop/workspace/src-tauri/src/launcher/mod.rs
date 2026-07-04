@@ -1,4 +1,4 @@
-pub mod bonsai_specs;
+pub mod app_specs;
 pub mod component;
 pub mod supervisor;
 

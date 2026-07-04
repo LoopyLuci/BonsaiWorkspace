@@ -20,7 +20,7 @@ pub struct FeatureFlags {
     pub hybrid_engine_enabled: bool,
     /// BONSAI.md — inject the self-evolving system prompt into every chat turn.
     #[serde(default)]
-    pub bonsai_md_enabled: bool,
+    pub project_context_md_enabled: bool,
     /// Undercover Mode — strip internal product names from outputs and commits.
     #[serde(default)]
     pub undercover_mode: bool,
@@ -55,7 +55,7 @@ impl Default for FeatureFlags {
             cluster_orchestrator_enabled: false,
             tts_enabled: false,
             hybrid_engine_enabled: false,
-            bonsai_md_enabled: true,
+            project_context_md_enabled: true,
             undercover_mode: false,
             plan_gate_enabled: false,
             web_router_enabled: true,

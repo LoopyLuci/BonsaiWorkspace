@@ -1,4 +1,4 @@
-use crate::core::{BonsaiPlan, BonsaiResponse};
+use crate::core::{AgentPlan, AgentResponse};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::RwLock;
@@ -14,7 +14,7 @@ pub struct TrainingExample {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExampleSource {
-    /// Produced live by the BonsaiCore process() loop
+    /// Produced live by the AgentCore process() loop
     Live,
     /// Hand-authored synthetic data
     Synthetic,
@@ -46,13 +46,13 @@ impl DataCurator {
         }
     }
 
-    /// Called after every successful BonsaiCore::process(). Returns true if
+    /// Called after every successful AgentCore::process(). Returns true if
     /// the example was accepted (passes quality gate + dedup).
     pub async fn ingest(
         &self,
         request: &str,
-        plan: &BonsaiPlan,
-        _response: &BonsaiResponse,
+        plan: &AgentPlan,
+        _response: &AgentResponse,
     ) -> bool {
         // Quality gate
         if plan.confidence < MIN_CONFIDENCE {

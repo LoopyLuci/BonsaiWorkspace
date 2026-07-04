@@ -1,7 +1,7 @@
 //! Unified GPU Controller — single decision point for all GPU operations.
 //!
 //! Integrates `GpuLayer` (health/routing), `SharedMemoryArena` (cross-model
-//! memory), and `MicroBonsai` (load prediction) into one coherent abstraction.
+//! memory), and `SmartRouter` (load prediction) into one coherent abstraction.
 //!
 //! Users never see GPU failures — all operations have automatic CPU fallback
 //! with async GPU recovery scheduled behind the scenes.
@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::gpu_layer::{BackendType, GpuLayer};
-use crate::micro_bonsai::MicroBonsai;
+use crate::smart_router::SmartRouter;
 use crate::shared_arena::SharedMemoryArena;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -62,7 +62,7 @@ pub struct GpuHealthReport {
 pub struct GpuController {
     pub gpu: Arc<GpuLayer>,
     arena: Arc<SharedMemoryArena>,
-    micro: Arc<MicroBonsai>,
+    micro: Arc<SmartRouter>,
     /// Map model_path → current layer allocation.
     pub(crate) allocs: RwLock<HashMap<String, LayerAlloc>>,
     /// Last-used times for models (separate view used by TTL monitor).
@@ -76,7 +76,7 @@ impl GpuController {
     pub fn new(
         gpu: Arc<GpuLayer>,
         arena: Arc<SharedMemoryArena>,
-        micro: Arc<MicroBonsai>,
+        micro: Arc<SmartRouter>,
     ) -> Arc<Self> {
         Arc::new(Self {
             gpu,
@@ -389,7 +389,7 @@ impl GpuController {
 
     // ── Predictive prefetch ───────────────────────────────────────────────────
 
-    /// Ask MicroBonsai which model will likely be needed next and store a
+    /// Ask SmartRouter which model will likely be needed next and store a
     /// summary placeholder in the arena so the swap can reuse context.
     pub async fn predictive_prefetch(&self, current_prompt: &str) {
         // Record that this prompt occurred (feeds selection heuristics).

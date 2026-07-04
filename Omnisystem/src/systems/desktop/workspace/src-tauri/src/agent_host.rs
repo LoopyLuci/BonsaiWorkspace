@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::agent::{Agent, AgentContext, AgentMessage, AgentMetadata, AgentOutput};
-use crate::error::BonsaiError;
+use crate::error::AgentError;
 
 pub struct AgentHost {
     agents: RwLock<HashMap<String, Arc<dyn Agent>>>,
@@ -41,11 +41,11 @@ impl AgentHost {
         agent_id: &str,
         ctx: AgentContext,
         msg: AgentMessage,
-    ) -> Result<AgentOutput, BonsaiError> {
+    ) -> Result<AgentOutput, AgentError> {
         let agents = self.agents.read().await;
         let agent = agents
             .get(agent_id)
-            .ok_or_else(|| BonsaiError::Internal(format!("Agent '{agent_id}' not found")))?;
+            .ok_or_else(|| AgentError::Internal(format!("Agent '{agent_id}' not found")))?;
         agent.handle_message(ctx, msg).await
     }
 }
