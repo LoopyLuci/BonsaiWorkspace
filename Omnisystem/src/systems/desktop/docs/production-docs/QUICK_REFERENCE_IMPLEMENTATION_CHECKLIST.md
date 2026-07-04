@@ -271,7 +271,7 @@ Status: [ ] PENDING [ ] IN PROGRESS [ ] COMPLETE
   - [ ] consensus.rs (400 LOC) - Distributed consensus
   - [ ] network.rs (300 LOC) - P2P networking
   - [ ] Tests: 20+
-- [ ] poe-bonsai-bridge
+- [ ] poe-omnisystem-bridge
   - [ ] integration.rs (300 LOC)
   - [ ] Tests: 10+
 - [ ] poe-boot & poe-manifestation

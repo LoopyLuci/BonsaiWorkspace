@@ -1,4 +1,4 @@
-// @bonsai/shared-ui — Shared Svelte components
+// @omnisystem/shared-ui — Shared Svelte components
 // Single source of truth for all UI components across launcher, installer, and workspace
 
 export { default as DocPanel } from './lib/DocPanel.svelte';

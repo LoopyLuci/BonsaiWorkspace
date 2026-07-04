@@ -9,11 +9,11 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.modelmanager"
+    namespace = "ai.omnisystem.modelmanager"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ai.bonsai.modelmanager"
+        applicationId = "ai.omnisystem.modelmanager"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -64,7 +64,7 @@ android {
 
 dependencies {
     // Project
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
 
     // Kotlin
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.23")

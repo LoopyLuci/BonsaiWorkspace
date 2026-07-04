@@ -3,7 +3,7 @@
     Generate DreamAgent fine-tuning data for EternalWorkshop consolidation.
 
 .DESCRIPTION
-    Reads raw MemoryNodes from the Bonsai SQLite database, chunks them into
+    Reads raw MemoryNodes from the Omnisystem SQLite database, chunks them into
     batches, sends each batch to the teacher model (Qwen3-35B via llama-server)
     and asks it to produce a consolidated, high-value summary.
     Output: training_data/dreamagent.jsonl
@@ -12,10 +12,10 @@
     Teacher must be running on port 8080 before calling this script.
 
 .PARAMETER DbPath
-    Path to the Bonsai memory database. Default: ~\.bonsai\memory.db
+    Path to the Omnisystem memory database. Default: ~\.omnisystem\memory.db
 
 .PARAMETER Output
-    Output JSONL path. Default: ~\.bonsai\training_export\dreamagent.jsonl
+    Output JSONL path. Default: ~\.omnisystem\training_export\dreamagent.jsonl
 
 .PARAMETER TeacherUrl
     llama-server URL. Default: http://127.0.0.1:8080
@@ -32,8 +32,8 @@
 #>
 
 param(
-    [string]$DbPath     = "$env:USERPROFILE\.bonsai\memory.db",
-    [string]$Output     = "$env:USERPROFILE\.bonsai\training_export\dreamagent.jsonl",
+    [string]$DbPath     = "$env:USERPROFILE\.omnisystem\memory.db",
+    [string]$Output     = "$env:USERPROFILE\.omnisystem\training_export\dreamagent.jsonl",
     [string]$TeacherUrl = "http://127.0.0.1:8080",
     [int]   $BatchSize  = 20,
     [int]   $MaxBatches = 0
@@ -49,7 +49,7 @@ $env:HF_DATASETS_OFFLINE         = "1"
 $env:HF_HUB_DISABLE_TELEMETRY   = "1"
 
 $SystemPrompt = @"
-You are the Bonsai Memory Consolidator. You receive a JSON array of raw activity nodes from a programming session.
+You are the Omnisystem Memory Consolidator. You receive a JSON array of raw activity nodes from a programming session.
 Your job is to:
 1. Merge related information into concise, high-value insights.
 2. Remove duplicate or trivial entries (repeated keystrokes, minor cursor moves).
@@ -92,7 +92,7 @@ function Invoke-Teacher {
 function Get-MemoryNodes {
     param([string]$Db)
     if (-not (Test-Path $Db)) {
-        Write-Warning "Database not found at $Db. Run the Bonsai app first to populate memory nodes."
+        Write-Warning "Database not found at $Db. Run the Omnisystem app first to populate memory nodes."
         return @()
     }
     # Use Python + sqlite3 (stdlib) — no extra deps needed
@@ -183,4 +183,4 @@ for ($b = 0; $b -lt $limit; $b++) {
 Write-Host ""
 Write-Host "[dreamagent] Wrote $written training examples → $Output"
 Write-Host "[dreamagent] Fine-tune with:"
-Write-Host "  just finetune-sft data=`"$Output`" output=`"`$env:USERPROFILE\.bonsai\adapters\bonsai-dreamagent-v1`""
+Write-Host "  just finetune-sft data=`"$Output`" output=`"`$env:USERPROFILE\.omnisystem\adapters\omnisystem-dreamagent-v1`""

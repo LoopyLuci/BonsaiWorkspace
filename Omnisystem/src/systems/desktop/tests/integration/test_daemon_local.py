@@ -12,7 +12,7 @@ async def call(ws, method, params, req_id):
 
 async def main():
     appdata = Path(os.getenv("APPDATA"))
-    base = appdata / "bonsai"
+    base = appdata / "omnisystem"
 
     port_file = base / "daemon_port"
     token_file = base / "daemon_token"
@@ -77,7 +77,7 @@ async def main():
 
         # 7. Transfer: send file (loopback). Server expects `file_path` param.
         test_file = Path("test_transfer.txt")
-        test_file.write_text("Hello, Bonsai transfer test!")
+        test_file.write_text("Hello, Omnisystem transfer test!")
 
         send_resp = await call(ws, "transfer.send_file", {
             "file_path": str(test_file.absolute())

@@ -89,7 +89,7 @@ function Describe-Owner {
             Write-Host "Failed to stop PID $pid: $_" -ForegroundColor Red
         }
     } else {
-        if ($proc.ProcessName -match 'bonsai|bot') {
+        if ($proc.ProcessName -match 'omnisystem|bot') {
             Write-Host "Detected process appears bot-related; consider stopping it with -ForceKill." -ForegroundColor Magenta
         } else {
             Write-Host "Process appears unrelated. To forcibly stop it, re-run with -ForceKill." -ForegroundColor Gray

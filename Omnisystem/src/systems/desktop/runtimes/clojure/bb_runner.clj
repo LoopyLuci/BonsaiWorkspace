@@ -11,7 +11,7 @@
         idx (.indexOf args "--allowed-paths")
         from-arg (when (and (>= idx 0) (< (inc idx) (count args)))
                    (nth args (inc idx)))
-        from-env (System/getenv "BONSAI_ALLOWED_PATHS")
+        from-env (System/getenv "OMNISYSTEM_ALLOWED_PATHS")
         raw (or from-arg from-env "")]
     (->> (str/split raw (re-pattern (java.util.regex.Pattern/quote (path-separator))))
          (map str/trim)

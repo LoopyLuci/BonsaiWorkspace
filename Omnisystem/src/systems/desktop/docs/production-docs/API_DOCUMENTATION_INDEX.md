@@ -248,7 +248,7 @@ curl -H "Authorization: Bearer YOUR_API_TOKEN" \
 - Shadow mode validation
 - Model lifecycle management
 
-### Wave 4: Bonsai Buddy
+### Wave 4: Omnisystem Buddy
 - Distributed agent coordination
 - Offline queue operation
 - CRDT synchronization
@@ -306,21 +306,21 @@ curl -H "Authorization: Bearer YOUR_API_TOKEN" \
 
 ### 1. Installation
 ```bash
-cargo install bonsai-cli
+cargo install omnisystem-cli
 # or
-curl https://releases.bonsai.io/cli/latest -o bonsai
-chmod +x bonsai
+curl https://releases.omnisystem.io/cli/latest -o omnisystem
+chmod +x omnisystem
 ```
 
 ### 2. Authentication
 ```bash
-bonsai auth login
-export BONSAI_TOKEN=$(bonsai auth token)
+omnisystem auth login
+export OMNISYSTEM_TOKEN=$(omnisystem auth token)
 ```
 
 ### 3. First Request
 ```bash
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/services
 ```
 
@@ -421,9 +421,9 @@ This documentation is designed for:
 ## File Locations
 
 ```
-z:\Projects\BonsaiWorkspace\OMNISYSTEM_INTEGRATION_API.md
-z:\Projects\BonsaiWorkspace\OMNISYSTEM_INTEGRATION_API_SUMMARY.txt
-z:\Projects\BonsaiWorkspace\API_DOCUMENTATION_INDEX.md
+z:\Projects\OmnisystemWorkspace\OMNISYSTEM_INTEGRATION_API.md
+z:\Projects\OmnisystemWorkspace\OMNISYSTEM_INTEGRATION_API_SUMMARY.txt
+z:\Projects\OmnisystemWorkspace\API_DOCUMENTATION_INDEX.md
 ```
 
 ---
@@ -440,7 +440,7 @@ z:\Projects\BonsaiWorkspace\API_DOCUMENTATION_INDEX.md
 ## Next Steps
 
 1. **Review** - Familiarize yourself with the API endpoints
-2. **Authenticate** - Generate your API token using `bonsai auth login`
+2. **Authenticate** - Generate your API token using `omnisystem auth login`
 3. **Test** - Use the curl examples to test endpoints
 4. **Deploy** - Follow the quick start guide for your first service
 5. **Monitor** - Set up observability with health checks and metrics

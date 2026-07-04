@@ -1,7 +1,7 @@
 /**
- * Captures VSCode editor state and streams it to Bonsai via the WebSocket client.
+ * Captures VSCode editor state and streams it to Omnisystem via the WebSocket client.
  *
- * Events sent to Bonsai:
+ * Events sent to Omnisystem:
  *   vscode_file_tree   – workspace folder structure (on change or connect)
  *   vscode_editor_open – full file content when active editor changes
  *   vscode_editor_delta – ranged text changes (VSCode's native contentChanges)
@@ -12,12 +12,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import type { BonsaiClient } from './bonsai-client';
+import type { OmnisystemClient } from './omnisystem-client';
 
 export class StateStreamer {
   private disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly client: BonsaiClient) {}
+  constructor(private readonly client: OmnisystemClient) {}
 
   start(): void {
     // Initial snapshot when first connected.
@@ -132,7 +132,7 @@ export class StateStreamer {
   }
 
   private sendDiagnostics(uri: vscode.Uri): void {
-    const config = vscode.workspace.getConfiguration('bonsai');
+    const config = vscode.workspace.getConfiguration('omnisystem');
     if (!config.get<boolean>('streamDiagnostics', true)) return;
 
     const diags = vscode.languages.getDiagnostics(uri);

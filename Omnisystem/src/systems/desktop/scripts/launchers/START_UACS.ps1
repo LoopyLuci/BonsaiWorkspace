@@ -5,8 +5,8 @@ Write-Host "╔═════════════════════�
 Write-Host "║   🧠 Universal Agent Control System (Visual + HITL Mode)       ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 
-$BonsaiDir = Get-Location
-Write-Host "`n📍 Working Directory: $BonsaiDir" -ForegroundColor Yellow
+$OmnisystemDir = Get-Location
+Write-Host "`n📍 Working Directory: $OmnisystemDir" -ForegroundColor Yellow
 
 # Check if cargo exists
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -31,14 +31,14 @@ Write-Host "   3️⃣  Terminal 3: Browser (http://localhost:5173)" -Foreground
 
 # Terminal 1: UACS Server
 Write-Host "`n[Terminal 1] Starting UACS Server..." -ForegroundColor Cyan
-Start-Process pwsh -ArgumentList "-NoExit", "-Command", "cd '$BonsaiDir'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426"
+Start-Process pwsh -ArgumentList "-NoExit", "-Command", "cd '$OmnisystemDir'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426"
 
 # Give the server a moment to start
 Start-Sleep -Seconds 3
 
 # Terminal 2: Dashboard
 Write-Host "[Terminal 2] Starting Dashboard..." -ForegroundColor Cyan
-Start-Process pwsh -ArgumentList "-NoExit", "-Command", "cd '$BonsaiDir/uacs-dashboard'; npm run dev"
+Start-Process pwsh -ArgumentList "-NoExit", "-Command", "cd '$OmnisystemDir/uacs-dashboard'; npm run dev"
 
 # Terminal 3: Open browser
 Write-Host "[Terminal 3] Opening dashboard in browser..." -ForegroundColor Cyan

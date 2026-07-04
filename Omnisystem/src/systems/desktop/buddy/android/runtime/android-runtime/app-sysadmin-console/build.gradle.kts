@@ -7,10 +7,10 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.sysadminconsole"
+    namespace = "ai.omnisystem.sysadminconsole"
     compileSdk = 35
     defaultConfig {
-        applicationId = "ai.bonsai.sysadminconsole"
+        applicationId = "ai.omnisystem.sysadminconsole"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -38,7 +38,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
     implementation(project(":app-nodecontroller"))
     implementation(project(":app-computedonor"))
     implementation(project(":app-remote"))

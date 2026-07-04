@@ -289,7 +289,7 @@ Each repository is **self-contained**, **fully documented**, and ready for:
 └── 📁 [20+ other services]
 
 📁 apps/
-├── 📁 workspace/               # Bonsai Workspace IDE (8,000 LOC)
+├── 📁 workspace/               # Omnisystem Workspace IDE (8,000 LOC)
 ├── 📁 buddy/                   # Mobile companion (2,000 LOC)
 └── 📁 [other apps]
 

@@ -8,7 +8,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Layer 3: BonsaiEcosystem (Application Layer)         │
+│ Layer 3: OmnisystemEcosystem (Application Layer)         │
 │ Desktop environment, universal assistant, installers │
 └──────────────────▲──────────────────────────────────┘
                    │ Uses/depends on
@@ -49,11 +49,11 @@
   - **[Omnisystem/deployment/docker-compose.ai.yml](Omnisystem/deployment/docker-compose.ai.yml)** - Docker setup
   - **[Omnisystem/deployment/k8s-ai-shim.yaml](Omnisystem/deployment/k8s-ai-shim.yaml)** - Kubernetes manifests
 
-### 🟢 Layer 3: BonsaiEcosystem (Applications & Desktop Environment)
-- **[Omnisystem/modules/BonsaiEcosystem/README.md](Omnisystem/modules/BonsaiEcosystem/README.md)** - BonsaiEcosystem overview (Workspace, Buddy, Control Panel, installers)
+### 🟢 Layer 3: OmnisystemEcosystem (Applications & Desktop Environment)
+- **[Omnisystem/modules/OmnisystemEcosystem/README.md](Omnisystem/modules/OmnisystemEcosystem/README.md)** - OmnisystemEcosystem overview (Workspace, Buddy, Control Panel, installers)
 - **Applications**:
-  - **Bonsai Workspace**: Full IDE with editor, file manager, terminal, Git integration
-  - **Bonsai Buddy**: Universal AI assistant (Windows, macOS, Linux, iOS, Android)
+  - **Omnisystem Workspace**: Full IDE with editor, file manager, terminal, Git integration
+  - **Omnisystem Buddy**: Universal AI assistant (Windows, macOS, Linux, iOS, Android)
   - **System Control Panel**: Comprehensive system management interface
   - **Installers**: Windows (NSIS) and Linux (.deb, .rpm)
   - **Browser Extension**: Chrome, Firefox, Edge, Safari
@@ -92,17 +92,17 @@ cargo build --release
 **Documentation**: [Omnisystem/README.md](Omnisystem/README.md)  
 **Status**: ✅ **Complete** - All services implemented, tested, 13,200+ LOC, 98+ tests passing
 
-### Layer 3: BonsaiEcosystem (Desktop Environment & Applications)
+### Layer 3: OmnisystemEcosystem (Desktop Environment & Applications)
 ```bash
-cd Omnisystem/modules/BonsaiEcosystem
-# Bonsai Workspace (IDE, file manager, terminal, Git)
-# Bonsai Buddy (universal assistant - Windows, macOS, Linux, iOS, Android)
+cd Omnisystem/modules/OmnisystemEcosystem
+# Omnisystem Workspace (IDE, file manager, terminal, Git)
+# Omnisystem Buddy (universal assistant - Windows, macOS, Linux, iOS, Android)
 # System Control Panel (resource monitoring, service management)
 # Installers for Windows (NSIS) and Linux (.deb, .rpm)
 ./scripts/build-all.sh
 ```
 
-**Documentation**: [Omnisystem/modules/BonsaiEcosystem/README.md](Omnisystem/modules/BonsaiEcosystem/README.md)  
+**Documentation**: [Omnisystem/modules/OmnisystemEcosystem/README.md](Omnisystem/modules/OmnisystemEcosystem/README.md)  
 **Status**: ✅ **Complete** - 25,000+ LOC, all platforms, pre-built binaries included
 
 ---
@@ -141,9 +141,9 @@ cd Omnisystem/modules/BonsaiEcosystem
 - ✅ **6 deployment modes** (Co-OS, VM, container, library OS, bare-metal, cloud)
 - ✅ **Kubernetes-ready**: HA deployment with 3-10 replicas, auto-scaling
 
-### Bonsai Ecosystem Application Layer (Layer 3)
-- ✅ **Bonsai Workspace**: Complete IDE and desktop environment
-- ✅ **Bonsai Buddy**: Universal assistant on ALL devices and ALL operating systems
+### Omnisystem Ecosystem Application Layer (Layer 3)
+- ✅ **Omnisystem Workspace**: Complete IDE and desktop environment
+- ✅ **Omnisystem Buddy**: Universal assistant on ALL devices and ALL operating systems
   - Pre-built binaries: Windows, macOS, Linux, iOS, Android
   - Fully functional native implementations
 - ✅ **System Control Panel**: Manage services, capabilities, resources
@@ -181,7 +181,7 @@ cd Omnisystem/modules/BonsaiEcosystem
 | **1** | UOSC Kernel | 3,900+ | ✅ Complete |
 | **2** | Omnisystem Services | 50,000+ | ✅ Complete |
 | **2** | Languages (4) | 80,000+ | ✅ Complete |
-| **3** | BonsaiEcosystem | 25,000+ | ✅ Complete |
+| **3** | OmnisystemEcosystem | 25,000+ | ✅ Complete |
 | **Total** | All layers | **160,000+** | ✅ **Production Ready** |
 
 ---
@@ -189,7 +189,7 @@ cd Omnisystem/modules/BonsaiEcosystem
 ## 🔗 Repository Structure
 
 ```
-z:\Projects\BonsaiWorkspace/
+z:\Projects\OmnisystemWorkspace/
 ├── README.md                               # Main overview (all 3 layers)
 ├── OMNISYSTEM_README.md                   # Enterprise systems (5 systems, 13,200+ LOC)
 ├── CONTRIBUTING.md                        # Development guidelines
@@ -239,15 +239,15 @@ z:\Projects\BonsaiWorkspace/
 │   │   └── mesh-network/                  # Mesh routing + Magic DNS
 │   │
 │   ├── modules/                           # ━━ LAYER 3: APPLICATIONS
-│   │   ├── BonsaiEcosystem/               # Desktop environment
-│   │   │   ├── README.md                  # BonsaiEcosystem overview
-│   │   │   ├── workspace/                 # Bonsai Workspace (IDE)
-│   │   │   ├── buddy/                     # Bonsai Buddy (universal assistant)
+│   │   ├── OmnisystemEcosystem/               # Desktop environment
+│   │   │   ├── README.md                  # OmnisystemEcosystem overview
+│   │   │   ├── workspace/                 # Omnisystem Workspace (IDE)
+│   │   │   ├── buddy/                     # Omnisystem Buddy (universal assistant)
 │   │   │   ├── control-panel/             # System Control Panel
 │   │   │   ├── installer/                 # Windows + Linux installers
 │   │   │   ├── browser-extension/         # Chrome, Firefox, Edge, Safari
 │   │   │   └── docs/                      # 48+ documentation files
-│   │   ├── bonsai-workspace/              # Bonsai Workspace core
+│   │   ├── omnisystem-workspace/              # Omnisystem Workspace core
 │   │   ├── omnisystem-core/               # Omnisystem core runtime
 │   │   └── [other subsystems]
 │   │
@@ -275,7 +275,7 @@ z:\Projects\BonsaiWorkspace/
 |--------|--------|----------|
 | **UOSC Kernel** | ✅ Complete | 3,900 LOC, 9 subsystems, 10 proofs |
 | **Omnisystem Services** | ✅ Complete | All services implemented & tested |
-| **Bonsai Ecosystem** | ✅ Complete | All apps functional & documented |
+| **Omnisystem Ecosystem** | ✅ Complete | All apps functional & documented |
 | **Formal Verification** | ✅ Complete | 10 theorems proven in Axiom |
 | **Cross-Platform Support** | ✅ Complete | Windows, macOS, Linux, iOS, Android |
 | **Documentation** | ✅ Complete | 48 comprehensive files |
@@ -289,8 +289,8 @@ z:\Projects\BonsaiWorkspace/
 
 - **UOSC can run alone**: Yes, it's a complete standalone microkernel
 - **Omnisystem requires UOSC**: Yes, UOSC is its kernel
-- **BonsaiEcosystem requires Omnisystem**: Yes, it uses OS services
-- **Bonsai Buddy available everywhere**: Yes, all devices and all OSs with pre-built binaries
+- **OmnisystemEcosystem requires Omnisystem**: Yes, it uses OS services
+- **Omnisystem Buddy available everywhere**: Yes, all devices and all OSs with pre-built binaries
 - **Mobile binaries included**: Yes, iOS (.ipa) and Android (.apk)
 - **App store distribution**: Direct download only
 - **All code production-ready**: Yes, zero incomplete features
@@ -315,7 +315,7 @@ z:\Projects\BonsaiWorkspace/
 3. Read: [AI_SHIM_INTEGRATION_GUIDE.md](AI_SHIM_INTEGRATION_GUIDE.md) - AI integration details
 
 **I want to understand Layer 3 (Applications)**
-1. Read: [Omnisystem/modules/BonsaiEcosystem/README.md](Omnisystem/modules/BonsaiEcosystem/README.md) - BonsaiEcosystem overview
+1. Read: [Omnisystem/modules/OmnisystemEcosystem/README.md](Omnisystem/modules/OmnisystemEcosystem/README.md) - OmnisystemEcosystem overview
 2. Explore: Workspace, Buddy, Control Panel documentation in their respective folders
 
 **I want to build from source**

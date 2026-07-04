@@ -1,4 +1,4 @@
-$path = 'Z:\Projects\BonsaiWorkspace\bonsai_autopilot.ps1'
+$path = 'Z:\Projects\OmnisystemWorkspace\omnisystem_autopilot.ps1'
 $lines = Get-Content $path
 $open=0; $close=0
 for ($i=0; $i -lt $lines.Count; $i++) {

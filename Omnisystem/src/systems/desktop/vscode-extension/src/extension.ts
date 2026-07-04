@@ -1,29 +1,29 @@
 /**
- * Bonsai Workspace Runner — VSCode Extension entry point.
+ * Omnisystem Workspace Runner — VSCode Extension entry point.
  *
  * On activation:
- *   1. Creates the BonsaiClient WebSocket connection.
+ *   1. Creates the OmnisystemClient WebSocket connection.
  *   2. Starts StateStreamer to capture and forward VSCode state.
- *   3. Registers CommandHandler to execute Bonsai→VSCode commands.
+ *   3. Registers CommandHandler to execute Omnisystem→VSCode commands.
  *   4. Registers the connect / disconnect / status VSCode commands.
  */
 
 import * as vscode from 'vscode';
-import { BonsaiClient } from './bonsai-client';
+import { OmnisystemClient } from './omnisystem-client';
 import { StateStreamer } from './state-streamer';
 import { handleCommand } from './command-handler';
 
-let client:  BonsaiClient  | null = null;
+let client:  OmnisystemClient  | null = null;
 let streamer: StateStreamer | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel('Bonsai Workspace Runner');
+  const output = vscode.window.createOutputChannel('Omnisystem Workspace Runner');
   context.subscriptions.push(output);
 
-  client  = new BonsaiClient(context, output);
+  client  = new OmnisystemClient(context, output);
   streamer = new StateStreamer(client);
 
-  // Route inbound commands from Bonsai.
+  // Route inbound commands from Omnisystem.
   client.onMessage(async (msg) => {
     if (msg.type === 'vscode_cmd') {
       await handleCommand(msg);
@@ -41,29 +41,29 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Register VSCode commands.
   context.subscriptions.push(
-    vscode.commands.registerCommand('bonsai.connect', () => {
+    vscode.commands.registerCommand('omnisystem.connect', () => {
       client?.connect();
-      vscode.window.showInformationMessage('Connecting to Bonsai Workspace…');
+      vscode.window.showInformationMessage('Connecting to Omnisystem Workspace…');
     }),
 
-    vscode.commands.registerCommand('bonsai.disconnect', () => {
+    vscode.commands.registerCommand('omnisystem.disconnect', () => {
       streamer?.stop();
       client?.disconnect();
-      vscode.window.showInformationMessage('Disconnected from Bonsai Workspace.');
+      vscode.window.showInformationMessage('Disconnected from Omnisystem Workspace.');
     }),
 
-    vscode.commands.registerCommand('bonsai.showStatus', () => {
+    vscode.commands.registerCommand('omnisystem.showStatus', () => {
       const connected = client?.isConnected ?? false;
       vscode.window.showInformationMessage(
         connected
-          ? 'Bonsai Workspace: Connected'
-          : 'Bonsai Workspace: Not connected — use "Bonsai: Connect" to connect.',
+          ? 'Omnisystem Workspace: Connected'
+          : 'Omnisystem Workspace: Not connected — use "Omnisystem: Connect" to connect.',
       );
     }),
   );
 
   // Auto-connect if setting is enabled.
-  const config = vscode.workspace.getConfiguration('bonsai');
+  const config = vscode.workspace.getConfiguration('omnisystem');
   if (config.get<boolean>('autoConnect', true)) {
     client.connect();
   }

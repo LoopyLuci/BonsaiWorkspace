@@ -4,9 +4,9 @@
 # Fixes SHA256 hashing issues with explicit method calls and proper error handling
 
 param(
-    [string]$ChunksDir = "Z:\Projects\BonsaiWorkspace\extraction-output\chunks",
+    [string]$ChunksDir = "Z:\Projects\OmnisystemWorkspace\extraction-output\chunks",
     [double]$QualityThreshold = 0.6,
-    [string]$OutputDir = "Z:\Projects\BonsaiWorkspace\extraction-output\deduplicated"
+    [string]$OutputDir = "Z:\Projects\OmnisystemWorkspace\extraction-output\deduplicated"
 )
 
 Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan

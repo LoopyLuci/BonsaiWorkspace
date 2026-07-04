@@ -4,7 +4,7 @@
 
 param(
     [string]$Version = "1.0.0",
-    [string]$TagMessage = "Bonsai Ecosystem v$Version"
+    [string]$TagMessage = "Omnisystem Ecosystem v$Version"
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +40,7 @@ $artifactFiles = Get-ChildItem -Path $distDir -Recurse -File | Where-Object {
 if ($artifactFiles.Count -eq 0) {
     Write-Host "⚠️  No artifacts found in $distDir" -ForegroundColor Yellow
     Write-Host "   Run the build pipeline first:" -ForegroundColor Gray
-    Write-Host "   ./scripts/ci/bonsai-ci-runner.ps1 -Stage all" -ForegroundColor Gray
+    Write-Host "   ./scripts/ci/omnisystem-ci-runner.ps1 -Stage all" -ForegroundColor Gray
 } else {
     Write-Host "  Found $($artifactFiles.Count) artifact(s):" -ForegroundColor Yellow
     foreach ($file in $artifactFiles) {
@@ -52,22 +52,22 @@ if ($artifactFiles.Count -eq 0) {
 
 # Create release on GitHub
 $releaseNotes = @"
-## 🚀 Bonsai Ecosystem v$Version
+## 🚀 Omnisystem Ecosystem v$Version
 
 ### 🧬 Desktop Applications
-- **Bonsai Workspace IDE** — AI-powered code editor and orchestration system
+- **Omnisystem Workspace IDE** — AI-powered code editor and orchestration system
 - **Model Workshop** — Design, build, and train AI models with beautiful UI
 - **MCP Manager** — Configure MCP servers, clients, and tools
-- **Bonsai Nexus** — Unified launcher for all ecosystem applications
+- **Omnisystem Nexus** — Unified launcher for all ecosystem applications
 
 ### 📱 Android Applications
-- **Bonsai Buddy** — AI companion with real-time WebSocket updates
+- **Omnisystem Buddy** — AI companion with real-time WebSocket updates
 - **Model Workshop Mobile** — Manage models on the go
 - **MCP Manager Mobile** — Monitor MCP servers from device
 
 ### 🚀 Backend Services
 - **Octopus AI** — Distributed inference engine
-- **Bonsai API Gateway** — REST/GraphQL API layer
+- **Omnisystem API Gateway** — REST/GraphQL API layer
 - **BMF Messaging** — Sovereign email/SMS delivery system
 
 ### ✨ Features
@@ -78,10 +78,10 @@ $releaseNotes = @"
 ✅ Production-grade stability
 
 ### 📥 Installation
-- **Windows**: Run \`BonsaiEcosystem-Setup.exe\` and follow the installer
-- **macOS**: Drag \`BonsaiEcosystem.app\` to Applications
-- **Linux**: Run \`BonsaiEcosystem-x86_64.AppImage\`
-- **Android**: Install \`BonsaiBuddy-release.apk\` or use Play Store
+- **Windows**: Run \`OmnisystemEcosystem-Setup.exe\` and follow the installer
+- **macOS**: Drag \`OmnisystemEcosystem.app\` to Applications
+- **Linux**: Run \`OmnisystemEcosystem-x86_64.AppImage\`
+- **Android**: Install \`OmnisystemBuddy-release.apk\` or use Play Store
 
 See [CHANGELOG.md](CHANGELOG.md) for full details.
 "@
@@ -90,7 +90,7 @@ Write-Host "  Creating GitHub release..." -ForegroundColor Yellow
 
 $args = @(
     "release", "create", "v$Version",
-    "--title", "Bonsai Ecosystem v$Version",
+    "--title", "Omnisystem Ecosystem v$Version",
     "--notes", $releaseNotes,
     "--draft:$false"
 )
@@ -103,7 +103,7 @@ foreach ($artifact in $artifacts) {
 try {
     & gh @args
     Write-Host "✅ GitHub Release v$Version created successfully!" -ForegroundColor Green
-    Write-Host "   View at: https://github.com/LoopyLuci/BonsaiWorkspace/releases/tag/v$Version" -ForegroundColor Cyan
+    Write-Host "   View at: https://github.com/LoopyLuci/OmnisystemWorkspace/releases/tag/v$Version" -ForegroundColor Cyan
 } catch {
     Write-Host "❌ Failed to create release: $_" -ForegroundColor Red
     exit 1

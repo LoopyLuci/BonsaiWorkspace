@@ -1,7 +1,7 @@
 #!/usr/bin/env powershell
 <#
 .SYNOPSIS
-Run Polyglot Pong tests using Bonsai Enclave environment manager
+Run Polyglot Pong tests using Omnisystem Enclave environment manager
 
 This script:
 1. Creates a managed Python environment with Enclave
@@ -13,24 +13,24 @@ param(
     [int]$Frames = 100
 )
 
-$workdir = "z:\Projects\BonsaiEcosystem"
+$workdir = "z:\Projects\OmnisystemEcosystem"
 $enclavebin = "$workdir\target\release\enclave.exe"
 $polyglotdir = "$workdir\polyglot-pong"
 
 Write-Host ""
 Write-Host "════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  POLYGLOT PONG - RUNNING WITH BONSAI ENCLAVE" -ForegroundColor Cyan
+Write-Host "  POLYGLOT PONG - RUNNING WITH OMNISYSTEM ENCLAVE" -ForegroundColor Cyan
 Write-Host "════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 
 # Check if enclave binary exists
 if (-not (Test-Path $enclavebin)) {
-    Write-Host "✗ Bonsai Enclave binary not found at $enclavebin" -ForegroundColor Red
+    Write-Host "✗ Omnisystem Enclave binary not found at $enclavebin" -ForegroundColor Red
     Write-Host "  Building now..."
     cargo build -p sandbox --bin enclave --release
 }
 
-Write-Host "✓ Bonsai Enclave is ready" -ForegroundColor Green
+Write-Host "✓ Omnisystem Enclave is ready" -ForegroundColor Green
 Write-Host ""
 
 # For MVP: Use built-in Python directly since we haven't integrated Python downloading yet

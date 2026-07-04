@@ -30,7 +30,7 @@ All contributors must abide by the **Contributor Covenant Code of Conduct**:
 - **Be constructive** – Provide thoughtful feedback and suggestions
 - **Report issues** – Contact maintainers privately if you witness violations
 
-Violations can be reported to: [conduct@bonsai-ai.org](mailto:conduct@bonsai-ai.org)
+Violations can be reported to: [conduct@omnisystem-ai.org](mailto:conduct@omnisystem-ai.org)
 
 ---
 
@@ -559,7 +559,7 @@ pub fn my_function(param1: i32) -> Result<i64, MyError>
 
 - **GitHub Discussions** – for general questions and discussion
 - **Chat** – Join #uosc or #omnisystem on Matrix (placeholder)
-- **Email** – hello@bonsai-ai.org (placeholder)
+- **Email** – hello@omnisystem-ai.org (placeholder)
 
 ### Found a Bug?
 

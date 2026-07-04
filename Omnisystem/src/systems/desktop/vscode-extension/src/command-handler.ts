@@ -1,5 +1,5 @@
 /**
- * Executes commands received from Bonsai Workspace in VSCode.
+ * Executes commands received from Omnisystem Workspace in VSCode.
  *
  * Supported commands:
  *   open_file      – open a file in the editor
@@ -10,7 +10,7 @@
  */
 
 import * as vscode from 'vscode';
-import type { BonsaiMessage } from './bonsai-client';
+import type { OmnisystemMessage } from './omnisystem-client';
 
 interface OpenFileArgs      { path: string }
 interface CursorSetArgs     { path: string; line: number; col: number }
@@ -18,7 +18,7 @@ interface TextEditArgs      { path: string; startLine: number; startCol: number;
 interface ExecuteCommandArgs { id: string; args?: unknown[] }
 interface ShowDiffArgs      { originalPath: string; modifiedPath: string; title?: string }
 
-export async function handleCommand(msg: BonsaiMessage): Promise<void> {
+export async function handleCommand(msg: OmnisystemMessage): Promise<void> {
   const payload = msg.payload as Record<string, unknown>;
   const cmd     = payload['cmd'] as string | undefined;
   const args    = (payload['args'] ?? {}) as Record<string, unknown>;
@@ -46,7 +46,7 @@ export async function handleCommand(msg: BonsaiMessage): Promise<void> {
       const a = args as unknown as ShowDiffArgs;
       const orig = vscode.Uri.file(a.originalPath);
       const mod  = vscode.Uri.file(a.modifiedPath);
-      await vscode.commands.executeCommand('vscode.diff', orig, mod, a.title ?? 'Bonsai Diff');
+      await vscode.commands.executeCommand('vscode.diff', orig, mod, a.title ?? 'Omnisystem Diff');
       break;
     }
 

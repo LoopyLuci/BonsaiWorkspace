@@ -5,7 +5,7 @@
 
   onMount(() => {
     // Load from localStorage
-    const stored = localStorage.getItem('bonsai-dev-mode');
+    const stored = localStorage.getItem('omnisystem-dev-mode');
     if (stored !== null) {
       isDevMode = stored === 'true';
     }
@@ -13,10 +13,10 @@
 
   const toggle = () => {
     isDevMode = !isDevMode;
-    localStorage.setItem('bonsai-dev-mode', String(isDevMode));
+    localStorage.setItem('omnisystem-dev-mode', String(isDevMode));
     // Dispatch custom event for app-level listeners
     window.dispatchEvent(
-      new CustomEvent('bonsai-dev-mode-changed', { detail: { isDevMode } })
+      new CustomEvent('omnisystem-dev-mode-changed', { detail: { isDevMode } })
     );
   };
 </script>

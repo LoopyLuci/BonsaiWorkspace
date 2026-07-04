@@ -75,7 +75,7 @@ crates/hde-shadow-mode/         NEW: Shadow validation (1,000 LOC)
 
 ---
 
-## Wave 4: Bonsai Buddy Completion (6,500 LOC, 3 components)
+## Wave 4: Omnisystem Buddy Completion (6,500 LOC, 3 components)
 
 ### Crates to Create/Expand
 ```
@@ -85,7 +85,7 @@ crates/crdt-snapshot/           NEW: CRDT merging (1,500 LOC)
 ```
 
 ### Key Deliverables
-- Standalone Bonsai Buddy agent
+- Standalone Omnisystem Buddy agent
 - Offline-first synchronization
 - CRDT snapshot merging
 - Integration with SLM
@@ -198,7 +198,7 @@ README.md
 ## Getting Started
 
 ```bash
-cd z:/Projects/BonsaiWorkspace
+cd z:/Projects/OmnisystemWorkspace
 
 # Verify Wave 1 foundation
 cargo test -p kernel-snapshot -p service-sdk --release

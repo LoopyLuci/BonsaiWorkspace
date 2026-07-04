@@ -1,5 +1,5 @@
 import browser from '../lib/browser';
-import { BonsaiClient } from '../lib/bonsai-client';
+import { OmnisystemClient } from '../lib/omnisystem-client';
 import {
   appendAuditEntry,
   clearAuditLog,
@@ -133,7 +133,7 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
           // handle cases where the workspace bound to a non-default port.
           let didConnect = false;
           try {
-            await BonsaiClient.getStatus();
+            await OmnisystemClient.getStatus();
             didConnect = true;
           } catch {
             const settings = await getSettings();
@@ -150,7 +150,7 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
                 }
               } catch { /* keep probing */ }
             }
-            if (!didConnect) throw new Error(`Bonsai not found on ports ${PROBE_PORTS.join(', ')}`);
+            if (!didConnect) throw new Error(`Omnisystem not found on ports ${PROBE_PORTS.join(', ')}`);
           }
           connected = true;
           await emit({ type: 'CONNECTION_STATUS', connected: true });
@@ -170,7 +170,7 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
         return { ok: true, data: { connected } };
 
       case 'LIST_MODELS':
-        return { ok: true, data: await BonsaiClient.listModels() };
+        return { ok: true, data: await OmnisystemClient.listModels() };
 
       case 'GET_SETTINGS':
         return { ok: true, data: await getSettings() };
@@ -199,7 +199,7 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
           type: 'GET_PAGE_SNAPSHOT',
           payload: { includeHtml: false }
         });
-        const response = await BonsaiClient.chat([
+        const response = await OmnisystemClient.chat([
           {
             role: 'user',
             content: `Summarize this page in concise bullets.\\nTitle: ${snapshot.title}\\nURL: ${snapshot.url}\\n\\nContent:\\n${snapshot.visibleText.slice(0, 14000)}`
@@ -209,10 +209,10 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
       }
 
       case 'CHAT':
-        return { ok: true, data: await BonsaiClient.chat(req.messages) };
+        return { ok: true, data: await OmnisystemClient.chat(req.messages) };
 
       case 'CHAT_STREAM': {
-        await BonsaiClient.chatStream(req.messages, async (token) => {
+        await OmnisystemClient.chatStream(req.messages, async (token) => {
           await emit({ type: 'CHAT_TOKEN', streamId: req.streamId, token });
         });
         await emit({ type: 'CHAT_DONE', streamId: req.streamId });
@@ -240,19 +240,19 @@ async function handleRequest(req: BackgroundRequest): Promise<BackgroundResponse
 
 browser.runtime.onInstalled.addListener(async () => {
   browser.contextMenus.create({
-    id: 'ask-bonsai-selection',
-    title: 'Ask Bonsai Buddy about selection',
+    id: 'ask-omnisystem-selection',
+    title: 'Ask Omnisystem Buddy about selection',
     contexts: ['selection']
   });
 
   browser.contextMenus.create({
     id: 'edit-in-workspace',
-    title: 'Edit in Bonsai Workspace',
+    title: 'Edit in Omnisystem Workspace',
     contexts: ['selection', 'page']
   });
 
   try {
-    await BonsaiClient.getStatus();
+    await OmnisystemClient.getStatus();
     connected = true;
   } catch {
     connected = false;
@@ -266,7 +266,7 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 browser.contextMenus.onClicked.addListener(async (info: any, tab: any) => {
   if (!tab?.id) return;
 
-  if (info.menuItemId === 'ask-bonsai-selection' && info.selectionText) {
+  if (info.menuItemId === 'ask-omnisystem-selection' && info.selectionText) {
     const streamId = crypto.randomUUID();
     await handleRequest({
       type: 'CHAT_STREAM',
@@ -291,13 +291,13 @@ browser.omnibox.onInputChanged.addListener(async (text: string, suggest: (result
   try {
     const streamId = crypto.randomUUID();
     let responseText = '';
-    await BonsaiClient.chatStream([{ role: 'user', content: text }], (token) => {
+    await OmnisystemClient.chatStream([{ role: 'user', content: text }], (token) => {
       responseText += token;
     });
     suggest([
       {
         content: text,
-        description: responseText.slice(0, 140) || 'Bonsai Buddy is thinking...'
+        description: responseText.slice(0, 140) || 'Omnisystem Buddy is thinking...'
       }
     ]);
     await emit({ type: 'CHAT_DONE', streamId });
@@ -305,7 +305,7 @@ browser.omnibox.onInputChanged.addListener(async (text: string, suggest: (result
     suggest([
       {
         content: text,
-        description: 'Bonsai is unavailable. Is the desktop app running?'
+        description: 'Omnisystem is unavailable. Is the desktop app running?'
       }
     ]);
   }

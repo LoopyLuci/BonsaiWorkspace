@@ -215,7 +215,7 @@ function Main {
     Write-Status "2. Connect Claude Code to the MCP server"
     Write-Host ""
     Write-Status "3. Run your first scan:" Info
-    Write-Status "   .\scripts\run-bug-hunter.ps1 -Path 'Z:\Projects\BonsaiEcosystem' -Mode full"
+    Write-Status "   .\scripts\run-bug-hunter.ps1 -Path 'Z:\Projects\OmnisystemEcosystem' -Mode full"
     Write-Host ""
 }
 

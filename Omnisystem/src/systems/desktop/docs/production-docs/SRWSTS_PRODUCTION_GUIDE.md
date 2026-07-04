@@ -10,14 +10,14 @@
 
 ## Executive Summary
 
-The Sandboxed Real-World Stress Test Suite (SRWSTS) is a production-grade system for validating BonsaiWorkspace/Omnisystem under extreme real-world conditions. It comprises **15 production crates** (31,757 LOC) with **444+ passing tests** and **deterministic fault injection** capabilities.
+The Sandboxed Real-World Stress Test Suite (SRWSTS) is a production-grade system for validating OmnisystemWorkspace/Omnisystem under extreme real-world conditions. It comprises **15 production crates** (31,757 LOC) with **444+ passing tests** and **deterministic fault injection** capabilities.
 
 ### Current Status: 4/7 Systems Production-Ready
 
 | System | Status | Tests | Details |
 |--------|--------|-------|---------|
 | Omnisystem Services | ✅ PRODUCTION | 40+ | P2P, Storage, Network, Compositor fully validated |
-| Bonsai Applications | ✅ PRODUCTION | 50+ | Workspace, Buddy, Omni-Bot stress tested |
+| Omnisystem Applications | ✅ PRODUCTION | 50+ | Workspace, Buddy, Omni-Bot stress tested |
 | Fault Injection & Chaos | ✅ PRODUCTION | 38+ | 40+ real-world scenarios with deterministic scheduling |
 | Hardware Equivalence | ✅ PRODUCTION | 93+ | x86_64, ARMv8, RISC-V validation complete |
 | Full-Stack Integration | ⏳ IN PROGRESS | 64 | Vault-based system testing (requires fixture fixes) |
@@ -81,7 +81,7 @@ The Sandboxed Real-World Stress Test Suite (SRWSTS) is a production-grade system
 - Compositor, Service Discovery, Cross-service Interaction
 
 **srwsts-applications** (5,000+ LOC, 50+ tests)
-- Bonsai applications stress testing
+- Omnisystem applications stress testing
 - Workspace (500 concurrent files), Buddy (1,000 offline-online transitions), Omni-Bot (10,000 tasks)
 - Memory leak detection, CRDT merge stress, UI responsiveness
 
@@ -109,7 +109,7 @@ The Sandboxed Real-World Stress Test Suite (SRWSTS) is a production-grade system
 
 ## Integration Points
 
-### With Bonsai Ecosystem
+### With Omnisystem Ecosystem
 
 1. **Sanctum** - Vault isolation for test execution
 2. **Environment Fabric** - Test environment provisioning (Container, VM, Baremetal)
@@ -252,6 +252,6 @@ jobs:
 ---
 
 **Generated**: 2026-06-07  
-**System**: BonsaiWorkspace SRWSTS v1.0  
+**System**: OmnisystemWorkspace SRWSTS v1.0  
 **Status**: READY FOR PRODUCTION
 

@@ -8,11 +8,11 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.computedonor"
+    namespace = "ai.omnisystem.computedonor"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ai.bonsai.computedonor"
+        applicationId = "ai.omnisystem.computedonor"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -52,7 +52,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
 
     // Kotlin & Coroutines
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.23")

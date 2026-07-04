@@ -5,8 +5,8 @@ echo "Running Rust tests..."
 cargo test --workspace
 
 echo "Running frontend checks when available..."
-if [ -f "bonsai-workspace/package.json" ]; then
-  (cd bonsai-workspace && npm test || true)
+if [ -f "omnisystem-workspace/package.json" ]; then
+  (cd omnisystem-workspace && npm test || true)
 fi
 
 echo "Running python tests when available..."

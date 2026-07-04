@@ -15,7 +15,7 @@ from datetime import datetime
 class KDBModuleBuilder:
     """Build KDB modules from merged chunks"""
 
-    def __init__(self, output_dir: str = r"Z:\Projects\BonsaiWorkspace\kdb-modules"):
+    def __init__(self, output_dir: str = r"Z:\Projects\OmnisystemWorkspace\kdb-modules"):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -69,7 +69,7 @@ class KDBModuleBuilder:
             "domains": sorted(list(domains)),
             "extraction_methods": sorted(list(methods)),
             "total_tokens": total_tokens,
-            "created_with": "Bonsai Knowledge Extraction Fabric (KEF)",
+            "created_with": "Omnisystem Knowledge Extraction Fabric (KEF)",
         }
 
         # Create .kmod file (ZIP archive)
@@ -138,16 +138,16 @@ with zipfile.ZipFile("{model_name}.kmod") as kmod:
     print(chunks[0])
 ```
 
-### Bonsai KDB Integration
+### Omnisystem KDB Integration
 ```bash
 # Register module with KDB
-bonsai kdb register {model_name}.kmod
+omnisystem kdb register {model_name}.kmod
 
 # Search knowledge
-bonsai kdb search --module {model_name} "your question"
+omnisystem kdb search --module {model_name} "your question"
 
 # Load at inference time
-bonsai model infer --with-kdb {model_name} "your prompt"
+omnisystem model infer --with-kdb {model_name} "your prompt"
 ```
 
 ## Quality Assurance
@@ -160,7 +160,7 @@ All chunks in this module have:
 ## Provenance
 - **Source model**: {model_name}
 - **Extraction date**: {metadata['extraction_date']}
-- **Extraction system**: Bonsai Knowledge Extraction Fabric (KEF)
+- **Extraction system**: Omnisystem Knowledge Extraction Fabric (KEF)
 - **Version**: {metadata['version']}
 
 ---
@@ -169,7 +169,7 @@ Generated: {datetime.now().isoformat()}
 
 def main():
     input_file = r"D:\Models\extracted_knowledge\merged_chunks.jsonl"
-    output_dir = r"Z:\Projects\BonsaiWorkspace\kdb-modules"
+    output_dir = r"Z:\Projects\OmnisystemWorkspace\kdb-modules"
 
     print(f"\n📦 PHASE 6: Build KDB Modules")
     print("=" * 70)
@@ -244,9 +244,9 @@ def main():
     print(f"\n✨ All knowledge extraction complete!")
     print(f"\nNext steps:")
     print(f"  1. Verify modules: ls -lh {output_dir}/*.kmod")
-    print(f"  2. Load in KDB: bonsai kdb register {output_dir}/*.kmod")
-    print(f"  3. Search: bonsai kdb search --module <model> '<query>'")
-    print(f"  4. Use in inference: bonsai model infer --with-kdb <model> '<prompt>'")
+    print(f"  2. Load in KDB: omnisystem kdb register {output_dir}/*.kmod")
+    print(f"  3. Search: omnisystem kdb search --module <model> '<query>'")
+    print(f"  4. Use in inference: omnisystem model infer --with-kdb <model> '<prompt>'")
 
     return 0
 

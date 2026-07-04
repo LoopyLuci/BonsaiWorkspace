@@ -47,7 +47,7 @@ The Omnisystem architecture has been fully implemented, tested, and documented. 
 - Health check interface
 
 #### Advanced Services
-✅ **Phase 5: Bonsai Buddy Integration** (`buddy-agent`)
+✅ **Phase 5: Omnisystem Buddy Integration** (`buddy-agent`)
 - Standalone offline-first agent
 - State machine: Idle → Processing → Synchronized
 - 2 unit tests passing
@@ -148,20 +148,20 @@ The Omnisystem architecture has been fully implemented, tested, and documented. 
 
 ---
 
-### Wave 4: Bonsai Buddy (3 Components)
+### Wave 4: Omnisystem Buddy (3 Components)
 
-✅ **Component 1: Standalone Agent** (`bonsai-buddy-agent`)
+✅ **Component 1: Standalone Agent** (`omnisystem-buddy-agent`)
 - Independent system assistant
 - Offline capability
 - Online/offline switching
 
-✅ **Component 2: Offline Sync** (`bonsai-buddy-offline-sync`)
+✅ **Component 2: Offline Sync** (`omnisystem-buddy-offline-sync`)
 - Operation queue system
 - Batch synchronization
 - Pending operation tracking
 - 1 unit test passing
 
-✅ **Component 3: CRDT Snapshot Merging** (`bonsai-buddy-crdt`)
+✅ **Component 3: CRDT Snapshot Merging** (`omnisystem-buddy-crdt`)
 - Conflict-free replication
 - Vector clock causality
 - Distributed state merging
@@ -229,7 +229,7 @@ The Omnisystem architecture has been fully implemented, tested, and documented. 
 | axiom-verify | 2 | ✅ |
 | hde-runtime | 3 | ✅ |
 | hde-safety-envelope | 1 | ✅ |
-| bonsai-buddy-* | 6 | ✅ |
+| omnisystem-buddy-* | 6 | ✅ |
 | omnisystem-config | 3 | ✅ |
 | Other components | 15+ | ✅ |
 | **Total** | **50+** | **✅** |

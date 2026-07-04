@@ -7,10 +7,10 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.extensions"
+    namespace = "ai.omnisystem.extensions"
     compileSdk = 35
     defaultConfig {
-        applicationId = "ai.bonsai.extensions"
+        applicationId = "ai.omnisystem.extensions"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -38,7 +38,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.23")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
     val composeVersion = "1.6.4"

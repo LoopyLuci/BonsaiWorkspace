@@ -1,4 +1,4 @@
-# BonsaiWorkspace 292-Crate Implementation Plan Index
+# OmnisystemWorkspace 292-Crate Implementation Plan Index
 
 **Complete Reference for Building & Integrating All Crates to Production-Ready Status**
 
@@ -6,7 +6,7 @@
 
 ## Overview
 
-This folder contains three comprehensive planning documents detailing the complete roadmap to build and integrate all 292 crates in BonsaiWorkspace to 100% functional, production-ready status.
+This folder contains three comprehensive planning documents detailing the complete roadmap to build and integrate all 292 crates in OmnisystemWorkspace to 100% functional, production-ready status.
 
 **Total Documentation**: ~126 KB (30,000+ words across 3 documents)  
 **Timeline**: 16-20 weeks  
@@ -324,10 +324,10 @@ This folder contains three comprehensive planning documents detailing the comple
 
 ## Files on Disk
 
-All three documents are in the BonsaiWorkspace root:
+All three documents are in the OmnisystemWorkspace root:
 
 ```
-z:/Projects/BonsaiWorkspace/
+z:/Projects/OmnisystemWorkspace/
 ├── COMPREHENSIVE_IMPLEMENTATION_PLAN.md (93 KB)
 │   └── Main technical specification
 ├── IMPLEMENTATION_PLAN_EXECUTIVE_SUMMARY.md (15 KB)

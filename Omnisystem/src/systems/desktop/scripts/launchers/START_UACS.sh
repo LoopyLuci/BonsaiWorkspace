@@ -5,9 +5,9 @@ echo "╔═══════════════════════�
 echo "║   🧠 Universal Agent Control System (Visual + HITL Mode)       ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 
-BONSAI_DIR="$(pwd)"
+OMNISYSTEM_DIR="$(pwd)"
 echo ""
-echo "📍 Working Directory: $BONSAI_DIR"
+echo "📍 Working Directory: $OMNISYSTEM_DIR"
 
 # Check if cargo exists
 if ! command -v cargo &> /dev/null; then
@@ -36,16 +36,16 @@ echo "   3️⃣  Terminal 3: Browser (http://localhost:5173)"
 # Terminal 1: UACS Server
 echo ""
 echo "[Terminal 1] Starting UACS Server..."
-gnome-terminal -- bash -c "cd '$BONSAI_DIR'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426; exec bash" 2>/dev/null || \
-xterm -hold -e "cd '$BONSAI_DIR'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426" &
+gnome-terminal -- bash -c "cd '$OMNISYSTEM_DIR'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426; exec bash" 2>/dev/null || \
+xterm -hold -e "cd '$OMNISYSTEM_DIR'; cargo run -p mcp-server -- visual --hitl-categories destructive,network --port 11426" &
 
 # Give the server a moment to start
 sleep 3
 
 # Terminal 2: Dashboard
 echo "[Terminal 2] Starting Dashboard..."
-gnome-terminal -- bash -c "cd '$BONSAI_DIR/uacs-dashboard'; npm run dev; exec bash" 2>/dev/null || \
-xterm -hold -e "cd '$BONSAI_DIR/uacs-dashboard'; npm run dev" &
+gnome-terminal -- bash -c "cd '$OMNISYSTEM_DIR/uacs-dashboard'; npm run dev; exec bash" 2>/dev/null || \
+xterm -hold -e "cd '$OMNISYSTEM_DIR/uacs-dashboard'; npm run dev" &
 
 # Terminal 3: Open browser
 echo "[Terminal 3] Opening dashboard in browser..."

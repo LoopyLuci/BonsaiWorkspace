@@ -18,13 +18,13 @@
   ];
 
   onMount(() => {
-    const stored = localStorage.getItem('bonsai-dev-mode');
+    const stored = localStorage.getItem('omnisystem-dev-mode');
     devMode = stored === 'true';
   });
 
   function handleDevModeChange(event: CustomEvent) {
     devMode = event.detail;
-    localStorage.setItem('bonsai-dev-mode', devMode ? 'true' : 'false');
+    localStorage.setItem('omnisystem-dev-mode', devMode ? 'true' : 'false');
   }
 </script>
 
@@ -32,7 +32,7 @@
   <header class="panel-header">
     <h1 class="panel-title">🌿 Control Panel</h1>
     <div class="header-right">
-      <DevToggle bind:devMode on:bonsai-dev-mode-changed={handleDevModeChange} />
+      <DevToggle bind:devMode on:omnisystem-dev-mode-changed={handleDevModeChange} />
     </div>
   </header>
 

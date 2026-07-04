@@ -1,6 +1,6 @@
 # Repository Migration Complete
 
-**Complete restructuring of BonsaiWorkspace into three-layer architecture**
+**Complete restructuring of OmnisystemWorkspace into three-layer architecture**
 
 **Date**: 2026-06-08  
 **Status**: ✅ MIGRATION COMPLETE  
@@ -10,11 +10,11 @@
 
 ## Migration Summary
 
-All Bonsai-related files and folders have been successfully migrated to the new three-layer repository structure:
+All Omnisystem-related files and folders have been successfully migrated to the new three-layer repository structure:
 
 ```
-Z:\Projects\BonsaiWorkspace\
-├── BonsaiEcosystem/        (59,478 items) ✅ MIGRATED
+Z:\Projects\OmnisystemWorkspace\
+├── OmnisystemEcosystem/        (59,478 items) ✅ MIGRATED
 ├── Omnisystem/             (11,901 items) ✅ MIGRATED
 └── UOSC/ → (symlink)       ✅ CREATED
 ```
@@ -23,29 +23,29 @@ Z:\Projects\BonsaiWorkspace\
 
 ## Migration Map: Where Files Moved
 
-### BonsaiEcosystem Migration
+### OmnisystemEcosystem Migration
 
 | Old Location | New Location | Items | Status |
 |--------------|--------------|-------|--------|
-| `bonsai-workspace/` | `BonsaiEcosystem/workspace/` | 8,200+ | ✅ Moved |
-| `browser-extension/` | `BonsaiEcosystem/integrations/browser-extension/` | 150+ | ✅ Moved |
-| `vscode-extension/` | `BonsaiEcosystem/integrations/vscode-extension/` | 200+ | ✅ Moved |
-| `visualiser-ui/` | `BonsaiEcosystem/integrations/visualiser-ui/` | 180+ | ✅ Moved |
-| `uacs-dashboard/` | `BonsaiEcosystem/integrations/uacs-dashboard/` | 120+ | ✅ Moved |
-| `examples/` | `BonsaiEcosystem/examples/` | 50+ | ✅ Moved |
-| New structure | `BonsaiEcosystem/installer/` | – | ✅ Created |
-| New structure | `BonsaiEcosystem/launcher/` | – | ✅ Created |
-| New structure | `BonsaiEcosystem/control-panel/` | – | ✅ Created |
-| New structure | `BonsaiEcosystem/buddy/` | – | ✅ Created |
-| New structure | `BonsaiEcosystem/sylva-ui/` | – | ✅ Created |
-| New structure | `BonsaiEcosystem/docs/` | – | ✅ Created |
+| `omnisystem-workspace/` | `OmnisystemEcosystem/workspace/` | 8,200+ | ✅ Moved |
+| `browser-extension/` | `OmnisystemEcosystem/integrations/browser-extension/` | 150+ | ✅ Moved |
+| `vscode-extension/` | `OmnisystemEcosystem/integrations/vscode-extension/` | 200+ | ✅ Moved |
+| `visualiser-ui/` | `OmnisystemEcosystem/integrations/visualiser-ui/` | 180+ | ✅ Moved |
+| `uacs-dashboard/` | `OmnisystemEcosystem/integrations/uacs-dashboard/` | 120+ | ✅ Moved |
+| `examples/` | `OmnisystemEcosystem/examples/` | 50+ | ✅ Moved |
+| New structure | `OmnisystemEcosystem/installer/` | – | ✅ Created |
+| New structure | `OmnisystemEcosystem/launcher/` | – | ✅ Created |
+| New structure | `OmnisystemEcosystem/control-panel/` | – | ✅ Created |
+| New structure | `OmnisystemEcosystem/buddy/` | – | ✅ Created |
+| New structure | `OmnisystemEcosystem/sylva-ui/` | – | ✅ Created |
+| New structure | `OmnisystemEcosystem/docs/` | – | ✅ Created |
 
 ### Omnisystem Migration
 
 | Old Location | New Location | Items | Status |
 |--------------|--------------|-------|--------|
-| `bonsai-native/` | `Omnisystem/coos/host_adapters/native/` | 250+ | ✅ Moved |
-| `bonsai-omnisystem-languages/` | `Omnisystem/languages/legacy/` | 1,200+ | ✅ Moved |
+| `omnisystem-native/` | `Omnisystem/coos/host_adapters/native/` | 250+ | ✅ Moved |
+| `omnisystem-omnisystem-languages/` | `Omnisystem/languages/legacy/` | 1,200+ | ✅ Moved |
 | `deploy/` | `Omnisystem/deployment/` | 180+ | ✅ Moved |
 | `docs/` | `Omnisystem/docs/reference/` | 300+ | ✅ Moved |
 | `ci/` | `Omnisystem/tools/ci/` | 100+ | ✅ Copied |
@@ -62,11 +62,11 @@ Z:\Projects\BonsaiWorkspace\
 
 ## Current Repository Structure
 
-### BonsaiEcosystem
+### OmnisystemEcosystem
 
 ```
-BonsaiEcosystem/                           (59,478 items)
-├── workspace/                              # Bonsai Workspace IDE (8,200+ items)
+OmnisystemEcosystem/                           (59,478 items)
+├── workspace/                              # Omnisystem Workspace IDE (8,200+ items)
 │   ├── src-tauri/
 │   ├── dashboard/
 │   ├── tests/
@@ -158,12 +158,12 @@ Omnisystem/                                (11,901 items)
 The following new directories were created for the three-layer architecture:
 
 ```
-✅ BonsaiEcosystem/installer/
-✅ BonsaiEcosystem/launcher/
-✅ BonsaiEcosystem/control-panel/
-✅ BonsaiEcosystem/buddy/
-✅ BonsaiEcosystem/sylva-ui/
-✅ BonsaiEcosystem/docs/
+✅ OmnisystemEcosystem/installer/
+✅ OmnisystemEcosystem/launcher/
+✅ OmnisystemEcosystem/control-panel/
+✅ OmnisystemEcosystem/buddy/
+✅ OmnisystemEcosystem/sylva-ui/
+✅ OmnisystemEcosystem/docs/
 ✅ Omnisystem/UOSC/
 ✅ Omnisystem/UOSC/kernel/
 ✅ Omnisystem/UOSC/drivers/
@@ -183,7 +183,7 @@ The following new directories were created for the three-layer architecture:
 
 ### Code & Implementation
 
-- ✅ **Bonsai Workspace** (8,200+ items) → IDE, file manager, terminal, debugger
+- ✅ **Omnisystem Workspace** (8,200+ items) → IDE, file manager, terminal, debugger
 - ✅ **Languages** (3,500+ items) → Titan, Sylva, Aether, Axiom implementations
 - ✅ **Services** (4,200+ items) → TransferDaemon, UMS, AI Shim, container runtime, etc.
 - ✅ **Integrations** (650+ items) → Browser, VSCode, UI dashboards
@@ -212,7 +212,7 @@ The following new directories were created for the three-layer architecture:
 | Metric | Count |
 |--------|-------|
 | **Total items migrated** | 71,379 |
-| **BonsaiEcosystem items** | 59,478 |
+| **OmnisystemEcosystem items** | 59,478 |
 | **Omnisystem items** | 11,901 |
 | **Lines of code** | 85,000+ |
 | **Documentation LOC** | 18,000+ |
@@ -254,15 +254,15 @@ The following new directories were created for the three-layer architecture:
 
 ### Migration Execution
 
-- [x] bonsai-workspace moved to BonsaiEcosystem/workspace
-- [x] bonsai-native moved to Omnisystem/coos/host_adapters/native
-- [x] bonsai-omnisystem-languages moved to Omnisystem/languages/legacy
+- [x] omnisystem-workspace moved to OmnisystemEcosystem/workspace
+- [x] omnisystem-native moved to Omnisystem/coos/host_adapters/native
+- [x] omnisystem-omnisystem-languages moved to Omnisystem/languages/legacy
 - [x] deploy moved to Omnisystem/deployment
 - [x] docs moved to Omnisystem/docs/reference
-- [x] examples moved to BonsaiEcosystem/examples
+- [x] examples moved to OmnisystemEcosystem/examples
 - [x] ci, scripts copied to Omnisystem/tools
 - [x] runtime, runtimes copied to Omnisystem/services
-- [x] Integration files moved to BonsaiEcosystem/integrations
+- [x] Integration files moved to OmnisystemEcosystem/integrations
 - [x] All new directories created
 
 ### Post-Migration
@@ -280,7 +280,7 @@ The following new directories were created for the three-layer architecture:
 
 ### Immediate (Complete)
 
-- ✅ Move all Bonsai files to BonsaiEcosystem
+- ✅ Move all Omnisystem files to OmnisystemEcosystem
 - ✅ Organize services in Omnisystem
 - ✅ Create three-layer structure
 - ✅ Verify all files migrated
@@ -296,7 +296,7 @@ The following new directories were created for the three-layer architecture:
 ### Medium-term (Next Week)
 
 - [ ] Complete remaining documentation (planned docs)
-- [ ] Push to GitHub repositories (UOSC, Omnisystem, BonsaiEcosystem)
+- [ ] Push to GitHub repositories (UOSC, Omnisystem, OmnisystemEcosystem)
 - [ ] Set up CI/CD on GitHub
 - [ ] Public announcement
 
@@ -307,15 +307,15 @@ The following new directories were created for the three-layer architecture:
 ### Old → New Mappings
 
 ```
-bonsai-workspace/                    → BonsaiEcosystem/workspace/
-browser-extension/                   → BonsaiEcosystem/integrations/browser-extension/
-vscode-extension/                    → BonsaiEcosystem/integrations/vscode-extension/
-visualiser-ui/                       → BonsaiEcosystem/integrations/visualiser-ui/
-uacs-dashboard/                      → BonsaiEcosystem/integrations/uacs-dashboard/
-examples/                            → BonsaiEcosystem/examples/
+omnisystem-workspace/                    → OmnisystemEcosystem/workspace/
+browser-extension/                   → OmnisystemEcosystem/integrations/browser-extension/
+vscode-extension/                    → OmnisystemEcosystem/integrations/vscode-extension/
+visualiser-ui/                       → OmnisystemEcosystem/integrations/visualiser-ui/
+uacs-dashboard/                      → OmnisystemEcosystem/integrations/uacs-dashboard/
+examples/                            → OmnisystemEcosystem/examples/
 
-bonsai-native/                       → Omnisystem/coos/host_adapters/native/
-bonsai-omnisystem-languages/         → Omnisystem/languages/legacy/
+omnisystem-native/                       → Omnisystem/coos/host_adapters/native/
+omnisystem-omnisystem-languages/         → Omnisystem/languages/legacy/
 deploy/                              → Omnisystem/deployment/
 docs/                                → Omnisystem/docs/reference/
 ci/                                  → Omnisystem/tools/ci/
@@ -347,7 +347,7 @@ make all
 make test
 
 # Verify structure
-ls -la BonsaiEcosystem/
+ls -la OmnisystemEcosystem/
 ls -la Omnisystem/
 ```
 
@@ -375,7 +375,7 @@ The following documentation should be updated to reflect new paths:
 
 ✅ **71,379 files** successfully migrated  
 ✅ **Three-layer architecture** implemented  
-✅ **BonsaiEcosystem** separated as application layer  
+✅ **OmnisystemEcosystem** separated as application layer  
 ✅ **Omnisystem** organized as OS core  
 ✅ **UOSC** placed as microkernel layer  
 ✅ **All components** in correct locations  

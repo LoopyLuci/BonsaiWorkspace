@@ -21,7 +21,7 @@ Additionally, the system must support optional, safety-clamped AI/ML models that
 
 This specification provides:
 1. **Complete architecture** for the Service Lifecycle Manager (SLM)
-2. **Integration blueprint** with Bonsai Buddy standalone agent
+2. **Integration blueprint** with Omnisystem Buddy standalone agent
 3. **Hybrid Determinism Engine** design for AI-enhanced optimization
 4. **Implementation roadmap** with 8 phases and concrete milestones
 5. **Formal verification strategy** using Axiom proofs
@@ -49,7 +49,7 @@ This specification provides:
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Omnisystem Client Layer                         │
-│  (Bonsai Buddy, CLI, services that need background functionality)  │
+│  (Omnisystem Buddy, CLI, services that need background functionality)  │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
                           ▼ (capability-mediated request)
@@ -438,15 +438,15 @@ The audit-log enables:
 
 ---
 
-## Part 2: Bonsai Buddy as Standalone Agent
+## Part 2: Omnisystem Buddy as Standalone Agent
 
-### 2.1 Bonsai Buddy Architecture
+### 2.1 Omnisystem Buddy Architecture
 
-Bonsai Buddy is a desktop/mobile companion app (Tauri + native) that can run entirely independently from the Omnisystem cluster.
+Omnisystem Buddy is a desktop/mobile companion app (Tauri + native) that can run entirely independently from the Omnisystem cluster.
 
 **Embedded Components**:
 ```
-Bonsai Buddy (Tauri App)
+Omnisystem Buddy (Tauri App)
     │
     ├─► SLM Client (Lightweight)
     │   • Capability-mediated requests to services
@@ -495,7 +495,7 @@ Bonsai Buddy (Tauri App)
 
 ### 2.3 Offline-First Architecture
 
-Bonsai Buddy uses event-sourced snapshots with CRDT merging:
+Omnisystem Buddy uses event-sourced snapshots with CRDT merging:
 
 ```
 Local Buddy Instance           Cluster Instance
@@ -530,7 +530,7 @@ The merge algorithm is deterministic and conflict-free because:
 
 ### 2.4 Snapshot Synchronization via TransferDaemon
 
-When Bonsai Buddy comes online:
+When Omnisystem Buddy comes online:
 
 ```titan
 pub async fn sync_with_cluster(&self, cluster_addr: &str) -> Result<()> {
@@ -854,7 +854,7 @@ The AI advisor call is non-blocking. If it times out or the advisor crashes, the
 
 ---
 
-### Phase 5: Bonsai Buddy Integration (2-3 weeks)
+### Phase 5: Omnisystem Buddy Integration (2-3 weeks)
 **Objective**: Embed SLM client + local CAS in Tauri app
 
 **Deliverables**:
@@ -1297,7 +1297,7 @@ pub struct HDEConfig {
 This specification provides a complete blueprint for implementing production-grade background services and a hybrid determinism engine. The design:
 
 ✅ **Maintains determinism as foundation** – AI is optional, core always works  
-✅ **Enables offline-first operation** – Bonsai Buddy works disconnected  
+✅ **Enables offline-first operation** – Omnisystem Buddy works disconnected  
 ✅ **Provides automatic recovery** – Snapshot-based self-healing  
 ✅ **Ensures formal correctness** – Axiom proofs throughout  
 ✅ **Supports atomic updates** – Hot-reload without downtime  

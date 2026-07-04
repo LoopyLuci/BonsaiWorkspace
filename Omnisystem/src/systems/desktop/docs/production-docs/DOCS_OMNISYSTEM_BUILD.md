@@ -425,7 +425,7 @@ make build-service SERVICES="ai-shim,ums,transfer-daemon"
 ### Build just the apps
 
 ```bash
-# Just Bonsai Workspace
+# Just Omnisystem Workspace
 make build-app APP=workspace
 
 # Just Buddy (mobile app)
@@ -524,9 +524,9 @@ build/
 ├── omnisystem.qcow2         # QCOW2 disk (QEMU/KVM)
 ├── omnisystem.vhdx          # VHD disk (Hyper-V)
 ├── omnisystem-container.tar # Docker image
-├── bonsai-installer.exe     # Windows installer
-├── bonsai-installer.dmg     # macOS installer
-├── bonsai-installer.deb     # Linux installer
+├── omnisystem-installer.exe     # Windows installer
+├── omnisystem-installer.dmg     # macOS installer
+├── omnisystem-installer.deb     # Linux installer
 ├── omnisystem.jar           # Java artifact (if applicable)
 └── logs/                    # Build logs
     ├── build.log            # Build output

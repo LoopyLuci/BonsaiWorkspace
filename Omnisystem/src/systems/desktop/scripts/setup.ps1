@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-Write-Host "Setting up Bonsai Ecosystem..." -ForegroundColor Cyan
+Write-Host "Setting up Omnisystem Ecosystem..." -ForegroundColor Cyan
 
 if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) {
     throw "Rust is missing. Install rustup first."
@@ -17,5 +17,5 @@ if (Test-Path requirements.txt) {
     python -m pip install -r requirements.txt
 }
 
-cargo build -p bonsai-cli --release
+cargo build -p omnisystem-cli --release
 Write-Host "Setup complete." -ForegroundColor Green

@@ -13,7 +13,7 @@
       <div class="setting-item">
         <div class="setting-label">
           <div class="label-text">Auto-start with system</div>
-          <div class="label-desc">Launch Bonsai automatically when your computer starts</div>
+          <div class="label-desc">Launch Omnisystem automatically when your computer starts</div>
         </div>
         <input type="checkbox" bind:checked={autoStart} class="toggle" />
       </div>

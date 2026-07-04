@@ -1,4 +1,4 @@
-# Contributing to Bonsai Workspace
+# Contributing to Omnisystem Workspace
 
 Thank you for considering a contribution. This document covers everything you need to get from a fresh clone to a passing test run.
 
@@ -17,29 +17,29 @@ Optional but recommended: `sccache` (faster Rust rebuilds), `just` (task runner)
 
 ```powershell
 # 1. Install frontend deps
-cd bonsai-workspace\src
+cd omnisystem-workspace\src
 npm install
 
 # 2. Start the dev server (Tauri + Vite HMR)
 npx tauri dev
 
 # 3. In a separate terminal — start the daemon
-cargo run -p bonsai-daemon
+cargo run -p omnisystem-daemon
 
 # 4. Run all tests
 cargo test --workspace
-npm --prefix bonsai-workspace\src run test
+npm --prefix omnisystem-workspace\src run test
 ```
 
 ## Directory Layout
 
 ```
-BonsaiWorkspace/
-├── bonsai-workspace/   Tauri desktop app (Svelte frontend + Rust backend)
+OmnisystemWorkspace/
+├── omnisystem-workspace/   Tauri desktop app (Svelte frontend + Rust backend)
 ├── src-daemon/         Headless orchestration daemon
 ├── crates/             Shared Rust libraries and standalone binaries
-│   └── bonsai-watchdog/  Survival-system watchdog (standalone workspace)
-├── bonsai-bot/         CLI companion tool
+│   └── omnisystem-watchdog/  Survival-system watchdog (standalone workspace)
+├── omnisystem-bot/         CLI companion tool
 ├── config/             Runtime feature flags (features.yaml)
 ├── docs/               All documentation (architecture, plans, user guide)
 ├── scripts/            Build, launch, and developer utility scripts
@@ -59,7 +59,7 @@ See [docs/README.md](docs/README.md) for full documentation index.
 
 1. Fork the repo and create a feature branch off `main`.
 2. Make your changes, add tests for new behaviour.
-3. Run `cargo test --workspace` and `npm --prefix bonsai-workspace\src run test`.
+3. Run `cargo test --workspace` and `npm --prefix omnisystem-workspace\src run test`.
 4. Open a PR against `main`. The CI will run the full survival-system and workspace checks automatically.
 
 ## Reporting Bugs

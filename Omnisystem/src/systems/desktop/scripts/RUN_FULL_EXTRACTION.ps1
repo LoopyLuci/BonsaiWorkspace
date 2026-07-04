@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Bonsai Omniscient Knowledge Extraction Pipeline - Full Execution
+    Omnisystem Omniscient Knowledge Extraction Pipeline - Full Execution
     Extracts 100% of knowledge from all models in D:\Models\general
 
 .DESCRIPTION
@@ -52,7 +52,7 @@ function Write-Info($text) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
 
-Write-Header "Bonsai Omniscient Knowledge Extraction Pipeline"
+Write-Header "Omnisystem Omniscient Knowledge Extraction Pipeline"
 Write-Info "Starting from Phase $StartFrom"
 Write-Info "Script directory: $scriptDir"
 
@@ -159,13 +159,13 @@ Write-Header "EXTRACTION PIPELINE COMPLETE"
 
 Write-Info "Output directories:"
 Write-Info "  - Extracted chunks: D:\Models\extracted_knowledge\"
-Write-Info "  - KDB modules: Z:\Projects\BonsaiWorkspace\kdb-modules\"
+Write-Info "  - KDB modules: Z:\Projects\OmnisystemWorkspace\kdb-modules\"
 
 Write-Info "Next steps:"
-Write-Info "  1. Verify KDB modules: Get-ChildItem Z:\Projects\BonsaiWorkspace\kdb-modules\*.kmod"
-Write-Info "  2. Load modules into Bonsai KDB: bonsai kdb register *.kmod"
-Write-Info "  3. Test search: bonsai kdb search --module <model> '<query>'"
-Write-Info "  4. Use in inference: bonsai model infer --with-kdb <model> '<prompt>'"
+Write-Info "  1. Verify KDB modules: Get-ChildItem Z:\Projects\OmnisystemWorkspace\kdb-modules\*.kmod"
+Write-Info "  2. Load modules into Omnisystem KDB: omnisystem kdb register *.kmod"
+Write-Info "  3. Test search: omnisystem kdb search --module <model> '<query>'"
+Write-Info "  4. Use in inference: omnisystem model infer --with-kdb <model> '<prompt>'"
 
 Write-Host "`n🎉 All knowledge extracted and packaged as KDB modules!" -ForegroundColor Green
 Write-Host "   Total chunks: Check merged_chunks.jsonl for count" -ForegroundColor Green

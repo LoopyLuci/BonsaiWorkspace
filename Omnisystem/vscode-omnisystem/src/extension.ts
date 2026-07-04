@@ -58,6 +58,9 @@ interface WorkspaceInfo {
     bonsaiRoot: vscode.Uri | undefined;
 }
 
+// App manifest filename: primary (de-branded) name first, then legacy fallback.
+const APP_MANIFEST_NAMES = ['app.omnisystem.toml', 'app.bonsai.toml'] as const;
+
 // ─── Module-level state ───────────────────────────────────────────────────────
 
 let client: LanguageClient | undefined;
@@ -334,19 +337,24 @@ async function detectWorkspace(): Promise<WorkspaceInfo> {
         }
     }
 
-    // 3. Shallow scan (workspace root and one level deep) for app.bonsai.toml
+    // 3. Shallow scan (workspace root and one level deep) for the app manifest.
+    //    Primary name is app.omnisystem.toml; app.bonsai.toml is the legacy name.
     if (!hasBonsai) {
         const bonsaiCandidates: string[] = [];
         if (folders) {
             for (const f of folders) {
-                bonsaiCandidates.push(vscode.Uri.joinPath(f.uri, 'app.bonsai.toml').fsPath);
+                for (const name of APP_MANIFEST_NAMES) {
+                    bonsaiCandidates.push(vscode.Uri.joinPath(f.uri, name).fsPath);
+                }
             }
         }
         try {
             const entries = fs.readdirSync(root.fsPath, { withFileTypes: true });
             for (const entry of entries) {
                 if (entry.isDirectory()) {
-                    bonsaiCandidates.push(path.join(root.fsPath, entry.name, 'app.bonsai.toml'));
+                    for (const name of APP_MANIFEST_NAMES) {
+                        bonsaiCandidates.push(path.join(root.fsPath, entry.name, name));
+                    }
                 }
             }
         } catch { /* ignore */ }
@@ -547,7 +555,7 @@ function buildServerOptions(lspPath: string, _config: vscode.WorkspaceConfigurat
 function registerFileWatchers(ctx: vscode.ExtensionContext): void {
     const omniWatcher   = vscode.workspace.createFileSystemWatcher('**/*.{titan,vera,helix,aether,axiom,sylva,nexus}');
     const buildWatcher  = vscode.workspace.createFileSystemWatcher('**/BUILD.omnisystem');
-    const bonsaiWatcher = vscode.workspace.createFileSystemWatcher('**/app.bonsai.toml');
+    const bonsaiWatcher = vscode.workspace.createFileSystemWatcher('**/app.{omnisystem,bonsai}.toml');
 
     omniWatcher.onDidCreate(() => { explorerProvider.refresh(); });
     omniWatcher.onDidDelete(() => { explorerProvider.refresh(); });
@@ -1150,8 +1158,8 @@ function cmdBonsaiLaunch(): void {
     // Secondary: also try launching via npm/bonsai CLI if in a Bonsai workspace.
     BonsaiDashboardPanel.createOrShow(extensionContext.extensionUri);
     const root = workspaceRoot();
-    if (root && fs.existsSync(path.join(root, 'app.bonsai.toml'))) {
-        runRawInTerminal('npm run dev', 'Bonsai: Dev Server');
+    if (root && APP_MANIFEST_NAMES.some((n) => fs.existsSync(path.join(root, n)))) {
+        runRawInTerminal('npm run dev', 'Desktop: Dev Server');
     }
 }
 
@@ -1390,7 +1398,7 @@ async function scaffoldBonsaiApp(): Promise<void> {
     try {
         await vscode.workspace.fs.createDirectory(appDir);
         await vscode.workspace.fs.writeFile(
-            vscode.Uri.joinPath(appDir, 'app.bonsai.toml'), Buffer.from(toml, 'utf8')
+            vscode.Uri.joinPath(appDir, APP_MANIFEST_NAMES[0]), Buffer.from(toml, 'utf8')
         );
         await vscode.workspace.fs.writeFile(
             vscode.Uri.joinPath(appDir, `${name.trim()}.titan`), Buffer.from(mainTs, 'utf8')

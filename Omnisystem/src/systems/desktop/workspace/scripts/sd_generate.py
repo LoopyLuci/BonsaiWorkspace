@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bonsai Stable Diffusion generator — AMD DirectML backend.
+"""Omnisystem Stable Diffusion generator — AMD DirectML backend.
 
 Supports:
   - HuggingFace model directories (safetensors layout)

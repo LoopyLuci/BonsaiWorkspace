@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-This session completed a **comprehensive architectural redesign** of BonsaiWorkspace into a **next-generation, bleeding-edge, production-grade Co-Operating System** (Co-OS). The system enables Omnisystem to run on any device with any host OS (Windows, macOS, Linux, Android, iOS) in the optimal deployment mode, all orchestrated by the Bonsai Ecosystem.
+This session completed a **comprehensive architectural redesign** of OmnisystemWorkspace into a **next-generation, bleeding-edge, production-grade Co-Operating System** (Co-OS). The system enables Omnisystem to run on any device with any host OS (Windows, macOS, Linux, Android, iOS) in the optimal deployment mode, all orchestrated by the Omnisystem Ecosystem.
 
 **Deliverables**:
 - ✅ Complete three-layer architecture specification
@@ -29,12 +29,12 @@ This session completed a **comprehensive architectural redesign** of BonsaiWorks
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ BonsaiEcosystem (Application Layer)                             │
+│ OmnisystemEcosystem (Application Layer)                             │
 │ • Universal Installer (all platforms)                           │
 │ • Native Launchers (Windows, macOS, Linux, Android, iOS)       │
 │ • System Tray / Menu Bar Control Panel                          │
-│ • Bonsai Workspace (IDE)                                        │
-│ • Bonsai Buddy (Mobile companion)                               │
+│ • Omnisystem Workspace (IDE)                                        │
+│ • Omnisystem Buddy (Mobile companion)                               │
 │ • Sylva UI Library (Cross-platform widgets)                     │
 └─────────────────────────────────────────────────────────────────┘
                              ↓ IPC / RPC
@@ -128,7 +128,7 @@ This session completed a **comprehensive architectural redesign** of BonsaiWorks
 
 ### 4. Host Detection Type System
 
-**File**: `BonsaiEcosystem/installer/host_detection.ti` (500+ LOC)
+**File**: `OmnisystemEcosystem/installer/host_detection.ti` (500+ LOC)
 
 **Detects**:
 - OS type (Windows 10/11, macOS Intel/ARM, Ubuntu/Debian/Fedora/RHEL, Android, iOS)
@@ -147,7 +147,7 @@ This session completed a **comprehensive architectural redesign** of BonsaiWorks
 
 ### 5. Universal Installer Architecture
 
-**File**: `BonsaiEcosystem/installer/architecture.md` (2,500+ LOC)
+**File**: `OmnisystemEcosystem/installer/architecture.md` (2,500+ LOC)
 
 **Four-Phase Installation**:
 
@@ -166,8 +166,8 @@ This session completed a **comprehensive architectural redesign** of BonsaiWorks
    
 4. **Post-Installation** – Configure & start using
    - First-time setup wizard
-   - Bonsai Control Panel (system tray app)
-   - Bonsai Workspace launch
+   - Omnisystem Control Panel (system tray app)
+   - Omnisystem Workspace launch
 
 **Deployment Modes**:
 - **Co-OS** (Hyper-V/KVM/Virtualization.framework) – Full hardware isolation, ~20s boot
@@ -177,7 +177,7 @@ This session completed a **comprehensive architectural redesign** of BonsaiWorks
 
 ### 6. Control Panel Architecture
 
-**File**: `BonsaiEcosystem/control-panel/architecture.md` (2,000+ LOC)
+**File**: `OmnisystemEcosystem/control-panel/architecture.md` (2,000+ LOC)
 
 **Platform-Native Implementations**:
 - **Windows**: System tray with WPF dashboard
@@ -385,7 +385,7 @@ This session delivered a **complete, production-ready architectural foundation**
 1. ✅ Run on **any device** (Windows, macOS, Linux, Android, iOS)
 2. ✅ With **any host OS** (automatically detected)
 3. ✅ In the **optimal deployment mode** (Co-OS, Library OS, Container, Remote)
-4. ✅ Orchestrated by **Bonsai Ecosystem** (installer, launcher, control panel)
+4. ✅ Orchestrated by **Omnisystem Ecosystem** (installer, launcher, control panel)
 5. ✅ Enforced by **capability-based security** (fine-grained access control)
 6. ✅ Abstracted by **hypervisor agnosticism** (KVM, Hyper-V, Virtualization.framework)
 

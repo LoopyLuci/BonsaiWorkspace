@@ -1,25 +1,25 @@
 #!/usr/bin/env pwsh
-# launch.ps1 — One-click Bonsai Workspace launcher.
+# launch.ps1 — One-click Omnisystem Workspace launcher.
 # Sweeps stale sidecars, resets port config, then starts the binary.
 # The binary was compiled with custom-protocol so it loads the UI from
 # the embedded dist/ — no Vite dev server required.
 
 param(
-    [string]$BinaryPath = "Z:\Projects\BonsaiWorkspace\target\debug\bonsai-workspace.exe",
+    [string]$BinaryPath = "Z:\Projects\OmnisystemWorkspace\target\debug\omnisystem-workspace.exe",
     [int]   $ApiPort    = 11369,
     [int]   $BuddyPort  = 11420
 )
 
-$CfgPath = "$env:APPDATA\com.bonsai.workspace\bonsai-config.json"
+$CfgPath = "$env:APPDATA\com.omnisystem.workspace\omnisystem-config.json"
 
-Write-Host "=== Bonsai Workspace ===" -ForegroundColor Cyan
+Write-Host "=== Omnisystem Workspace ===" -ForegroundColor Cyan
 
 # 1. Kill stale sidecars
 Write-Host "Sweeping stale processes..." -ForegroundColor Yellow
 Get-CimInstance Win32_Process -EA SilentlyContinue | Where-Object {
     $_.ExecutablePath -like "*llama-server*" -or
     $_.ExecutablePath -like "*piper.exe" -or
-    $_.ExecutablePath -like "*bonsai-workspace.exe"
+    $_.ExecutablePath -like "*omnisystem-workspace.exe"
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }
 Start-Sleep -Milliseconds 600
 
@@ -32,7 +32,7 @@ if (Test-Path $CfgPath) {
 }
 
 # 3. Start
-Write-Host "Starting Bonsai Workspace..." -ForegroundColor Yellow
+Write-Host "Starting Omnisystem Workspace..." -ForegroundColor Yellow
 $app = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle Normal
 
 # 4. Wait for backend

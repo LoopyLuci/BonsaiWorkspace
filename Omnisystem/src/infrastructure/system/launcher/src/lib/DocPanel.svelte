@@ -13,7 +13,7 @@
     },
     'app-menu': {
       simple: 'This menu shows all the apps you have installed. Click Launch to open one.',
-      dev: 'Apps are registered via AppManifest in app.bonsai.toml. The registry maintains a DashMap of AppEntry records.'
+      dev: 'Apps are registered via AppManifest in app.omnisystem.toml. The registry maintains a DashMap of AppEntry records.'
     },
     services: {
       simple: 'Services are programs running in the background to help Bonsai work.',

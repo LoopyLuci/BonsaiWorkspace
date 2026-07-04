@@ -20,7 +20,7 @@ chat_templates = [
 
 topics = [
     "recursion", "async/await", "threads", "memory management",
-    "the Bonsai Ecosystem", "machine learning", "neural networks",
+    "the Omnisystem Ecosystem", "machine learning", "neural networks",
     "transformers", "LLMs", "Rust", "Python", "TypeScript",
     "databases", "caching", "API design", "microservices"
 ]

@@ -27,7 +27,7 @@ echo "==> Running git-filter-repo to remove /target/ and common large binary ext
 # Adjust path-globs as needed. --invert-paths removes matching paths from history.
 git filter-repo \
   --invert-paths \
-  --path-glob "bonsai-runtime/target/**" \
+  --path-glob "omnisystem-runtime/target/**" \
   --path-glob "**/target/**" \
   --path-glob "**/target/*" \
   --path-glob "*.pdb" \

@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.remote"
+    namespace = "ai.omnisystem.remote"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ai.bonsai.remote"
+        applicationId = "ai.omnisystem.remote"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -51,7 +51,7 @@ android {
 
 dependencies {
     // Project dependencies
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
 
     // AndroidX
     implementation("androidx.core:core-ktx:1.15.0")

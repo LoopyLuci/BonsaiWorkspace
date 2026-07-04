@@ -1,7 +1,7 @@
 param(
     [int]$pr = 4,
     [string]$repoOwner = 'LoopyLuci',
-    [string]$repoName = 'BonsaiWorkspace',
+    [string]$repoName = 'OmnisystemWorkspace',
     [int]$pollSeconds = 15,
     [int]$maxMinutes = 120
 )

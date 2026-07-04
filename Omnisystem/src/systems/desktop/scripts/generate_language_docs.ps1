@@ -22,11 +22,11 @@ if (-not (Test-Path $ManifestPath)) {
     $StubContent = @"
 # Language Support – 750+ Languages Validated
 
-This document lists all programming languages supported by the Bonsai Ecosystem's Polyglot Pong framework.
+This document lists all programming languages supported by the Omnisystem Ecosystem's Polyglot Pong framework.
 
 ## Overview
 
-The Bonsai Ecosystem supports **750+ programming languages** for code generation, validation, and deterministic execution. Each language is grouped by family (systems, dynamic, functional, etc.) and includes:
+The Omnisystem Ecosystem supports **750+ programming languages** for code generation, validation, and deterministic execution. Each language is grouped by family (systems, dynamic, functional, etc.) and includes:
 
 - Language name and official version
 - Compiler/interpreter path
@@ -130,11 +130,11 @@ $ByFamily = $Languages | Group-Object { $_["family"] }
 $MarkdownContent = @"
 # Language Support – 750+ Languages Validated
 
-This document lists all programming languages supported by the Bonsai Ecosystem's Polyglot Pong framework.
+This document lists all programming languages supported by the Omnisystem Ecosystem's Polyglot Pong framework.
 
 ## Overview
 
-The Bonsai Ecosystem supports **$($Languages.Count) programming languages** for code generation, validation, and deterministic execution. Each language is grouped by family and includes:
+The Omnisystem Ecosystem supports **$($Languages.Count) programming languages** for code generation, validation, and deterministic execution. Each language is grouped by family and includes:
 
 - Language name and official version
 - Compiler/interpreter path

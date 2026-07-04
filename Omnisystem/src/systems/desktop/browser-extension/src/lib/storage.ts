@@ -1,8 +1,8 @@
 import browser from 'webextension-polyfill';
 import type { AuditEntry, ExtensionSettings } from './types';
 
-const SETTINGS_KEY = 'bonsai.settings';
-const AUDIT_KEY = 'bonsai.auditLog';
+const SETTINGS_KEY = 'omnisystem.settings';
+const AUDIT_KEY = 'omnisystem.auditLog';
 
 export const defaultSettings: ExtensionSettings = {
   apiHost: '127.0.0.1',
@@ -10,7 +10,7 @@ export const defaultSettings: ExtensionSettings = {
   buddyHost: '127.0.0.1',
   buddyPort: 11420,
   workspaceUrl: 'http://localhost:1420',
-  defaultModel: 'bonsai-buddy',
+  defaultModel: 'omnisystem-buddy',
   desktopConnectionToken: '',
   observationMode: 'none',
   autoAllowActionsByHost: []

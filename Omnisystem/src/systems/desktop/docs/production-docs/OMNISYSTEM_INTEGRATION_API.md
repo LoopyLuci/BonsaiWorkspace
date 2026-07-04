@@ -31,7 +31,7 @@ The Omnisystem Integration API provides programmatic access to a four-wave distr
 - **Wave 1**: Background Services with kernel-level snapshotting
 - **Wave 2**: Clojure Integration with persistent data structures
 - **Wave 3**: Hybrid Determinism Engine (HDE) for AI-optional optimization
-- **Wave 4**: Bonsai Buddy distributed agent system
+- **Wave 4**: Omnisystem Buddy distributed agent system
 
 ### API Base URLs
 
@@ -863,10 +863,10 @@ curl -H "Authorization: Bearer $TOKEN" \
       "language": "rust",
       "description": "High-performance fax processing service",
       "binary_hash": "blake3:abc123def456...",
-      "author": "bonsai-team",
+      "author": "omnisystem-team",
       "published_at": "2026-04-15T10:00:00Z",
       "downloads": 15240,
-      "signatures": ["bonsai-council"],
+      "signatures": ["omnisystem-council"],
       "dependencies": [
         {
           "module_id": "mod_pdf_001",
@@ -908,10 +908,10 @@ curl -H "Authorization: Bearer $TOKEN" \
   "long_description": "...",
   "binary_hash": "blake3:abc123def456...",
   "binary_size_bytes": 45678901,
-  "author": "bonsai-team",
+  "author": "omnisystem-team",
   "published_at": "2026-04-15T10:00:00Z",
   "downloads": 15240,
-  "signatures": ["bonsai-council"],
+  "signatures": ["omnisystem-council"],
   "signature_verification": "valid",
   "dependencies": [
     {
@@ -1083,7 +1083,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 ```json
 {
   "valid": true,
-  "signer": "bonsai-council",
+  "signer": "omnisystem-council",
   "timestamp": "2026-06-05T00:00:00Z",
   "message": "Signature verified successfully"
 }
@@ -1905,24 +1905,24 @@ All API responses use standard HTTP status codes and include detailed error info
 
 ```bash
 # Using cargo
-cargo install bonsai-cli
+cargo install omnisystem-cli
 
 # Or download binary
-curl https://releases.bonsai.io/cli/latest -o bonsai
-chmod +x bonsai
+curl https://releases.omnisystem.io/cli/latest -o omnisystem
+chmod +x omnisystem
 ```
 
 ### Generate API Token
 
 ```bash
-bonsai auth login
+omnisystem auth login
 # Follow interactive prompt to authenticate
 ```
 
 ### Verify Installation
 
 ```bash
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/services | jq '.total'
 ```
 
@@ -1933,14 +1933,14 @@ curl -H "Authorization: Bearer $BONSAI_TOKEN" \
 ### Step 1: Find Available Module
 
 ```bash
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   "http://localhost:8080/modules/search?query=fax" | jq '.'
 ```
 
 ### Step 2: Spawn Service Instance
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "manifest": {
@@ -1970,14 +1970,14 @@ curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
 
 ```bash
 SERVICE_ID="550e8400-e29b-41d4-a716-446655440000"
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/services/$SERVICE_ID/health
 ```
 
 ### Step 4: Pause and Snapshot
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"timeout_ms": 5000}' \
   http://localhost:8080/services/$SERVICE_ID/pause
@@ -1991,11 +1991,11 @@ curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
 #!/bin/bash
 
 # Set up environment
-export BONSAI_API_HOST="http://localhost:8080"
-export BONSAI_API_PORT="8080"
+export OMNISYSTEM_API_HOST="http://localhost:8080"
+export OMNISYSTEM_API_PORT="8080"
 
 # Generate token
-TOKEN=$(curl -X POST "$BONSAI_API_HOST/auth/tokens" \
+TOKEN=$(curl -X POST "$OMNISYSTEM_API_HOST/auth/tokens" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
@@ -2003,11 +2003,11 @@ TOKEN=$(curl -X POST "$BONSAI_API_HOST/auth/tokens" \
     "expiration_days": 30
   }' | jq -r '.token')
 
-export BONSAI_TOKEN=$TOKEN
+export OMNISYSTEM_TOKEN=$TOKEN
 
 # Verify
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
-  "$BONSAI_API_HOST/services" | jq '.total'
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
+  "$OMNISYSTEM_API_HOST/services" | jq '.total'
 ```
 
 ---
@@ -2020,7 +2020,7 @@ curl -H "Authorization: Bearer $BONSAI_TOKEN" \
 #!/bin/bash
 
 # 1. Create validation matrix
-MATRIX=$(curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+MATRIX=$(curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "deploy-validation",
@@ -2037,7 +2037,7 @@ echo "Matrix ID: $MATRIX_ID"
 
 # 2. Wait for completion
 while true; do
-  RESULT=$(curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+  RESULT=$(curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
     http://localhost:8080/validation/matrix/$MATRIX_ID)
   STATUS=$(echo $RESULT | jq -r '.status')
   PASS_RATE=$(echo $RESULT | jq -r '.pass_rate // 0')
@@ -2053,7 +2053,7 @@ done
 
 # 3. Deploy if validation passed
 if [ $(echo "$PASS_RATE > 0.95" | bc) -eq 1 ]; then
-  curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+  curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
     http://localhost:8080/workflows/wf_001/execute
 fi
 ```
@@ -2064,7 +2064,7 @@ fi
 #!/bin/bash
 
 # Migrate service from staging to production
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "source_env_id": "env_staging_001",
@@ -2109,7 +2109,7 @@ The Omnisystem uses a capability-based security model where every service reques
 ### Request with Capabilities
 
 ```bash
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "X-Capabilities: cap_abc123..." \
   -H "Content-Type: application/json" \
   -d '{"command": "scan"}' \
@@ -2120,7 +2120,7 @@ curl -H "Authorization: Bearer $BONSAI_TOKEN" \
 
 ## 2. Offline Queue Operation
 
-The Bonsai Buddy agent maintains an offline-first operation queue.
+The Omnisystem Buddy agent maintains an offline-first operation queue.
 
 ### Queued Operations
 
@@ -2146,7 +2146,7 @@ The Bonsai Buddy agent maintains an offline-first operation queue.
 ### Sync When Online
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/buddy/sync \
   -H "Content-Type: application/json" \
   -d '{"queue_id": "queue_001"}'
@@ -2156,7 +2156,7 @@ curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
 
 ## 3. CRDT Synchronization
 
-The Bonsai Buddy system uses CRDTs (Conflict-free Replicated Data Types) for distributed state merging.
+The Omnisystem Buddy system uses CRDTs (Conflict-free Replicated Data Types) for distributed state merging.
 
 ### Snapshot Merge Operation
 
@@ -2176,7 +2176,7 @@ The Bonsai Buddy system uses CRDTs (Conflict-free Replicated Data Types) for dis
 ### Merge Request
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"local": {...}, "remote": {...}}' \
   http://localhost:8080/crdt/merge
@@ -2191,7 +2191,7 @@ Subscribe to real-time events via WebSocket.
 ### Connect to WebSocket
 
 ```bash
-wscat -c "ws://localhost:8080/ws?token=$BONSAI_TOKEN"
+wscat -c "ws://localhost:8080/ws?token=$OMNISYSTEM_TOKEN"
 ```
 
 ### Subscribe to Events
@@ -2270,7 +2270,7 @@ retry_count=0
 backoff=1
 
 while [ $retry_count -lt $max_retries ]; do
-  curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+  curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
     http://localhost:8080/services/$SERVICE_ID && break
   
   retry_count=$((retry_count + 1))
@@ -2302,14 +2302,14 @@ done
 
 ```bash
 # Configure connection pool size
-export BONSAI_POOL_SIZE=100
-export BONSAI_POOL_TIMEOUT_SECS=30
+export OMNISYSTEM_POOL_SIZE=100
+export OMNISYSTEM_POOL_TIMEOUT_SECS=30
 ```
 
 ### Request Batching
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "requests": [
@@ -2332,7 +2332,7 @@ curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
 
 ```bash
 # Enable client-side caching
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Cache-Control: max-age=300" \
   http://localhost:8080/modules/mod_fax_001
 ```
@@ -2383,7 +2383,7 @@ export OTEL_SERVICE_NAME="omnisystem-api"
 
 ```bash
 # Rotate token every 30 days
-bonsai auth rotate --expiration-days 30
+omnisystem auth rotate --expiration-days 30
 ```
 
 ### Rate Limiting
@@ -2396,7 +2396,7 @@ Default limits:
 ### IP Whitelisting
 
 ```bash
-curl -X POST -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -X POST -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "token": "YOUR_API_TOKEN",
@@ -2420,11 +2420,11 @@ The API uses URL-based versioning:
 
 ```bash
 # Old endpoint (v1)
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/v1/services
 
 # New endpoint (v2)
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/v2/services
 ```
 
@@ -2437,21 +2437,21 @@ curl -H "Authorization: Bearer $BONSAI_TOKEN" \
 **Issue**: "Service not found"
 ```bash
 # Verify service exists
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/services | jq '.services[] | select(.name == "fax-service")'
 ```
 
 **Issue**: "Token expired"
 ```bash
 # Regenerate token
-bonsai auth login
-export BONSAI_TOKEN=$(bonsai auth token)
+omnisystem auth login
+export OMNISYSTEM_TOKEN=$(omnisystem auth token)
 ```
 
 **Issue**: "Resource quota exceeded"
 ```bash
 # Check resource usage
-curl -H "Authorization: Bearer $BONSAI_TOKEN" \
+curl -H "Authorization: Bearer $OMNISYSTEM_TOKEN" \
   http://localhost:8080/environments/env_prod_001 | jq '.metrics'
 ```
 
@@ -2460,7 +2460,7 @@ curl -H "Authorization: Bearer $BONSAI_TOKEN" \
 ```bash
 # Enable debug logging
 export RUST_LOG=debug
-bonsai start --log-level debug
+omnisystem start --log-level debug
 ```
 
 ---

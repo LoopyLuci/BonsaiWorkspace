@@ -17,11 +17,11 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "ai.bonsai.buddy"
+    namespace = "ai.omnisystem.buddy"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "ai.bonsai.buddy"
+        applicationId = "ai.omnisystem.buddy"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

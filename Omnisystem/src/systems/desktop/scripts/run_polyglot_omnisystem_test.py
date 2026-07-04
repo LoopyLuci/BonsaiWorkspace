@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configuration
 REPO_ROOT = Path(__file__).parent
-OMNISYSTEM_DIR = REPO_ROOT / "bonsai-omnisystem-languages"
+OMNISYSTEM_DIR = REPO_ROOT / "omnisystem-omnisystem-languages"
 LANGUAGES = ["Sylva", "Titan", "Aether", "Axiom"]
 RESULTS_DIR = REPO_ROOT / "polyglot-test-results"
 RESULTS_DIR.mkdir(exist_ok=True)

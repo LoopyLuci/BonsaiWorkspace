@@ -15,7 +15,7 @@ Over two sessions, we have delivered a **complete, next-generation, bleeding-edg
 **The three-layer system**:
 1. **UOSC** – Formally verified microkernel (10,000 LOC)
 2. **Omnisystem** – Complete polyglot OS (50,000 LOC)
-3. **BonsaiEcosystem** – GUI, installer, user applications (separate repo)
+3. **OmnisystemEcosystem** – GUI, installer, user applications (separate repo)
 
 **All fully documented and ready for**: GitHub publication, community contribution, production deployment, and commercial adoption.
 
@@ -393,9 +393,9 @@ git push origin feature/my-feature
 wget https://releases.github.com/omnisystem/v1.0.0/omnisystem-1.0.0.iso
 
 # 2. Deploy in chosen mode
-./bonsai-installer.exe  # Windows
-open bonsai-installer.dmg  # macOS
-bash bonsai-installer.sh  # Linux
+./omnisystem-installer.exe  # Windows
+open omnisystem-installer.dmg  # macOS
+bash omnisystem-installer.sh  # Linux
 
 # 3. Configure and run
 omnisystem config --cpu 4 --memory 8192
@@ -466,7 +466,7 @@ omnisystem start
 
 All documentation is available in:
 ```
-Z:\Projects\BonsaiWorkspace\
+Z:\Projects\OmnisystemWorkspace\
 ├── UOSC_README.md
 ├── OMNISYSTEM_README.md
 ├── DOCS_OMNISYSTEM_BUILD.md

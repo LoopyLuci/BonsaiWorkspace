@@ -38,12 +38,12 @@ Omnisystem runs **alongside** your existing OS (Windows, macOS, Linux) without r
 #### Windows 11 Pro/Enterprise
 
 ```powershell
-# 1. Download Bonsai Installer
-Invoke-WebRequest -Uri "https://releases.bonsai-ai.org/installer/windows/bonsai-installer.exe" `
-  -OutFile "bonsai-installer.exe"
+# 1. Download Omnisystem Installer
+Invoke-WebRequest -Uri "https://releases.omnisystem-ai.org/installer/windows/omnisystem-installer.exe" `
+  -OutFile "omnisystem-installer.exe"
 
 # 2. Run installer (will auto-detect Hyper-V)
-.\bonsai-installer.exe
+.\omnisystem-installer.exe
 
 # 3. Follow wizard:
 # - Select deployment mode (Co-OS recommended)
@@ -52,7 +52,7 @@ Invoke-WebRequest -Uri "https://releases.bonsai-ai.org/installer/windows/bonsai-
 # - Wait for installation (~3-5 minutes)
 
 # 4. Launch Omnisystem
-# - Click Start Menu → Bonsai Omnisystem
+# - Click Start Menu → Omnisystem Omnisystem
 # - Or use CLI:
 omnisystem start
 ```
@@ -61,32 +61,32 @@ omnisystem start
 
 ```bash
 # 1. Download installer
-curl -L https://releases.bonsai-ai.org/installer/macos/bonsai-installer.dmg \
-  -o bonsai-installer.dmg
+curl -L https://releases.omnisystem-ai.org/installer/macos/omnisystem-installer.dmg \
+  -o omnisystem-installer.dmg
 
 # 2. Open and install
-open bonsai-installer.dmg
-# Then drag Bonsai Installer to Applications
+open omnisystem-installer.dmg
+# Then drag Omnisystem Installer to Applications
 
 # 3. Run installer
-open /Applications/Bonsai\ Installer.app
+open /Applications/Omnisystem\ Installer.app
 
 # 4. Follow wizard (uses Virtualization.framework)
 
 # 5. Launch
-launchctl start org.bonsai.omnisystem
-# Or click Launchpad → Bonsai Omnisystem
+launchctl start org.omnisystem.omnisystem
+# Or click Launchpad → Omnisystem Omnisystem
 ```
 
 #### Linux (Ubuntu 22.04+, Fedora 38+)
 
 ```bash
 # 1. Download installer
-wget https://releases.bonsai-ai.org/installer/linux/bonsai-installer-$(lsb_release -cs).sh
+wget https://releases.omnisystem-ai.org/installer/linux/omnisystem-installer-$(lsb_release -cs).sh
 
 # 2. Run installer
-chmod +x bonsai-installer-*.sh
-sudo ./bonsai-installer-*.sh
+chmod +x omnisystem-installer-*.sh
+sudo ./omnisystem-installer-*.sh
 
 # Follow prompts to:
 # - Enable KVM (if needed)
@@ -102,7 +102,7 @@ omnisystem start
 
 ### Co-OS Configuration
 
-After installation, configure via **Bonsai Control Panel**:
+After installation, configure via **Omnisystem Control Panel**:
 
 ```bash
 # Open control panel
@@ -183,7 +183,7 @@ omnisystem mount ~/omnisystem-fs
 
 ```bash
 # Download disk image
-wget https://releases.bonsai-ai.org/images/omnisystem.qcow2
+wget https://releases.omnisystem-ai.org/images/omnisystem.qcow2
 
 # Boot in QEMU
 qemu-system-x86_64 \
@@ -208,7 +208,7 @@ qemu-system-x86_64 \
 
 ```powershell
 # Download VHD image
-$url = "https://releases.bonsai-ai.org/images/omnisystem.vhdx"
+$url = "https://releases.omnisystem-ai.org/images/omnisystem.vhdx"
 Invoke-WebRequest -Uri $url -OutFile "omnisystem.vhdx"
 
 # Create VM
@@ -228,7 +228,7 @@ vmconnect localhost Omnisystem
 
 ```bash
 # Download OVA (VirtualBox appliance)
-wget https://releases.bonsai-ai.org/images/omnisystem.ova
+wget https://releases.omnisystem-ai.org/images/omnisystem.ova
 
 # Import
 VBoxManage import omnisystem.ova
@@ -248,20 +248,20 @@ VBoxManage startvm Omnisystem --type headless
 
 ```bash
 # Pull image
-docker pull bonsai-ai/omnisystem:latest
+docker pull omnisystem-ai/omnisystem:latest
 
 # Run container
-docker run -it --rm bonsai-ai/omnisystem:latest /bin/sylva
+docker run -it --rm omnisystem-ai/omnisystem:latest /bin/sylva
 
 # Run with persistent storage
 docker run -it --rm \
   -v omnisystem-data:/data \
-  bonsai-ai/omnisystem:latest
+  omnisystem-ai/omnisystem:latest
 
 # Run with GPU support
 docker run -it --rm \
   --gpus all \
-  bonsai-ai/omnisystem:latest
+  omnisystem-ai/omnisystem:latest
 ```
 
 ### Kubernetes
@@ -275,7 +275,7 @@ metadata:
 spec:
   containers:
   - name: omnisystem
-    image: bonsai-ai/omnisystem:latest
+    image: omnisystem-ai/omnisystem:latest
     resources:
       requests:
         memory: "4Gi"
@@ -304,7 +304,7 @@ kubectl exec -it omnisystem -- /bin/sylva
 version: '3.8'
 services:
   omnisystem:
-    image: bonsai-ai/omnisystem:latest
+    image: omnisystem-ai/omnisystem:latest
     container_name: omnisystem
     volumes:
       - omnisystem-data:/data
@@ -384,7 +384,7 @@ Your Program
 
 ```bash
 # Download ISO
-wget https://releases.bonsai-ai.org/images/omnisystem.iso
+wget https://releases.omnisystem-ai.org/images/omnisystem.iso
 
 # Write to USB (Linux)
 sudo dd if=omnisystem.iso of=/dev/sdX bs=4M conv=fsync
@@ -444,7 +444,7 @@ Omnisystem can coexist with Windows or Linux on the same disk:
 ssh -i key.pem ec2-user@instance-ip
 
 # 3. Download and run Omnisystem
-wget https://releases.bonsai-ai.org/installer/linux/omnisystem-installer.sh
+wget https://releases.omnisystem-ai.org/installer/linux/omnisystem-installer.sh
 bash omnisystem-installer.sh
 
 # 4. Configure as Co-OS
@@ -488,7 +488,7 @@ az vm create \
 
 ### Single Machine
 
-One Omnisystem instance per machine, managed by Bonsai Control Panel.
+One Omnisystem instance per machine, managed by Omnisystem Control Panel.
 
 ### Multiple Machines
 
@@ -659,7 +659,7 @@ omnisystem net restart
 1. **Choose deployment mode** – Select the mode that fits your use case
 2. **Install** – Follow the mode-specific installation guide
 3. **Configure** – Set up resources, network, storage as needed
-4. **Monitor** – Use Bonsai Control Panel or CLI for monitoring
+4. **Monitor** – Use Omnisystem Control Panel or CLI for monitoring
 5. **Scale** – Add more instances if needed
 
 For more information:

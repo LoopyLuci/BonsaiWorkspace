@@ -27,7 +27,7 @@
   (try
     (let [appdata (System/getenv "APPDATA")
           cfg (when (seq appdata)
-                (str appdata "\\com.bonsai.workspace\\bonsai-config.json"))]
+                (str appdata "\\com.omnisystem.workspace\\omnisystem-config.json"))]
       (if (and cfg (fs/exists? cfg))
         (let [m (json/parse-string (slurp cfg) true)
               p (long (or (:api_port m) 11369))]

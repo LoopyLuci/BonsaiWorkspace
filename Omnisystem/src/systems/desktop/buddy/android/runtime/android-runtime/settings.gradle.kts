@@ -14,12 +14,12 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BonsaiBuddyAndroid"
+rootProject.name = "OmnisystemBuddyAndroid"
 
 // Core
-include(":library-bonsai-shared")
+include(":library-omnisystem-shared")
 
-// Bonsai Buddy (AI Assistant)
+// Omnisystem Buddy (AI Assistant)
 include(":app")
 
 // Phase 3: Remote Desktop

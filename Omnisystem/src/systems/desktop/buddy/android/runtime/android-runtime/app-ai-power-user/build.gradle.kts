@@ -7,10 +7,10 @@ plugins {
 }
 
 android {
-    namespace = "ai.bonsai.aipoweruser"
+    namespace = "ai.omnisystem.aipoweruser"
     compileSdk = 35
     defaultConfig {
-        applicationId = "ai.bonsai.aipoweruser"
+        applicationId = "ai.omnisystem.aipoweruser"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -38,7 +38,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":library-bonsai-shared"))
+    implementation(project(":library-omnisystem-shared"))
     implementation(project(":app"))
     implementation(project(":app-academy"))
     implementation(project(":app-workspace"))

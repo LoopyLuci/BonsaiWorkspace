@@ -1,4 +1,4 @@
-# BonsaiWorkspace Implementation Plan - Executive Summary
+# OmnisystemWorkspace Implementation Plan - Executive Summary
 ## Complete Production Integration of 292 Crates
 
 **Status**: PRODUCTION SPECIFICATION  
@@ -10,7 +10,7 @@
 
 ## THE CHALLENGE
 
-BonsaiWorkspace is a massive distributed system across 292 Rust crates:
+OmnisystemWorkspace is a massive distributed system across 292 Rust crates:
 
 - **94 registered** in Cargo.toml (actively integrated)
 - **201 unregistered** in filesystem (not yet integrated)
@@ -398,7 +398,7 @@ These must be built/completed first, in order:
 
 ## CONCLUSION
 
-This comprehensive 16-20 week plan transforms BonsaiWorkspace from a partially integrated system (31.9% build coverage) into a **fully integrated, production-ready ecosystem** with:
+This comprehensive 16-20 week plan transforms OmnisystemWorkspace from a partially integrated system (31.9% build coverage) into a **fully integrated, production-ready ecosystem** with:
 
 - ✅ **All 292 crates** functional & integrated
 - ✅ **80%+ test coverage** across all systems

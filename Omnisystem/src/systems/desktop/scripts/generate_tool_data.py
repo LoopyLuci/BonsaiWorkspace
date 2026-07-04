@@ -39,7 +39,7 @@ TOOLS: dict[str, dict] = {
             "What does config.yaml contain?",
             "Read the README file",
             "Print the contents of Cargo.toml",
-            "Open bonsai-workspace/src-tauri/src/lib.rs and show me its contents",
+            "Open omnisystem-workspace/src-tauri/src/lib.rs and show me its contents",
             "What's in the justfile?",
         ],
     },
@@ -60,7 +60,7 @@ TOOLS: dict[str, dict] = {
         "schema": {"path": "string", "extension": "string (optional)"},
         "prompts": [
             "List all files in the src directory",
-            "What Rust files are in bonsai-workspace/src-tauri/src?",
+            "What Rust files are in omnisystem-workspace/src-tauri/src?",
             "Show me the Python scripts in the scripts/ folder",
             "List everything in the crates directory",
             "What .svelte files exist in src/lib/components?",
@@ -86,7 +86,7 @@ TOOLS: dict[str, dict] = {
             "Run cargo build --release",
             "Check the current git status",
             "List the files changed in the last commit",
-            "Run npm install in bonsai-workspace/src",
+            "Run npm install in omnisystem-workspace/src",
             "Show me the last 10 lines of the log file",
             "Run cargo check --workspace",
         ],
@@ -120,7 +120,7 @@ TOOLS: dict[str, dict] = {
         "schema": {"pattern": "string", "path": "string (optional)", "file_glob": "string (optional)"},
         "prompts": [
             "Find all usages of AppState in the Rust source",
-            "Search for 'bonsai_md' in all .rs files",
+            "Search for 'omnisystem_md' in all .rs files",
             "Find TODO comments in the codebase",
             "Where is MemoryNodeStore defined?",
             "Search for any file importing hot_reload",
@@ -144,35 +144,35 @@ TOOLS: dict[str, dict] = {
         "schema": {"node_type": "string", "source": "string", "content": "string", "tags": "array of strings"},
         "prompts": [
             "Remember that I fixed the cargo build error by adding the log crate",
-            "Record that I added BONSAI.md injection to the submit_chat command",
+            "Record that I added OMNISYSTEM.md injection to the submit_chat command",
             "Save a note that the hot reload watcher uses 2-second polling",
             "Record that DirectML cannot be used for training backward passes",
             "Remember this decision: DPO training uses CPU only on this machine",
-            "Log that I deployed bonsai-latest.gguf at 14:30",
+            "Log that I deployed omnisystem-latest.gguf at 14:30",
         ],
     },
-    "get_bonsai_md": {
-        "description": "Read the current BONSAI.md system prompt content.",
+    "get_omnisystem_md": {
+        "description": "Read the current OMNISYSTEM.md system prompt content.",
         "schema": {"workspace_path": "string (optional)"},
         "prompts": [
-            "Show me the current BONSAI.md",
+            "Show me the current OMNISYSTEM.md",
             "What does the system prompt say?",
-            "Read the BONSAI.md file",
+            "Read the OMNISYSTEM.md file",
             "What's in my self-evolving system prompt?",
-            "Display the current Bonsai context",
+            "Display the current Omnisystem context",
             "What guidelines am I operating under?",
         ],
     },
-    "set_bonsai_md": {
-        "description": "Update the BONSAI.md system prompt content.",
+    "set_omnisystem_md": {
+        "description": "Update the OMNISYSTEM.md system prompt content.",
         "schema": {"workspace_path": "string", "content": "string"},
         "prompts": [
-            "Update BONSAI.md to add a new rule about offline-only training",
+            "Update OMNISYSTEM.md to add a new rule about offline-only training",
             "Set the system prompt to include a reminder about AMD DirectML limitations",
-            "Modify BONSAI.md to add my preferred code style",
-            "Update the Bonsai context with today's learnings",
-            "Add a new section to BONSAI.md about the training pipeline",
-            "Write a new BONSAI.md that emphasises safety first",
+            "Modify OMNISYSTEM.md to add my preferred code style",
+            "Update the Omnisystem context with today's learnings",
+            "Add a new section to OMNISYSTEM.md about the training pipeline",
+            "Write a new OMNISYSTEM.md that emphasises safety first",
         ],
     },
     "hot_reload_model": {
@@ -182,7 +182,7 @@ TOOLS: dict[str, dict] = {
             "Hot reload the model",
             "Swap in the new GGUF without restarting",
             "Reload the model after training",
-            "Load the latest bonsai-latest.gguf",
+            "Load the latest omnisystem-latest.gguf",
             "Trigger a model swap",
             "Update the running model to the newly trained version",
         ],
@@ -214,7 +214,7 @@ TOOLS: dict[str, dict] = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a tool-call assistant for the Bonsai AI workspace. "
+    "You are a tool-call assistant for the Omnisystem AI workspace. "
     "Given a user request, respond ONLY with a valid JSON object representing the tool call. "
     "The JSON must have exactly two keys: \"tool\" (the tool name) and \"args\" (an object). "
     "Do not include any explanation, markdown, or text outside the JSON object."
@@ -268,7 +268,7 @@ def teacher_available(teacher_url: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(pathlib.Path.home() / ".bonsai/training_export/tool_use_synthetic.jsonl"))
+    parser.add_argument("--output", default=str(pathlib.Path.home() / ".omnisystem/training_export/tool_use_synthetic.jsonl"))
     parser.add_argument("--teacher-url", default=TEACHER_URL)
     parser.add_argument("--offline", action="store_true",
                         help="Use rule-based examples only (no teacher calls)")

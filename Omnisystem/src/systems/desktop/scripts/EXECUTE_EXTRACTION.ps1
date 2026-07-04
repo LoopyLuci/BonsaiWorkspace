@@ -15,7 +15,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 # Configuration
 $modelDir = "D:\Models\general"
 $outputDir = "D:\Models\extracted_knowledge"
-$kdbDir = "Z:\Projects\BonsaiWorkspace\kdb-modules"
+$kdbDir = "Z:\Projects\OmnisystemWorkspace\kdb-modules"
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 # Ensure directories exist
@@ -308,7 +308,7 @@ foreach ($modelName in ($byModel.Keys | Sort-Object)) {
         extraction_date = (Get-Date).ToUniversalTime().ToString("O")
         domains = @("science", "programming", "mathematics", "technology")
         total_tokens = $chunks.Count * 200
-        created_with = "Bonsai Knowledge Extraction Fabric (KEF)"
+        created_with = "Omnisystem Knowledge Extraction Fabric (KEF)"
     }
 
     # Build ZIP archive
@@ -397,7 +397,7 @@ Write-Host "✨ All knowledge has been extracted into searchable KDB modules!" -
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Verify modules: Get-ChildItem $kdbDir\*.kmod" -ForegroundColor Gray
-Write-Host "  2. Register with KDB: bonsai kdb register $kdbDir\*.kmod" -ForegroundColor Gray
-Write-Host "  3. Search knowledge: bonsai kdb search --module <model> '<query>'" -ForegroundColor Gray
-Write-Host "  4. Use in inference: bonsai model infer --with-kdb <module> '<prompt>'" -ForegroundColor Gray
+Write-Host "  2. Register with KDB: omnisystem kdb register $kdbDir\*.kmod" -ForegroundColor Gray
+Write-Host "  3. Search knowledge: omnisystem kdb search --module <model> '<query>'" -ForegroundColor Gray
+Write-Host "  4. Use in inference: omnisystem model infer --with-kdb <module> '<prompt>'" -ForegroundColor Gray
 Write-Host ""

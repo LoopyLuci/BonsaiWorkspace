@@ -345,7 +345,7 @@
 ## File Locations
 
 ```
-z:\Projects\BonsaiWorkspace\
+z:\Projects\OmnisystemWorkspace\
 ├── OMNISYSTEM_INTEGRATION_API.md (2,472 lines)
 ├── API_DOCUMENTATION_INDEX.md (452 lines)
 ├── API_DOCUMENTATION_COMPLETION.md (557 lines)

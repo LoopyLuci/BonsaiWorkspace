@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Install the Stable Diffusion image generation pipeline for Bonsai (AMD/DirectML).
+    Install the Stable Diffusion image generation pipeline for Omnisystem (AMD/DirectML).
 
 .DESCRIPTION
-    1. Creates a dedicated Python venv at %LOCALAPPDATA%\com.bonsai.workspace\sd_venv.
+    1. Creates a dedicated Python venv at %LOCALAPPDATA%\com.omnisystem.workspace\sd_venv.
     2. Installs torch-directml + diffusers + dependencies into that venv.
-    3. Copies scripts/sd_generate.py to %LOCALAPPDATA%\com.bonsai.workspace\scripts\.
+    3. Copies scripts/sd_generate.py to %LOCALAPPDATA%\com.omnisystem.workspace\scripts\.
     4. Optionally downloads a model from HuggingFace (-DownloadModel).
 
     Supports: HuggingFace directories, .safetensors, .ckpt, and GGUF files.
@@ -17,10 +17,10 @@
     Path to Python 3.10+. Default: auto-detected (py, python3, python).
 
 .PARAMETER VenvDir
-    SD venv directory. Default: %LOCALAPPDATA%\com.bonsai.workspace\sd_venv
+    SD venv directory. Default: %LOCALAPPDATA%\com.omnisystem.workspace\sd_venv
 
 .PARAMETER ScriptsDir
-    Where to deploy sd_generate.py. Default: %LOCALAPPDATA%\com.bonsai.workspace\scripts
+    Where to deploy sd_generate.py. Default: %LOCALAPPDATA%\com.omnisystem.workspace\scripts
 
 .PARAMETER DownloadModel
     Download model weights from HuggingFace. WARNING: several GB download.
@@ -45,8 +45,8 @@
 
 param(
     [string]$PythonExe  = "",
-    [string]$VenvDir    = "$env:LOCALAPPDATA\com.bonsai.workspace\sd_venv",
-    [string]$ScriptsDir = "$env:LOCALAPPDATA\com.bonsai.workspace\scripts",
+    [string]$VenvDir    = "$env:LOCALAPPDATA\com.omnisystem.workspace\sd_venv",
+    [string]$ScriptsDir = "$env:LOCALAPPDATA\com.omnisystem.workspace\scripts",
     [switch]$DownloadModel,
     [string]$ModelId    = "runwayml/stable-diffusion-v1-5",
     [string]$ModelDir   = ""

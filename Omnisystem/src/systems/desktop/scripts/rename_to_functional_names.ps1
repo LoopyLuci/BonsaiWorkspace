@@ -1,6 +1,6 @@
 # Comprehensive Functional Naming Rename
 # Removes ALL branding prefixes and applies descriptive, functional names
-# Handles: bonsai-*, build-*, usos-*, uosc-*
+# Handles: omnisystem-*, build-*, usos-*, uosc-*
 # Result: Components named by what they do, not what brand they belong to
 
 param(
@@ -21,7 +21,7 @@ $renameMap = @{
     "kernel" = "kernel"
     "kernel" = "kernel"
 
-    # Crates (bonsai-* → functional)
+    # Crates (omnisystem-* → functional)
     "driver-converter" = "driver-converter"
     "test-orchestrator" = "test-orchestrator"
     "validation-mesh" = "validation-mesh"
@@ -243,12 +243,12 @@ foreach ($file in $allFiles) {
         if ($null -eq $content) { continue }
 
         # Look for remaining brand prefixes
-        if ($content -match '\bbonsai-|\bomni-|\busos-|\buosc-') {
+        if ($content -match '\bomnisystem-|\bomni-|\busos-|\buosc-') {
             $lines = @()
             $lineNum = 0
             foreach ($line in (Get-Content -Path $file.FullName -ErrorAction SilentlyContinue)) {
                 $lineNum++
-                if ($line -match '\bbonsai-|\bomni-|\busos-|\buosc-') {
+                if ($line -match '\bomnisystem-|\bomni-|\busos-|\buosc-') {
                     $lines += "$($lineNum): $line"
                 }
             }

@@ -6,7 +6,7 @@
 
   const docData = {
     'service': {
-      simple: 'A "service" is a program running quietly in the background, doing one job for Bonsai — like a worker at a factory.',
+      simple: 'A "service" is a program running quietly in the background, doing one job for Omnisystem — like a worker at a factory.',
       developer: 'Services are managed by the SLM (Service Lifecycle Manager). Each has a ServiceManifest, resource quota, and health check. See: SLM Docs.'
     },
     'capability': {

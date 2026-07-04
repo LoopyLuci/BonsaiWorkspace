@@ -35,7 +35,7 @@
 
       ws.onopen = () => {
         connected = true;
-        console.log('Connected to Bonsai Agent Control');
+        console.log('Connected to Omnisystem Agent Control');
       };
 
       ws.onclose = () => {
@@ -89,7 +89,7 @@
 <div class="dashboard">
   <header>
     <div class="header-left">
-      <h1>🧠 Bonsai Agent Control</h1>
+      <h1>🧠 Omnisystem Agent Control</h1>
       <span class="status" class:connected>
         {#if connected}
           🟢 CONNECTED

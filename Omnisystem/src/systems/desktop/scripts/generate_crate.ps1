@@ -13,7 +13,7 @@
     - docs/specs/<crate>.md exists
 
 .PARAMETER Crate
-    Name of the crate to generate (e.g., "bonsai-error").
+    Name of the crate to generate (e.g., "omnisystem-error").
 
 .PARAMETER TeacherPort
     Port where llama-server is running. Default: 8080.
@@ -25,11 +25,11 @@
     Print the spec and first prompt but do not call the teacher or write files.
 
 .EXAMPLE
-    # Generate bonsai-error crate
-    .\scripts\generate_crate.ps1 -Crate bonsai-error
+    # Generate omnisystem-error crate
+    .\scripts\generate_crate.ps1 -Crate omnisystem-error
 
-    # Generate bonsai-log with a different teacher port
-    .\scripts\generate_crate.ps1 -Crate bonsai-log -TeacherPort 8081
+    # Generate omnisystem-log with a different teacher port
+    .\scripts\generate_crate.ps1 -Crate omnisystem-log -TeacherPort 8081
 #>
 param(
     [Parameter(Mandatory=$true)]

@@ -3,12 +3,12 @@
 
   // Default items always include home
   let breadcrumbs = [
-    { label: '🌿 Bonsai', onClick: () => {}, isActive: false },
+    { label: '🌿 Omnisystem', onClick: () => {}, isActive: false },
     ...items
   ];
 
   $: breadcrumbs = [
-    { label: '🌿 Bonsai', onClick: () => {}, isActive: false },
+    { label: '🌿 Omnisystem', onClick: () => {}, isActive: false },
     ...items
   ];
 </script>

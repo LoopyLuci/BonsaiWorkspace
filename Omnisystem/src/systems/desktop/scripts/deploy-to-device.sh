@@ -8,7 +8,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MOBILE_DIR="$PROJECT_ROOT/android-app"
 
 echo "=========================================="
-echo "Bonsai Remote Desktop APK Deployer"
+echo "Omnisystem Remote Desktop APK Deployer"
 echo "=========================================="
 echo ""
 
@@ -97,7 +97,7 @@ grant_permissions() {
     )
 
     for permission in "${PERMISSIONS[@]}"; do
-        adb shell pm grant com.bonsai.remote_desktop "$permission" 2>/dev/null || true
+        adb shell pm grant com.omnisystem.remote_desktop "$permission" 2>/dev/null || true
     done
 
     echo "✓ Permissions granted"
@@ -109,7 +109,7 @@ enable_accessibility() {
     echo "Enabling accessibility service..."
 
     adb shell settings put secure enabled_accessibility_services \
-        com.bonsai.remote_desktop/.accessibility.RemoteAccessibilityService
+        com.omnisystem.remote_desktop/.accessibility.RemoteAccessibilityService
 
     echo "✓ Accessibility service enabled"
 }
@@ -117,10 +117,10 @@ enable_accessibility() {
 # Start app
 start_app() {
     echo ""
-    echo "Starting Bonsai Remote Desktop..."
+    echo "Starting Omnisystem Remote Desktop..."
 
     adb shell am start -n \
-        com.bonsai.remote_desktop/.MainActivity
+        com.omnisystem.remote_desktop/.MainActivity
 
     echo "✓ App started"
 }
@@ -140,7 +140,7 @@ verify_installation() {
     echo ""
     echo "Verifying installation..."
 
-    INSTALLED=$(adb shell pm list packages | grep "com.bonsai.remote_desktop")
+    INSTALLED=$(adb shell pm list packages | grep "com.omnisystem.remote_desktop")
 
     if [ -z "$INSTALLED" ]; then
         echo "WARNING: Package not found after installation"
@@ -159,12 +159,12 @@ show_summary() {
     echo "=========================================="
     echo ""
     echo "Next steps:"
-    echo "1. Open Bonsai Remote Desktop on your device"
+    echo "1. Open Omnisystem Remote Desktop on your device"
     echo "2. Follow the setup wizard to pair with your desktop"
     echo "3. Scan the QR code displayed on your desktop"
     echo ""
     echo "Need help?"
-    echo "  Logs: adb logcat | grep -i bonsai"
+    echo "  Logs: adb logcat | grep -i omnisystem"
     echo "  Crash logs: adb logcat | grep -i crash"
     echo ""
 }
@@ -174,14 +174,14 @@ uninstall_previous() {
     echo ""
     echo "Checking for previous installation..."
 
-    INSTALLED=$(adb shell pm list packages | grep "com.bonsai.remote_desktop")
+    INSTALLED=$(adb shell pm list packages | grep "com.omnisystem.remote_desktop")
 
     if [ ! -z "$INSTALLED" ]; then
         read -p "Previous version found. Uninstall before installing? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             echo "Uninstalling previous version..."
-            adb uninstall com.bonsai.remote_desktop
+            adb uninstall com.omnisystem.remote_desktop
             echo "✓ Previous version uninstalled"
         fi
     fi

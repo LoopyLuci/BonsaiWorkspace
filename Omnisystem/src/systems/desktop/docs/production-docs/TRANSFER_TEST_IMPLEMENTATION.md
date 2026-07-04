@@ -636,7 +636,7 @@ omni --version
 aether --version
 
 # Build FTDaemon core
-cd /path/to/BonsaiWorkspace
+cd /path/to/OmnisystemWorkspace
 cargo build --release --package ftdaemon-core
 ```
 
@@ -666,7 +666,7 @@ export FTDAEMON_NODE_B_ADDR=34.234.56.78
 export FTDAEMON_TEST_FILE_SIZE_MB=50
 
 # Run test
-cd /path/to/BonsaiWorkspace
+cd /path/to/OmnisystemWorkspace
 python3 tests/transfer_test/run_test.py
 
 # Monitor progress

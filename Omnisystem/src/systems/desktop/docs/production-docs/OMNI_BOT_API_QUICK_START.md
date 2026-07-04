@@ -38,7 +38,7 @@
 ## File Locations
 
 ```
-/z/Projects/BonsaiWorkspace/
+/z/Projects/OmnisystemWorkspace/
 ├── crates/omni-bot-api/
 │   ├── src/
 │   │   ├── handlers/services.rs      ← NEW (346 lines, 8 handlers + store)

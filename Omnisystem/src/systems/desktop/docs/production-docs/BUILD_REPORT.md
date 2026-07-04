@@ -164,7 +164,7 @@ strip = false             # Keep symbols for debugging
    - Health monitoring loop implementation
 
 3. **Medium-term** (2-4 weeks)
-   - Bonsai Buddy offline-first agent
+   - Omnisystem Buddy offline-first agent
    - CRDT snapshot synchronization
    - Hot-reload service binaries
 
@@ -173,7 +173,7 @@ strip = false             # Keep symbols for debugging
 To reproduce this build:
 
 ```bash
-cd z:/Projects/BonsaiWorkspace
+cd z:/Projects/OmnisystemWorkspace
 cargo clean
 cargo build --workspace --release -j 32
 ```

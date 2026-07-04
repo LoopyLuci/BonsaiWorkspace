@@ -1,4 +1,4 @@
-$sidecars="$env:APPDATA\com.bonsai.workspace\sidecars"; $voices="$env:APPDATA\com.bonsai.workspace\voices"
+$sidecars="$env:APPDATA\com.omnisystem.workspace\sidecars"; $voices="$env:APPDATA\com.omnisystem.workspace\voices"
 New-Item -ItemType Directory -Force -Path $sidecars,$voices | Out-Null
 $piper="https://github.com/rhasspy/piper/releases/latest/download/piper_windows_amd64.zip"
 Invoke-WebRequest $piper -OutFile "$env:TEMP\piper.zip"

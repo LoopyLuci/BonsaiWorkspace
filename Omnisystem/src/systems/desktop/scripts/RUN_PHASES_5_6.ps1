@@ -4,17 +4,17 @@
 # Orchestrates deduplication and KDB module creation for the full extraction
 
 param(
-    [string]$ChunksDir = "Z:\Projects\BonsaiWorkspace\extraction-output\chunks",
+    [string]$ChunksDir = "Z:\Projects\OmnisystemWorkspace\extraction-output\chunks",
     [string]$ModelsDir = "D:\Models\general",
     [double]$QualityThreshold = 0.6,
-    [string]$OutputDir = "Z:\Projects\BonsaiWorkspace\extraction-output"
+    [string]$OutputDir = "Z:\Projects\OmnisystemWorkspace\extraction-output"
 )
 
 $pipelineStart = Get-Date
 $phases = @()
 
 Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║  BONSAI KNOWLEDGE EXTRACTION PIPELINE                      ║" -ForegroundColor Cyan
+Write-Host "║  OMNISYSTEM KNOWLEDGE EXTRACTION PIPELINE                      ║" -ForegroundColor Cyan
 Write-Host "║  Phases 5 & 6: Deduplication → KDB Module Building        ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
 
@@ -37,7 +37,7 @@ Write-Host "$('='*62)" -ForegroundColor Magenta
 $phase5Start = Get-Date
 
 try {
-    & "Z:\Projects\BonsaiWorkspace\scripts\PHASE5_DEDUP_FIXED.ps1" `
+    & "Z:\Projects\OmnisystemWorkspace\scripts\PHASE5_DEDUP_FIXED.ps1" `
         -ChunksDir $ChunksDir `
         -QualityThreshold $QualityThreshold `
         -OutputDir "$OutputDir\deduplicated"
@@ -63,11 +63,11 @@ Write-Host "$('='*62)" -ForegroundColor Magenta
 $phase6Start = Get-Date
 
 try {
-    & "Z:\Projects\BonsaiWorkspace\scripts\PHASE6_BUILD_KDB.ps1" `
+    & "Z:\Projects\OmnisystemWorkspace\scripts\PHASE6_BUILD_KDB.ps1" `
         -ModelsDir $ModelsDir `
         -ChunksDir $ChunksDir `
         -DeduplicatedChunksPath "$OutputDir\deduplicated\chunks_deduplicated.jsonl" `
-        -OutputDir "Z:\Projects\BonsaiWorkspace\kdb-modules"
+        -OutputDir "Z:\Projects\OmnisystemWorkspace\kdb-modules"
 
     $phase6Duration = [Math]::Round(((Get-Date) - $phase6Start).TotalSeconds, 2)
     $phases += "Phase 6: KDB Building ✅ ($phase6Duration s)"
@@ -103,8 +103,8 @@ if (Test-Path "$OutputDir\deduplicated") {
 }
 
 $kdbModules = @()
-if (Test-Path "Z:\Projects\BonsaiWorkspace\kdb-modules") {
-    $kdbModules = Get-ChildItem "Z:\Projects\BonsaiWorkspace\kdb-modules" -Filter "*.kmod"
+if (Test-Path "Z:\Projects\OmnisystemWorkspace\kdb-modules") {
+    $kdbModules = Get-ChildItem "Z:\Projects\OmnisystemWorkspace\kdb-modules" -Filter "*.kmod"
 }
 
 Write-Host "`n📁 OUTPUT FILES:" -ForegroundColor Cyan
@@ -122,11 +122,11 @@ foreach ($module in $kdbModules) {
 
 Write-Host "`n🎯 NEXT STEPS:" -ForegroundColor Cyan
 Write-Host "  1. Verify deduplicated chunks:" -ForegroundColor White
-Write-Host "     Get-Content 'Z:\Projects\BonsaiWorkspace\extraction-output\deduplicated\chunks_deduplicated.csv' | head -5" -ForegroundColor Gray
+Write-Host "     Get-Content 'Z:\Projects\OmnisystemWorkspace\extraction-output\deduplicated\chunks_deduplicated.csv' | head -5" -ForegroundColor Gray
 Write-Host "  2. Inspect KDB modules:" -ForegroundColor White
-Write-Host "     Get-ChildItem 'Z:\Projects\BonsaiWorkspace\kdb-modules\' -Filter '*.kmod'" -ForegroundColor Gray
-Write-Host "  3. Register with Bonsai KDB:" -ForegroundColor White
-Write-Host "     bonsai kdb register --modules Z:\Projects\BonsaiWorkspace\kdb-modules\*.kmod" -ForegroundColor Gray
+Write-Host "     Get-ChildItem 'Z:\Projects\OmnisystemWorkspace\kdb-modules\' -Filter '*.kmod'" -ForegroundColor Gray
+Write-Host "  3. Register with Omnisystem KDB:" -ForegroundColor White
+Write-Host "     omnisystem kdb register --modules Z:\Projects\OmnisystemWorkspace\kdb-modules\*.kmod" -ForegroundColor Gray
 
 Write-Host "`n✨ Knowledge extraction pipeline complete!" -ForegroundColor Green
 Write-Host "   All chunks deduplicated, quality-scored, and packaged into KDB modules." -ForegroundColor Green

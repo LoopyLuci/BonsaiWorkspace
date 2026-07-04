@@ -134,7 +134,7 @@ def teacher_available(teacher_url: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(pathlib.Path.home() / ".bonsai/training_export/safety_dpo.jsonl"))
+    parser.add_argument("--output", default=str(pathlib.Path.home() / ".omnisystem/training_export/safety_dpo.jsonl"))
     parser.add_argument("--teacher-url", default=TEACHER_URL)
     parser.add_argument("--with-rejected", action="store_true",
                         help="Generate rejected sides via teacher (slower; teacher must be on --teacher-url)")

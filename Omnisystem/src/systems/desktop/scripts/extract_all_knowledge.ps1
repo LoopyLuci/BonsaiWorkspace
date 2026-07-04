@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Bonsai Omniscient Knowledge Extraction Pipeline
+    Omnisystem Omniscient Knowledge Extraction Pipeline
     Extracts 100% of knowledge from all models in D:\Models\general
 
 .DESCRIPTION
@@ -9,7 +9,7 @@
     - Scans directory for all models (smallest first for validation)
     - Applies three extraction methods (synthetic Q&A, activation, behavioral)
     - Deduplicates and builds KDB modules
-    - Integrates with Bonsai ecosystem (TDL, Universe, Compute Fabric)
+    - Integrates with Omnisystem ecosystem (TDL, Universe, Compute Fabric)
 
 .PARAMETER ModelDir
     Directory containing all models (default: D:\Models\general)
@@ -18,7 +18,7 @@
     Directory for intermediate outputs (default: D:\Models\extracted_knowledge)
 
 .PARAMETER KdbDir
-    Directory for final KDB modules (default: Z:\Projects\BonsaiWorkspace\kdb-modules)
+    Directory for final KDB modules (default: Z:\Projects\OmnisystemWorkspace\kdb-modules)
 
 .PARAMETER ProgressFile
     JSON file tracking extraction progress (default: D:\Models\extraction_progress.json)
@@ -38,7 +38,7 @@
 param(
     [string]$ModelDir = "D:\Models\general",
     [string]$OutputDir = "D:\Models\extracted_knowledge",
-    [string]$KdbDir = "Z:\Projects\BonsaiWorkspace\kdb-modules",
+    [string]$KdbDir = "Z:\Projects\OmnisystemWorkspace\kdb-modules",
     [string]$ProgressFile = "D:\Models\extraction_progress.json",
     [int]$QuestionsPerDomain = 100,
     [int]$Phase = 1,
@@ -69,7 +69,7 @@ function Ensure-Directory($path) {
 Ensure-Directory $OutputDir
 Ensure-Directory $KdbDir
 
-Write-Phase "Starting Bonsai Omniscient Knowledge Extraction Pipeline"
+Write-Phase "Starting Omnisystem Omniscient Knowledge Extraction Pipeline"
 Write-Info "Models from: $ModelDir"
 Write-Info "Output to: $OutputDir"
 Write-Info "KDB modules: $KdbDir"
@@ -140,7 +140,7 @@ for root, dirs, files in os.walk(model_dir):
             elif file.lower().endswith('.onnx'):
                 format = 'onnx'
             elif file.lower().endswith('.bkp'):
-                format = 'bonsai_package'
+                format = 'omnisystem_package'
 
             models.append({{
                 'id': f'model_{len(models)+1:03d}',
@@ -409,7 +409,7 @@ foreach ($key in $stats.Keys) {
 
 Write-Info "Next steps:"
 Write-Info "  1. Verify KDB modules with: cargo run --example load_kdb_module -- $KdbDir/model.kmod"
-Write-Info "  2. Integrate with TDL: bonsai tdl import-from-kdb $KdbDir"
-Write-Info "  3. Test inference: bonsai model query --kdb-module model.kmod 'What is X?'"
+Write-Info "  2. Integrate with TDL: omnisystem tdl import-from-kdb $KdbDir"
+Write-Info "  3. Test inference: omnisystem model query --kdb-module model.kmod 'What is X?'"
 
 Write-Success "Knowledge extraction pipeline ready for production deployment"

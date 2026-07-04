@@ -351,7 +351,7 @@ UOSC is the microkernel for [Omnisystem](https://github.com/your-org/omnisystem)
 
 - Userspace services (TransferDaemon, UMS, AI Shim, etc.)
 - Language runtimes (Titan, Sylva, Aether, Axiom)
-- Full desktop environment (Bonsai Workspace)
+- Full desktop environment (Omnisystem Workspace)
 
 You can use UOSC standalone without Omnisystem for embedded, real-time, or security-critical applications.
 
@@ -372,7 +372,7 @@ For detailed threat model and security guarantees, see [SECURITY.md](docs/SECURI
 Dual-licensed under **Apache License 2.0** or **MIT License** – choose whichever is more convenient for your project.
 
 ```
-Copyright 2026 BonsaiAI Contributors
+Copyright 2026 OmnisystemAI Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -405,5 +405,5 @@ limitations under the License.
 
 **UOSC Version**: 1.0.0  
 **Last Updated**: 2026-06-08  
-**Maintainer**: BonsaiAI Contributors
+**Maintainer**: OmnisystemAI Contributors
 

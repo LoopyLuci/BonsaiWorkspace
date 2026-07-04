@@ -1,9 +1,9 @@
 # Bug Hunter Automated Scan & Fix Script
 # Purpose: Run complete Bug Hunter workflow with Survival System & KDB integration
-# Usage: .\scripts\run-bug-hunter.ps1 -Path "Z:\Projects\BonsaiEcosystem" -Mode "full"
+# Usage: .\scripts\run-bug-hunter.ps1 -Path "Z:\Projects\OmnisystemEcosystem" -Mode "full"
 
 param(
-    [string]$Path = "Z:\Projects\BonsaiEcosystem",
+    [string]$Path = "Z:\Projects\OmnisystemEcosystem",
     [ValidateSet("quick", "full", "ai")]
     [string]$Mode = "full",
     [switch]$AutoFix = $true,
@@ -102,7 +102,7 @@ function Main {
         output_format = "json"
     }
 
-    $scanResult = Invoke-McpTool "bonsai_scan_repo" $scanArgs
+    $scanResult = Invoke-McpTool "omnisystem_scan_repo" $scanArgs
 
     if (!$scanResult) {
         Write-Status "✗ Scan failed" Error
@@ -131,7 +131,7 @@ function Main {
         limit = 50
     }
 
-    $criticalFindings = Invoke-McpTool "bonsai_list_findings" $listArgs
+    $criticalFindings = Invoke-McpTool "omnisystem_list_findings" $listArgs
     $criticalCount = $criticalFindings.findings.Count
 
     Write-Status "✓ Found $criticalCount critical/high issues" Success
@@ -155,7 +155,7 @@ function Main {
 
         # Get detailed info
         $detailArgs = @{ finding_id = $findingId }
-        $detail = Invoke-McpTool "bonsai_get_finding" $detailArgs
+        $detail = Invoke-McpTool "omnisystem_get_finding" $detailArgs
 
         # Check if auto-fixable
         if ($detail.fix -and $detail.fix.available -eq $true) {
@@ -166,7 +166,7 @@ function Main {
                     confirm = $true
                 }
 
-                $fixResult = Invoke-McpTool "bonsai_auto_fix" $fixArgs
+                $fixResult = Invoke-McpTool "omnisystem_auto_fix" $fixArgs
 
                 if ($fixResult.status -eq "applied") {
                     Write-Status "  ✓ Fix applied" Success
@@ -217,7 +217,7 @@ function Main {
             format = "markdown"
         }
 
-        $reportResult = Invoke-McpTool "bonsai_generate_report" $reportArgs
+        $reportResult = Invoke-McpTool "omnisystem_generate_report" $reportArgs
 
         if ($reportResult) {
             $reportPath = "bug-hunter-report-$(Get-Date -Format 'yyyyMMdd-HHmmss').md"

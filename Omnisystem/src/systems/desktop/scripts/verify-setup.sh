@@ -1,5 +1,5 @@
 #!/bin/bash
-# Verify Bonsai Remote Desktop installation and permissions
+# Verify Omnisystem Remote Desktop installation and permissions
 
 set -e
 
@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "=========================================="
-echo "Bonsai Remote Desktop Setup Verification"
+echo "Omnisystem Remote Desktop Setup Verification"
 echo "=========================================="
 echo ""
 
@@ -111,25 +111,25 @@ check_app_installation() {
     echo ""
     echo "Checking App Installation..."
 
-    INSTALLED=$(adb shell pm list packages | grep -c "com.bonsai.remote_desktop" || true)
+    INSTALLED=$(adb shell pm list packages | grep -c "com.omnisystem.remote_desktop" || true)
 
     if [ "$INSTALLED" -gt 0 ]; then
-        print_pass "Bonsai Remote Desktop app installed"
+        print_pass "Omnisystem Remote Desktop app installed"
 
         # Get app version
-        APP_VERSION=$(adb shell dumpsys package com.bonsai.remote_desktop | \
+        APP_VERSION=$(adb shell dumpsys package com.omnisystem.remote_desktop | \
             grep "versionName=" | cut -d= -f2)
         print_pass "App version: $APP_VERSION"
 
         # Check if app is enabled
-        APP_ENABLED=$(adb shell pm list packages -d | grep -c "com.bonsai.remote_desktop" || true)
+        APP_ENABLED=$(adb shell pm list packages -d | grep -c "com.omnisystem.remote_desktop" || true)
         if [ "$APP_ENABLED" -eq 0 ]; then
             print_pass "App is enabled"
         else
             print_warn "App is disabled"
         fi
     else
-        print_warn "Bonsai Remote Desktop app not installed"
+        print_warn "Omnisystem Remote Desktop app not installed"
     fi
 }
 
@@ -138,7 +138,7 @@ check_accessibility_service() {
     echo ""
     echo "Checking Accessibility Service..."
 
-    SERVICE_NAME="com.bonsai.remote_desktop/.accessibility.RemoteAccessibilityService"
+    SERVICE_NAME="com.omnisystem.remote_desktop/.accessibility.RemoteAccessibilityService"
     ENABLED=$(adb shell settings get secure enabled_accessibility_services | \
         grep -c "$SERVICE_NAME" || true)
 
@@ -146,7 +146,7 @@ check_accessibility_service() {
         print_pass "Accessibility service enabled"
     else
         print_warn "Accessibility service not enabled (needed for text input)"
-        echo "    To enable: Go to Settings > Accessibility > Bonsai Remote Desktop"
+        echo "    To enable: Go to Settings > Accessibility > Omnisystem Remote Desktop"
     fi
 }
 
@@ -244,7 +244,7 @@ check_daemon() {
         print_pass "Daemon is running on localhost:8080"
     else
         print_warn "Daemon not accessible on localhost:8080"
-        echo "    To start: bonsai daemon --enable-remote-desktop"
+        echo "    To start: omnisystem daemon --enable-remote-desktop"
     fi
 
     if curl -s http://localhost:8000/health &> /dev/null; then
@@ -265,7 +265,7 @@ check_logs() {
         print_pass "No errors in recent logs"
     else
         print_warn "Found $ERRORS errors in logs (this may be normal)"
-        echo "    View logs: adb logcat | grep -i bonsai"
+        echo "    View logs: adb logcat | grep -i omnisystem"
     fi
 }
 
@@ -282,7 +282,7 @@ generate_report() {
     echo ""
 
     if [ "$FAIL_COUNT" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
-        echo "✓ Setup verification passed! You're ready to use Bonsai Remote Desktop."
+        echo "✓ Setup verification passed! You're ready to use Omnisystem Remote Desktop."
     elif [ "$FAIL_COUNT" -eq 0 ]; then
         echo "⚠ Setup complete with warnings. Some features may be limited."
     else

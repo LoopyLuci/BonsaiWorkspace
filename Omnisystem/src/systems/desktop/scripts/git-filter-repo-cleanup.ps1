@@ -26,7 +26,7 @@ Set-Location "$tmpRoot\repo.git"
 
 Write-Output "Running git-filter-repo to remove /target/ and common large binaries..."
 # require git-filter-repo installed and on PATH
-git filter-repo --invert-paths --path-glob "bonsai-runtime/target/**" --path-glob "**/target/**" --path-glob "*.pdb" --path-glob "*.rlib" --path-glob "*.exe" --path-glob "*.dll" --path-glob "*.so" --path-glob "*.dylib"
+git filter-repo --invert-paths --path-glob "omnisystem-runtime/target/**" --path-glob "**/target/**" --path-glob "*.pdb" --path-glob "*.rlib" --path-glob "*.exe" --path-glob "*.dll" --path-glob "*.so" --path-glob "*.dylib"
 
 Write-Output "Pushing rewritten history back to origin (force)..."
 if ([string]::IsNullOrWhiteSpace($origUrl)) { throw "origin url not found" }

@@ -40,7 +40,7 @@
 
   onMount(async () => {
     try {
-      const stored = localStorage.getItem('bonsai-dev-mode');
+      const stored = localStorage.getItem('omnisystem-dev-mode');
       devMode = stored === 'true';
 
       featured = await invoke('get_featured_apps') as App[];
@@ -83,7 +83,7 @@
 
   function handleDevModeChange(event: CustomEvent) {
     devMode = event.detail;
-    localStorage.setItem('bonsai-dev-mode', devMode ? 'true' : 'false');
+    localStorage.setItem('omnisystem-dev-mode', devMode ? 'true' : 'false');
   }
 
   function handleDocClick(topic: string) {
@@ -234,9 +234,9 @@
 <div class="launcher">
   <header class="launcher-header">
     <div class="header-content">
-      <h1 class="launcher-title">🌿 BonsaiWorkspace</h1>
+      <h1 class="launcher-title">🌿 OmnisystemWorkspace</h1>
       <div class="header-right">
-        <DevToggle bind:devMode on:bonsai-dev-mode-changed={handleDevModeChange} />
+        <DevToggle bind:devMode on:omnisystem-dev-mode-changed={handleDevModeChange} />
         <button class="doc-button" on:click={() => handleDocClick('launcher')} title="Help">?</button>
       </div>
     </div>

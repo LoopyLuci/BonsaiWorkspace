@@ -9,14 +9,14 @@
   const docData: Record<string, { simple: string; dev: string }> = {
     launcher: {
       simple: 'The launcher is your starting point for opening any app on your computer.',
-      dev: 'BonsaiLauncher is a Tauri 2.x desktop app that manages the app registry, service discovery, and app lifecycle.'
+      dev: 'OmnisystemLauncher is a Tauri 2.x desktop app that manages the app registry, service discovery, and app lifecycle.'
     },
     'app-menu': {
       simple: 'This menu shows all the apps you have installed. Click Launch to open one.',
-      dev: 'Apps are registered via AppManifest in app.bonsai.toml. The registry maintains a DashMap of AppEntry records.'
+      dev: 'Apps are registered via AppManifest in app.omnisystem.toml. The registry maintains a DashMap of AppEntry records.'
     },
     services: {
-      simple: 'Services are programs running in the background to help Bonsai work.',
+      simple: 'Services are programs running in the background to help Omnisystem work.',
       dev: 'Services are managed by the Service Lifecycle Manager (SLM) and expose health checks via HTTP endpoints.'
     },
     capabilities: {

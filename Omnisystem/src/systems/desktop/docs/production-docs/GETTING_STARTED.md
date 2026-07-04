@@ -30,7 +30,7 @@ All 11 BEDF crates have been scaffolded with:
 - [ ] **Review your deliverables:** See `PARALLEL_BUILD_MANIFEST.md` for your team's schedule
 - [ ] **Explore your crate structure:**
   ```powershell
-  cd Z:\Projects\BonsaiWorkspace\crates\YOUR_CRATE_NAME
+  cd Z:\Projects\OmnisystemWorkspace\crates\YOUR_CRATE_NAME
   ls -Recurse
   ```
 - [ ] **Read the generated Cargo.toml:** Understand dependencies and workspace inheritance
@@ -54,7 +54,7 @@ All 11 BEDF crates have been scaffolded with:
 ### Quick Build (Your Team Only)
 
 ```powershell
-cd Z:\Projects\BonsaiWorkspace\scripts\build
+cd Z:\Projects\OmnisystemWorkspace\scripts\build
 
 # Team A: Fuzzing
 .\build-team-a.ps1
@@ -74,7 +74,7 @@ Each script:
 ### Full Parallel Build (All Teams)
 
 ```powershell
-cd Z:\Projects\BonsaiWorkspace\scripts\build
+cd Z:\Projects\OmnisystemWorkspace\scripts\build
 .\build-all-parallel.ps1
 ```
 
@@ -85,58 +85,58 @@ cd Z:\Projects\BonsaiWorkspace\scripts\build
 ## 🔗 Crate Organization
 
 ### Team A: Fuzzing Engine
-📦 **crates/bonsai-bedf-fuzzing**  
+📦 **crates/omnisystem-bedf-fuzzing**  
 🎯 **Deliverable:** Coverage-guided fuzzing with libFuzzer/AFL++  
 ⏰ **Timeline:** 8 weeks  
 🔧 **Key Dependencies:** tokio, anyhow, dashmap, tracing  
 
 ### Team B: Concurrency Testing
-📦 **crates/bonsai-bedf-concurrency**  
+📦 **crates/omnisystem-bedf-concurrency**  
 🎯 **Deliverable:** Deterministic (loom) + randomized (shuttle) testing  
 ⏰ **Timeline:** 6 weeks  
 
 ### Team C: Memory Sanitizers
-📦 **crates/bonsai-bedf-sanitizers**  
+📦 **crates/omnisystem-bedf-sanitizers**  
 🎯 **Deliverable:** ASAN/MSAN/TSAN/LSAN integration  
 ⏰ **Timeline:** 4 weeks  
 
 ### Team D: Property Testing
-📦 **crates/bonsai-bedf-property**  
+📦 **crates/omnisystem-bedf-property**  
 🎯 **Deliverable:** Proptest harness + generative testing  
 ⏰ **Timeline:** 4 weeks  
 
 ### Team E: Penetration Testing
-📦 **crates/bonsai-bedf-pentest**  
+📦 **crates/omnisystem-bedf-pentest**  
 🎯 **Deliverable:** OWASP ZAP + protocol fuzzing + RESTful testing  
 ⏰ **Timeline:** 8 weeks  
 
 ### Team F: Sandbox Orchestration
-📦 **crates/bonsai-bedf-sandbox**  
+📦 **crates/omnisystem-bedf-sandbox**  
 🎯 **Deliverable:** Sanctum vault orchestration + seccomp  
 ⏰ **Timeline:** 8 weeks  
 
 ### Team G: Triage & AI
-📦 **crates/bonsai-bedf-triage**  
+📦 **crates/omnisystem-bedf-triage**  
 🎯 **Deliverable:** Crash deduplication, AI explanation, auto-fixes  
 ⏰ **Timeline:** 8 weeks  
 
 ### Team H: MCP Tools
-📦 **crates/bonsai-bedf-mcp**  
+📦 **crates/omnisystem-bedf-mcp**  
 🎯 **Deliverable:** 8 MCP tools for AI integration  
 ⏰ **Timeline:** 4 weeks  
 
 ### Team I: Advanced Enhancements
-📦 **crates/bonsai-bedf-enhancements**  
+📦 **crates/omnisystem-bedf-enhancements**  
 🎯 **Deliverable:** 10 strategic enhancements (resource budgeting, flaky detection, etc.)  
 ⏰ **Timeline:** 12 weeks  
 
 ### Team J: Survival System Integration
-📦 **crates/bonsai-survival-system-ext**  
+📦 **crates/omnisystem-survival-system-ext**  
 🎯 **Deliverable:** Bug memory, confidence scoring, permanent learning  
 ⏰ **Timeline:** 6 weeks  
 
 ### Team K: Knowledge Database Integration
-📦 **crates/bonsai-kdb-ext**  
+📦 **crates/omnisystem-kdb-ext**  
 🎯 **Deliverable:** Cross-project rules, embeddings, pattern matching  
 ⏰ **Timeline:** 6 weeks  
 
@@ -180,11 +180,11 @@ cd Z:\Projects\BonsaiWorkspace\scripts\build
 
 ## 🚨 Common Build Issues
 
-### Issue: "error: could not compile `bonsai-bedf-X`"
+### Issue: "error: could not compile `omnisystem-bedf-X`"
 
 **Solution:** Check if you have the latest workspace dependencies:
 ```powershell
-cd Z:\Projects\BonsaiWorkspace
+cd Z:\Projects\OmnisystemWorkspace
 cargo update
 cargo build --workspace
 ```
@@ -340,7 +340,7 @@ Your crate is initialized. Your build scripts are ready. Your CI/CD is active.
 **Ready to build?** 🎯
 
 ```powershell
-cd Z:\Projects\BonsaiWorkspace\crates\YOUR_CRATE_NAME
+cd Z:\Projects\OmnisystemWorkspace\crates\YOUR_CRATE_NAME
 git checkout -b team/YOUR_TEAM/first-spike
 # ... implement ...
 git push origin team/YOUR_TEAM/first-spike

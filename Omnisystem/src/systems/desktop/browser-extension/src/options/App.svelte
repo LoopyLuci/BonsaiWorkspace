@@ -32,7 +32,7 @@
 </script>
 
 <main style="max-width: 900px; margin: 24px auto; padding: 0 16px; display: grid; gap: 12px;">
-  <h1>Bonsai Everywhere Settings</h1>
+  <h1>Omnisystem Everywhere Settings</h1>
 
   {#if settings}
     <section class="card" style="display: grid; gap: 8px;">

@@ -1,7 +1,7 @@
 """Import survival fixes registry into the survival knowledge base.
 
 Reads scripts/survival_fixes_registry.json and inserts each entry into
-~/.bonsai/survival_kb.db (the same database the Bonsai watchdog uses).
+~/.omnisystem/survival_kb.db (the same database the Omnisystem watchdog uses).
 
 Idempotent: skips entries whose error_pattern already exists in the DB.
 
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS fixes (
 """
 
 REGISTRY = Path(__file__).parent / "survival_fixes_registry.json"
-DEFAULT_DB = Path.home() / ".bonsai" / "survival_kb.db"
+DEFAULT_DB = Path.home() / ".omnisystem" / "survival_kb.db"
 
 
 def import_fixes(db_path: Path) -> None:

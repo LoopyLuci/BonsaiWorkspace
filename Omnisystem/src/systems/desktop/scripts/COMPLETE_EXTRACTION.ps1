@@ -15,7 +15,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 # Configuration
 $modelDir = "D:\Models\general"
 $outputDir = "D:\Models\extracted_knowledge"
-$kdbDir = "Z:\Projects\BonsaiWorkspace\kdb-modules"
+$kdbDir = "Z:\Projects\OmnisystemWorkspace\kdb-modules"
 $pipelineStart = Get-Date
 
 # Ensure directories exist
@@ -23,7 +23,7 @@ $pipelineStart = Get-Date
 
 Write-Host ""
 Write-Host "════════════════════════════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "🧠 BONSAI KNOWLEDGE EXTRACTION — COMPLETE PIPELINE (FIXED)" -ForegroundColor Green
+Write-Host "🧠 OMNISYSTEM KNOWLEDGE EXTRACTION — COMPLETE PIPELINE (FIXED)" -ForegroundColor Green
 Write-Host "════════════════════════════════════════════════════════════════════════════════" -ForegroundColor Green
 Write-Host ""
 Write-Host "Start time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Yellow
@@ -292,7 +292,7 @@ foreach ($modelName in ($byModel.Keys | Sort-Object)) {
         domains = @("science", "programming", "mathematics", "technology")
         extraction_methods = @("synthetic_qa", "activation_clustering", "behavioral_scenario")
         total_tokens = $chunks.Count * 200
-        created_with = "Bonsai Knowledge Extraction Fabric (KEF)"
+        created_with = "Omnisystem Knowledge Extraction Fabric (KEF)"
     }
 
     # Build ZIP archive
@@ -415,7 +415,7 @@ Write-Host "✨ Knowledge extraction and packaging complete!" -ForegroundColor G
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Verify modules: Get-ChildItem $kdbDir\*.kmod | Measure-Object -Property Length -Sum" -ForegroundColor Gray
-Write-Host "  2. Register with KDB: bonsai kdb register $kdbDir\*.kmod" -ForegroundColor Gray
-Write-Host "  3. Search knowledge: bonsai kdb search --module <model> '<query>'" -ForegroundColor Gray
-Write-Host "  4. Use in inference: bonsai model infer --with-kdb <module> '<prompt>'" -ForegroundColor Gray
+Write-Host "  2. Register with KDB: omnisystem kdb register $kdbDir\*.kmod" -ForegroundColor Gray
+Write-Host "  3. Search knowledge: omnisystem kdb search --module <model> '<query>'" -ForegroundColor Gray
+Write-Host "  4. Use in inference: omnisystem model infer --with-kdb <module> '<prompt>'" -ForegroundColor Gray
 Write-Host ""

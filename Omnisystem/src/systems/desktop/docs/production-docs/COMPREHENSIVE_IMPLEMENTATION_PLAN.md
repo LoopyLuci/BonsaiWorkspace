@@ -1,5 +1,5 @@
 # COMPREHENSIVE PRODUCTION-GRADE IMPLEMENTATION PLAN
-## BonsaiWorkspace: 292 Crates to Full Integration
+## OmnisystemWorkspace: 292 Crates to Full Integration
 
 **Document Version**: 1.0  
 **Generated**: 2026-06-07  
@@ -11,7 +11,7 @@
 
 ## EXECUTIVE SUMMARY
 
-This document provides a complete, actionable implementation plan to build and integrate all 292 crates in BonsaiWorkspace to production-grade quality. The workspace contains:
+This document provides a complete, actionable implementation plan to build and integrate all 292 crates in OmnisystemWorkspace to production-grade quality. The workspace contains:
 
 - **94 registered crates** (active in Cargo.toml)
 - **201 unregistered crates** (exist in filesystem but not declared)
@@ -67,7 +67,7 @@ This document provides a complete, actionable implementation plan to build and i
 | poe-boot | 39 | Empty | Bootstrap sequence |
 | poe-mesh | 25 | Empty | Distributed reasoning |
 | poe-manifestation | 38 | Empty | Concept materialization |
-| poe-bonsai-bridge | 92 | Stub | Integration bridge |
+| poe-omnisystem-bridge | 92 | Stub | Integration bridge |
 | poe-bush-sim | 378 | Partial | Simulation engine |
 
 **What Needs Building**:
@@ -414,7 +414,7 @@ TIER 4 (TESTING): Validation systems
 **Deliverable**: Updated Cargo.toml with all 292 crates
 
 **Files to modify**:
-- `/z/Projects/BonsaiWorkspace/Cargo.toml` (add ~200 new members)
+- `/z/Projects/OmnisystemWorkspace/Cargo.toml` (add ~200 new members)
 
 ---
 
@@ -782,14 +782,14 @@ src/
 **Status**: BLOCKING for applications
 
 #### 4.1: POE (Philosophy of Everything)
-**Crates**: poe-core, poe-boot, poe-mesh, poe-manifestation, poe-bonsai-bridge, poe-bush-sim
+**Crates**: poe-core, poe-boot, poe-mesh, poe-manifestation, poe-omnisystem-bridge, poe-bush-sim
 
 **Build Requirements** (~3000 LOC):
 - Knowledge representation (triple store)
 - Axiom system (first-order logic)
 - Inference engine (forward/backward chaining)
 - Distributed consensus protocol
-- Integration bridge with Bonsai systems
+- Integration bridge with Omnisystem systems
 - Simulation engine
 - Comprehensive test suite (100+ tests)
 
@@ -809,7 +809,7 @@ poe-mesh/src/
 ├── network.rs (300 LOC) - Network protocol
 └── tests.rs (200 LOC)
 
-poe-bonsai-bridge/src/
+poe-omnisystem-bridge/src/
 ├── lib.rs
 ├── integration.rs (300 LOC) - Integration points
 └── tests.rs (200 LOC)
@@ -1906,7 +1906,7 @@ Foundation Layer:
 ### Request → Response Flow (CLI Command)
 
 ```
-User Input: $ bonsai kdb search "quantum physics"
+User Input: $ omnisystem kdb search "quantum physics"
     ↓
 CLI Parser (cli)
     ↓
@@ -1929,7 +1929,7 @@ Output to Terminal
 ### OmniBot → POE → KDB Flow
 
 ```
-User: @bonsai reason about climate change
+User: @omnisystem reason about climate change
     ↓
 OmniBot (Discord handler)
     ↓
@@ -2029,7 +2029,7 @@ poe-mesh/
 │
 └── tests.rs (200 LOC)
 
-poe-bonsai-bridge/
+poe-omnisystem-bridge/
 ├── integration.rs (300 LOC)
 │   └── Integration with other systems
 │       - KDB query interface
@@ -2603,7 +2603,7 @@ impl McpServer {
 ### Subcommand Structure
 
 ```
-bonsai
+omnisystem
 ├── kdb
 │   ├── search <query>
 │   ├── query <sparql>
@@ -2644,7 +2644,7 @@ bonsai
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(about = "Bonsai Ecosystem CLI")]
+#[command(about = "Omnisystem Ecosystem CLI")]
 struct Args {
     #[command(subcommand)]
     command: Commands,
@@ -2678,7 +2678,7 @@ impl Args {
 
 - [ ] Shell completion (bash, zsh, fish, powershell)
 - [ ] Interactive REPL mode
-- [ ] Configuration file support (~/.bonsai/config.toml)
+- [ ] Configuration file support (~/.omnisystem/config.toml)
 - [ ] Environment variable overrides
 - [ ] JSON output format
 - [ ] Error messages with suggestions
@@ -3109,7 +3109,7 @@ GOVERNANCE
 
 # CONCLUSION
 
-This comprehensive plan provides a complete roadmap to build and integrate all 292 crates in BonsaiWorkspace into a production-grade system. The plan is:
+This comprehensive plan provides a complete roadmap to build and integrate all 292 crates in OmnisystemWorkspace into a production-grade system. The plan is:
 
 ✅ **Actionable**: Each phase has concrete tasks, deliverables, and success criteria  
 ✅ **Detailed**: ~55,000 LOC expansion defined across 20 systems  
@@ -3125,7 +3125,7 @@ This comprehensive plan provides a complete roadmap to build and integrate all 2
 4. **Continuous integration essential** (weekly builds, testing)
 5. **Strong QA process** (80%+ coverage requirement)
 
-**Expected Outcome**: A fully integrated, production-ready Bonsai Ecosystem with all 292 crates functional, properly tested, and deployed at 100% build coverage.
+**Expected Outcome**: A fully integrated, production-ready Omnisystem Ecosystem with all 292 crates functional, properly tested, and deployed at 100% build coverage.
 
 ---
 

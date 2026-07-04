@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 # ============================================================================
 
 $REPO_ROOT = Get-Location
-$OMNISYSTEM_DIR = "$REPO_ROOT/bonsai-omnisystem-languages"
+$OMNISYSTEM_DIR = "$REPO_ROOT/omnisystem-omnisystem-languages"
 $RESULTS_DIR = "$REPO_ROOT/polyglot-pong-results"
 $TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
 $LOG_FILE = "$RESULTS_DIR/polyglot-pong-$TIMESTAMP.log"

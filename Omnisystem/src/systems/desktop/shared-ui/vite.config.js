@@ -6,9 +6,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.js',
-      name: 'BonsaiSharedUI',
+      name: 'OmnisystemSharedUI',
       formats: ['es', 'umd'],
-      fileName: (format) => `bonsai-shared-ui.${format === 'es' ? 'js' : 'umd.js'}`
+      fileName: (format) => `omnisystem-shared-ui.${format === 'es' ? 'js' : 'umd.js'}`
     },
     rollupOptions: {
       external: ['svelte'],

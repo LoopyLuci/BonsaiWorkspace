@@ -179,10 +179,10 @@ try {
   $workspaceHealth = "http://127.0.0.1:$WorkspacePort/health"
   $buddyHealth = "http://127.0.0.1:$BuddyPort/health"
 
-  $workspaceBoot = Start-BackendIfNeeded -Name "workspace" -HealthUrl $workspaceHealth -FilePath "cargo" -ArgumentList @("run", "--manifest-path", "bonsai-workspace/src-tauri/Cargo.toml") -WorkingDirectory $RepoRoot
+  $workspaceBoot = Start-BackendIfNeeded -Name "workspace" -HealthUrl $workspaceHealth -FilePath "cargo" -ArgumentList @("run", "--manifest-path", "omnisystem-workspace/src-tauri/Cargo.toml") -WorkingDirectory $RepoRoot
   $workspaceProc = $workspaceBoot.Process
 
-  $botBoot = Start-BackendIfNeeded -Name "bot" -HealthUrl "http://127.0.0.1:$BotAdminPort/health" -FilePath "cargo" -ArgumentList @("run", "--manifest-path", "bonsai-bot/Cargo.toml") -WorkingDirectory $RepoRoot
+  $botBoot = Start-BackendIfNeeded -Name "bot" -HealthUrl "http://127.0.0.1:$BotAdminPort/health" -FilePath "cargo" -ArgumentList @("run", "--manifest-path", "omnisystem-bot/Cargo.toml") -WorkingDirectory $RepoRoot
   $botProc = $botBoot.Process
 
   if (-not (Wait-Healthy -Uri $workspaceHealth -TimeoutSec $TimeoutSeconds)) {
@@ -209,7 +209,7 @@ try {
   Run-Test -Name "Test 2: Buddy API chat completions" -Body {
     $uri = "http://127.0.0.1:$BuddyPort/v1/chat/completions"
     $body = @{
-      model = "bonsai-local"
+      model = "omnisystem-local"
       messages = @(@{ role = "user"; content = "Respond with: integration-ok" })
       stream = $false
     }
@@ -219,7 +219,7 @@ try {
 
   Run-Test -Name "Test 3: Bot admin API status" -Body {
     $health = Invoke-HttpJson -Uri "http://127.0.0.1:$detectedBotPort/health"
-    $token = $env:BONSAI_BOT_ADMIN_TOKEN
+    $token = $env:OMNISYSTEM_BOT_ADMIN_TOKEN
     $statusResp = $null
     if (-not [string]::IsNullOrWhiteSpace($token)) {
       $statusResp = Invoke-HttpJson -Uri "http://127.0.0.1:$detectedBotPort/status" -Headers @{ Authorization = "Bearer $token" }
@@ -280,7 +280,7 @@ try {
 
   Run-Test -Name "Test 7: RAG search" -Body {
     $fixturePath = Join-Path $runnerDir "rag-fixture.txt"
-    Set-Content -Path $fixturePath -Value "Bonsai integration fixture: alpha-bravo-charlie" -Encoding UTF8
+    Set-Content -Path $fixturePath -Value "Omnisystem integration fixture: alpha-bravo-charlie" -Encoding UTF8
 
     $indexCandidates = @(
       @{ uri = "http://127.0.0.1:$WorkspacePort/v1/rag/index"; body = @{ path = $fixturePath } },
@@ -350,12 +350,12 @@ try {
   }
 
   Run-Test -Name "Test 10: Launcher recursion guard" -Body {
-    $launchDir = Join-Path $RepoRoot "bonsai-workspace\src"
-    $launcher = Join-Path $launchDir "orchestrate-bonsai-ecosystem.mjs"
-    $pidFile = Join-Path $RepoRoot ".bonsai-launcher.pid"
+    $launchDir = Join-Path $RepoRoot "omnisystem-workspace\src"
+    $launcher = Join-Path $launchDir "orchestrate-omnisystem-ecosystem.mjs"
+    $pidFile = Join-Path $RepoRoot ".omnisystem-launcher.pid"
 
     if (-not (Test-Path $launcher)) {
-      return @{ Pass = $false; Notes = "orchestrate-bonsai-ecosystem.mjs not found" }
+      return @{ Pass = $false; Notes = "orchestrate-omnisystem-ecosystem.mjs not found" }
     }
 
     $sentinel = Start-Process -FilePath "pwsh" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 30") -PassThru

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Setting up Bonsai Ecosystem..."
+echo "Setting up Omnisystem Ecosystem..."
 
 if ! command -v rustc >/dev/null 2>&1; then
   echo "Rust is missing. Install via rustup before continuing."
@@ -24,6 +24,6 @@ if [ -f "requirements.txt" ]; then
   python3 -m pip install -r requirements.txt
 fi
 
-cargo build -p bonsai-cli --release
+cargo build -p omnisystem-cli --release
 
 echo "Setup complete."

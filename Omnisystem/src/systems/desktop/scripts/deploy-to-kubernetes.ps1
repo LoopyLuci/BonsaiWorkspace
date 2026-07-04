@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Deploy Bonsai to Kubernetes cluster
+Deploy Omnisystem to Kubernetes cluster
 
 .DESCRIPTION
 Orchestrates production deployment with canary rollouts, health checks, and rollback
@@ -10,7 +10,7 @@ Orchestrates production deployment with canary rollouts, health checks, and roll
 Kubernetes cluster name
 
 .PARAMETER Namespace
-Namespace to deploy to (default: bonsai)
+Namespace to deploy to (default: omnisystem)
 
 .PARAMETER Image
 Container image to deploy
@@ -30,7 +30,7 @@ Show what would happen without applying
 
 param(
     [Parameter(Mandatory = $true)][string]$Cluster,
-    [string]$Namespace = "bonsai",
+    [string]$Namespace = "omnisystem",
     [Parameter(Mandatory = $true)][string]$Image,
     [switch]$Canary = $true,
     [int]$CanaryWeight = 5,
@@ -104,9 +104,9 @@ function Update-Image {
         Write-Log "[DRY RUN] Would update image to: $Image" "warning"
     }
     else {
-        kubectl set image deployment/bonsai-core `
+        kubectl set image deployment/omnisystem-core `
             -n $Namespace `
-            bonsai-core=$Image `
+            omnisystem-core=$Image `
             --record
 
         Write-Log "✓ Image updated" "success"
@@ -117,11 +117,11 @@ function Deploy-Manifests {
     Write-Log "Applying Kubernetes manifests..." "info"
 
     $manifests = @(
-        "deploy/kubernetes/bonsai-deployment.yaml"
+        "deploy/kubernetes/omnisystem-deployment.yaml"
     )
 
     if ($Canary) {
-        $manifests += "deploy/kubernetes/bonsai-canary-deployment.yaml"
+        $manifests += "deploy/kubernetes/omnisystem-canary-deployment.yaml"
     }
 
     foreach ($manifest in $manifests) {
@@ -154,7 +154,7 @@ function Wait-Rollout {
     }
 
     try {
-        kubectl rollout status deployment/bonsai-core `
+        kubectl rollout status deployment/omnisystem-core `
             -n $Namespace `
             --timeout=10m
 
@@ -178,7 +178,7 @@ function Check-Health {
     Start-Sleep -Seconds 5
 
     try {
-        $svc = kubectl get service bonsai-core -n $Namespace -o json | ConvertFrom-Json
+        $svc = kubectl get service omnisystem-core -n $Namespace -o json | ConvertFrom-Json
         $ip = $svc.status.loadBalancer.ingress[0].ip
 
         if ([string]::IsNullOrEmpty($ip)) {
@@ -223,16 +223,16 @@ function Get-Deployment-Status {
     }
 
     Write-Host "`nDeployment:" -ForegroundColor Cyan
-    kubectl get deployment bonsai-core -n $Namespace
+    kubectl get deployment omnisystem-core -n $Namespace
 
     Write-Host "`nPods:" -ForegroundColor Cyan
-    kubectl get pods -n $Namespace -l app=bonsai,component=core
+    kubectl get pods -n $Namespace -l app=omnisystem,component=core
 
     Write-Host "`nReplicaSet:" -ForegroundColor Cyan
-    kubectl get rs -n $Namespace -l app=bonsai,component=core
+    kubectl get rs -n $Namespace -l app=omnisystem,component=core
 
     Write-Host "`nService:" -ForegroundColor Cyan
-    kubectl get svc bonsai-core -n $Namespace
+    kubectl get svc omnisystem-core -n $Namespace
 
     Write-Host "`nEvents:" -ForegroundColor Cyan
     kubectl get events -n $Namespace --sort-by='.lastTimestamp' | tail -10
@@ -249,16 +249,16 @@ function Rollback-Deployment {
     }
 
     if ([string]::IsNullOrEmpty($Revision)) {
-        kubectl rollout undo deployment/bonsai-core -n $Namespace
+        kubectl rollout undo deployment/omnisystem-core -n $Namespace
     }
     else {
-        kubectl rollout undo deployment/bonsai-core -n $Namespace --to-revision=$Revision
+        kubectl rollout undo deployment/omnisystem-core -n $Namespace --to-revision=$Revision
     }
 
     Write-Log "✓ Rollback initiated" "success"
 
     # Wait for rollback
-    kubectl rollout status deployment/bonsai-core -n $Namespace --timeout=5m
+    kubectl rollout status deployment/omnisystem-core -n $Namespace --timeout=5m
     Write-Log "✓ Rollback complete" "success"
 }
 
@@ -271,7 +271,7 @@ function Create-Backup {
     }
 
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $backupFile = "deploy/backups/bonsai-deployment-$timestamp.yaml"
+    $backupFile = "deploy/backups/omnisystem-deployment-$timestamp.yaml"
 
     $backupDir = Split-Path $backupFile
     if (-not (Test-Path $backupDir)) {
@@ -284,7 +284,7 @@ function Create-Backup {
 
 # Main execution
 try {
-    Write-Log "Starting Bonsai Kubernetes deployment..." "info"
+    Write-Log "Starting Omnisystem Kubernetes deployment..." "info"
     Write-Log "Cluster: $Cluster, Namespace: $Namespace, Image: $Image" "info"
     if ($DryRun) { Write-Log "DRY RUN MODE" "warning" }
 

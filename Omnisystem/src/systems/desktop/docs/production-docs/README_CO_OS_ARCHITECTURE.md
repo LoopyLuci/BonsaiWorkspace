@@ -1,4 +1,4 @@
-# Bonsai Co-Operating System (Co-OS) – Complete Architecture
+# Omnisystem Co-Operating System (Co-OS) – Complete Architecture
 
 **Version**: 1.0.0 (Foundation Phase Complete)  
 **Status**: Architecture Specification & Foundation Implementation Ready  
@@ -12,7 +12,7 @@ This document describes the **next-generation, bleeding-edge, production-grade C
 
 1. **UOSC Microkernel** – Hardware-independent, capability-based OS core
 2. **Omnisystem Services** – Production services (TransferDaemon, AI Orchestration, UMS, etc.)
-3. **BonsaiEcosystem** – Universal orchestrator, installer, GUI, and user-facing applications
+3. **OmnisystemEcosystem** – Universal orchestrator, installer, GUI, and user-facing applications
 
 The system enables **Omnisystem to run on any device, with any host OS (Windows, macOS, Linux, Android, iOS), in the optimal deployment mode**, automatically selected by intelligent detection and decision engines.
 
@@ -22,7 +22,7 @@ The system enables **Omnisystem to run on any device, with any host OS (Windows,
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    BonsaiEcosystem (App Layer)                  │
+│                    OmnisystemEcosystem (App Layer)                  │
 │ ┌──────────────┬──────────────┬──────────────┬────────────────┐ │
 │ │   Installer  │   Launcher   │Control Panel │    Workspace   │ │
 │ │              │              │              │     + Buddy    │ │
@@ -70,7 +70,7 @@ The system enables **Omnisystem to run on any device, with any host OS (Windows,
 
 ### Location
 ```
-Z:\Projects\BonsaiWorkspace\Omnisystem\UOSC\
+Z:\Projects\OmnisystemWorkspace\Omnisystem\UOSC\
 ├── kernel/                 # Core microkernel
 │   ├── capability.ti      # Capability-based security model
 │   ├── memory.ti          # Virtual memory & paging
@@ -168,7 +168,7 @@ sys_get_time()              – Get current time
 
 ### Location
 ```
-Z:\Projects\BonsaiWorkspace\Omnisystem\
+Z:\Projects\OmnisystemWorkspace\Omnisystem\
 ├── kernel/                 (symlink to UOSC/kernel)
 ├── services/               # Core OS services
 │   ├── transfer-daemon/    # P2P file transfer (4 lanes)
@@ -240,11 +240,11 @@ Z:\Projects\BonsaiWorkspace\Omnisystem\
 
 ---
 
-## Layer 3: BonsaiEcosystem
+## Layer 3: OmnisystemEcosystem
 
 ### Location
 ```
-Z:\Projects\BonsaiWorkspace\BonsaiEcosystem\
+Z:\Projects\OmnisystemWorkspace\OmnisystemEcosystem\
 ├── installer/              # Universal installer
 │   ├── architecture.md     # Installer design
 │   ├── host_detection.ti   # OS/hardware detection
@@ -284,7 +284,7 @@ Z:\Projects\BonsaiWorkspace\BonsaiEcosystem\
 - **Features**:
   - Detects if already running (auto-reuse)
   - Shows splash screen with boot messages
-  - Auto-launches Bonsai Workspace on ready
+  - Auto-launches Omnisystem Workspace on ready
 
 #### Control Panel
 - **Purpose**: Real-time management & monitoring
@@ -296,7 +296,7 @@ Z:\Projects\BonsaiWorkspace\BonsaiEcosystem\
   - Snapshot save/restore
   - Settings configuration
 
-#### Bonsai Workspace
+#### Omnisystem Workspace
 - **Purpose**: Full desktop environment inside Omnisystem
 - **Components**:
   - Window manager (Sylva-based)
@@ -323,15 +323,15 @@ Z:\Projects\BonsaiWorkspace\BonsaiEcosystem\
 **Architecture**:
 ```
 Host OS (Windows 11)
-  ├─ Bonsai Installer (detects Hyper-V)
+  ├─ Omnisystem Installer (detects Hyper-V)
   ├─ Hyper-V hypervisor
-  ├─ Bonsai Control Panel (Windows app)
+  ├─ Omnisystem Control Panel (Windows app)
   └─ Capability Broker (Windows service)
        │
        └─→ VM (Omnisystem)
            ├─ UOSC kernel
            ├─ Omnisystem services
-           └─ Bonsai Workspace
+           └─ Omnisystem Workspace
 ```
 
 **Startup**: 15-20 seconds (VM boot)  
@@ -351,12 +351,12 @@ Host OS (Windows 11)
 **Architecture**:
 ```
 Host OS (Linux)
-  ├─ Bonsai Launcher
+  ├─ Omnisystem Launcher
   ├─ Library OS Translator (seccomp/ptrace)
   ├─ Omnisystem Process
   │  ├─ UOSC kernel (in-process)
   │  ├─ Omnisystem services
-  │  └─ Bonsai Workspace
+  │  └─ Omnisystem Workspace
   └─ Capability Broker (local enforcement)
 ```
 
@@ -376,7 +376,7 @@ Host OS (Linux)
   └─ Container (Omnisystem)
       ├─ UOSC kernel (userspace)
       ├─ Omnisystem services
-      └─ Bonsai Workspace
+      └─ Omnisystem Workspace
 ```
 
 **Startup**: 2-5 seconds  
@@ -391,14 +391,14 @@ Host OS (Linux)
 **Architecture**:
 ```
 iOS Device
-  ├─ Bonsai App (remote UI)
+  ├─ Omnisystem App (remote UI)
   └─ (connects via network)
        │
        └─→ Mac / PC / Cloud
            └─ Omnisystem
                ├─ UOSC kernel
                ├─ Omnisystem services
-               └─ Bonsai Workspace
+               └─ Omnisystem Workspace
 ```
 
 ---
@@ -452,7 +452,7 @@ Capability Broker checks:
 ### 1. Detection Phase
 
 ```bash
-bonsai-installer.exe
+omnisystem-installer.exe
   └─ Detect host
      ├─ OS: Windows 11 Pro
      ├─ Architecture: x86-64
@@ -503,7 +503,7 @@ Installing Omnisystem...
 ```
 ✅ Installation complete!
 
-Omnisystem is running. Click to launch Bonsai Workspace:
+Omnisystem is running. Click to launch Omnisystem Workspace:
   [🚀 Launch Workspace]
 
 Quick shortcuts:
@@ -568,8 +568,8 @@ Quick shortcuts:
 ## File Structure Summary
 
 ```
-Z:\Projects\BonsaiWorkspace\
-├── BonsaiEcosystem/        # Application layer (orchestrator & GUI)
+Z:\Projects\OmnisystemWorkspace\
+├── OmnisystemEcosystem/        # Application layer (orchestrator & GUI)
 │   ├── installer/          # Universal installer
 │   ├── launcher/           # Native launchers
 │   ├── control-panel/      # System tray/menu bar manager
@@ -610,8 +610,8 @@ Z:\Projects\BonsaiWorkspace\
 ## References
 
 - [Architecture Restructuring Plan](ARCHITECTURE_RESTRUCTURING_PLAN.md)
-- [Installer Design](BonsaiEcosystem/installer/architecture.md)
-- [Control Panel Design](BonsaiEcosystem/control-panel/architecture.md)
+- [Installer Design](OmnisystemEcosystem/installer/architecture.md)
+- [Control Panel Design](OmnisystemEcosystem/control-panel/architecture.md)
 - [Capability System](Omnisystem/UOSC/kernel/capability.ti)
 - [Hypervisor Abstraction](Omnisystem/coos/hypervisor_abstraction/hypervisor.ti)
 - [KVM Backend](Omnisystem/coos/hypervisor_abstraction/kvm_backend.rs)

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import browser from '../lib/browser';
-  import { BonsaiClient } from '../lib/bonsai-client';
-  import type { ToolResult } from '../lib/bonsai-client';
+  import { OmnisystemClient } from '../lib/omnisystem-client';
+  import type { ToolResult } from '../lib/omnisystem-client';
   import type { AuditEntry } from '../lib/types';
 
   type SidebarTab = 'chat' | 'tools' | 'activity';
@@ -155,7 +155,7 @@
 
     try {
       const args = collectToolArgs(tool);
-      const result = await BonsaiClient.invokeTool(tool.name, args);
+      const result = await OmnisystemClient.invokeTool(tool.name, args);
       toolResults = {
         ...toolResults,
         [tool.name]: result
@@ -200,7 +200,7 @@
 
   {#if activeTab === 'chat'}
     <section class="panel">
-      <h2>Bonsai Buddy</h2>
+      <h2>Omnisystem Buddy</h2>
       <textarea bind:value={input} rows="3" placeholder="Ask Buddy anything"></textarea>
       <button on:click={ask} disabled={busy}>Send</button>
       <div class="stream-box">
@@ -215,7 +215,7 @@
 
   {#if activeTab === 'tools'}
     <section class="panel tool-grid">
-      <h2>Bonsai Tools</h2>
+      <h2>Omnisystem Tools</h2>
       {#each tools as tool}
         <article class="tool-card">
           <div class="tool-header">

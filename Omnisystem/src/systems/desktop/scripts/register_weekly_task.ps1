@@ -51,10 +51,10 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "Runs the full BonsAI training pipeline every Monday at 2 AM. Managed by Bonsai Workspace." `
+        -Description "Runs the full BonsAI training pipeline every Monday at 2 AM. Managed by Omnisystem Workspace." `
         -Force | Out-Null
 
-    Write-Host "[bonsai] Scheduled task 'BonsAI Weekly Training' registered."
+    Write-Host "[omnisystem] Scheduled task 'BonsAI Weekly Training' registered."
     Write-Host "         Runs: Every Monday at 02:00 AM"
     Write-Host "         Script: $TrainScript"
     Write-Host ""

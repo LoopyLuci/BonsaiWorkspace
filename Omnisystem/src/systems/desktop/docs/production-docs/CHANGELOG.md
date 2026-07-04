@@ -1,4 +1,4 @@
-# Bonsai Ecosystem Changelog
+# Omnisystem Ecosystem Changelog
 
 ## [0.2.0] — 2026-05-28
 
@@ -12,7 +12,7 @@
 - **WebRTC answering-side handshake** — `WebRtcLane::new_answer()` fully implemented: uses `on_data_channel` callback with a oneshot channel to receive the data channel from the offerer side; 30-second timeout guard.
 
 ### Security
-- **CRITICAL fix** — Bumped `lettre` to `>=0.11.22` in `bonsai-bot` and `src-tauri` to patch RUSTSEC-2026-0141 (TLS hostname verification disabled with Boring TLS backend, severity 9.1).
+- **CRITICAL fix** — Bumped `lettre` to `>=0.11.22` in `omnisystem-bot` and `src-tauri` to patch RUSTSEC-2026-0141 (TLS hostname verification disabled with Boring TLS backend, severity 9.1).
 
 ### Known Issues (tracked for v0.2.1)
 - `rsa 0.9.10` — RUSTSEC-2023-0071 (Marvin Attack timing side-channel, severity 5.9). No upstream fix available; mitigated by the fact that RSA is only used in `sqlx-mysql` and `ssh-key` paths which are not exposed on network interfaces.
@@ -37,14 +37,14 @@ comparison, a controlled continuous training loop, and the multi-modal expansion
 | 1 | Chat responds | **PASS** | "2+2=4" in 1986 ms, 21 tok/s, model Bonsai-1.7B |
 | 2 | Code generation via `code-writer` agent | **PASS** | `write_file` action for `src/hello.py` in 1537 ms |
 | 3 | Sandbox code execution (`print(42)`) | **PASS** | stdout="42", exit_code=0, 192 ms (venv warm) |
-| 4 | Session persistence | **PARTIAL** | Chat acknowledged "bonsai-test-42"; telemetry counters at 0 (inference telemetry tracks llama-server calls, not /chat relay), memory dir not created (no RAG write triggered) |
+| 4 | Session persistence | **PARTIAL** | Chat acknowledged "omnisystem-test-42"; telemetry counters at 0 (inference telemetry tracks llama-server calls, not /chat relay), memory dir not created (no RAG write triggered) |
 | 5 | Feature flags default OFF | **PASS** | `swarm_enabled` and `bot_enabled` are `true` by design (enabled at startup); all hardware/experimental flags false |
 | 6 | GPU stats | **PASS** | Stats endpoint responds; `adapter_loaded: false` expected (no LoRA loaded yet), GPU layers managed by llama-server separately |
 
 ### Test 4 — Persistence Detail
 The `/api/v1/chat` endpoint relays to the local llama-server; session memory
 requires an explicit RAG write (via the assistant pipeline, not the raw relay).
-`~/.bonsai/memory/` is only created when the assistant's memory-injection path
+`~/.omnisystem/memory/` is only created when the assistant's memory-injection path
 runs. Raw `/api/v1/chat` calls bypass the assistant pipeline by design.
 
 ### Test 5 — Flag Detail
@@ -75,7 +75,7 @@ are all `false` as expected.
 - `telemetry_store` borrow-after-move in AppState construction
 
 ### Infrastructure
-- `launch-all.mjs` → `launch-all-tests.mjs` → `orchestrate-bonsai-ecosystem.mjs` (comprehensive ecosystem orchestrator: manages preflight, spawns Tauri + bonsai-bot, validates health, optional testing)
+- `launch-all.mjs` → `launch-all-tests.mjs` → `orchestrate-omnisystem-ecosystem.mjs` (comprehensive ecosystem orchestrator: manages preflight, spawns Tauri + omnisystem-bot, validates health, optional testing)
 - Generated training data splits added to `.gitignore`
 
 ---
@@ -87,14 +87,14 @@ are all `false` as expected.
 - Inference mode chip selector in ChatPanel
 - Inference Defaults settings with Apply to All
 - Auto-dismiss model loaded notification (5 seconds)
-- BonsaiExeLauncherBuilder.ps1 + .cmd for building .exe
+- OmnisystemExeLauncherBuilder.ps1 + .cmd for building .exe
 
 ### Fixed
 - Flashing terminal window on Windows (CREATE_NO_WINDOW on all spawns)
 - GPU crash auto-recovery with CPU fallback (0xc0000409, 0xc0000005)
 - Vite launcher crash (4294967295 exit code)
 - Slot-ready race condition (transient "No model slot is ready")
-- Bonsai Buddy no longer pinned by default
+- Omnisystem Buddy no longer pinned by default
 - llama-server warmup crash (--no-warmup flag)
 
 ### Changed

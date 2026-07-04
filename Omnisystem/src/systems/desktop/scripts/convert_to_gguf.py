@@ -8,14 +8,14 @@ Steps:
   4. Save fused model to a temporary directory.
   5. Call llama.cpp convert_hf_to_gguf.py to produce a quantised GGUF.
 
-The GGUF ends up at --output. If --output is ~/.bonsai/models/bonsai-latest.gguf
+The GGUF ends up at --output. If --output is ~/.omnisystem/models/omnisystem-latest.gguf
 the hot-reload watcher (hot_reload.rs) will pick it up automatically within 2 s.
 
 Usage:
     python scripts/convert_to_gguf.py \
         --base-model  C:/Users/limpi/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct/snapshots/<hash> \
-        --adapter     C:/Users/limpi/.bonsai/adapters/bonsai-final-v1 \
-        --output      C:/Users/limpi/.bonsai/models/bonsai-latest.gguf \
+        --adapter     C:/Users/limpi/.omnisystem/adapters/omnisystem-final-v1 \
+        --output      C:/Users/limpi/.omnisystem/models/omnisystem-latest.gguf \
         --llama-cpp-dir C:/path/to/llama.cpp
 
 Offline-safe: no HuggingFace calls.

@@ -4,7 +4,7 @@ Import historical errors from JSONL or git history into the Survival KB.
 
 Usage:
     python scripts/import_historical_errors.py
-    python scripts/import_historical_errors.py --db ~/.bonsai/survival_kb.db
+    python scripts/import_historical_errors.py --db ~/.omnisystem/survival_kb.db
     python scripts/import_historical_errors.py --from-git   # scan git log for fix: commits
 """
 import argparse
@@ -17,7 +17,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-DB_DEFAULT = Path.home() / ".bonsai" / "survival_kb.db"
+DB_DEFAULT = Path.home() / ".omnisystem" / "survival_kb.db"
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -94,8 +94,8 @@ HISTORICAL = [
     ("cargo not recognized in bash",
      "Add $HOME/.cargo/bin to PATH: export PATH=\"$PATH:$HOME/.cargo/bin\"",
      "build", "build,cargo,path", 1.0),
-    ("LLAMA_CPP_PATH not set bonsai-native",
-     "Set LLAMA_CPP_PATH env var to the llama.cpp build dir, or set BONSAI_NATIVE_SKIP=1.",
+    ("LLAMA_CPP_PATH not set omnisystem-native",
+     "Set LLAMA_CPP_PATH env var to the llama.cpp build dir, or set OMNISYSTEM_NATIVE_SKIP=1.",
      "build", "build,native,llama", 0.95),
     ("rusqlite 0.31 conflicts with sqlx libsqlite3-sys",
      "Use rusqlite = { version = \"0.32\", features = [\"bundled\"] } to avoid the conflict.",
@@ -117,7 +117,7 @@ HISTORICAL = [
      "Reduce n_gpu_layers, batch_size, and max_length. Use gradient_checkpointing=True.",
      "training", "training,gpu,oom", 1.0),
     ("port 11369 already in use",
-     "Kill zombie daemon: pkill bonsai-workspace (Linux) or Stop-Process -Name bonsai-workspace (PowerShell).",
+     "Kill zombie daemon: pkill omnisystem-workspace (Linux) or Stop-Process -Name omnisystem-workspace (PowerShell).",
      "runtime", "runtime,port,daemon", 1.0),
     ("panicked at index out of bounds",
      "Use .get(idx) instead of [idx] and handle None. Add input validation before indexing.",

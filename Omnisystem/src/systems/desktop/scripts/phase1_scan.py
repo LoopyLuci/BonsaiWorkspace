@@ -72,7 +72,7 @@ def main():
                         elif file.lower().endswith('.onnx'):
                             fmt = 'onnx'
                         elif file.lower().endswith('.bkp'):
-                            fmt = 'bonsai_package'
+                            fmt = 'omnisystem_package'
 
                         models.append({
                             'id': f'model_{len(models)+1:03d}',

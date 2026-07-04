@@ -97,7 +97,7 @@ describe('toOp (delta op serialisation)', () => {
 
 // ── Message protocol shape ────────────────────────────────────────────────────
 
-describe('BonsaiMessage protocol shape', () => {
+describe('OmnisystemMessage protocol shape', () => {
   it('auth message has correct shape', () => {
     const msg = { type: 'auth', payload: { token: 'ABC123' } };
     expect(msg.type).toBe('auth');

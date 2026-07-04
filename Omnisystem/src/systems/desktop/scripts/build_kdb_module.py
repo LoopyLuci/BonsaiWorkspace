@@ -187,17 +187,17 @@ with zipfile.ZipFile("{output_path.name}") as kmod:
         print(f"  - {chunk.get('id')}: {chunk.get('question', chunk.get('prompt', ''))}")
 ```
 
-## Integration with Bonsai KDB
+## Integration with Omnisystem KDB
 
 ```bash
 # Register with KDB
-bonsai kdb register {output_path.name}
+omnisystem kdb register {output_path.name}
 
 # Search knowledge
-bonsai kdb search --module {source_model} "your question"
+omnisystem kdb search --module {source_model} "your question"
 
 # Load at inference time
-bonsai model infer --with-kdb {source_model} "your prompt"
+omnisystem model infer --with-kdb {source_model} "your prompt"
 ```
 
 ---

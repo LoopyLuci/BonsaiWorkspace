@@ -35,7 +35,7 @@ Omnisystem can run as:
 | **AI Shim** | Unified API to Claude, GPT-4, DeepSeek, Grok, Llama. Provider-agnostic. Deterministic fallback (local verified model). |
 | **Service Manager** | Demand-activated services. Pause idle services, snapshot memory, restore instantly. Dynamic resource quotas. |
 | **Container Runtime** | Run Docker/OCI containers natively. Full `docker` and `kubectl` compatibility. No Docker Engine needed. |
-| **Bonsai Workspace** | Full desktop environment (IDE, file manager, terminal, AI assistant). Written in Sylva UI. |
+| **Omnisystem Workspace** | Full desktop environment (IDE, file manager, terminal, AI assistant). Written in Sylva UI. |
 | **Time-Travel Debugging** | Record program execution, rewind to any point, inspect state. Deterministic replay. |
 
 ## Quick Start
@@ -84,11 +84,11 @@ qemu-system-x86_64 \
 
 ### Run as Co-OS (Windows/macOS/Linux)
 
-Use the **Bonsai Ecosystem Installer** (separate repo). It will:
+Use the **Omnisystem Ecosystem Installer** (separate repo). It will:
 1. Detect your host OS and hardware
 2. Choose optimal deployment mode (Co-OS, Library OS, or Container)
 3. Download and install Omnisystem
-4. Launch Bonsai Workspace
+4. Launch Omnisystem Workspace
 
 ### Run in Docker
 
@@ -100,7 +100,7 @@ make container-image
 docker run -it --rm omnisystem:latest /bin/sylva
 
 # Or start GUI
-docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix omnisystem:latest bonsai-workspace
+docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix omnisystem:latest omnisystem-workspace
 ```
 
 ## Repository Structure
@@ -179,7 +179,7 @@ omnisystem/
 │   └── [750+ total]
 │
 ├── apps/                        # User applications
-│   ├── workspace/              # Bonsai Workspace (IDE + desktop)
+│   ├── workspace/              # Omnisystem Workspace (IDE + desktop)
 │   │   ├── ui/                 # Sylva UI components
 │   │   ├── editor/             # Text editor, IDE features
 │   │   ├── file_manager/       # File browser
@@ -456,13 +456,13 @@ sync
 
 ### As a Co-OS (Windows/macOS/Linux)
 
-Use the Bonsai Ecosystem installer:
+Use the Omnisystem Ecosystem installer:
 
 ```bash
 # Download installer (platform-specific)
-bonsai-installer.exe              # Windows
-bonsai-installer.dmg              # macOS
-bonsai-installer-ubuntu.deb       # Linux
+omnisystem-installer.exe              # Windows
+omnisystem-installer.dmg              # macOS
+omnisystem-installer-ubuntu.deb       # Linux
 
 # Run installer
 # (auto-detects host OS and deployment mode)
@@ -529,7 +529,7 @@ See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for:
 Dual-licensed under **Apache License 2.0** or **MIT License** – choose whichever is more convenient for your project.
 
 ```
-Copyright 2026 BonsaiAI Contributors
+Copyright 2026 OmnisystemAI Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -550,7 +550,7 @@ limitations under the License.
 - **Discussions**: Ask questions in GitHub Discussions
 - **Contributing**: See [CONTRIBUTING.md](docs/CONTRIBUTING.md)
 - **Chat**: Join us at `#omnisystem` on Matrix (placeholder)
-- **Email**: hello@bonsai-ai.org (placeholder)
+- **Email**: hello@omnisystem-ai.org (placeholder)
 
 ## Acknowledgments
 
@@ -569,7 +569,7 @@ Omnisystem builds on decades of OS research:
 - ✅ 750+ language connectors
 - ✅ TransferDaemon P2P
 - ✅ AI Shim with fallback
-- ✅ Bonsai Workspace (IDE + desktop)
+- ✅ Omnisystem Workspace (IDE + desktop)
 - ✅ Container runtime (Docker/K8s)
 - ✅ Co-OS deployment (Windows/macOS/Linux)
 
@@ -591,5 +591,5 @@ Omnisystem builds on decades of OS research:
 **Omnisystem Version**: 1.0.0  
 **UOSC Version**: 1.0.0  
 **Last Updated**: 2026-06-08  
-**Maintainers**: BonsaiAI Contributors
+**Maintainers**: OmnisystemAI Contributors
 

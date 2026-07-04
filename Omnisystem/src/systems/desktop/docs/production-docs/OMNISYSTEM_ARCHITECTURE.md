@@ -6,7 +6,7 @@ The Omnisystem is a production-ready, four-wave distributed system architecture 
 - **Wave 1**: Background Services with formal verification
 - **Wave 2**: Clojure Integration with persistent data structures
 - **Wave 3**: Hybrid Determinism Engine (HDE) for AI-optional optimization
-- **Wave 4**: Bonsai Buddy distributed agent system
+- **Wave 4**: Omnisystem Buddy distributed agent system
 
 Total: 20+ components, 240+ workspace crates, 40+ unit tests, 0 compilation errors.
 
@@ -37,7 +37,7 @@ Service lifecycle management with kernel-level snapshotting, enabling demand-act
 - ServiceConfig and resource management
 - Health check interface
 
-**Phase 5: Bonsai Buddy Integration** (`buddy-agent`)
+**Phase 5: Omnisystem Buddy Integration** (`buddy-agent`)
 - Standalone offline-first agent
 - State machine: Idle → Processing → Synchronized
 - Multi-instance support
@@ -141,22 +141,22 @@ AI-optional optimization with safety guarantees and formal validation.
 
 ---
 
-## Wave 4: Bonsai Buddy – Distributed Agent
+## Wave 4: Omnisystem Buddy – Distributed Agent
 
 ### Architecture
 Standalone, offline-first, eventually-consistent distributed agent system.
 
-**Component 1: Standalone Agent** (`bonsai-buddy-agent`)
+**Component 1: Standalone Agent** (`omnisystem-buddy-agent`)
 - Independent system assistant
 - Offline capability
 - Online/offline mode switching
 
-**Component 2: Offline Sync** (`bonsai-buddy-offline-sync`)
+**Component 2: Offline Sync** (`omnisystem-buddy-offline-sync`)
 - Operation queue for offline work
 - Batch synchronization on reconnect
 - Pending operation tracking
 
-**Component 3: CRDT Snapshot Merging** (`bonsai-buddy-crdt`)
+**Component 3: CRDT Snapshot Merging** (`omnisystem-buddy-crdt`)
 - Conflict-free replicated data types
 - Vector clock causality tracking
 - Distributed state merging without conflicts
@@ -207,7 +207,7 @@ Standalone, offline-first, eventually-consistent distributed agent system.
 - model-builder: 2 tests
 - axiom-verify: 2 tests
 - hde-runtime: 3 tests
-- bonsai-buddy-*: 6 tests
+- omnisystem-buddy-*: 6 tests
 - integration-tests: 6 tests
 
 ### Integration Tests: 6 Comprehensive Tests

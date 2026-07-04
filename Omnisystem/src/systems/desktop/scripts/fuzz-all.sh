@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "Starting fuzz smoke run..."
-TARGETS=(bonsai-kdb bonsai-p2p bonsai-crdt)
+TARGETS=(omnisystem-kdb omnisystem-p2p omnisystem-crdt)
 for t in "${TARGETS[@]}"; do
   echo "Fuzz target: $t (skipped unless fuzz target exists)"
   cargo fuzz list >/dev/null 2>&1 || continue

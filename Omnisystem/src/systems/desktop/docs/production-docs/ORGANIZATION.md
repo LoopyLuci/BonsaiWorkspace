@@ -1,6 +1,6 @@
 # Repository Organization
 
-This document describes the structure and organization of the Bonsai Ecosystem repository.
+This document describes the structure and organization of the Omnisystem Ecosystem repository.
 
 ## Root-Level Files
 
@@ -95,7 +95,7 @@ Pre-trained models and model artifacts.
 
 ### Other Key Directories
 - `/android-runtime/` - Android runtime implementation
-- `/bonsai-workspace/` - Workspace UI/IDE
+- `/omnisystem-workspace/` - Workspace UI/IDE
 - `/browser-extension/` - Browser extension components
 - `/polyglot-pong/` - Polyglot language testing framework
 - `/vscode-extension/` - VS Code integration
@@ -135,9 +135,9 @@ The following directories are Git-ignored and should not be committed:
 
 - **Active vs. Archived**: Files in `/docs/` are actively maintained. Files in `/archive/` are for reference only.
 - **Git Strategy**: Use `.gitignore` to exclude build artifacts, logs, and cached files.
-- **Naming Conventions**: The repository uses "Bonsai Ecosystem" for the system name, with subsystem names (Omnisystem, UBVM, etc.) being independent functional names.
+- **Naming Conventions**: The repository uses "Omnisystem Ecosystem" for the system name, with subsystem names (Omnisystem, UBVM, etc.) being independent functional names.
 
 ---
 
 **Last Updated**: 2026-06-06  
-**Maintained By**: Bonsai Ecosystem Team
+**Maintained By**: Omnisystem Ecosystem Team

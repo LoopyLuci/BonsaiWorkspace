@@ -8,13 +8,13 @@
 
 ## Executive Summary
 
-This plan restructures the BonsaiWorkspace repository into three cohesive layers:
+This plan restructures the OmnisystemWorkspace repository into three cohesive layers:
 
-1. **UOSC** (Z:\Projects\BonsaiWorkspace\Omnisystem\UOSC) – Microkernel core
-2. **Omnisystem** (Z:\Projects\BonsaiWorkspace\Omnisystem) – OS services, polyglot runtime
-3. **BonsaiEcosystem** (Z:\Projects\BonsaiWorkspace\BonsaiEcosystem) – Application-level GUI, orchestration
+1. **UOSC** (Z:\Projects\OmnisystemWorkspace\Omnisystem\UOSC) – Microkernel core
+2. **Omnisystem** (Z:\Projects\OmnisystemWorkspace\Omnisystem) – OS services, polyglot runtime
+3. **OmnisystemEcosystem** (Z:\Projects\OmnisystemWorkspace\OmnisystemEcosystem) – Application-level GUI, orchestration
 
-The system enables **Co-Operating System (Co-OS)** installation on any device with any host OS (Windows, macOS, Linux, Android, iOS) via a unified Bonsai Ecosystem orchestrator with flawless setup, management, and updates.
+The system enables **Co-Operating System (Co-OS)** installation on any device with any host OS (Windows, macOS, Linux, Android, iOS) via a unified Omnisystem Ecosystem orchestrator with flawless setup, management, and updates.
 
 ---
 
@@ -23,7 +23,7 @@ The system enables **Co-Operating System (Co-OS)** installation on any device wi
 ### Current Architecture (Obsolete)
 
 ```
-Z:\Projects\BonsaiWorkspace\
+Z:\Projects\OmnisystemWorkspace\
 ├── crates/           (monolithic, no separation)
 ├── tests/
 ├── docs/
@@ -33,13 +33,13 @@ Z:\Projects\BonsaiWorkspace\
 ### New Architecture (Final Structure)
 
 ```
-Z:\Projects\BonsaiWorkspace\
-├── BonsaiEcosystem/              # Application Layer & Orchestrator
+Z:\Projects\OmnisystemWorkspace\
+├── OmnisystemEcosystem/              # Application Layer & Orchestrator
 │   ├── installer/                # Universal installer (Windows, macOS, Linux, Android, iOS)
 │   ├── launcher/                 # Platform-specific launchers
 │   ├── control-panel/            # System tray / menu bar app for managing Omnisystem
-│   ├── workspace/                # Bonsai Workspace (primary desktop IDE/environment)
-│   ├── buddy/                    # Bonsai Buddy (mobile companion app)
+│   ├── workspace/                # Omnisystem Workspace (primary desktop IDE/environment)
+│   ├── buddy/                    # Omnisystem Buddy (mobile companion app)
 │   ├── sylva-ui/                 # Sylva UI component library (cross-platform widgets)
 │   ├── themes/                   # Visual themes and customization
 │   ├── integrations/             # Host OS-specific integrations
@@ -205,9 +205,9 @@ input:keyboard                     – Keyboard interception
 
 ---
 
-## Part 3: Bonsai Ecosystem as Universal Orchestrator
+## Part 3: Omnisystem Ecosystem as Universal Orchestrator
 
-### 1. Bonsai Installer
+### 1. Omnisystem Installer
 
 A **single, universal installer** that detects the host environment and installs Omnisystem optimally:
 
@@ -240,43 +240,43 @@ if (Windows && Hyper-V_available) {
 1. Detect environment
 2. Download Omnisystem image (ISO, EFI, image.tar, etc.)
 3. Set up hypervisor / container / library OS
-4. Install Bonsai Launcher as system app
+4. Install Omnisystem Launcher as system app
 5. Configure capabilities (file access, network, GPU, etc.)
 6. Create Start Menu / Launchpad / desktop entry
 7. Run first-boot wizard
 
 **All operations are reversible** (rollback on failure).
 
-### 2. Bonsai Launcher
+### 2. Omnisystem Launcher
 
 A **platform-specific launcher** that starts Omnisystem:
 
-**Windows** (Bonsai.exe):
+**Windows** (Omnisystem.exe):
 - Launchable from Start Menu
 - Auto-starts via service (if configured)
 - Shows splash screen with boot messages
 - Connects to VM via RDP or display protocol
 
-**macOS** (Bonsai.app):
+**macOS** (Omnisystem.app):
 - Launchable from Launchpad
 - Added to Dock
 - Uses Virtualization.framework
 
 **Linux** (.desktop entry):
 - Added to application menu
-- Launchable via terminal: `bonsai launch`
+- Launchable via terminal: `omnisystem launch`
 - Integrates with systemd
 
-**Android** (Bonsai App):
+**Android** (Omnisystem App):
 - Standard Android app
 - Starts Omnisystem VM/container
 - Shows live terminal or VNC
 
-**iOS** (Bonsai App):
+**iOS** (Omnisystem App):
 - Connects to paired Mac/PC
 - Remote control interface
 
-### 3. Bonsai Control Panel
+### 3. Omnisystem Control Panel
 
 A **system tray / menu bar app** for managing Omnisystem:
 
@@ -290,7 +290,7 @@ A **system tray / menu bar app** for managing Omnisystem:
 - **Logs**: View system logs and error messages
 - **Updates**: Check for and install Omnisystem updates
 
-### 4. Bonsai Workspace
+### 4. Omnisystem Workspace
 
 The **full desktop environment** running inside Omnisystem:
 
@@ -311,7 +311,7 @@ The **full desktop environment** running inside Omnisystem:
 - Web rendering fallback (HTML5 UI over Wayland-over-virtio)
 - GPU acceleration via virtio-gpu (if available)
 
-### 5. Bonsai Buddy
+### 5. Omnisystem Buddy
 
 **Mobile companion app** (Android & iOS):
 
@@ -324,7 +324,7 @@ The **full desktop environment** running inside Omnisystem:
 
 ### 6. Sylva UI Library
 
-**Cross-platform widget library** used by all Bonsai apps:
+**Cross-platform widget library** used by all Omnisystem apps:
 
 **Components**:
 - Buttons, text fields, checkboxes, radio buttons
@@ -371,7 +371,7 @@ Each test:
 1. Spins up a clean VM
 2. Runs the installer
 3. Verifies Omnisystem boots
-4. Launches Bonsai Workspace
+4. Launches Omnisystem Workspace
 5. Tests all core services (AI, FileTransfer, UMS)
 6. Measures startup time, memory usage, resource contention
 7. Tests capability enforcement
@@ -402,7 +402,7 @@ If installer cannot proceed, it provides clear instructions:
 - Update kernel/services
 - Resume from snapshot
 
-**For Bonsai Ecosystem**:
+**For Omnisystem Ecosystem**:
 - Check for updates weekly
 - Download and install (may require launcher restart)
 - No downtime for Omnisystem
@@ -433,13 +433,13 @@ If installer cannot proceed, it provides clear instructions:
 - [ ] First-boot wizard (capability grants)
 - [ ] Rollback & error handling
 
-### Bonsai Ecosystem Phase
+### Omnisystem Ecosystem Phase
 - [ ] Universal installer (executable for all platforms)
-- [ ] Bonsai Launcher (platform-specific entry point)
-- [ ] Bonsai Control Panel (system tray app)
-- [ ] Bonsai Workspace (IDE, file manager, terminal)
+- [ ] Omnisystem Launcher (platform-specific entry point)
+- [ ] Omnisystem Control Panel (system tray app)
+- [ ] Omnisystem Workspace (IDE, file manager, terminal)
 - [ ] Sylva UI library (cross-platform widgets)
-- [ ] Bonsai Buddy (mobile companion)
+- [ ] Omnisystem Buddy (mobile companion)
 
 ### Testing Phase
 - [ ] UVM integration (automated test matrix)
@@ -473,7 +473,7 @@ If installer cannot proceed, it provides clear instructions:
 
 - ✅ Omnisystem installs flawlessly on 100+ hardware/OS combinations
 - ✅ Installation takes < 5 minutes (including downloads)
-- ✅ Bonsai Workspace launches in < 10 seconds
+- ✅ Omnisystem Workspace launches in < 10 seconds
 - ✅ All core services functional (AI, FileTransfer, UMS)
 - ✅ Capability enforcement verified (no unauthorized access)
 - ✅ Resource quotas respected (no overflow into host)
@@ -485,9 +485,9 @@ If installer cannot proceed, it provides clear instructions:
 
 ## Conclusion
 
-This architecture enables **Omnisystem to be installed on any device, with any host OS, in any deployment mode**, all managed by the unified **Bonsai Ecosystem**. The system is designed to be **flawless**, **secure**, **user-friendly**, and **production-ready** from day one.
+This architecture enables **Omnisystem to be installed on any device, with any host OS, in any deployment mode**, all managed by the unified **Omnisystem Ecosystem**. The system is designed to be **flawless**, **secure**, **user-friendly**, and **production-ready** from day one.
 
-The key insight is that **the Bonsai Ecosystem is not just an application suite – it is the orchestrator, installer, and gateway to the sovereign computing future**.
+The key insight is that **the Omnisystem Ecosystem is not just an application suite – it is the orchestrator, installer, and gateway to the sovereign computing future**.
 
 ---
 

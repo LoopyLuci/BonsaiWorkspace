@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Smoke test for Bonsai Workspace swarm + RAG behavior.
+# Smoke test for Omnisystem Workspace swarm + RAG behavior.
 # Usage:
 #   scripts/smoke-test-swarm.sh
 #   BUDDY_PORT=11420 API_PORT=11369 scripts/smoke-test-swarm.sh
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="${ROOT_DIR}/bonsai-workspace"
+APP_DIR="${ROOT_DIR}/omnisystem-workspace"
 
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-11369}"
@@ -98,7 +98,7 @@ smoke_swarm_sequential_gate() {
   local payload
   payload=$(cat <<'JSON'
 {
-  "model": "bonsai-buddy",
+  "model": "omnisystem-buddy",
   "stream": false,
   "max_tokens": 600,
   "messages": [
@@ -148,13 +148,13 @@ smoke_rag_search() {
   local payload
   payload=$(cat <<'JSON'
 {
-  "model": "bonsai-buddy",
+  "model": "omnisystem-buddy",
   "stream": false,
   "max_tokens": 600,
   "messages": [
     {
       "role": "user",
-      "content": "Use search_knowledge for query: Bonsai Buddy API listening on http://127.0.0.1:11420. Return the best matching file path and one-sentence summary."
+      "content": "Use search_knowledge for query: Omnisystem Buddy API listening on http://127.0.0.1:11420. Return the best matching file path and one-sentence summary."
     }
   ]
 }

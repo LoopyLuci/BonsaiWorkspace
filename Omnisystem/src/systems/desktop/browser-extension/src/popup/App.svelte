@@ -75,14 +75,14 @@
 
 <main style="width: 360px; padding: 12px; display: grid; gap: 10px;">
   <section class="card" style="display: flex; justify-content: space-between; align-items: center;">
-    <strong>Bonsai Buddy</strong>
+    <strong>Omnisystem Buddy</strong>
     <span class={`badge ${status === 'connected' ? 'ok' : 'offline'}`}>
       {status === 'checking' ? 'Checking...' : status}
     </span>
   </section>
 
   <section class="card" style="display: grid; gap: 8px;">
-    <BigButton on:click={connect} disabled={busy}>Connect To Bonsai</BigButton>
+    <BigButton on:click={connect} disabled={busy}>Connect To Omnisystem</BigButton>
     <BigButton variant="secondary" on:click={summarizePage} disabled={busy}>Summarize This Page</BigButton>
     <BigButton variant="secondary" on:click={openWorkspace}>Open Workspace</BigButton>
   </section>

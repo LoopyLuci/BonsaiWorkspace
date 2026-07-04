@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Deploy the Bonsai Universal Linter (BUL) to production.
+Deploy the Omnisystem Universal Linter (BUL) to production.
 
 .DESCRIPTION
 Comprehensive deployment script for BUL including:
@@ -100,13 +100,13 @@ Write-Header "DEPLOYMENT PHASE 2: Pre-Deployment Checks"
 Write-Status "Checking workspace structure..."
 $workspaceRoot = Get-Location
 $requiredDirs = @(
-    "crates/bonsai-lint",
+    "crates/omnisystem-lint",
     "crates/mcp-server",
-    "crates/bonsai-lint-treesitter-titan",
-    "crates/bonsai-lint-treesitter-aether",
-    "crates/bonsai-lint-treesitter-sylva",
-    "crates/bonsai-lint-treesitter-axiom",
-    "bonsai-workspace/src/lib/components",
+    "crates/omnisystem-lint-treesitter-titan",
+    "crates/omnisystem-lint-treesitter-aether",
+    "crates/omnisystem-lint-treesitter-sylva",
+    "crates/omnisystem-lint-treesitter-axiom",
+    "omnisystem-workspace/src/lib/components",
     "docs"
 )
 
@@ -122,9 +122,9 @@ Write-Success "Workspace structure verified"
 Write-Status "Checking Cargo.toml files..."
 $cargoFiles = @(
     "Cargo.toml",
-    "crates/bonsai-lint/Cargo.toml",
+    "crates/omnisystem-lint/Cargo.toml",
     "crates/mcp-server/Cargo.toml",
-    "crates/bonsai-lint-treesitter-titan/Cargo.toml"
+    "crates/omnisystem-lint-treesitter-titan/Cargo.toml"
 )
 
 foreach ($file in $cargoFiles) {
@@ -143,11 +143,11 @@ if (-not $SkipBuild) {
     Write-Header "DEPLOYMENT PHASE 3: Building Crates"
 
     $crates = @(
-        "bonsai-lint",
-        "bonsai-lint-treesitter-titan",
-        "bonsai-lint-treesitter-aether",
-        "bonsai-lint-treesitter-sylva",
-        "bonsai-lint-treesitter-axiom",
+        "omnisystem-lint",
+        "omnisystem-lint-treesitter-titan",
+        "omnisystem-lint-treesitter-aether",
+        "omnisystem-lint-treesitter-sylva",
+        "omnisystem-lint-treesitter-axiom",
         "mcp-server"
     )
 
@@ -179,13 +179,13 @@ if (-not $SkipBuild) {
 if (-not $SkipTests) {
     Write-Header "DEPLOYMENT PHASE 4: Running Tests"
 
-    Write-Status "Running bonsai-lint tests..." "Info"
+    Write-Status "Running omnisystem-lint tests..." "Info"
     if ($DryRun) {
-        Write-Status "DRY RUN: cargo test -p bonsai-lint" "Warning"
+        Write-Status "DRY RUN: cargo test -p omnisystem-lint" "Warning"
     } else {
         try {
-            cargo test -p bonsai-lint --release 2>&1 | Out-Null
-            Write-Success "bonsai-lint tests passed"
+            cargo test -p omnisystem-lint --release 2>&1 | Out-Null
+            Write-Success "omnisystem-lint tests passed"
         } catch {
             Write-Error-Custom "Tests failed"
             exit 1
@@ -218,7 +218,7 @@ if (-not (Test-Path $artifactDir)) {
 
 Write-Status "Copying build artifacts..."
 $artifacts = @(
-    @{src = "target/release/bonsai-lint"; dst = "bonsai-lint.exe"},
+    @{src = "target/release/omnisystem-lint"; dst = "omnisystem-lint.exe"},
     @{src = "target/release/mcp-server"; dst = "mcp-server.exe"}
 )
 
@@ -243,8 +243,8 @@ foreach ($artifact in $artifacts) {
 # ============================================================================
 Write-Header "DEPLOYMENT PHASE 6: Configuration"
 
-Write-Status "Creating .bonsai/rules directory..."
-$rulesDir = Join-Path $workspaceRoot ".bonsai/rules"
+Write-Status "Creating .omnisystem/rules directory..."
+$rulesDir = Join-Path $workspaceRoot ".omnisystem/rules"
 if (-not (Test-Path $rulesDir)) {
     New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null
     Write-Success "Rules directory created"
@@ -281,7 +281,7 @@ foreach ($ruleName in $defaultRules.Keys) {
 }
 
 Write-Status "Creating lint.toml configuration..."
-$configPath = Join-Path $workspaceRoot ".bonsai/lint.toml"
+$configPath = Join-Path $workspaceRoot ".omnisystem/lint.toml"
 $config = @"
 [linter]
 enabled = true
@@ -318,10 +318,10 @@ $toolsFile = Join-Path $workspaceRoot "crates/mcp-server/src/tools.rs"
 $toolsContent = Get-Content $toolsFile -Raw
 
 $expectedTools = @(
-    "bonsai_lint_file",
-    "bonsai_lint_repo",
-    "bonsai_generate_lint_rule",
-    "bonsai_explain_diagnostic"
+    "omnisystem_lint_file",
+    "omnisystem_lint_repo",
+    "omnisystem_generate_lint_rule",
+    "omnisystem_explain_diagnostic"
 )
 
 foreach ($tool in $expectedTools) {
@@ -334,7 +334,7 @@ foreach ($tool in $expectedTools) {
 }
 
 Write-Status "Verifying IDE plugin..."
-$lintPanelPath = Join-Path $workspaceRoot "bonsai-workspace/src/lib/components/LintPanel.svelte"
+$lintPanelPath = Join-Path $workspaceRoot "omnisystem-workspace/src/lib/components/LintPanel.svelte"
 if (Test-Path $lintPanelPath) {
     Write-Success "IDE plugin component found"
 } else {
@@ -375,9 +375,9 @@ if (Test-Path $lockFile) {
 
 Write-Status "Verifying no uncommitted critical files..."
 $criticalFiles = @(
-    "crates/bonsai-lint/src/lib.rs",
+    "crates/omnisystem-lint/src/lib.rs",
     "crates/mcp-server/src/lint_commands.rs",
-    "bonsai-workspace/src/lib/components/LintPanel.svelte"
+    "omnisystem-workspace/src/lib/components/LintPanel.svelte"
 )
 
 foreach ($file in $criticalFiles) {
@@ -397,12 +397,12 @@ Write-Header "DEPLOYMENT PHASE 9: Summary"
 
 Write-Host "
 ╔══════════════════════════════════════════════════════════════════════════╗
-║                  BONSAI UNIVERSAL LINTER DEPLOYMENT                     ║
+║                  OMNISYSTEM UNIVERSAL LINTER DEPLOYMENT                     ║
 ║                          ✓ SUCCESSFUL                                    ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 📦 COMPONENTS DEPLOYED:
-  ✓ bonsai-lint crate (3,500+ LOC)
+  ✓ omnisystem-lint crate (3,500+ LOC)
   ✓ Omnisystem grammars (Titan, Aether, Sylva, Axiom)
   ✓ MCP server integration (4 tools)
   ✓ Workspace IDE plugin (LintPanel)
@@ -410,8 +410,8 @@ Write-Host "
   ✓ Hunspell LSP server
 
 🔧 CONFIGURATION:
-  ✓ .bonsai/lint.toml (production settings)
-  ✓ .bonsai/rules/ (default linting rules)
+  ✓ .omnisystem/lint.toml (production settings)
+  ✓ .omnisystem/rules/ (default linting rules)
   ✓ MCP tool registration verified
   ✓ IDE plugin component deployed
 
@@ -428,13 +428,13 @@ Write-Host "
 
 📝 NEXT STEPS:
   1. Start MCP server: cargo run -p mcp-server
-  2. Load IDE plugin: bonsai-workspace/src/lib/components/LintPanel.svelte
-  3. Configure Bug Hunt: .bonsai/lint.toml
+  2. Load IDE plugin: omnisystem-workspace/src/lib/components/LintPanel.svelte
+  3. Configure Bug Hunt: .omnisystem/lint.toml
   4. Start Hunspell LSP: cargo run --bin hunspell-lsp-server
-  5. Test linting: bonsai lint --help
+  5. Test linting: omnisystem lint --help
 
 📚 DOCUMENTATION:
-  • Quick-start: crates/bonsai-lint/README.md
+  • Quick-start: crates/omnisystem-lint/README.md
   • Architecture: docs/22-UNIVERSAL-LINTER.md
   • Integration: docs/23-LINTER-INTEGRATION.md
   • Implementation: docs/24-LINTER-IMPLEMENTATION-SUMMARY.md

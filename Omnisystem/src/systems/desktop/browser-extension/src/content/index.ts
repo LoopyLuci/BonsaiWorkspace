@@ -38,12 +38,12 @@ function getVisibleText(maxLen = 16000): string {
 }
 
 function highlightElement(element: Element): void {
-  const existing = document.getElementById('__bonsai_highlight__');
+  const existing = document.getElementById('__omnisystem_highlight__');
   existing?.remove();
 
   const rect = element.getBoundingClientRect();
   const box = document.createElement('div');
-  box.id = '__bonsai_highlight__';
+  box.id = '__omnisystem_highlight__';
   box.style.position = 'fixed';
   box.style.left = `${rect.left}px`;
   box.style.top = `${rect.top}px`;
@@ -193,7 +193,7 @@ browser.runtime.onMessage.addListener(async (message: unknown) => {
     case 'AUTOMATION_CONFIRM': {
       const action = String(msg.payload?.action ?? 'action');
       const selector = msg.payload?.selector ? ` on ${String(msg.payload.selector)}` : '';
-      const allowed = await createConfirmationOverlay(`Bonsai wants to ${action}${selector}.`);
+      const allowed = await createConfirmationOverlay(`Omnisystem wants to ${action}${selector}.`);
       return { allowed };
     }
 

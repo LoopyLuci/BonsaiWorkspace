@@ -7,7 +7,7 @@ Total Scope: 40,000+ LOC across 20 major components, 4 waves
 - [x] Phase 1: Kernel extensions (snapshot_vault/restore_vault) - 2,000 LOC
 - [ ] Phase 3: UMS integration - 1,500 LOC  
 - [ ] Phase 4: Service SDK (Snapshotable trait) - 1,200 LOC
-- [ ] Phase 5: Bonsai Buddy integration - 3,000 LOC
+- [ ] Phase 5: Omnisystem Buddy integration - 3,000 LOC
 - [ ] Phase 6: HDE AI Advisor Orchestrator - 2,500 LOC
 - [ ] Phase 7: Model Building Framework - 2,000 LOC
 - [ ] Phase 8: Axiom Formal Verification - 1,500 LOC
@@ -26,7 +26,7 @@ Total Scope: 40,000+ LOC across 20 major components, 4 waves
 - [ ] Model Building Framework - 2,000 LOC
 - [ ] Shadow mode validation - 1,000 LOC
 
-## Wave 4: Bonsai Buddy - 6,500 LOC
+## Wave 4: Omnisystem Buddy - 6,500 LOC
 - [ ] Standalone agent - 3,000 LOC
 - [ ] Offline-first sync - 2,000 LOC
 - [ ] CRDT snapshot merging - 1,500 LOC
