@@ -369,54 +369,152 @@ struct ExecutableGenerator {
 
 impl ExecutableGenerator {
     fn generate_elf(&self) -> Result<Vec<u8>, String> {
-        let mut elf: Vec<u8> = Vec::new()
+        // Produces a minimal but valid ELF64 executable.
+        // Layout: Ehdr (64 B) + Phdr (56 B) + .text + .data
+        let text_off:  u64 = 64 + 56   // Ehdr + one Phdr
+        let text_size: u64 = self.code_section.len() as u64
+        let data_off:  u64 = text_off + text_size
+        let data_size: u64 = self.data_section.len() as u64
+        let load_addr: u64 = 0x400000  // conventional x86-64 load address
+        let entry:     u64 = load_addr + text_off
 
-        // ELF header (64 bytes)
-        elf.extend_from_slice(&[0x7F, 0x45, 0x4C, 0x46])  // Magic number
-        elf.push(2)   // 64-bit
-        elf.push(1)   // Little-endian
-        elf.push(1)   // ELF version
-        elf.extend_from_slice(&vec![0; 9])  // OS/ABI
+        let mut e: Vec<u8> = Vec::with_capacity((text_off + text_size + data_size) as usize)
 
-        // e_type (executable)
-        elf.extend_from_slice(&[0x02, 0x00])
+        // ── ELF64 Header (Ehdr) ──────────────────────────────────────────────
+        e.extend_from_slice(&[0x7F, b'E', b'L', b'F'])  // EI_MAG
+        e.push(2)  // EI_CLASS  = ELFCLASS64
+        e.push(1)  // EI_DATA   = ELFDATA2LSB
+        e.push(1)  // EI_VERSION= EV_CURRENT
+        e.push(0)  // EI_OSABI  = ELFOSABI_NONE
+        e.extend_from_slice(&[0u8; 8])  // EI_ABIVERSION + padding
+        e.extend_from_slice(&2u16.to_le_bytes())   // e_type    = ET_EXEC
+        e.extend_from_slice(&0x3Eu16.to_le_bytes()) // e_machine = EM_X86_64
+        e.extend_from_slice(&1u32.to_le_bytes())   // e_version = EV_CURRENT
+        e.extend_from_slice(&entry.to_le_bytes())  // e_entry
+        e.extend_from_slice(&64u64.to_le_bytes())  // e_phoff (Phdr right after Ehdr)
+        e.extend_from_slice(&0u64.to_le_bytes())   // e_shoff (no sections)
+        e.extend_from_slice(&0u32.to_le_bytes())   // e_flags
+        e.extend_from_slice(&64u16.to_le_bytes())  // e_ehsize
+        e.extend_from_slice(&56u16.to_le_bytes())  // e_phentsize
+        e.extend_from_slice(&1u16.to_le_bytes())   // e_phnum
+        e.extend_from_slice(&64u16.to_le_bytes())  // e_shentsize
+        e.extend_from_slice(&0u16.to_le_bytes())   // e_shnum
+        e.extend_from_slice(&0u16.to_le_bytes())   // e_shstrndx
 
-        // e_machine (x86-64)
-        elf.extend_from_slice(&[0x3E, 0x00])
+        // ── Program Header (PT_LOAD) ─────────────────────────────────────────
+        let total_file = text_off + text_size + data_size
+        e.extend_from_slice(&1u32.to_le_bytes())            // p_type  = PT_LOAD
+        e.extend_from_slice(&0x5u32.to_le_bytes())          // p_flags = PF_R|PF_X
+        e.extend_from_slice(&0u64.to_le_bytes())            // p_offset
+        e.extend_from_slice(&load_addr.to_le_bytes())       // p_vaddr
+        e.extend_from_slice(&load_addr.to_le_bytes())       // p_paddr
+        e.extend_from_slice(&total_file.to_le_bytes())      // p_filesz
+        e.extend_from_slice(&total_file.to_le_bytes())      // p_memsz
+        e.extend_from_slice(&0x200000u64.to_le_bytes())     // p_align = 2 MiB
 
-        // e_version
-        elf.extend_from_slice(&[0x01, 0x00, 0x00, 0x00])
-
-        // Add more header fields...
-        elf.extend_from_slice(&vec![0; 40])  // Placeholder
-
-        // Code section
-        elf.extend_from_slice(&self.code_section)
-
-        // Data section
-        elf.extend_from_slice(&self.data_section)
-
-        Ok(elf)
+        e.extend_from_slice(&self.code_section)
+        e.extend_from_slice(&self.data_section)
+        Ok(e)
     }
 
     fn generate_pe(&self) -> Result<Vec<u8>, String> {
-        let mut pe: Vec<u8> = Vec::new()
+        // Produces a minimal PE32+ (64-bit) executable.
+        // Layout: DOS stub (64 B) → PE sig (4 B) → COFF header (20 B)
+        //         → Optional header PE32+ (112 B) → .text section (40 B) → .text bytes
+        let code_size   = self.code_section.len() as u32
+        let image_base: u64 = 0x140000000  // default for PE32+
+        let sect_align: u32 = 0x1000
+        let file_align: u32 = 0x200
+        let headers_size = 0x200u32  // rounded to file_align
+        let text_rva    = sect_align  // first section at VA 0x1000
+        let entry_rva   = text_rva
+        let text_raw    = headers_size  // raw data starts after headers
+        let size_of_image = text_rva + ((code_size + sect_align - 1) & !(sect_align - 1))
 
-        // DOS header
-        pe.extend_from_slice(&[0x4D, 0x5A])  // MZ
-        pe.extend_from_slice(&vec![0; 58])   // Padding
+        let mut p: Vec<u8> = Vec::new()
 
-        // PE signature offset (at 0x3C)
-        let sig_offset = 64u32
-        pe.extend_from_slice(&sig_offset.to_le_bytes())
+        // DOS stub (64 bytes, with PE offset at 0x3C = 60)
+        p.extend_from_slice(&[0x4D, 0x5A])  // MZ
+        p.extend_from_slice(&[0x90, 0x00])  // bytes on last page
+        p.extend_from_slice(&[0x03, 0x00])  // pages in file
+        p.extend_from_slice(&[0x00, 0x00])  // relocations
+        p.extend_from_slice(&[0x04, 0x00])  // size of header in paragraphs
+        p.extend_from_slice(&[0x00, 0x00])  // min extra paragraphs
+        p.extend_from_slice(&[0xFF, 0xFF])  // max extra paragraphs
+        p.extend_from_slice(&[0x00, 0x00])  // initial SS
+        p.extend_from_slice(&[0xB8, 0x00])  // initial SP
+        p.extend_from_slice(&[0x00, 0x00])  // checksum
+        p.extend_from_slice(&[0x00, 0x00])  // initial IP
+        p.extend_from_slice(&[0x00, 0x00])  // initial CS
+        p.extend_from_slice(&[0x40, 0x00])  // raw offset of reloc table
+        p.extend_from_slice(&[0x00, 0x00])  // overlay number
+        p.extend_from_slice(&[0u8; 8])       // reserved
+        p.extend_from_slice(&[0x00, 0x00])  // OEM id
+        p.extend_from_slice(&[0x00, 0x00])  // OEM info
+        p.extend_from_slice(&[0u8; 20])     // reserved
+        // e_lfanew at offset 0x3C: points to PE signature at byte 64
+        p.extend_from_slice(&64u32.to_le_bytes())
 
         // PE signature
-        pe.extend_from_slice(&[0x50, 0x45, 0x00, 0x00])  // "PE\0\0"
+        p.extend_from_slice(b"PE\0\0")
 
-        // Add COFF header and optional header...
-        pe.extend_from_slice(&vec![0; 200])  // Placeholder
+        // COFF header (20 bytes)
+        p.extend_from_slice(&0x8664u16.to_le_bytes())  // Machine = AMD64
+        p.extend_from_slice(&1u16.to_le_bytes())        // NumberOfSections = 1
+        p.extend_from_slice(&0u32.to_le_bytes())        // TimeDateStamp
+        p.extend_from_slice(&0u32.to_le_bytes())        // PointerToSymbolTable
+        p.extend_from_slice(&0u32.to_le_bytes())        // NumberOfSymbols
+        p.extend_from_slice(&112u16.to_le_bytes())      // SizeOfOptionalHeader (PE32+)
+        p.extend_from_slice(&0x22u16.to_le_bytes())     // Characteristics: executable, 64-bit
 
-        Ok(pe)
+        // Optional header PE32+ (112 bytes, 16 data directories = 128, but subsystem limits to 112 here)
+        p.extend_from_slice(&0x020Bu16.to_le_bytes())   // Magic = PE32+
+        p.extend_from_slice(&[14u8, 0u8])               // MajorLinkerVersion, Minor
+        p.extend_from_slice(&code_size.to_le_bytes())   // SizeOfCode
+        p.extend_from_slice(&0u32.to_le_bytes())        // SizeOfInitializedData
+        p.extend_from_slice(&0u32.to_le_bytes())        // SizeOfUninitializedData
+        p.extend_from_slice(&entry_rva.to_le_bytes())   // AddressOfEntryPoint
+        p.extend_from_slice(&text_rva.to_le_bytes())    // BaseOfCode
+        p.extend_from_slice(&image_base.to_le_bytes())  // ImageBase
+        p.extend_from_slice(&sect_align.to_le_bytes())  // SectionAlignment
+        p.extend_from_slice(&file_align.to_le_bytes())  // FileAlignment
+        p.extend_from_slice(&6u16.to_le_bytes())        // MajorOSVersion
+        p.extend_from_slice(&0u16.to_le_bytes())        // MinorOSVersion
+        p.extend_from_slice(&0u16.to_le_bytes())        // MajorImageVersion
+        p.extend_from_slice(&0u16.to_le_bytes())        // MinorImageVersion
+        p.extend_from_slice(&6u16.to_le_bytes())        // MajorSubsystemVersion
+        p.extend_from_slice(&0u16.to_le_bytes())        // MinorSubsystemVersion
+        p.extend_from_slice(&0u32.to_le_bytes())        // Win32VersionValue
+        p.extend_from_slice(&size_of_image.to_le_bytes()) // SizeOfImage
+        p.extend_from_slice(&headers_size.to_le_bytes()) // SizeOfHeaders
+        p.extend_from_slice(&0u32.to_le_bytes())        // CheckSum
+        p.extend_from_slice(&3u16.to_le_bytes())        // Subsystem = CUI (console)
+        p.extend_from_slice(&0u16.to_le_bytes())        // DllCharacteristics
+        p.extend_from_slice(&0x100000u64.to_le_bytes()) // SizeOfStackReserve
+        p.extend_from_slice(&0x1000u64.to_le_bytes())   // SizeOfStackCommit
+        p.extend_from_slice(&0x100000u64.to_le_bytes()) // SizeOfHeapReserve
+        p.extend_from_slice(&0x1000u64.to_le_bytes())   // SizeOfHeapCommit
+        p.extend_from_slice(&0u32.to_le_bytes())        // LoaderFlags
+        p.extend_from_slice(&16u32.to_le_bytes())       // NumberOfRvaAndSizes (16 data dirs)
+        p.extend_from_slice(&[0u8; 128])                // 16 data directories (all empty)
+
+        // .text section table entry (40 bytes)
+        let mut name = [0u8; 8]; name[..5].copy_from_slice(b".text")
+        p.extend_from_slice(&name)
+        p.extend_from_slice(&code_size.to_le_bytes())   // VirtualSize
+        p.extend_from_slice(&text_rva.to_le_bytes())    // VirtualAddress
+        p.extend_from_slice(&((code_size + file_align - 1) & !(file_align - 1)).to_le_bytes()) // SizeOfRawData
+        p.extend_from_slice(&text_raw.to_le_bytes())    // PointerToRawData
+        p.extend_from_slice(&0u32.to_le_bytes())        // PointerToRelocations
+        p.extend_from_slice(&0u32.to_le_bytes())        // PointerToLinenumbers
+        p.extend_from_slice(&0u16.to_le_bytes())        // NumberOfRelocations
+        p.extend_from_slice(&0u16.to_le_bytes())        // NumberOfLinenumbers
+        p.extend_from_slice(&0x60000020u32.to_le_bytes()) // Characteristics: CNT_CODE|MEM_EXECUTE|MEM_READ
+
+        // Pad to headers_size, then emit code
+        while p.len() < headers_size as usize { p.push(0) }
+        p.extend_from_slice(&self.code_section)
+        Ok(p)
     }
 }
 

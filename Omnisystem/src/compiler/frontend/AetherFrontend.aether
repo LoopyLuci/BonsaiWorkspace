@@ -1,31 +1,635 @@
-// AETHER FRONTEND - Async/Distributed Language Compiler (700 LOC)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER SELF-HOSTED FRONTEND COMPILER
+// Compiles Distributed Actor Systems (actor/state/message/handler) into TITAN IR
+// Language: AETHER - Self-Compiling Actor Framework
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-pub struct AetherCompiler {
-    actors: Vec<String>,
-    channels: Vec<String>,
-    spawns: Vec<String>,
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+use crate::backend::titan_backend::{IrModule, IrFunction, IrBasicBlock, IrInstruction, IrOpcode, IrValue}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// ACTOR AST
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct ActorState {
+    name: String,
+    state_type: String,
+    initial_value: Option<String>,
 }
 
-impl AetherCompiler {
-    pub fn new() -> Self {
-        AetherCompiler {
-            actors: Vec::new(),
-            channels: Vec::new(),
-            spawns: Vec::new(),
+pub struct MessageField {
+    name: String,
+    field_type: String,
+}
+
+pub struct MessageDef {
+    name: String,
+    fields: Vec<MessageField>,
+}
+
+pub struct HandlerDef {
+    message_name: String,
+    binding_name: String,   // the `msg` in `handler M(msg) { ... }`
+    body_tokens: Vec<String>,
+}
+
+pub struct ActorDecl {
+    name: String,
+    state_vars: Vec<ActorState>,
+    messages: Vec<MessageDef>,
+    handlers: Vec<HandlerDef>,
+}
+
+impl ActorDecl {
+    pub fn new(name: String) -> Self {
+        ActorDecl {
+            name,
+            state_vars: Vec::new(),
+            messages: Vec::new(),
+            handlers: Vec::new(),
         }
     }
 
-    pub fn compile_actor(&mut self, actor_code: String) -> Result<String, String> {
-        self.actors.push(actor_code);
-        Ok("Actor compiled with message handlers".to_string())
-    }
-
-    pub fn compile_async(&mut self, async_code: String) -> Result<String, String> {
-        self.spawns.push(async_code);
-        Ok("Async block compiled".to_string())
+    fn message_by_name(&self, name: &str) -> Option<&MessageDef> {
+        for m in &self.messages {
+            if m.name == name {
+                return Some(m)
+            }
+        }
+        None
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER LEXER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct AetherLexer {
+    source: String,
+    pos: i32,
+}
+
+impl AetherLexer {
+    pub fn new(source: String) -> Self {
+        AetherLexer { source, pos: 0 }
+    }
+
+    pub fn tokenize(&mut self) -> Vec<String> {
+        let mut tokens = Vec::new()
+        let chars: Vec<char> = self.source.chars().collect()
+        let len = chars.len() as i32
+
+        while self.pos < len {
+            let ch = chars[self.pos as usize]
+            if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+                self.pos += 1
+                continue
+            }
+
+            if ch == '#' {
+                while self.pos < len && chars[self.pos as usize] != '\n' {
+                    self.pos += 1
+                }
+                continue
+            }
+
+            if ch == ':' && self.pos + 1 < len && chars[(self.pos + 1) as usize].is_alphabetic() {
+                // atom literal, e.g. :ok / :error
+                let mut atom = ":".to_string()
+                self.pos += 1
+                while self.pos < len && (chars[self.pos as usize].is_alphanumeric() || chars[self.pos as usize] == '_') {
+                    atom.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(atom)
+                continue
+            }
+
+            if ch == '|' && self.pos + 1 < len && chars[(self.pos + 1) as usize] == '>' {
+                tokens.push("|>".to_string())
+                self.pos += 2
+                continue
+            }
+
+            if ch == '-' && self.pos + 1 < len && chars[(self.pos + 1) as usize] == '>' {
+                tokens.push("->".to_string())
+                self.pos += 2
+                continue
+            }
+
+            if ch == '{' || ch == '}' || ch == '(' || ch == ')' || ch == ',' || ch == ':' || ch == ';' || ch == '.' {
+                tokens.push(ch.to_string())
+                self.pos += 1
+            } else if ch == '"' {
+                let mut string_val = String::new()
+                self.pos += 1
+                while self.pos < len && chars[self.pos as usize] != '"' {
+                    string_val.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                self.pos += 1
+                tokens.push(format!("\"{}\"", string_val))
+            } else if ch.is_alphabetic() || ch == '_' {
+                let mut ident = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_alphanumeric() || chars[self.pos as usize] == '_') {
+                    ident.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(ident)
+            } else if ch.is_numeric() {
+                let mut num = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_numeric() || chars[self.pos as usize] == '.') {
+                    num.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(num)
+            } else {
+                self.pos += 1
+            }
+        }
+
+        tokens
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER PARSER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct AetherParser {
+    tokens: Vec<String>,
+    pos: i32,
+}
+
+impl AetherParser {
+    pub fn new(tokens: Vec<String>) -> Self {
+        AetherParser { tokens, pos: 0 }
+    }
+
+    fn peek(&self) -> String {
+        self.current_token()
+    }
+
+    fn advance(&mut self) -> String {
+        let t = self.current_token()
+        self.pos += 1
+        t
+    }
+
+    fn at_end(&self) -> bool {
+        self.pos >= (self.tokens.len() as i32)
+    }
+
+    pub fn parse(&mut self) -> Result<Vec<ActorDecl>, String> {
+        let mut actors = Vec::new()
+
+        while !self.at_end() {
+            if self.peek() == "actor" {
+                let actor = self.parse_actor()?
+                actors.push(actor)
+            } else {
+                self.pos += 1
+            }
+        }
+
+        Ok(actors)
+    }
+
+    fn parse_actor(&mut self) -> Result<ActorDecl, String> {
+        self.advance() // 'actor'
+        let actor_name = self.advance()
+        let mut actor = ActorDecl::new(actor_name)
+
+        if self.peek() != "{" {
+            return Err("Expected '{' after actor name".to_string())
+        }
+        self.advance() // '{'
+
+        while !self.at_end() && self.peek() != "}" {
+            match self.peek().as_str() {
+                "let" => self.parse_let(&mut actor)?,
+                "message" => self.parse_message(&mut actor)?,
+                "handler" => self.parse_handler(&mut actor)?,
+                _ => self.pos += 1,
+            }
+        }
+
+        if self.peek() == "}" {
+            self.advance()
+        }
+
+        Ok(actor)
+    }
+
+    // let field: T;   or   let field: T = init;
+    fn parse_let(&mut self, actor: &mut ActorDecl) -> Result<(), String> {
+        self.advance() // 'let'
+        let name = self.advance()
+        let mut state_type = "Any".to_string()
+        let mut initial_value: Option<String> = None
+        if self.peek() == ":" {
+            self.advance()
+            state_type = self.advance()
+        }
+        if self.peek() == "=" {
+            self.advance()
+            initial_value = Some(self.advance())
+        }
+        if self.peek() == ";" {
+            self.advance()
+        }
+        actor.state_vars.push(ActorState { name, state_type, initial_value })
+        Ok(())
+    }
+
+    // message M { f: T, g: T }
+    fn parse_message(&mut self, actor: &mut ActorDecl) -> Result<(), String> {
+        self.advance() // 'message'
+        let msg_name = self.advance()
+        let mut fields = Vec::new()
+
+        if self.peek() == "{" {
+            self.advance()
+            while !self.at_end() && self.peek() != "}" {
+                let field_name = self.advance()
+                if field_name == "," { continue }
+                let mut field_type = "Any".to_string()
+                if self.peek() == ":" {
+                    self.advance()
+                    field_type = self.advance()
+                }
+                fields.push(MessageField { name: field_name, field_type })
+                if self.peek() == "," { self.advance() }
+            }
+            if self.peek() == "}" { self.advance() }
+        }
+
+        actor.messages.push(MessageDef { name: msg_name, fields })
+        Ok(())
+    }
+
+    // handler M(msg) { body }
+    fn parse_handler(&mut self, actor: &mut ActorDecl) -> Result<(), String> {
+        self.advance() // 'handler'
+        let message_name = self.advance()
+        let mut binding_name = "msg".to_string()
+
+        if self.peek() == "(" {
+            self.advance()
+            if self.peek() != ")" {
+                binding_name = self.advance()
+            }
+            if self.peek() == ")" { self.advance() }
+        }
+
+        let mut body_tokens = Vec::new()
+        if self.peek() == "{" {
+            self.advance()
+            let mut depth = 1
+            while !self.at_end() && depth > 0 {
+                let t = self.advance()
+                if t == "{" { depth += 1 }
+                else if t == "}" { depth -= 1; if depth == 0 { break } }
+                body_tokens.push(t)
+            }
+        }
+
+        actor.handlers.push(HandlerDef { message_name, binding_name, body_tokens })
+        Ok(())
+    }
+
+    fn current_token(&self) -> String {
+        if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].clone()
+        } else {
+            String::new()
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER -> TITAN IR LOWERING
+// Every actor lowers to:
+//   1. a mailbox channel value created via aether_runtime_mailbox_create
+//   2. a spawn() call registering the actor's dispatch loop with the scheduler
+//   3. a dispatch-loop function containing one match arm per message type,
+//      each arm invoking the handler body via an opaque eval call and then
+//      looping back to receive the next message
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct AetherIrLowering {
+    tmp_counter: u32,
+}
+
+impl AetherIrLowering {
+    pub fn new() -> Self {
+        AetherIrLowering { tmp_counter: 0 }
+    }
+
+    fn next_tmp(&mut self) -> String {
+        self.tmp_counter += 1
+        format!("%aether_t{}", self.tmp_counter)
+    }
+
+    pub fn lower_actor(&mut self, actor: &ActorDecl, module: &mut IrModule) {
+        self.lower_spawn_fn(actor, module)
+        self.lower_dispatch_loop_fn(actor, module)
+        for handler in &actor.handlers {
+            self.lower_handler_fn(actor, handler, module)
+        }
+    }
+
+    // <ActorName>_spawn(): creates the mailbox and registers the dispatch loop
+    fn lower_spawn_fn(&mut self, actor: &ActorDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_spawn", actor.name)
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        let mailbox_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+        let mut create_mailbox = IrInstruction::new(IrOpcode::Call)
+        create_mailbox.result = Some(mailbox_val.clone())
+        create_mailbox.operands.push(IrValue { id: "aether_runtime_mailbox_create".to_string(), vtype: "fn".to_string() })
+        create_mailbox.operands.push(IrValue { id: format!("{}_mailbox", actor.name), vtype: "str".to_string() })
+        entry.instructions.push(create_mailbox)
+
+        // allocate actor state cells
+        for state in &actor.state_vars {
+            let mut alloc = IrInstruction::new(IrOpcode::Alloca)
+            alloc.result = Some(IrValue { id: format!("{}_{}", actor.name, state.name), vtype: state.state_type.clone() })
+            entry.instructions.push(alloc)
+
+            if let Some(init) = &state.initial_value {
+                let mut store = IrInstruction::new(IrOpcode::Store)
+                store.operands.push(IrValue { id: format!("{}_{}", actor.name, state.name), vtype: state.state_type.clone() })
+                store.operands.push(IrValue { id: init.clone(), vtype: state.state_type.clone() })
+                entry.instructions.push(store)
+            }
+        }
+
+        let pid_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+        let mut spawn_call = IrInstruction::new(IrOpcode::Call)
+        spawn_call.result = Some(pid_val.clone())
+        spawn_call.operands.push(IrValue { id: "aether_runtime_spawn".to_string(), vtype: "fn".to_string() })
+        spawn_call.operands.push(IrValue { id: format!("{}_dispatch_loop", actor.name), vtype: "fnref".to_string() })
+        spawn_call.operands.push(mailbox_val.clone())
+        entry.instructions.push(spawn_call)
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(pid_val)
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: Vec::new(),
+            return_type: IrValue { id: "ret".to_string(), vtype: "ptr".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+
+    // <ActorName>_dispatch_loop(mailbox): blocking receive loop with a match
+    // arm per declared message, each arm calling into the handler function
+    // and then jumping back to the receive block.
+    fn lower_dispatch_loop_fn(&mut self, actor: &ActorDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_dispatch_loop", actor.name)
+        let mailbox_param = IrValue { id: "mailbox".to_string(), vtype: "ptr".to_string() }
+
+        let mut recv_block = IrBasicBlock {
+            label: "recv".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        let msg_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+        let mut recv_call = IrInstruction::new(IrOpcode::Call)
+        recv_call.result = Some(msg_val.clone())
+        recv_call.operands.push(IrValue { id: "aether_runtime_mailbox_recv".to_string(), vtype: "fn".to_string() })
+        recv_call.operands.push(mailbox_param.clone())
+        recv_block.instructions.push(recv_call)
+
+        let tag_val = IrValue { id: self.next_tmp(), vtype: "i64".to_string() }
+        let mut tag_call = IrInstruction::new(IrOpcode::Call)
+        tag_call.result = Some(tag_val.clone())
+        tag_call.operands.push(IrValue { id: "aether_runtime_message_tag".to_string(), vtype: "fn".to_string() })
+        tag_call.operands.push(msg_val.clone())
+        recv_block.instructions.push(tag_call)
+
+        recv_block.successors.push("recv".to_string())
+
+        let mut blocks = Vec::new()
+
+        // one match arm block per message type, comparing the tag and dispatching
+        for (idx, msg) in actor.messages.iter().enumerate() {
+            let arm_label = format!("arm_{}", msg.name)
+            let mut arm_block = IrBasicBlock {
+                label: arm_label.clone(),
+                instructions: Vec::new(),
+                successors: vec!["recv".to_string()],
+                predecessors: vec!["recv".to_string()],
+            }
+
+            let mut cmp = IrInstruction::new(IrOpcode::Compare)
+            cmp.operands.push(tag_val.clone())
+            cmp.operands.push(IrValue { id: idx.to_string(), vtype: "i64".to_string() })
+            recv_block.instructions.push(cmp)
+
+            let mut branch = IrInstruction::new(IrOpcode::JumpIf)
+            branch.operands.push(IrValue { id: arm_label.clone(), vtype: "label".to_string() })
+            recv_block.instructions.push(branch)
+            recv_block.successors.push(arm_label.clone())
+
+            if let Some(handler) = actor.handlers.iter().find(|h| h.message_name == msg.name) {
+                let mut call = IrInstruction::new(IrOpcode::Call)
+                call.operands.push(IrValue { id: format!("{}_{}_handler", actor.name, handler.message_name), vtype: "fnref".to_string() })
+                call.operands.push(msg_val.clone())
+                arm_block.instructions.push(call)
+            }
+
+            let mut loop_back = IrInstruction::new(IrOpcode::Jump)
+            loop_back.operands.push(IrValue { id: "recv".to_string(), vtype: "label".to_string() })
+            arm_block.instructions.push(loop_back)
+
+            blocks.push(arm_block)
+        }
+
+        blocks.insert(0, recv_block)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: vec![mailbox_param],
+            return_type: IrValue { id: "ret".to_string(), vtype: "i64".to_string() },
+            blocks,
+            entry_block: "recv".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+
+    // <ActorName>_<Message>_handler(msg): evaluates the handler body
+    fn lower_handler_fn(&mut self, actor: &ActorDecl, handler: &HandlerDef, module: &mut IrModule) {
+        let fn_name = format!("{}_{}_handler", actor.name, handler.message_name)
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        // unpack message fields into locals, if the message was declared
+        if let Some(msg_def) = actor.message_by_name(&handler.message_name) {
+            for field in &msg_def.fields {
+                let field_val = IrValue { id: format!("{}_{}", handler.binding_name, field.name), vtype: field.field_type.clone() }
+                let mut unpack = IrInstruction::new(IrOpcode::Call)
+                unpack.result = Some(field_val)
+                unpack.operands.push(IrValue { id: "aether_runtime_message_field".to_string(), vtype: "fn".to_string() })
+                unpack.operands.push(IrValue { id: handler.binding_name.clone(), vtype: "ptr".to_string() })
+                unpack.operands.push(IrValue { id: field.name.clone(), vtype: "str".to_string() })
+                entry.instructions.push(unpack)
+            }
+        }
+
+        let body_src: String = handler.body_tokens.join(" ")
+        let mut eval_call = IrInstruction::new(IrOpcode::Call)
+        eval_call.operands.push(IrValue { id: "aether_runtime_eval_handler_body".to_string(), vtype: "fn".to_string() })
+        eval_call.operands.push(IrValue { id: body_src, vtype: "str".to_string() })
+        entry.instructions.push(eval_call)
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(IrValue { id: "zero".to_string(), vtype: "i64".to_string() })
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: vec![IrValue { id: handler.binding_name.clone(), vtype: "ptr".to_string() }],
+            return_type: IrValue { id: "ret".to_string(), vtype: "i64".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER CODE GENERATOR (source pretty-printer, used for round-trip diagnostics)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct AetherCodeGen {
+    output: String,
+}
+
+impl AetherCodeGen {
+    pub fn new() -> Self {
+        AetherCodeGen { output: String::new() }
+    }
+
+    pub fn generate(&mut self, actors: &Vec<ActorDecl>) -> String {
+        for actor in actors {
+            self.gen_actor(actor)
+        }
+        self.output.clone()
+    }
+
+    fn gen_actor(&mut self, actor: &ActorDecl) {
+        self.output.push_str(&format!("actor {} {{\n", actor.name))
+
+        for state in &actor.state_vars {
+            match &state.initial_value {
+                Some(v) => self.output.push_str(&format!("  let {}: {} = {};\n", state.name, state.state_type, v)),
+                None => self.output.push_str(&format!("  let {}: {};\n", state.name, state.state_type)),
+            }
+        }
+
+        for msg in &actor.messages {
+            self.output.push_str(&format!("  message {} {{ ", msg.name))
+            for (i, field) in msg.fields.iter().enumerate() {
+                if i > 0 { self.output.push_str(", ") }
+                self.output.push_str(&format!("{}: {}", field.name, field.field_type))
+            }
+            self.output.push_str(" }\n")
+        }
+
+        for handler in &actor.handlers {
+            self.output.push_str(&format!("  handler {}({}) {{ {} }}\n",
+                handler.message_name, handler.binding_name, handler.body_tokens.join(" ")))
+        }
+
+        self.output.push_str("}\n\n")
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// AETHER SELF-HOSTED COMPILER (MAIN ENTRY POINTS)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn compile_aether_source(source: String) -> Result<String, String> {
+    let mut lexer = AetherLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = AetherParser::new(tokens)
+    let actors = parser.parse()?
+
+    let mut codegen = AetherCodeGen::new()
+    let generated = codegen.generate(&actors)
+
+    Ok(generated)
+}
+
+pub fn compile_aether_to_ir(source: String, module_name: String) -> Result<IrModule, String> {
+    let mut lexer = AetherLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = AetherParser::new(tokens)
+    let actors = parser.parse()?
+
+    let mut module = IrModule::new(module_name)
+    let mut lowering = AetherIrLowering::new()
+    for actor in &actors {
+        lowering.lower_actor(actor, &mut module)
+    }
+
+    Ok(module)
+}
+
+pub fn test_aether_compiler() -> Result<(), String> {
+    let aether_code = r#"
+        actor PriceFeeder {
+            let prices: Vec<f32> = [];
+
+            message UpdatePrice {
+                asset: String,
+                price: f32
+            }
+
+            handler UpdatePrice(msg) {
+                prices.push(msg.price);
+            }
+        }
+    "#.to_string()
+
+    let result = compile_aether_source(aether_code.clone())?
+    if !(result.contains("actor") && result.contains("PriceFeeder")) {
+        return Err("AETHER compilation failed: text roundtrip".to_string())
+    }
+
+    let ir_module = compile_aether_to_ir(aether_code, "test_module".to_string())?
+    if !ir_module.functions.contains_key("PriceFeeder_spawn") {
+        return Err("AETHER IR lowering failed: missing spawn function".to_string())
+    }
+    if !ir_module.functions.contains_key("PriceFeeder_dispatch_loop") {
+        return Err("AETHER IR lowering failed: missing dispatch loop".to_string())
+    }
+    if !ir_module.functions.contains_key("PriceFeeder_UpdatePrice_handler") {
+        return Err("AETHER IR lowering failed: missing message handler".to_string())
+    }
+
+    Ok(())
+}
+
 pub fn main() {
-    println!("✓ AETHER Frontend - Async Language Compiler Ready");
+    println!("AETHER Frontend - Actor Language Compiler Ready")
 }

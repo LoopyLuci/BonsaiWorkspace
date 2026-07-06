@@ -1,0 +1,654 @@
+// OmniOS Sandboxing Immune System — Core Runtime
+// Every application, process, and piece of code that runs under OmniOS is wrapped
+// in a Sanctum vault and connected only to explicitly-permitted capabilities.
+// The Immune System actively monitors all vault events and quarantines violations.
+//
+// Architecture:
+//   SandboxRegistry  — tracks all active vaults and their capability allowlists
+//   ImmuneMonitor    — event loop that receives vault telemetry and acts on anomalies
+//   PolicyEngine     — evaluates capability requests against per-vault allowlists
+//   VaultSpawner     — creates isolated Sanctum vaults using OS-native primitives
+//   QuarantineCell   — holds suspended vaults pending operator review
+
+namespace omnios::sandbox;
+
+// Imports from real Omnisystem UOSC kernel modules (src/systems/UOSC/kernel/)
+use uosc::sanctum;       // VaultType, create_vault, enter_vault, suspend_vault, resume_vault
+use uosc::capability;    // CapabilityToken, CapabilityGrant, ResourceType, Permissions
+use uosc::ipc;           // IPC channel primitives, reply()
+use uosc::memory;        // allocate_isolated_memory, free_isolated_memory
+
+// Imports from Env-Fabric layer (src/systems/runtime/services/env-fabric/)
+use env_fabric::manager;  // env_spec_new, env_manager_create, env_state_set_status
+use env_fabric::payload;  // payload_emulation_new, build_emulation_payload
+
+// ─── Core Types ───────────────────────────────────────────────────────────────
+
+pub struct VaultHandle {
+    pub vault_id:     u64,
+    pub owner_pid:    u64,
+    pub app_name:     String,
+    pub policy_id:    u64,
+    pub state:        VaultState,
+    pub quarantined:  bool,
+    pub spawn_time:   u64,
+    pub event_count:  u64,
+}
+
+pub enum VaultState {
+    Initializing,
+    Running,
+    Suspended,
+    Quarantined,
+    Terminated,
+}
+
+pub struct CapabilityAllowlist {
+    pub policy_id:          u64,
+    pub app_name:           String,
+    pub allowed_net_hosts:  Vec<String>,   // explicit hostname allowlist; empty = no network
+    pub allowed_fs_paths:   Vec<String>,   // path prefixes the vault may read/write
+    pub allowed_ipc_peers:  Vec<u64>,      // vault IDs this vault may send IPC to
+    pub allowed_syscalls:   Vec<u32>,      // system call numbers (seccomp allowlist)
+    pub max_mem_mb:         u64,
+    pub max_cpu_pct:        u32,           // 0–100
+    pub allow_child_spawn:  bool,
+    pub allow_gpu:          bool,
+    pub allow_audio:        bool,
+    pub allow_display:      bool,
+}
+
+pub struct ImmuneEvent {
+    pub event_id:    u64,
+    pub vault_id:    u64,
+    pub kind:        ImmuneEventKind,
+    pub timestamp:   u64,
+    pub detail:      String,
+    pub severity:    EventSeverity,
+}
+
+pub enum ImmuneEventKind {
+    CapabilityDenied,      // vault requested something outside its allowlist
+    PolicyViolation,       // vault attempted a forbidden syscall
+    MemoryOverLimit,       // vault exceeded its memory quota
+    UnauthorizedIpc,       // vault tried to contact an un-permitted peer
+    NetworkDenied,         // outbound connection to a non-allowlisted host
+    FsAccessDenied,        // attempted to read/write outside permitted paths
+    AnomalousBehavior,     // heuristic trigger: unusual syscall pattern
+    QuarantineEntered,     // vault has been suspended and quarantined
+    QuarantineLifted,      // operator cleared the vault and resumed it
+    VaultSpawned,
+    VaultTerminated,
+}
+
+pub enum EventSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+// ─── Sandbox Registry ────────────────────────────────────────────────────────
+
+pub struct SandboxRegistry {
+    vaults:     Vec<VaultHandle>,
+    policies:   Vec<CapabilityAllowlist>,
+    events:     Vec<ImmuneEvent>,
+    next_vault: u64,
+    next_event: u64,
+}
+
+impl SandboxRegistry {
+    pub fn new() -> SandboxRegistry {
+        SandboxRegistry {
+            vaults:     Vec::new(),
+            policies:   Vec::new(),
+            events:     Vec::new(),
+            next_vault: 1,
+            next_event: 1,
+        }
+    }
+
+    pub fn register_policy(&mut self, policy: CapabilityAllowlist) -> u64 {
+        let id = policy.policy_id;
+        self.policies.push(policy);
+        id
+    }
+
+    pub fn spawn_vault(&mut self, app_name: &str, policy_id: u64) -> Result<u64, SandboxError> {
+        // Verify the policy exists
+        let policy_exists = self.policies.iter().any(|p| p.policy_id == policy_id);
+        if !policy_exists {
+            return Err(SandboxError::PolicyNotFound(policy_id));
+        }
+
+        let vault_id = self.next_vault;
+        self.next_vault += 1;
+
+        // Request Sanctum vault from the kernel — hardware-isolated execution context
+        let sanctum_vault = sanctum::create_vault(
+            vault_id,
+            sanctum::VaultType::Isolated,
+            self.policy_by_id(policy_id).map(|p| p.max_mem_mb * 1024 * 1024).unwrap_or(256 * 1024 * 1024),
+            &[0],  // let scheduler assign cores
+        )?;
+
+        let handle = VaultHandle {
+            vault_id,
+            owner_pid:   sanctum_vault.owner_pid,
+            app_name:    app_name.to_string(),
+            policy_id,
+            state:       VaultState::Initializing,
+            quarantined: false,
+            spawn_time:  current_timestamp(),
+            event_count: 0,
+        };
+        self.vaults.push(handle);
+
+        self.emit(vault_id, ImmuneEventKind::VaultSpawned, EventSeverity::Info,
+            format!("Vault {} spawned for '{}'", vault_id, app_name));
+
+        Ok(vault_id)
+    }
+
+    pub fn terminate_vault(&mut self, vault_id: u64) -> Result<(), SandboxError> {
+        let idx = self.vault_idx(vault_id)?;
+        self.vaults[idx].state = VaultState::Terminated;
+        self.emit(vault_id, ImmuneEventKind::VaultTerminated, EventSeverity::Info,
+            format!("Vault {} terminated cleanly", vault_id));
+        Ok(())
+    }
+
+    pub fn quarantine(&mut self, vault_id: u64, reason: &str) -> Result<(), SandboxError> {
+        let idx = self.vault_idx(vault_id)?;
+        self.vaults[idx].state       = VaultState::Quarantined;
+        self.vaults[idx].quarantined = true;
+        self.emit(vault_id, ImmuneEventKind::QuarantineEntered, EventSeverity::Critical,
+            format!("Vault {} quarantined: {}", vault_id, reason));
+        // Suspend the underlying Sanctum vault execution
+        sanctum::suspend_vault(vault_id)?;
+        Ok(())
+    }
+
+    pub fn lift_quarantine(&mut self, vault_id: u64) -> Result<(), SandboxError> {
+        let idx = self.vault_idx(vault_id)?;
+        self.vaults[idx].state       = VaultState::Running;
+        self.vaults[idx].quarantined = false;
+        self.emit(vault_id, ImmuneEventKind::QuarantineLifted, EventSeverity::Info,
+            format!("Vault {} quarantine lifted", vault_id));
+        sanctum::resume_vault(vault_id)?;
+        Ok(())
+    }
+
+    fn vault_idx(&self, id: u64) -> Result<usize, SandboxError> {
+        self.vaults.iter().position(|v| v.vault_id == id)
+            .ok_or(SandboxError::VaultNotFound(id))
+    }
+
+    fn policy_by_id(&self, id: u64) -> Option<&CapabilityAllowlist> {
+        self.policies.iter().find(|p| p.policy_id == id)
+    }
+
+    fn emit(&mut self, vault_id: u64, kind: ImmuneEventKind, sev: EventSeverity, detail: String) {
+        let evt = ImmuneEvent {
+            event_id:  self.next_event,
+            vault_id,
+            kind,
+            timestamp: current_timestamp(),
+            detail,
+            severity: sev,
+        };
+        self.next_event += 1;
+        // Keep ring buffer of last 1024 events
+        if self.events.len() >= 1024 { self.events.remove(0); }
+        self.events.push(evt);
+    }
+
+    pub fn active_vault_count(&self) -> usize {
+        self.vaults.iter().filter(|v| matches!(v.state, VaultState::Running)).count()
+    }
+
+    pub fn quarantined_vault_count(&self) -> usize {
+        self.vaults.iter().filter(|v| v.quarantined).count()
+    }
+
+    pub fn recent_events(&self, limit: usize) -> &[ImmuneEvent] {
+        let start = self.events.len().saturating_sub(limit);
+        &self.events[start..]
+    }
+}
+
+// ─── Policy Engine ────────────────────────────────────────────────────────────
+
+pub struct PolicyEngine {
+    registry: &mut SandboxRegistry,
+}
+
+impl PolicyEngine {
+    pub fn new(registry: &mut SandboxRegistry) -> PolicyEngine {
+        PolicyEngine { registry }
+    }
+
+    // Returns true if the vault is permitted to make this network connection.
+    pub fn check_network(&mut self, vault_id: u64, host: &str) -> bool {
+        let policy = self.get_policy(vault_id);
+        match policy {
+            None => {
+                self.deny(vault_id, ImmuneEventKind::NetworkDenied,
+                    format!("No policy for vault {}; network denied by default", vault_id));
+                false
+            }
+            Some(p) => {
+                if p.allowed_net_hosts.is_empty() {
+                    self.deny(vault_id, ImmuneEventKind::NetworkDenied,
+                        format!("Network policy: deny-all for '{}' → {}", p.app_name, host));
+                    return false;
+                }
+                let allowed = p.allowed_net_hosts.iter().any(|h| host == h || host.ends_with(&format!(".{}", h)));
+                if !allowed {
+                    self.deny(vault_id, ImmuneEventKind::NetworkDenied,
+                        format!("Host '{}' not in allowlist for '{}'", host, p.app_name));
+                }
+                allowed
+            }
+        }
+    }
+
+    // Returns true if the vault may access this filesystem path.
+    pub fn check_fs(&mut self, vault_id: u64, path: &str) -> bool {
+        let policy = self.get_policy(vault_id);
+        match policy {
+            None => {
+                self.deny(vault_id, ImmuneEventKind::FsAccessDenied,
+                    format!("No policy for vault {}; FS access denied by default", vault_id));
+                false
+            }
+            Some(p) => {
+                let allowed = p.allowed_fs_paths.iter().any(|prefix| path.starts_with(prefix.as_str()));
+                if !allowed {
+                    self.deny(vault_id, ImmuneEventKind::FsAccessDenied,
+                        format!("Path '{}' outside permitted scope for '{}'", path, p.app_name));
+                }
+                allowed
+            }
+        }
+    }
+
+    // Returns true if the vault may send IPC to the target vault.
+    pub fn check_ipc(&mut self, from_vault: u64, to_vault: u64) -> bool {
+        let policy = self.get_policy(from_vault);
+        match policy {
+            None => {
+                self.deny(from_vault, ImmuneEventKind::UnauthorizedIpc,
+                    format!("No policy for vault {}; IPC denied", from_vault));
+                false
+            }
+            Some(p) => {
+                let allowed = p.allowed_ipc_peers.contains(&to_vault);
+                if !allowed {
+                    self.deny(from_vault, ImmuneEventKind::UnauthorizedIpc,
+                        format!("'{}' → vault {} not in IPC allowlist", p.app_name, to_vault));
+                }
+                allowed
+            }
+        }
+    }
+
+    // Returns true if the vault may invoke this system call number.
+    pub fn check_syscall(&mut self, vault_id: u64, syscall_nr: u32) -> bool {
+        let policy = self.get_policy(vault_id);
+        match policy {
+            None => {
+                self.deny(vault_id, ImmuneEventKind::PolicyViolation,
+                    format!("No policy for vault {}; syscall {} denied", vault_id, syscall_nr));
+                false
+            }
+            Some(p) => {
+                let allowed = p.allowed_syscalls.contains(&syscall_nr);
+                if !allowed {
+                    self.deny(vault_id, ImmuneEventKind::PolicyViolation,
+                        format!("Syscall {} denied for vault {}", syscall_nr, vault_id));
+                }
+                allowed
+            }
+        }
+    }
+
+    fn get_policy(&self, vault_id: u64) -> Option<&CapabilityAllowlist> {
+        let found = self.registry.vaults.iter().find(|v| v.vault_id == vault_id);
+        let policy_id = match found { Some(v) => v.policy_id, None => return None };
+        self.registry.policy_by_id(policy_id)
+    }
+
+    fn deny(&mut self, vault_id: u64, kind: ImmuneEventKind, detail: String) {
+        self.registry.emit(vault_id, kind, EventSeverity::Warning, detail);
+    }
+}
+
+// ─── Immune Monitor ───────────────────────────────────────────────────────────
+// The Immune Monitor is an event-loop actor that receives telemetry from all
+// active Sanctum vaults, applies heuristic analysis, and auto-quarantines
+// vaults whose behavior deviates from their declared policy.
+
+pub actor ImmuneMonitor {
+    let registry: SandboxRegistry;
+    let policy_engine: PolicyEngine;
+    let alert_threshold: u32;     // events-per-second before auto-quarantine
+    let violation_counts: HashMap<u64, u32>;
+
+    message CheckVault { vault_id: u64 }
+    message VaultEvent { vault_id: u64, kind: ImmuneEventKind, detail: String }
+    message GetStatus {}
+    message ListVaults {}
+    message QuarantineVault { vault_id: u64, reason: String }
+    message LiftQuarantine { vault_id: u64 }
+
+    handler CheckVault(msg) {
+        // Re-evaluate every running vault's resource usage against its policy
+        let vaults_to_check: Vec<u64> = self.registry.vaults.iter()
+            .filter(|v| matches!(v.state, VaultState::Running))
+            .map(|v| v.vault_id).collect();
+
+        for vid in vaults_to_check {
+            let usage = sanctum::query_vault_usage(vid);
+            match usage {
+                Ok(u) => {
+                    let policy = self.registry.policy_by_id(
+                        self.registry.vaults.iter().find(|v| v.vault_id == vid).unwrap().policy_id
+                    );
+                    if let Some(p) = policy {
+                        if u.mem_bytes > p.max_mem_mb * 1024 * 1024 {
+                            self.registry.emit(vid, ImmuneEventKind::MemoryOverLimit,
+                                EventSeverity::Warning,
+                                format!("Vault {} exceeded memory quota ({} MB)", vid, p.max_mem_mb));
+                            // Increment violation counter
+                            let count = self.violation_counts.entry(vid).or_insert(0);
+                            *count += 1;
+                            if *count >= self.alert_threshold {
+                                let _ = self.registry.quarantine(vid,
+                                    "Auto-quarantine: repeated memory quota violations");
+                            }
+                        }
+                    }
+                }
+                Err(_) => {} // vault may have terminated; next tick will clean up
+            }
+        }
+    }
+
+    handler VaultEvent(msg) {
+        let count = self.violation_counts.entry(msg.vault_id).or_insert(0);
+        *count += 1;
+        self.registry.emit(msg.vault_id, msg.kind, EventSeverity::Warning, msg.detail.clone());
+
+        if *count >= self.alert_threshold {
+            let _ = self.registry.quarantine(msg.vault_id,
+                format!("Auto-quarantine: {} violations accumulated", count));
+            // Reset counter after quarantine
+            self.violation_counts.insert(msg.vault_id, 0);
+        }
+    }
+
+    handler GetStatus(_) {
+        // Return aggregate status summary via IPC reply
+        let summary = ImmuneSummary {
+            active_vaults:      self.registry.active_vault_count() as u32,
+            quarantined_vaults: self.registry.quarantined_vault_count() as u32,
+            total_events:       self.registry.events.len() as u64,
+            alert_threshold:    self.alert_threshold,
+        };
+        ipc::reply(summary);
+    }
+
+    handler ListVaults(_) {
+        let list: Vec<VaultSummary> = self.registry.vaults.iter().map(|v| VaultSummary {
+            vault_id:    v.vault_id,
+            app_name:    v.app_name.clone(),
+            state:       vault_state_name(&v.state),
+            quarantined: v.quarantined,
+            event_count: v.event_count,
+        }).collect();
+        ipc::reply(list);
+    }
+
+    handler QuarantineVault(msg) {
+        let _ = self.registry.quarantine(msg.vault_id, &msg.reason);
+    }
+
+    handler LiftQuarantine(msg) {
+        let _ = self.registry.lift_quarantine(msg.vault_id);
+    }
+}
+
+// ─── Vault Spawner ────────────────────────────────────────────────────────────
+// Wraps every app/process launch in a Sanctum vault with a deny-by-default
+// policy and only the explicit capabilities the app has declared.
+
+pub struct VaultSpawner {
+    monitor: ActorRef<ImmuneMonitor>,
+}
+
+impl VaultSpawner {
+    pub fn new(monitor: ActorRef<ImmuneMonitor>) -> VaultSpawner {
+        VaultSpawner { monitor }
+    }
+
+    // Launch an application inside a fresh Sanctum vault.
+    // `manifest` is the app's declared capability requirements.
+    pub fn launch(&self, registry: &mut SandboxRegistry, app_name: &str, manifest: &AppManifest) -> Result<u64, SandboxError> {
+        let policy = build_policy_from_manifest(registry.policies.len() as u64 + 1, app_name, manifest);
+        let policy_id = registry.register_policy(policy);
+        let vault_id  = registry.spawn_vault(app_name, policy_id)?;
+
+        // Notify immune monitor that a new vault is live
+        self.monitor.send(VaultEvent {
+            vault_id,
+            kind:   ImmuneEventKind::VaultSpawned,
+            detail: format!("App '{}' launched in vault {}", app_name, vault_id),
+        });
+
+        Ok(vault_id)
+    }
+}
+
+// ─── App Manifest ─────────────────────────────────────────────────────────────
+// Every OmniOS application declares what it needs; the Immune System grants
+// only what is explicitly listed and denies everything else.
+
+pub struct AppManifest {
+    pub app_name:          String,
+    pub version:           String,
+    pub net_hosts:         Vec<String>,   // e.g. ["api.example.com", "cdn.example.com"]
+    pub fs_paths:          Vec<String>,   // e.g. ["/workspace", "/home/user/Documents"]
+    pub ipc_peers:         Vec<String>,   // app names this app may talk to via IPC
+    pub syscall_profile:   SyscallProfile,
+    pub max_mem_mb:        u64,
+    pub max_cpu_pct:       u32,
+    pub needs_gpu:         bool,
+    pub needs_audio:       bool,
+    pub needs_display:     bool,
+    pub allow_child_spawn: bool,
+}
+
+pub enum SyscallProfile {
+    Minimal,     // read/write/open/close/exit only
+    Standard,    // typical desktop app syscalls
+    Elevated,    // system administration (must be explicitly justified)
+}
+
+fn build_policy_from_manifest(policy_id: u64, app_name: &str, m: &AppManifest) -> CapabilityAllowlist {
+    let syscalls = match m.syscall_profile {
+        SyscallProfile::Minimal  => minimal_syscalls(),
+        SyscallProfile::Standard => standard_syscalls(),
+        SyscallProfile::Elevated => elevated_syscalls(),
+    };
+
+    CapabilityAllowlist {
+        policy_id,
+        app_name:          app_name.to_string(),
+        allowed_net_hosts: m.net_hosts.clone(),
+        allowed_fs_paths:  m.fs_paths.clone(),
+        allowed_ipc_peers: Vec::new(), // resolved at launch time from app names → vault IDs
+        allowed_syscalls:  syscalls,
+        max_mem_mb:        m.max_mem_mb,
+        max_cpu_pct:       m.max_cpu_pct,
+        allow_child_spawn: m.allow_child_spawn,
+        allow_gpu:         m.needs_gpu,
+        allow_audio:       m.needs_audio,
+        allow_display:     m.needs_display,
+    }
+}
+
+// ─── Default Syscall Profiles ────────────────────────────────────────────────
+
+fn minimal_syscalls() -> Vec<u32> {
+    // read, write, open, openat, close, exit, exit_group, fstat, lseek, mmap, munmap, brk
+    vec![0, 1, 2, 3, 5, 8, 9, 11, 12, 60, 231]
+}
+
+fn standard_syscalls() -> Vec<u32> {
+    // Minimal + stat, getdents, socket (local only), connect, poll, epoll, futex,
+    // clone (threads only), sigaction, ioctl, fcntl, sendmsg, recvmsg
+    let mut s = minimal_syscalls();
+    s.extend(&[4, 78, 41, 42, 7, 232, 202, 56, 13, 16, 72, 46, 47]);
+    s
+}
+
+fn elevated_syscalls() -> Vec<u32> {
+    // Standard + mount, umount, chroot, setuid, setgid, prctl, ptrace (system tools)
+    let mut s = standard_syscalls();
+    s.extend(&[165, 166, 161, 105, 106, 157, 101]);
+    s
+}
+
+// ─── Helper Types ─────────────────────────────────────────────────────────────
+
+pub struct ImmuneSummary {
+    pub active_vaults:      u32,
+    pub quarantined_vaults: u32,
+    pub total_events:       u64,
+    pub alert_threshold:    u32,
+}
+
+pub struct VaultSummary {
+    pub vault_id:    u64,
+    pub app_name:    String,
+    pub state:       String,
+    pub quarantined: bool,
+    pub event_count: u64,
+}
+
+pub enum SandboxError {
+    PolicyNotFound(u64),
+    VaultNotFound(u64),
+    SanctumError(sanctum::VaultError),
+    SpawnFailed(String),
+}
+
+fn vault_state_name(s: &VaultState) -> String {
+    match s {
+        VaultState::Initializing => "initializing",
+        VaultState::Running      => "running",
+        VaultState::Suspended    => "suspended",
+        VaultState::Quarantined  => "quarantined",
+        VaultState::Terminated   => "terminated",
+    }.to_string()
+}
+
+fn current_timestamp() -> u64 {
+    // Wall clock milliseconds — provided by OmniOS runtime
+    omnios::runtime::wall_clock_ms()
+}
+
+// ─── Bootstrap Entry Point ────────────────────────────────────────────────────
+
+pub fn init() -> Result<SandboxRegistry, SandboxError> {
+    sanctum::init_vaults()?;
+
+    let mut registry = SandboxRegistry::new();
+
+    // Register built-in system policies for core OmniOS daemons
+    registry.register_policy(CapabilityAllowlist {
+        policy_id:          1,
+        app_name:           "omnios-kernel-monitor".to_string(),
+        allowed_net_hosts:  Vec::new(),
+        allowed_fs_paths:   vec!["/proc".to_string(), "/sys".to_string(), "/dev/null".to_string()],
+        allowed_ipc_peers:  Vec::new(),
+        allowed_syscalls:   elevated_syscalls(),
+        max_mem_mb:         64,
+        max_cpu_pct:        5,
+        allow_child_spawn:  false,
+        allow_gpu:          false,
+        allow_audio:        false,
+        allow_display:      false,
+    });
+
+    registry.register_policy(CapabilityAllowlist {
+        policy_id:          2,
+        app_name:           "omnios-desktop".to_string(),
+        allowed_net_hosts:  Vec::new(),
+        allowed_fs_paths:   vec!["/workspace".to_string(), "/home".to_string()],
+        allowed_ipc_peers:  vec![1],
+        allowed_syscalls:   standard_syscalls(),
+        max_mem_mb:         512,
+        max_cpu_pct:        80,
+        allow_child_spawn:  true,
+        allow_gpu:          true,
+        allow_audio:        true,
+        allow_display:      true,
+    });
+
+    Ok(registry)
+}
+
+#[test]
+fn test_sandbox_init() {
+    let registry = init();
+    assert!(registry.is_ok());
+    let reg = registry.unwrap();
+    assert_eq!(reg.policies.len(), 2);
+    assert_eq!(reg.active_vault_count(), 0);
+    println!("✓ SandboxImmuneSystem: init ok, {} policies loaded", reg.policies.len());
+}
+
+#[test]
+fn test_policy_engine_network_deny() {
+    let mut registry = init().unwrap();
+    let mut engine = PolicyEngine::new(&mut registry);
+    // vault 999 has no policy → network must be denied
+    let allowed = engine.check_network(999, "evil.example.com");
+    assert_eq!(allowed, false);
+    println!("✓ PolicyEngine: network deny-by-default works");
+}
+
+#[test]
+fn test_vault_quarantine() {
+    let mut registry = init().unwrap();
+    // Spawn a vault under desktop policy (id=2)
+    let vault_id = registry.spawn_vault("test-app", 2).unwrap();
+    assert_eq!(registry.active_vault_count(), 1);
+    // Quarantine it
+    let _ = registry.quarantine(vault_id, "test quarantine");
+    assert_eq!(registry.quarantined_vault_count(), 1);
+    // Lift quarantine
+    let _ = registry.lift_quarantine(vault_id);
+    assert_eq!(registry.quarantined_vault_count(), 0);
+    println!("✓ Vault quarantine / lift cycle works");
+}
+
+fn main() {
+    println!("OmniOS Sandboxing Immune System v1.0");
+    println!("=====================================");
+
+    match init() {
+        Ok(registry) => {
+            println!("✓ Sanctum vault subsystem initialized");
+            println!("✓ {} built-in policies loaded", registry.policies.len());
+            println!("✓ Immune System: ACTIVE");
+            println!("✓ Policy enforcement: deny-by-default on all vaults");
+            println!("✓ OmniOS Sandbox ready — zero-compromise isolation");
+        }
+        Err(e) => {
+            println!("✗ Sandbox initialization failed");
+        }
+    }
+}

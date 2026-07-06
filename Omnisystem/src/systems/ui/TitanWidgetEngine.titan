@@ -1,0 +1,774 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// TitanWidgetEngine — Reactive Widget State Engine
+// Titan language · Omnisystem UI · State management, event bus, render pipeline
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import TitanStdlib::{ Vec, HashMap, HashSet, String, i32, f32, bool, Option, Box }
+import TitanStdlib::{ Arc, Mutex, RwLock, Channel, Sender, Receiver }
+import TitanStdlib::io::{ log, log_warn, log_error }
+import TitanStdlib::time::{ Instant, Duration }
+
+// ── Widget ID ─────────────────────────────────────────────────────────────────
+
+type WidgetId = u64;
+
+struct IdGen {
+  next: u64,
+}
+
+impl IdGen {
+  fn new() -> IdGen { IdGen { next: 1 } }
+  fn gen(&mut self) -> WidgetId {
+    let id = self.next;
+    self.next += 1;
+    id
+  }
+}
+
+// ── Theme System ──────────────────────────────────────────────────────────────
+
+enum ThemeId {
+  OmniDark,
+  OmniLight,
+  OmniNeon,
+  OmniForest,
+  OmniAurora,
+  OmniSunset,
+}
+
+impl ThemeId {
+  fn css_attr(&self) -> String {
+    match self {
+      ThemeId::OmniDark   => "omni-dark",
+      ThemeId::OmniLight  => "omni-light",
+      ThemeId::OmniNeon   => "omni-neon",
+      ThemeId::OmniForest => "omni-forest",
+      ThemeId::OmniAurora => "omni-aurora",
+      ThemeId::OmniSunset => "omni-sunset",
+    }
+  }
+
+  fn from_str(s: &str) -> Option<ThemeId> {
+    match s {
+      "omni-dark"   => Some(ThemeId::OmniDark),
+      "omni-light"  => Some(ThemeId::OmniLight),
+      "omni-neon"   => Some(ThemeId::OmniNeon),
+      "omni-forest" => Some(ThemeId::OmniForest),
+      "omni-aurora" => Some(ThemeId::OmniAurora),
+      "omni-sunset" => Some(ThemeId::OmniSunset),
+      _             => None,
+    }
+  }
+
+  fn label(&self) -> String {
+    match self {
+      ThemeId::OmniDark   => "OmniDark",
+      ThemeId::OmniLight  => "OmniLight",
+      ThemeId::OmniNeon   => "OmniNeon",
+      ThemeId::OmniForest => "OmniForest",
+      ThemeId::OmniAurora => "OmniAurora",
+      ThemeId::OmniSunset => "OmniSunset",
+    }
+  }
+}
+
+struct ThemeEngine {
+  current:  ThemeId,
+  history:  Vec<ThemeId>,
+  listeners:Vec<Box<dyn Fn(ThemeId)>>,
+}
+
+impl ThemeEngine {
+  fn new() -> ThemeEngine {
+    ThemeEngine {
+      current:   ThemeId::OmniDark,
+      history:   Vec::new(),
+      listeners: Vec::new(),
+    }
+  }
+
+  fn switch(&mut self, theme: ThemeId) {
+    let prev = self.current
+    self.history.push(prev)
+    self.current = theme
+    for listener in &self.listeners {
+      listener(self.current)
+    }
+    log(format!("[ThemeEngine] Switched to: {}", self.current.label()))
+  }
+
+  fn previous(&mut self) {
+    if let Some(prev) = self.history.pop() {
+      self.current = prev
+      for listener in &self.listeners {
+        listener(self.current)
+      }
+    }
+  }
+
+  fn on_change(&mut self, f: impl Fn(ThemeId) + 'static) {
+    self.listeners.push(Box::new(f))
+  }
+
+  fn current_attr(&self) -> String {
+    self.current.css_attr()
+  }
+}
+
+// ── Reactive State ────────────────────────────────────────────────────────────
+
+enum StateValue {
+  Bool(bool),
+  Int(i64),
+  Float(f64),
+  Str(String),
+  List(Vec<StateValue>),
+  Map(HashMap<String, StateValue>),
+  Null,
+}
+
+impl StateValue {
+  fn as_bool(&self) -> bool {
+    match self { StateValue::Bool(b) => *b, _ => false }
+  }
+  fn as_int(&self) -> i64 {
+    match self { StateValue::Int(n) => *n, _ => 0 }
+  }
+  fn as_float(&self) -> f64 {
+    match self { StateValue::Float(f) => *f, _ => 0.0 }
+  }
+  fn as_str(&self) -> &str {
+    match self { StateValue::Str(s) => s.as_str(), _ => "" }
+  }
+}
+
+struct ReactiveState {
+  data:      HashMap<String, StateValue>,
+  watchers:  HashMap<String, Vec<Box<dyn Fn(&StateValue)>>>,
+  dirty:     HashSet<String>,
+}
+
+impl ReactiveState {
+  fn new() -> ReactiveState {
+    ReactiveState {
+      data:     HashMap::new(),
+      watchers: HashMap::new(),
+      dirty:    HashSet::new(),
+    }
+  }
+
+  fn set(&mut self, key: String, value: StateValue) {
+    self.data.insert(key.clone(), value)
+    self.dirty.insert(key.clone())
+    if let Some(watchers) = self.watchers.get(&key) {
+      if let Some(val) = self.data.get(&key) {
+        for w in watchers { w(val) }
+      }
+    }
+  }
+
+  fn get(&self, key: &str) -> Option<&StateValue> {
+    self.data.get(key)
+  }
+
+  fn watch(&mut self, key: String, f: impl Fn(&StateValue) + 'static) {
+    self.watchers.entry(key).or_insert_with(Vec::new).push(Box::new(f))
+  }
+
+  fn flush_dirty(&mut self) -> Vec<String> {
+    let keys: Vec<String> = self.dirty.iter().cloned().collect()
+    self.dirty.clear()
+    keys
+  }
+
+  fn bool_toggle(&mut self, key: &str) {
+    let current = self.data.get(key).map(|v| v.as_bool()).unwrap_or(false)
+    self.set(key.to_string(), StateValue::Bool(!current))
+  }
+
+  fn int_inc(&mut self, key: &str, delta: i64) {
+    let current = self.data.get(key).map(|v| v.as_int()).unwrap_or(0)
+    self.set(key.to_string(), StateValue::Int(current + delta))
+  }
+}
+
+// ── Event Bus ─────────────────────────────────────────────────────────────────
+
+struct WidgetEvent {
+  source:  WidgetId,
+  kind:    String,
+  payload: HashMap<String, String>,
+  ts:      Instant,
+}
+
+impl WidgetEvent {
+  fn new(source: WidgetId, kind: String) -> WidgetEvent {
+    WidgetEvent {
+      source,
+      kind,
+      payload: HashMap::new(),
+      ts: Instant::now(),
+    }
+  }
+
+  fn with(mut self, key: String, value: String) -> WidgetEvent {
+    self.payload.insert(key, value);
+    self
+  }
+
+  fn get(&self, key: &str) -> Option<&str> {
+    self.payload.get(key).map(|s| s.as_str())
+  }
+}
+
+type EventHandler = Box<dyn Fn(&WidgetEvent)>;
+
+struct EventBus {
+  handlers: HashMap<String, Vec<EventHandler>>,
+  history:  Vec<WidgetEvent>,
+  max_hist: usize,
+}
+
+impl EventBus {
+  fn new() -> EventBus {
+    EventBus {
+      handlers: HashMap::new(),
+      history:  Vec::new(),
+      max_hist: 256,
+    }
+  }
+
+  fn on(&mut self, kind: String, handler: impl Fn(&WidgetEvent) + 'static) {
+    self.handlers.entry(kind).or_insert_with(Vec::new).push(Box::new(handler))
+  }
+
+  fn emit(&mut self, event: WidgetEvent) {
+    log(format!("[EventBus] {} from widget:{}", event.kind, event.source))
+    if let Some(handlers) = self.handlers.get(&event.kind) {
+      for h in handlers { h(&event) }
+    }
+    self.history.push(event)
+    if self.history.len() > self.max_hist {
+      self.history.remove(0)
+    }
+  }
+
+  fn recent(&self, kind: &str, n: usize) -> Vec<&WidgetEvent> {
+    self.history.iter().rev().filter(|e| e.kind == kind).take(n).collect()
+  }
+
+  fn clear_handlers(&mut self, kind: &str) {
+    self.handlers.remove(kind)
+  }
+}
+
+// ── Widget Descriptor ─────────────────────────────────────────────────────────
+
+enum WidgetCategory {
+  Buttons,
+  Inputs,
+  Cards,
+  Navigation,
+  Feedback,
+  Data,
+  Overlays,
+  Special,
+}
+
+impl WidgetCategory {
+  fn label(&self) -> &str {
+    match self {
+      WidgetCategory::Buttons    => "Buttons",
+      WidgetCategory::Inputs     => "Inputs",
+      WidgetCategory::Cards      => "Cards",
+      WidgetCategory::Navigation => "Navigation",
+      WidgetCategory::Feedback   => "Feedback",
+      WidgetCategory::Data       => "Data",
+      WidgetCategory::Overlays   => "Overlays",
+      WidgetCategory::Special    => "Special",
+    }
+  }
+}
+
+struct WidgetDescriptor {
+  id:       String,
+  label:    String,
+  category: WidgetCategory,
+  desc:     String,
+  variants: Vec<String>,
+  sizes:    Vec<String>,
+  css_cls:  String,
+}
+
+impl WidgetDescriptor {
+  fn new(id: &str, label: &str, cat: WidgetCategory, desc: &str) -> WidgetDescriptor {
+    WidgetDescriptor {
+      id: id.to_string(),
+      label: label.to_string(),
+      category: cat,
+      desc: desc.to_string(),
+      variants: Vec::new(),
+      sizes: Vec::new(),
+      css_cls: format!("ow-{}", id),
+    }
+  }
+
+  fn with_variants(mut self, vs: Vec<&str>) -> WidgetDescriptor {
+    self.variants = vs.iter().map(|s| s.to_string()).collect();
+    self
+  }
+
+  fn with_sizes(mut self, ss: Vec<&str>) -> WidgetDescriptor {
+    self.sizes = ss.iter().map(|s| s.to_string()).collect();
+    self
+  }
+}
+
+// ── Widget Registry ───────────────────────────────────────────────────────────
+
+struct WidgetRegistry {
+  widgets: Vec<WidgetDescriptor>,
+  by_id:   HashMap<String, usize>,
+}
+
+impl WidgetRegistry {
+  fn new() -> WidgetRegistry {
+    let mut reg = WidgetRegistry { widgets: Vec::new(), by_id: HashMap::new() }
+    reg.populate_defaults()
+    reg
+  }
+
+  fn register(&mut self, w: WidgetDescriptor) {
+    let id  = w.id.clone()
+    let idx = self.widgets.len()
+    self.widgets.push(w)
+    self.by_id.insert(id, idx)
+  }
+
+  fn get(&self, id: &str) -> Option<&WidgetDescriptor> {
+    self.by_id.get(id).map(|&i| &self.widgets[i])
+  }
+
+  fn all(&self) -> &[WidgetDescriptor] {
+    &self.widgets
+  }
+
+  fn by_category(&self, cat: &str) -> Vec<&WidgetDescriptor> {
+    self.widgets.iter().filter(|w| w.category.label() == cat).collect()
+  }
+
+  fn search(&self, query: &str) -> Vec<&WidgetDescriptor> {
+    let q = query.to_lowercase()
+    self.widgets.iter().filter(|w|
+      w.label.to_lowercase().contains(&q) ||
+      w.desc.to_lowercase().contains(&q) ||
+      w.category.label().to_lowercase().contains(&q)
+    ).collect()
+  }
+
+  fn count(&self) -> usize { self.widgets.len() }
+
+  fn populate_defaults(&mut self) {
+    // Buttons
+    self.register(WidgetDescriptor::new("btn-primary",  "Primary Button",  WidgetCategory::Buttons, "Main CTA with accent color")
+      .with_variants(vec!["primary","solid","ghost","link","danger","success","warning"])
+      .with_sizes(vec!["2xs","xs","sm","md","lg","xl"]));
+    self.register(WidgetDescriptor::new("btn-icon",     "Icon Button",     WidgetCategory::Buttons, "Square icon-only button"));
+    self.register(WidgetDescriptor::new("btn-fab",      "FAB",             WidgetCategory::Buttons, "Floating action, circular"));
+    self.register(WidgetDescriptor::new("btn-group",    "Button Group",    WidgetCategory::Buttons, "Segmented button cluster"));
+    // Inputs
+    self.register(WidgetDescriptor::new("input-text",   "Text Input",      WidgetCategory::Inputs, "Single-line text field")
+      .with_sizes(vec!["sm","md","lg"]));
+    self.register(WidgetDescriptor::new("input-search", "Search Input",    WidgetCategory::Inputs, "Search with icon and clear"));
+    self.register(WidgetDescriptor::new("input-select", "Select",          WidgetCategory::Inputs, "Dropdown selection"));
+    self.register(WidgetDescriptor::new("input-toggle", "Toggle Switch",   WidgetCategory::Inputs, "On/off binary toggle"));
+    self.register(WidgetDescriptor::new("input-checkbox","Checkbox",       WidgetCategory::Inputs, "Multi-select checkbox"));
+    self.register(WidgetDescriptor::new("input-slider", "Slider",          WidgetCategory::Inputs, "Range input with thumb"));
+    // Cards
+    self.register(WidgetDescriptor::new("card-basic",   "Basic Card",      WidgetCategory::Cards, "Container with border/shadow")
+      .with_variants(vec!["basic","glass","flat","glow"]));
+    self.register(WidgetDescriptor::new("card-stat",    "Stat Card",       WidgetCategory::Cards, "KPI metric with delta"));
+    self.register(WidgetDescriptor::new("card-action",  "Action Card",     WidgetCategory::Cards, "Clickable card with icon+arrow"));
+    // Navigation
+    self.register(WidgetDescriptor::new("nav-tabs",     "Tabs",            WidgetCategory::Navigation, "Horizontal tab bar")
+      .with_variants(vec!["default","pill"]));
+    self.register(WidgetDescriptor::new("nav-breadcrumb","Breadcrumbs",    WidgetCategory::Navigation, "Path navigation"));
+    self.register(WidgetDescriptor::new("nav-sidebar",  "Sidebar Nav",     WidgetCategory::Navigation, "Vertical nav with icons"));
+    self.register(WidgetDescriptor::new("nav-toolbar",  "Toolbar",         WidgetCategory::Navigation, "Horizontal action bar"));
+    self.register(WidgetDescriptor::new("nav-pagination","Pagination",     WidgetCategory::Navigation, "Page number controls"));
+    // Feedback
+    self.register(WidgetDescriptor::new("fb-badge",     "Badge",           WidgetCategory::Feedback, "Status label")
+      .with_variants(vec!["default","success","warning","danger","info","muted"]));
+    self.register(WidgetDescriptor::new("fb-chip",      "Chip",            WidgetCategory::Feedback, "Dismissible tag"));
+    self.register(WidgetDescriptor::new("fb-progress",  "Progress Bar",    WidgetCategory::Feedback, "Animated fill")
+      .with_sizes(vec!["sm","md","lg"]));
+    self.register(WidgetDescriptor::new("fb-spinner",   "Spinner",         WidgetCategory::Feedback, "Loading indicator")
+      .with_sizes(vec!["xs","sm","md","lg","xl"]));
+    self.register(WidgetDescriptor::new("fb-alert",     "Alert",           WidgetCategory::Feedback, "Banner notification")
+      .with_variants(vec!["info","success","warning","danger"]));
+    self.register(WidgetDescriptor::new("fb-toast",     "Toast",           WidgetCategory::Feedback, "Auto-dismiss notification"));
+    self.register(WidgetDescriptor::new("fb-skeleton",  "Skeleton",        WidgetCategory::Feedback, "Content placeholder shimmer"));
+    // Data
+    self.register(WidgetDescriptor::new("data-table",   "Data Table",      WidgetCategory::Data, "Sortable rows with select"));
+    self.register(WidgetDescriptor::new("data-list",    "List",            WidgetCategory::Data, "Vertical item list"));
+    self.register(WidgetDescriptor::new("data-tree",    "Tree View",       WidgetCategory::Data, "Collapsible hierarchy"));
+    self.register(WidgetDescriptor::new("data-code",    "Code Block",      WidgetCategory::Data, "Syntax container + copy"));
+    self.register(WidgetDescriptor::new("data-metric",  "Metric",          WidgetCategory::Data, "Large KPI with trend"));
+    self.register(WidgetDescriptor::new("data-sparkline","Sparkline",      WidgetCategory::Data, "Mini bar chart"));
+    self.register(WidgetDescriptor::new("data-diff",    "Diff Viewer",     WidgetCategory::Data, "Add/remove/context lines"));
+    // Overlays
+    self.register(WidgetDescriptor::new("ol-modal",     "Modal",           WidgetCategory::Overlays, "Centered dialog")
+      .with_sizes(vec!["sm","md","lg","xl","full"]));
+    self.register(WidgetDescriptor::new("ol-drawer",    "Drawer",          WidgetCategory::Overlays, "Slide-in side panel"));
+    self.register(WidgetDescriptor::new("ol-tooltip",   "Tooltip",         WidgetCategory::Overlays, "On-hover hint"));
+    self.register(WidgetDescriptor::new("ol-popover",   "Popover",         WidgetCategory::Overlays, "Anchored info panel"));
+    self.register(WidgetDescriptor::new("ol-dropdown",  "Dropdown",        WidgetCategory::Overlays, "Contextual menu list"));
+    // Special
+    self.register(WidgetDescriptor::new("sp-health",    "Health Ring",     WidgetCategory::Special, "Circular progress ring"));
+    self.register(WidgetDescriptor::new("sp-terminal",  "Terminal",        WidgetCategory::Special, "Mock terminal with prompt"));
+    self.register(WidgetDescriptor::new("sp-filetree",  "File Tree",       WidgetCategory::Special, "File/folder tree navigator"));
+    self.register(WidgetDescriptor::new("sp-theme",     "Theme Picker",    WidgetCategory::Special, "Color swatch switcher"));
+    self.register(WidgetDescriptor::new("sp-wdb",       "Widget DB Card",  WidgetCategory::Special, "Widget catalog preview"));
+  }
+}
+
+// ── Render Pipeline ───────────────────────────────────────────────────────────
+
+struct RenderFrame {
+  frame_id:    u64,
+  dirty_ids:   Vec<WidgetId>,
+  ts:          Instant,
+  duration_ms: f64,
+}
+
+struct RenderPipeline {
+  frame_count:   u64,
+  frame_time_ms: f64,
+  dirty_queue:   Vec<WidgetId>,
+  fps_history:   Vec<f64>,
+  paused:        bool,
+}
+
+impl RenderPipeline {
+  fn new() -> RenderPipeline {
+    RenderPipeline {
+      frame_count:   0,
+      frame_time_ms: 16.67,
+      dirty_queue:   Vec::new(),
+      fps_history:   Vec::new(),
+      paused:        false,
+    }
+  }
+
+  fn mark_dirty(&mut self, id: WidgetId) {
+    if !self.dirty_queue.contains(&id) {
+      self.dirty_queue.push(id)
+    }
+  }
+
+  fn mark_all_dirty(&mut self, ids: &[WidgetId]) {
+    for &id in ids { self.mark_dirty(id) }
+  }
+
+  fn begin_frame(&mut self) -> RenderFrame {
+    self.frame_count += 1
+    let dirty = self.dirty_queue.clone()
+    self.dirty_queue.clear()
+    RenderFrame {
+      frame_id:    self.frame_count,
+      dirty_ids:   dirty,
+      ts:          Instant::now(),
+      duration_ms: 0.0,
+    }
+  }
+
+  fn end_frame(&mut self, frame: &mut RenderFrame) {
+    let elapsed = frame.ts.elapsed().as_secs_f64() * 1000.0
+    frame.duration_ms = elapsed
+    self.frame_time_ms = elapsed
+    let fps = if elapsed > 0.0 { 1000.0 / elapsed } else { 60.0 }
+    self.fps_history.push(fps)
+    if self.fps_history.len() > 60 { self.fps_history.remove(0) }
+  }
+
+  fn avg_fps(&self) -> f64 {
+    if self.fps_history.is_empty() { return 60.0 }
+    self.fps_history.iter().sum::<f64>() / self.fps_history.len() as f64
+  }
+
+  fn pause(&mut self)  { self.paused = true  }
+  fn resume(&mut self) { self.paused = false }
+}
+
+// ── Widget Instance ───────────────────────────────────────────────────────────
+
+struct WidgetInstance {
+  id:         WidgetId,
+  kind:       String,
+  state:      ReactiveState,
+  parent:     Option<WidgetId>,
+  children:   Vec<WidgetId>,
+  mounted:    bool,
+  visible:    bool,
+  dirty:      bool,
+  created_at: Instant,
+}
+
+impl WidgetInstance {
+  fn new(id: WidgetId, kind: String) -> WidgetInstance {
+    WidgetInstance {
+      id,
+      kind,
+      state:      ReactiveState::new(),
+      parent:     None,
+      children:   Vec::new(),
+      mounted:    false,
+      visible:    true,
+      dirty:      true,
+      created_at: Instant::now(),
+    }
+  }
+
+  fn mount(&mut self) {
+    self.mounted = true
+    log(format!("[WidgetInstance] Mounted widget:{} type:{}", self.id, self.kind))
+  }
+
+  fn unmount(&mut self) {
+    self.mounted = false
+  }
+
+  fn set_dirty(&mut self) { self.dirty = true  }
+  fn clear_dirty(&mut self) { self.dirty = false }
+}
+
+// ── Widget Manager ────────────────────────────────────────────────────────────
+
+struct WidgetManager {
+  id_gen:   IdGen,
+  widgets:  HashMap<WidgetId, WidgetInstance>,
+  roots:    Vec<WidgetId>,
+}
+
+impl WidgetManager {
+  fn new() -> WidgetManager {
+    WidgetManager {
+      id_gen:  IdGen::new(),
+      widgets: HashMap::new(),
+      roots:   Vec::new(),
+    }
+  }
+
+  fn create(&mut self, kind: String) -> WidgetId {
+    let id = self.id_gen.gen()
+    let mut w = WidgetInstance::new(id, kind)
+    w.mount()
+    self.widgets.insert(id, w)
+    id
+  }
+
+  fn add_child(&mut self, parent: WidgetId, child: WidgetId) {
+    if let Some(p) = self.widgets.get_mut(&parent) {
+      p.children.push(child)
+    }
+    if let Some(c) = self.widgets.get_mut(&child) {
+      c.parent = Some(parent)
+    }
+  }
+
+  fn destroy(&mut self, id: WidgetId) {
+    if let Some(mut w) = self.widgets.remove(&id) {
+      w.unmount()
+      let children = w.children.clone()
+      for cid in children { self.destroy(cid) }
+      if let Some(pid) = w.parent {
+        if let Some(parent) = self.widgets.get_mut(&pid) {
+          parent.children.retain(|&c| c != id)
+        }
+      }
+    }
+  }
+
+  fn get(&self, id: WidgetId) -> Option<&WidgetInstance> {
+    self.widgets.get(&id)
+  }
+
+  fn get_mut(&mut self, id: WidgetId) -> Option<&mut WidgetInstance> {
+    self.widgets.get_mut(&id)
+  }
+
+  fn mounted_count(&self) -> usize {
+    self.widgets.values().filter(|w| w.mounted).count()
+  }
+
+  fn dirty_ids(&self) -> Vec<WidgetId> {
+    self.widgets.values().filter(|w| w.dirty).map(|w| w.id).collect()
+  }
+}
+
+// ── Widget Engine (Top-level) ──────────────────────────────────────────────────
+
+struct WidgetEngine {
+  theme:     ThemeEngine,
+  registry:  WidgetRegistry,
+  manager:   WidgetManager,
+  events:    EventBus,
+  pipeline:  RenderPipeline,
+  global:    ReactiveState,
+  boot_time: Instant,
+}
+
+impl WidgetEngine {
+  fn new() -> WidgetEngine {
+    log("[WidgetEngine] Initializing Titan Widget Engine...")
+    let mut engine = WidgetEngine {
+      theme:     ThemeEngine::new(),
+      registry:  WidgetRegistry::new(),
+      manager:   WidgetManager::new(),
+      events:    EventBus::new(),
+      pipeline:  RenderPipeline::new(),
+      global:    ReactiveState::new(),
+      boot_time: Instant::now(),
+    }
+    engine.wire_default_events()
+    log(format!("[WidgetEngine] Ready. {} widgets registered.", engine.registry.count()))
+    engine
+  }
+
+  fn wire_default_events(&mut self) {
+    // Theme change propagates as global state
+    self.events.on("theme-change".to_string(), |evt| {
+      if let Some(theme_id) = evt.get("theme") {
+        log(format!("[WidgetEngine] theme-change event: {}", theme_id))
+      }
+    })
+
+    // Global error handling
+    self.events.on("error".to_string(), |evt| {
+      log_error(format!("[WidgetEngine] error event: {:?}", evt.get("msg")))
+    })
+  }
+
+  fn apply_theme(&mut self, theme_id: &str) {
+    if let Some(theme) = ThemeId::from_str(theme_id) {
+      self.theme.switch(theme)
+      let evt = WidgetEvent::new(0, "theme-change".to_string())
+        .with("theme".to_string(), theme_id.to_string())
+      self.events.emit(evt)
+      // Mark all mounted widgets dirty on theme change
+      let ids: Vec<WidgetId> = self.manager.widgets.keys().cloned().collect()
+      for id in &ids {
+        if let Some(w) = self.manager.get_mut(*id) {
+          w.set_dirty()
+        }
+      }
+      self.pipeline.mark_all_dirty(&ids)
+    }
+  }
+
+  fn create_widget(&mut self, kind: &str) -> WidgetId {
+    let id = self.manager.create(kind.to_string())
+    let evt = WidgetEvent::new(id, "widget-created".to_string())
+      .with("kind".to_string(), kind.to_string())
+    self.events.emit(evt)
+    id
+  }
+
+  fn destroy_widget(&mut self, id: WidgetId) {
+    let evt = WidgetEvent::new(id, "widget-destroyed".to_string())
+    self.events.emit(evt)
+    self.manager.destroy(id)
+  }
+
+  fn tick(&mut self) {
+    if self.pipeline.paused { return }
+    let mut frame = self.pipeline.begin_frame()
+    // Process dirty state
+    let dirty = self.global.flush_dirty()
+    if !dirty.is_empty() {
+      log(format!("[WidgetEngine] frame:{} dirty-keys:{}", frame.frame_id, dirty.len()))
+    }
+    // Clear dirty flags on processed widgets
+    for &id in &frame.dirty_ids {
+      if let Some(w) = self.manager.get_mut(id) {
+        w.clear_dirty()
+      }
+    }
+    self.pipeline.end_frame(&mut frame)
+  }
+
+  fn uptime_ms(&self) -> f64 {
+    self.boot_time.elapsed().as_secs_f64() * 1000.0
+  }
+
+  fn stats(&self) -> EngineStats {
+    EngineStats {
+      widget_count:    self.manager.widgets.len(),
+      mounted_count:   self.manager.mounted_count(),
+      registered_types:self.registry.count(),
+      avg_fps:         self.pipeline.avg_fps(),
+      frame_count:     self.pipeline.frame_count,
+      uptime_ms:       self.uptime_ms(),
+      current_theme:   self.theme.current_attr(),
+    }
+  }
+}
+
+struct EngineStats {
+  widget_count:     usize,
+  mounted_count:    usize,
+  registered_types: usize,
+  avg_fps:          f64,
+  frame_count:      u64,
+  uptime_ms:        f64,
+  current_theme:    String,
+}
+
+impl EngineStats {
+  fn report(&self) {
+    log(format!(
+      "[WidgetEngine::Stats] widgets:{} mounted:{} types:{} fps:{:.1} frames:{} uptime:{:.0}ms theme:{}",
+      self.widget_count, self.mounted_count, self.registered_types,
+      self.avg_fps, self.frame_count, self.uptime_ms, self.current_theme
+    ))
+  }
+}
+
+// ── Global Engine Singleton ───────────────────────────────────────────────────
+
+static mut ENGINE: Option<WidgetEngine> = None
+
+fn engine_init() {
+  unsafe {
+    if ENGINE.is_none() {
+      ENGINE = Some(WidgetEngine::new())
+    }
+  }
+}
+
+fn engine_get() -> &'static mut WidgetEngine {
+  unsafe {
+    ENGINE.as_mut().expect("Widget engine not initialized — call engine_init() first")
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+pub fn init()                     { engine_init() }
+pub fn apply_theme(id: &str)      { engine_get().apply_theme(id) }
+pub fn create_widget(k: &str) -> WidgetId { engine_get().create_widget(k) }
+pub fn destroy_widget(id: WidgetId)       { engine_get().destroy_widget(id) }
+pub fn tick()                     { engine_get().tick() }
+pub fn stats() -> EngineStats     { engine_get().stats() }
+pub fn registry() -> &'static WidgetRegistry { &engine_get().registry }
+pub fn emit(evt: WidgetEvent)     { engine_get().events.emit(evt) }
+pub fn on(kind: String, h: impl Fn(&WidgetEvent) + 'static) { engine_get().events.on(kind, h) }
+
+pub mod titan_widget_engine {
+  pub use super::{
+    WidgetEngine, WidgetManager, WidgetInstance, WidgetDescriptor, WidgetRegistry,
+    WidgetCategory, WidgetEvent, EventBus, ReactiveState, StateValue,
+    ThemeEngine, ThemeId, RenderPipeline, RenderFrame, EngineStats,
+    init, apply_theme, create_widget, destroy_widget, tick, stats, emit, on,
+  }
+}

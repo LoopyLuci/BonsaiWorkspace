@@ -124,3 +124,362 @@ pub actor DistributedCoordinator {
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 3: CHANNELS - MPSC, SPSC, Broadcast
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct Channel<T> {
+    id: String,
+    capacity: i32,
+    messages: Arc<Mutex<Vec<T>>>,
+    sender_count: i32,
+}
+
+impl Channel<Message> {
+    pub fn new(capacity: i32) -> Self {
+        Channel {
+            id: "channel_0".to_string(),
+            capacity: capacity,
+            messages: Arc::new(Mutex::new(Vec::new())),
+            sender_count: 0,
+        }
+    }
+
+    pub fn send(&self, msg: Message) -> Result<(), String> {
+        let mut queue = self.messages.lock().unwrap()
+        if (queue.len() as i32) < self.capacity {
+            queue.push(msg)
+            Ok(())
+        } else {
+            Err("Channel full".to_string())
+        }
+    }
+
+    pub fn recv(&self) -> Result<Option<Message>, String> {
+        let mut queue = self.messages.lock().unwrap()
+        if !queue.is_empty() {
+            Ok(Some(queue.remove(0)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn len(&self) -> i32 {
+        self.messages.lock().unwrap().len() as i32
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.messages.lock().unwrap().is_empty()
+    }
+
+    pub fn is_full(&self) -> bool {
+        let queue = self.messages.lock().unwrap()
+        (queue.len() as i32) >= self.capacity
+    }
+
+    pub fn clear(&self) {
+        self.messages.lock().unwrap().clear()
+    }
+}
+
+pub struct BroadcastChannel {
+    id: String,
+    subscribers: Arc<Mutex<Vec<String>>>,
+    message_history: Arc<Mutex<Vec<Message>>>,
+}
+
+impl BroadcastChannel {
+    pub fn new() -> Self {
+        BroadcastChannel {
+            id: "broadcast_0".to_string(),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+            message_history: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn subscribe(&self, subscriber_id: String) -> Result<(), String> {
+        self.subscribers.lock().unwrap().push(subscriber_id)
+        Ok(())
+    }
+
+    pub fn unsubscribe(&self, subscriber_id: String) -> Result<(), String> {
+        let mut subs = self.subscribers.lock().unwrap()
+        subs.retain(|id| id != &subscriber_id)
+        Ok(())
+    }
+
+    pub fn publish(&self, msg: Message) -> Result<i32, String> {
+        let mut history = self.message_history.lock().unwrap()
+        history.push(msg)
+        let subs = self.subscribers.lock().unwrap()
+        Ok(subs.len() as i32)
+    }
+
+    pub fn subscriber_count(&self) -> i32 {
+        self.subscribers.lock().unwrap().len() as i32
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 4: ROUTING & MESSAGE DISPATCHING
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct Route {
+    source_actor: String,
+    target_actor: String,
+    message_type: String,
+    priority: i32,  // higher = more important
+}
+
+pub actor Router {
+    routes: Arc<Mutex<Vec<Route>>>,
+    route_count: i32 = 0,
+
+    message AddRoute(source: String, target: String, msg_type: String, priority: i32) -> Result<(), String> {
+        let route = Route {
+            source_actor: source,
+            target_actor: target,
+            message_type: msg_type,
+            priority: priority,
+        }
+        routes.lock().unwrap().push(route)
+        self.route_count += 1
+        Ok(())
+    }
+
+    message GetRoute(source: String, msg_type: String) -> Result<Option<String>, String> {
+        let routes = routes.lock().unwrap()
+        for route in routes.iter() {
+            if route.source_actor == source && route.message_type == msg_type {
+                return Ok(Some(route.target_actor.clone()))
+            }
+        }
+        Ok(None)
+    }
+
+    message RouteMessage(source: String, msg_type: String) -> Result<String, String> {
+        let routes = routes.lock().unwrap()
+        let mut best_route: Option<&Route> = None
+
+        for route in routes.iter() {
+            if route.source_actor == source && route.message_type == msg_type {
+                if best_route.is_none() || route.priority > best_route.unwrap().priority {
+                    best_route = Some(route)
+                }
+            }
+        }
+
+        if let Some(route) = best_route {
+            Ok(route.target_actor.clone())
+        } else {
+            Err("No route found".to_string())
+        }
+    }
+
+    message GetRouteCount() -> Result<i32, String> {
+        Ok(self.route_count)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 5: LOAD BALANCING & FAILOVER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct LoadBalancer {
+    nodes: Vec<String>,
+    current_index: i32,
+    health_status: HashMap<String, bool>,
+}
+
+impl LoadBalancer {
+    pub fn new() -> Self {
+        LoadBalancer {
+            nodes: Vec::new(),
+            current_index: 0,
+            health_status: HashMap::new(),
+        }
+    }
+
+    pub fn add_node(&mut self, node_id: String) {
+        self.nodes.push(node_id.clone())
+        self.health_status.insert(node_id, true)
+    }
+
+    pub fn remove_node(&mut self, node_id: String) {
+        self.nodes.retain(|id| id != &node_id)
+        self.health_status.remove(&node_id)
+    }
+
+    pub fn next_node(&mut self) -> Option<String> {
+        if self.nodes.is_empty() {
+            return None
+        }
+
+        loop {
+            let node = self.nodes[self.current_index as usize].clone()
+            self.current_index = (self.current_index + 1) % (self.nodes.len() as i32)
+
+            if let Some(&healthy) = self.health_status.get(&node) {
+                if healthy {
+                    return Some(node)
+                }
+            }
+
+            if self.current_index == 0 {
+                break
+            }
+        }
+
+        None
+    }
+
+    pub fn mark_healthy(&mut self, node_id: String) {
+        self.health_status.insert(node_id, true)
+    }
+
+    pub fn mark_unhealthy(&mut self, node_id: String) {
+        self.health_status.insert(node_id, false)
+    }
+
+    pub fn healthy_node_count(&self) -> i32 {
+        self.health_status.values().filter(|&&v| v).count() as i32
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 6: SERVICE REGISTRY & DISCOVERY
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct ServiceInstance {
+    service_name: String,
+    instance_id: String,
+    host: String,
+    port: i32,
+    metadata: HashMap<String, String>,
+    is_healthy: bool,
+}
+
+pub actor ServiceRegistry {
+    services: Arc<Mutex<HashMap<String, Vec<ServiceInstance>>>>,
+    health_checks: HashMap<String, i32>,
+
+    message RegisterService(service_name: String, instance_id: String, host: String, port: i32) -> Result<(), String> {
+        let instance = ServiceInstance {
+            service_name: service_name.clone(),
+            instance_id: instance_id.clone(),
+            host: host,
+            port: port,
+            metadata: HashMap::new(),
+            is_healthy: true,
+        }
+
+        let mut services = services.lock().unwrap()
+        if let Some(instances) = services.get_mut(&service_name) {
+            instances.push(instance)
+        } else {
+            services.insert(service_name, vec![instance])
+        }
+
+        Ok(())
+    }
+
+    message DeregisterService(service_name: String, instance_id: String) -> Result<(), String> {
+        let mut services = services.lock().unwrap()
+        if let Some(instances) = services.get_mut(&service_name) {
+            instances.retain(|inst| inst.instance_id != instance_id)
+        }
+        Ok(())
+    }
+
+    message GetServiceInstances(service_name: String) -> Result<i32, String> {
+        let services = services.lock().unwrap()
+        Ok(services.get(&service_name).map(|v| v.len() as i32).unwrap_or(0))
+    }
+
+    message HealthCheck(service_name: String, instance_id: String) -> Result<(), String> {
+        let mut services = services.lock().unwrap()
+        if let Some(instances) = services.get_mut(&service_name) {
+            for instance in instances {
+                if instance.instance_id == instance_id {
+                    instance.is_healthy = true
+                    return Ok(())
+                }
+            }
+        }
+        Err("Service instance not found".to_string())
+    }
+
+    message MarkUnhealthy(service_name: String, instance_id: String) -> Result<(), String> {
+        let mut services = services.lock().unwrap()
+        if let Some(instances) = services.get_mut(&service_name) {
+            for instance in instances {
+                if instance.instance_id == instance_id {
+                    instance.is_healthy = false
+                    return Ok(())
+                }
+            }
+        }
+        Err("Service instance not found".to_string())
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PART 7: DISTRIBUTED TRACING & OBSERVABILITY
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct Span {
+    trace_id: String,
+    span_id: String,
+    parent_span_id: Option<String>,
+    operation_name: String,
+    start_time: i64,
+    end_time: i64,
+    tags: HashMap<String, String>,
+}
+
+impl Span {
+    pub fn new(trace_id: String, operation_name: String) -> Self {
+        Span {
+            trace_id: trace_id,
+            span_id: "span_0".to_string(),
+            parent_span_id: None,
+            operation_name: operation_name,
+            start_time: 0,
+            end_time: 0,
+            tags: HashMap::new(),
+        }
+    }
+
+    pub fn set_tag(&mut self, key: String, value: String) {
+        self.tags.insert(key, value)
+    }
+
+    pub fn duration(&self) -> i64 {
+        self.end_time - self.start_time
+    }
+}
+
+pub actor TracingCollector {
+    spans: Arc<Mutex<Vec<Span>>>,
+    trace_count: i32 = 0,
+
+    message RecordSpan(span: Span) -> Result<(), String> {
+        spans.lock().unwrap().push(span)
+        self.trace_count += 1
+        Ok(())
+    }
+
+    message GetSpanCount() -> Result<i32, String> {
+        Ok(spans.lock().unwrap().len() as i32)
+    }
+
+    message GetTrace(trace_id: String) -> Result<Vec<String>, String> {
+        let spans_lock = spans.lock().unwrap()
+        let matching: Vec<String> = spans_lock.iter()
+            .filter(|s| s.trace_id == trace_id)
+            .map(|s| s.operation_name.clone())
+            .collect()
+        Ok(matching)
+    }
+}

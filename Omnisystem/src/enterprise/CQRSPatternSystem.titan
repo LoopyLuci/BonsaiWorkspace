@@ -486,11 +486,160 @@ fn apply_filters(record: &HashMap<String, String>, filters: &HashMap<String, Str
     true
 }
 
-fn synchronize_read_model(_write_model_id: &str, _read_model_id: &str) -> Result<i32, String> {
-    // Synchronize from write model to read model
-    Ok(0)  // Placeholder
+// File-based event log synchronization: reads serialized commands from
+// `omnisystem_cqrs_<write_model_id>.log` and projects them to
+// `omnisystem_cqrs_<read_model_id>.proj` as key=value lines.
+fn synchronize_read_model(write_model_id: &str, read_model_id: &str) -> Result<i32, String> {
+    let event_log_path = format!("omnisystem_cqrs_{}.log", write_model_id)
+    let projection_path = format!("omnisystem_cqrs_{}.proj", read_model_id)
+
+    // Read all events from the write model event log file
+    let log_bytes = match read_file_bytes(&event_log_path) {
+        Ok(b)  => b,
+        Err(_) => return Ok(0),  // no log yet — nothing to sync
+    }
+
+    // Read current projection watermark (last synced byte offset)
+    let watermark: usize = match read_file_bytes(&format!("{}.wm", projection_path)) {
+        Ok(wm_bytes) => {
+            let s = String::from_utf8_lossy(&wm_bytes);
+            s.trim().parse::<usize>().unwrap_or(0)
+        },
+        Err(_) => 0,
+    }
+
+    let new_bytes = &log_bytes[watermark.min(log_bytes.len())..];
+    if new_bytes.is_empty() {
+        return Ok(0)
+    }
+
+    // Parse new event lines — each line: "aggregate_id\tfield=value\tfield=value\n"
+    let text = String::from_utf8_lossy(new_bytes)
+    let mut events_applied = 0i32
+
+    // Load existing projection
+    let mut projection: HashMap<String, String> = HashMap::new()
+    if let Ok(proj_bytes) = read_file_bytes(&projection_path) {
+        let proj_text = String::from_utf8_lossy(&proj_bytes)
+        for line in proj_text.lines() {
+            if let Some(eq_pos) = line.find('=') {
+                let k = line[..eq_pos].to_string()
+                let v = line[eq_pos + 1..].to_string()
+                projection.insert(k, v)
+            }
+        }
+    }
+
+    for line in text.lines() {
+        if line.is_empty() { continue }
+        let mut parts = line.splitn(2, '\t')
+        let aggregate_id = match parts.next() {
+            Some(id) => id.to_string(),
+            None => continue,
+        }
+        if let Some(fields_str) = parts.next() {
+            for kv in fields_str.split('\t') {
+                if let Some(eq) = kv.find('=') {
+                    let k = format!("{}.{}", aggregate_id, &kv[..eq])
+                    let v = kv[eq + 1..].to_string()
+                    projection.insert(k, v)
+                }
+            }
+        }
+        events_applied += 1
+    }
+
+    // Write updated projection
+    let mut proj_out = String::new()
+    for (k, v) in &projection {
+        proj_out.push_str(k)
+        proj_out.push('=')
+        proj_out.push_str(v)
+        proj_out.push('\n')
+    }
+    write_file_bytes(&projection_path, proj_out.as_bytes())?
+
+    // Update watermark
+    let new_watermark = format!("{}", log_bytes.len())
+    write_file_bytes(&format!("{}.wm", projection_path), new_watermark.as_bytes())?
+
+    Ok(events_applied)
 }
 
+extern "Win32" {
+    fn CreateFileA(path: *const u8, access: u32, share: u32, sec: *mut u8, disp: u32, flags: u32, tmpl: *mut u8) -> *mut u8
+    fn GetFileSize(h: *mut u8, high: *mut u32) -> u32
+    fn ReadFile(h: *mut u8, buf: *mut u8, n: u32, read: *mut u32, ov: *mut u8) -> i32
+    fn WriteFile(h: *mut u8, buf: *const u8, n: u32, written: *mut u32, ov: *mut u8) -> i32
+    fn CloseHandle(h: *mut u8) -> i32
+}
+extern "POSIX" {
+    fn open_rdonly(path: *const u8) -> i32
+    fn open_wronly_creat_trunc(path: *const u8) -> i32
+    fn lseek_end(fd: i32) -> i64
+    fn lseek_set(fd: i32, off: i64)
+    fn read_fd(fd: i32, buf: *mut u8, n: usize) -> isize
+    fn write_fd(fd: i32, buf: *const u8, n: usize) -> isize
+    fn close_fd(fd: i32)
+}
+
+fn read_file_bytes(path: &str) -> Result<Vec<u8>, String> {
+    let path_bytes: Vec<u8> = path.bytes().chain(std::iter::once(0u8)).collect()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA(path_bytes.as_ptr(), 0x80000000u32, 1, std::ptr::null_mut(), 3, 0x80, std::ptr::null_mut())
+        if h as usize == usize::MAX { return Err("open failed".to_string()) }
+        let sz = GetFileSize(h, std::ptr::null_mut()) as usize
+        let mut buf = vec![0u8; sz]
+        let mut nread = 0u32
+        ReadFile(h, buf.as_mut_ptr(), sz as u32, &mut nread, std::ptr::null_mut())
+        CloseHandle(h)
+        buf.truncate(nread as usize)
+        Ok(buf)
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_rdonly(path_bytes.as_ptr())
+        if fd < 0 { return Err("open failed".to_string()) }
+        let sz = lseek_end(fd) as usize
+        lseek_set(fd, 0)
+        let mut buf = vec![0u8; sz]
+        let n = read_fd(fd, buf.as_mut_ptr(), sz)
+        close_fd(fd)
+        if n < 0 { return Err("read failed".to_string()) }
+        buf.truncate(n as usize)
+        Ok(buf)
+    }
+}
+
+fn write_file_bytes(path: &str, data: &[u8]) -> Result<(), String> {
+    let path_bytes: Vec<u8> = path.bytes().chain(std::iter::once(0u8)).collect()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA(path_bytes.as_ptr(), 0x40000000u32, 0, std::ptr::null_mut(), 2, 0x80, std::ptr::null_mut())
+        if h as usize == usize::MAX { return Err("create failed".to_string()) }
+        let mut nwritten = 0u32
+        WriteFile(h, data.as_ptr(), data.len() as u32, &mut nwritten, std::ptr::null_mut())
+        CloseHandle(h)
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_wronly_creat_trunc(path_bytes.as_ptr())
+        if fd < 0 { return Err("create failed".to_string()) }
+        write_fd(fd, data.as_ptr(), data.len())
+        close_fd(fd)
+        Ok(())
+    }
+}
+
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
 }

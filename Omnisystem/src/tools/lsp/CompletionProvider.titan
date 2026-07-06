@@ -1,0 +1,905 @@
+// ============================================================
+// CompletionProvider.titan — Auto-completion engine
+// Omnisystem LSP Server · Smart completions for all 7 languages
+// Keywords, snippets, member access, fuzzy ranking, context-awareness.
+// ============================================================
+
+module CompletionProvider
+
+use std::collections::HashMap
+use LspProtocol::{
+    Position, Range, CompletionItem, CompletionItemKind,
+    line_prefix, word_at_position,
+}
+use LanguageAnalyzer::{SymbolTable, SymbolInfo, SymbolKindEx, detect_language}
+
+// ─────────────────────────────────────────────────────────────
+// § 1  TRIGGER CONTEXT
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum TriggerKind {
+    Invoked,
+    TriggerCharacter,
+    TriggerForIncompleteCompletions,
+}
+
+impl TriggerKind {
+    pub fn from_lsp(n: u32) -> Self {
+        match n {
+            1 => TriggerKind::Invoked,
+            2 => TriggerKind::TriggerCharacter,
+            3 => TriggerKind::TriggerForIncompleteCompletions,
+            _ => TriggerKind::Invoked,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompletionContext {
+    pub trigger_kind:      TriggerKind,
+    pub trigger_character: Option<char>,
+}
+
+impl CompletionContext {
+    pub fn invoked() -> Self {
+        CompletionContext { trigger_kind: TriggerKind::Invoked, trigger_character: None }
+    }
+
+    pub fn triggered_by(ch: char) -> Self {
+        CompletionContext { trigger_kind: TriggerKind::TriggerCharacter, trigger_character: Some(ch) }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 2  FUZZY RANKING
+// ─────────────────────────────────────────────────────────────
+
+// Compute edit distance (Levenshtein) between two short strings
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if a[i-1] == b[j-1] {
+                dp[i-1][j-1]
+            } else {
+                1 + dp[i-1][j-1].min(dp[i-1][j]).min(dp[i][j-1])
+            };
+        }
+    }
+    dp[m][n]
+}
+
+// Returns true if needle is a prefix-match or fuzzy substring of haystack
+pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
+    if needle.is_empty() { return true; }
+    let nl = needle.to_lowercase();
+    let hl = haystack.to_lowercase();
+    if hl.starts_with(&nl) { return true; }
+    // subsequence match
+    let mut hi = hl.chars();
+    'outer: for nc in nl.chars() {
+        loop {
+            match hi.next() {
+                Some(hc) if hc == nc => continue 'outer,
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
+// Score a label against a prefix (lower = better)
+pub fn score_completion(label: &str, prefix: &str) -> usize {
+    let ll = label.to_lowercase();
+    let pl = prefix.to_lowercase();
+    if ll.starts_with(&pl) {
+        return 0; // exact prefix — best
+    }
+    edit_distance(&pl, &ll[..pl.len().min(ll.len())])
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 3  KEYWORD TABLES
+// ─────────────────────────────────────────────────────────────
+
+fn titan_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("fn",       "Declare a function"),
+        ("let",      "Bind a variable"),
+        ("mut",      "Make binding mutable"),
+        ("struct",   "Declare a struct"),
+        ("enum",     "Declare an enum"),
+        ("impl",     "Implement methods for a type"),
+        ("pub",      "Public visibility modifier"),
+        ("use",      "Import a module or symbol"),
+        ("mod",      "Declare a module"),
+        ("if",       "Conditional branch"),
+        ("else",     "Alternate branch"),
+        ("for",      "Iterate over a range or collection"),
+        ("while",    "Loop while condition is true"),
+        ("return",   "Return a value from a function"),
+        ("match",    "Pattern match on a value"),
+        ("break",    "Break out of a loop"),
+        ("continue", "Continue to next iteration"),
+        ("true",     "Boolean literal true"),
+        ("false",    "Boolean literal false"),
+        ("self",     "Reference to the current instance"),
+        ("Self",     "Type of the current impl block"),
+        ("const",    "Declare a constant"),
+        ("static",   "Declare a static variable"),
+        ("trait",    "Declare a trait"),
+        ("type",     "Declare a type alias"),
+        ("in",       "Used in for..in loops"),
+        ("as",       "Type cast operator"),
+        ("where",    "Generic constraint clause"),
+        ("async",    "Mark a function as async"),
+        ("await",    "Await an async expression"),
+        ("move",     "Move semantics in closures"),
+    ]
+}
+
+fn vera_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("component",  "Declare a VERA UI component"),
+        ("props",      "Component props block"),
+        ("state",      "Component state block"),
+        ("render",     "Component render function"),
+        ("on_click",   "Click event handler"),
+        ("on_change",  "Change event handler"),
+        ("use_effect", "Side-effect hook"),
+        ("use_state",  "State management hook"),
+        ("fn",         "Declare a function"),
+        ("let",        "Bind a variable"),
+        ("mut",        "Make binding mutable"),
+        ("if",         "Conditional branch"),
+        ("for",        "Iterate"),
+        ("return",     "Return value"),
+        ("match",      "Pattern match"),
+        ("pub",        "Public visibility"),
+        ("self",       "Current component instance"),
+    ]
+}
+
+fn helix_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("pipeline",       "Declare a render pipeline"),
+        ("shader",         "Declare a shader program"),
+        ("vertex",         "Vertex shader stage"),
+        ("fragment",       "Fragment shader stage"),
+        ("compute",        "Compute shader stage"),
+        ("uniform",        "Declare a uniform binding"),
+        ("storage_buffer", "Declare a GPU storage buffer"),
+        ("texture2d",      "2D texture binding"),
+        ("sampler",        "Sampler binding"),
+        ("workgroup",      "Compute workgroup declaration"),
+        ("fn",             "Declare a function"),
+        ("let",            "Bind a variable"),
+        ("mut",            "Mutable binding"),
+        ("if",             "Conditional"),
+        ("for",            "Loop"),
+        ("return",         "Return value"),
+        ("struct",         "Struct declaration"),
+    ]
+}
+
+fn aether_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("actor",          "Declare an AETHER actor"),
+        ("message",        "Declare a message type"),
+        ("handler",        "Declare a message handler"),
+        ("spawn",          "Spawn an actor"),
+        ("send",           "Send a message to an actor"),
+        ("yield_now",      "Yield control to the scheduler"),
+        ("self_ref",       "Reference to current actor"),
+        ("run_event_loop", "Run the actor event loop"),
+        ("fn",             "Declare a function"),
+        ("let",            "Bind a variable"),
+        ("mut",            "Mutable binding"),
+        ("struct",         "Struct declaration"),
+        ("enum",           "Enum declaration"),
+        ("match",          "Pattern match"),
+        ("if",             "Conditional"),
+        ("for",            "Loop"),
+        ("return",         "Return value"),
+    ]
+}
+
+fn sylva_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("layer",    "Declare a neural network layer"),
+        ("model",    "Declare a model"),
+        ("dense",    "Fully-connected dense layer"),
+        ("conv2d",   "2D convolution layer"),
+        ("relu",     "ReLU activation function"),
+        ("softmax",  "Softmax activation function"),
+        ("sigmoid",  "Sigmoid activation function"),
+        ("train",    "Train the model"),
+        ("forward",  "Forward pass"),
+        ("backward", "Backward pass / gradient computation"),
+        ("fn",       "Declare a function"),
+        ("let",      "Bind a variable"),
+        ("mut",      "Mutable binding"),
+        ("for",      "Loop"),
+        ("return",   "Return value"),
+    ]
+}
+
+fn axiom_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("theorem",        "Declare a formal theorem"),
+        ("precondition",   "Theorem precondition"),
+        ("postcondition",  "Theorem postcondition"),
+        ("invariant",      "Loop or struct invariant"),
+        ("for_all",        "Universal quantifier"),
+        ("there_exists",   "Existential quantifier"),
+        ("assert",         "Assert a proposition"),
+        ("prove",          "Attempt automatic proof"),
+        ("fn",             "Declare a function"),
+        ("let",            "Bind a variable"),
+        ("if",             "Conditional"),
+        ("return",         "Return value"),
+    ]
+}
+
+fn nexus_keywords() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("layout",     "Declare a NEXUS layout"),
+        ("breakpoint", "Responsive breakpoint"),
+        ("flex",       "Flexbox container"),
+        ("grid",       "CSS grid container"),
+        ("row",        "Horizontal row"),
+        ("col",        "Vertical column"),
+        ("align",      "Alignment property"),
+        ("justify",    "Justify-content property"),
+        ("gap",        "Gap between flex/grid items"),
+        ("padding",    "Inner spacing"),
+        ("margin",     "Outer spacing"),
+        ("fn",         "Declare a function"),
+        ("let",        "Bind a variable"),
+        ("if",         "Conditional"),
+    ]
+}
+
+fn keywords_for_lang(lang: &str) -> Vec<(&'static str, &'static str)> {
+    match lang {
+        "titan"  => titan_keywords(),
+        "vera"   => vera_keywords(),
+        "helix"  => helix_keywords(),
+        "aether" => aether_keywords(),
+        "sylva"  => sylva_keywords(),
+        "axiom"  => axiom_keywords(),
+        "nexus"  => nexus_keywords(),
+        _        => titan_keywords(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 4  SNIPPET LIBRARY
+// ─────────────────────────────────────────────────────────────
+
+fn titan_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    // (trigger, label, body)
+    vec![
+        ("fn",     "fn — function",
+         "fn ${1:name}(${2:params}) -> ${3:ReturnType} {\n    ${4:// body}\n}"),
+        ("struct", "struct — struct definition",
+         "struct ${1:Name} {\n    pub ${2:field}: ${3:Type},\n}"),
+        ("enum",   "enum — enum definition",
+         "enum ${1:Name} {\n    ${2:Variant1},\n    ${3:Variant2},\n}"),
+        ("impl",   "impl — impl block",
+         "impl ${1:TypeName} {\n    pub fn ${2:method}(&self) -> ${3:ReturnType} {\n        ${4:todo!()}\n    }\n}"),
+        ("test",   "test — unit test function",
+         "#[test]\nfn test_${1:name}() {\n    ${2:assert_eq!(expected, actual)}\n}"),
+        ("match",  "match — match expression",
+         "match ${1:value} {\n    ${2:pattern} => ${3:expr},\n    _ => ${4:default},\n}"),
+        ("for",    "for — for-in loop",
+         "for ${1:item} in ${2:iterator} {\n    ${3:// body}\n}"),
+        ("if",     "if — if-else block",
+         "if ${1:condition} {\n    ${2:// then}\n} else {\n    ${3:// else}\n}"),
+    ]
+}
+
+fn vera_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("component", "component — VERA UI component",
+         "component ${1:Name} {\n    props {\n        ${2:title}: String,\n    }\n    state {\n        ${3:count}: i32 = 0,\n    }\n    render {\n        ${4:// JSX-like elements}\n    }\n}"),
+        ("on_click", "on_click — click handler",
+         "on_click(|${1:event}| {\n    ${2:// handle click}\n})"),
+        ("use_state", "use_state — state hook",
+         "let (${1:value}, set_${1:value}) = use_state(${2:initial});"),
+    ]
+}
+
+fn helix_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("pipeline", "pipeline — render pipeline",
+         "pipeline ${1:Name} {\n    uniform ${2:transform}: mat4,\n    vertex ${3:vert_main},\n    fragment ${4:frag_main},\n}"),
+        ("shader", "shader — vertex+fragment pair",
+         "shader ${1:vert_main}(${2:input}: VertexInput) -> VertexOutput {\n    ${3:// transform vertices}\n}\n\nshader ${4:frag_main}(${5:input}: FragmentInput) -> vec4 {\n    ${6:// compute color}\n}"),
+        ("compute", "compute — compute shader",
+         "compute ${1:main}() workgroup(${2:64}, 1, 1) {\n    ${3:// compute kernel}\n}"),
+    ]
+}
+
+fn aether_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("actor", "actor — actor definition",
+         "message ${1:MyMessage} {\n    pub ${2:data}: ${3:String},\n}\n\nactor ${4:MyActor} {\n    pub ${5:state}: ${6:i32},\n\n    handler ${1:MyMessage}(msg: ${1:MyMessage}) {\n        ${7:// handle message}\n    }\n}"),
+        ("spawn", "spawn — spawn and send",
+         "let ${1:actor_ref} = spawn(${2:MyActor} { ${3:state}: ${4:0} });\nsend(${1:actor_ref}, ${2:MyActor}Message { ${5:field}: ${6:value} });"),
+    ]
+}
+
+fn sylva_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("model", "model — neural network model",
+         "model ${1:MyNet} {\n    dense input(${2:784}, ${3:256})\n    relu\n    dense hidden(${3:256}, ${4:128})\n    relu\n    dense output(${4:128}, ${5:10})\n    softmax\n}"),
+        ("layer", "layer — custom layer",
+         "layer ${1:custom}(${2:in_dim}: usize, ${3:out_dim}: usize) {\n    forward(x: Tensor) -> Tensor {\n        ${4:// transform tensor}\n    }\n}"),
+    ]
+}
+
+fn axiom_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("theorem", "theorem — formal theorem",
+         "theorem ${1:name} {\n    precondition { ${2:x > 0} }\n    postcondition { ${3:result >= 0} }\n    prove {\n        ${4:// proof steps}\n    }\n}"),
+        ("invariant", "invariant — loop invariant",
+         "invariant {\n    ${1:// property that holds throughout loop}\n}"),
+    ]
+}
+
+fn nexus_snippets() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("layout", "layout — responsive layout",
+         "layout ${1:Main} {\n    breakpoint sm { min_width: 640 }\n    breakpoint md { min_width: 768 }\n    breakpoint lg { min_width: 1024 }\n\n    flex {\n        row {\n            ${2:// columns}\n        }\n    }\n}"),
+        ("flex", "flex — flex container",
+         "flex {\n    align: ${1:center}\n    justify: ${2:space_between}\n    gap: ${3:16}\n    ${4:// children}\n}"),
+        ("grid", "grid — grid layout",
+         "grid {\n    cols: ${1:3}\n    gap: ${2:16}\n    ${3:// cells}\n}"),
+    ]
+}
+
+fn snippets_for_lang(lang: &str) -> Vec<(&'static str, &'static str, &'static str)> {
+    match lang {
+        "titan"  => titan_snippets(),
+        "vera"   => vera_snippets(),
+        "helix"  => helix_snippets(),
+        "aether" => aether_snippets(),
+        "sylva"  => sylva_snippets(),
+        "axiom"  => axiom_snippets(),
+        "nexus"  => nexus_snippets(),
+        _        => titan_snippets(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 5  PRIMITIVE TYPE COMPLETIONS
+// ─────────────────────────────────────────────────────────────
+
+fn primitive_types() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("i8",    "8-bit signed integer"),
+        ("i16",   "16-bit signed integer"),
+        ("i32",   "32-bit signed integer"),
+        ("i64",   "64-bit signed integer"),
+        ("i128",  "128-bit signed integer"),
+        ("isize", "Pointer-sized signed integer"),
+        ("u8",    "8-bit unsigned integer"),
+        ("u16",   "16-bit unsigned integer"),
+        ("u32",   "32-bit unsigned integer"),
+        ("u64",   "64-bit unsigned integer"),
+        ("u128",  "128-bit unsigned integer"),
+        ("usize", "Pointer-sized unsigned integer"),
+        ("f32",   "32-bit floating point"),
+        ("f64",   "64-bit floating point"),
+        ("bool",  "Boolean type"),
+        ("char",  "Unicode scalar value"),
+        ("str",   "String slice"),
+        ("String","Owned UTF-8 string"),
+        ("Vec",   "Growable array"),
+        ("HashMap","Hash map"),
+        ("Option","Optional value"),
+        ("Result","Success or error value"),
+        ("Box",   "Heap allocation"),
+        ("Arc",   "Atomically reference counted"),
+        ("Rc",    "Reference counted"),
+    ]
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 6  CONTEXT DETECTION
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq)]
+enum CompletionKind {
+    Keyword,
+    MemberAccess { object: String },
+    UseStatement,
+    TypePosition,
+    General,
+}
+
+fn detect_context(prefix: &str) -> CompletionKind {
+    let trimmed = prefix.trim_end();
+
+    // Member access: ends with '.' possibly after an identifier
+    if trimmed.ends_with('.') {
+        // Extract the object name before the dot
+        let before_dot = &trimmed[..trimmed.len() - 1];
+        let obj = before_dot.split_whitespace().last()
+            .unwrap_or("").to_string();
+        return CompletionKind::MemberAccess { object: obj };
+    }
+
+    // Use statement
+    if trimmed.starts_with("use ") || trimmed.contains("use ") {
+        return CompletionKind::UseStatement;
+    }
+
+    // Type position: after ':' or '->' or 'impl' or '<'
+    if trimmed.ends_with(':') || trimmed.ends_with("->") ||
+       trimmed.ends_with("impl ") || trimmed.ends_with('<') {
+        return CompletionKind::TypePosition;
+    }
+
+    // After a keyword that starts a declaration
+    let last_word = trimmed.split_whitespace().last().unwrap_or("");
+    if matches!(last_word, "fn" | "struct" | "enum" | "let" | "const" | "mod") {
+        return CompletionKind::Keyword;
+    }
+
+    CompletionKind::General
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 7  MEMBER ACCESS COMPLETIONS
+// ─────────────────────────────────────────────────────────────
+
+fn get_member_completions(
+    type_name: &str,
+    symbols: &SymbolTable,
+    uri: &str,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+
+    // Look up struct fields for the type
+    for sym in symbols.all_symbols() {
+        if sym.scope_depth > 0 {
+            // Fields are at depth 1; check if they belong to this type
+            if let SymbolKindEx::Field = sym.kind {
+                let mut item = CompletionItem::new(
+                    &sym.name,
+                    CompletionItemKind::Field,
+                );
+                item.detail = Some(sym.type_str.clone());
+                if !sym.doc_comment.is_empty() {
+                    item.documentation = Some(sym.doc_comment.clone());
+                }
+                items.push(item);
+            }
+        }
+    }
+
+    // Standard method completions based on common types
+    let std_methods: &[(&str, &[(&str, &str, &str)])] = &[
+        ("String", &[
+            ("len",        "(&self) -> usize",     "Returns length in bytes"),
+            ("is_empty",   "(&self) -> bool",      "Returns true if length is zero"),
+            ("to_uppercase","(&self) -> String",   "Convert to uppercase"),
+            ("to_lowercase","(&self) -> String",   "Convert to lowercase"),
+            ("trim",       "(&self) -> &str",      "Trim whitespace"),
+            ("contains",   "(&self, pat: &str) -> bool", "Check if string contains pattern"),
+            ("starts_with","(&self, pat: &str) -> bool", "Check prefix"),
+            ("ends_with",  "(&self, pat: &str) -> bool", "Check suffix"),
+            ("split",      "(&self, sep: char) -> Split", "Split by separator"),
+            ("replace",    "(&self, from: &str, to: &str) -> String", "Replace substrings"),
+            ("push_str",   "(&mut self, s: &str)", "Append string slice"),
+            ("push",       "(&mut self, ch: char)", "Append character"),
+            ("clone",      "(&self) -> String",    "Clone the string"),
+            ("as_str",     "(&self) -> &str",      "Convert to string slice"),
+            ("chars",      "(&self) -> Chars",     "Iterator over characters"),
+        ]),
+        ("Vec", &[
+            ("len",      "(&self) -> usize",          "Number of elements"),
+            ("is_empty", "(&self) -> bool",            "True if no elements"),
+            ("push",     "(&mut self, value: T)",      "Append element"),
+            ("pop",      "(&mut self) -> Option<T>",   "Remove and return last"),
+            ("get",      "(&self, index: usize) -> Option<&T>", "Get by index"),
+            ("iter",     "(&self) -> Iter<T>",         "Iterator over references"),
+            ("iter_mut", "(&mut self) -> IterMut<T>",  "Mutable iterator"),
+            ("contains", "(&self, x: &T) -> bool",    "Check membership"),
+            ("sort",     "(&mut self)",                "Sort in place"),
+            ("reverse",  "(&mut self)",                "Reverse in place"),
+            ("clear",    "(&mut self)",                "Remove all elements"),
+            ("extend",   "(&mut self, iter: impl IntoIterator<Item=T>)", "Extend from iterator"),
+            ("retain",   "(&mut self, f: impl FnMut(&T) -> bool)", "Keep matching elements"),
+            ("clone",    "(&self) -> Vec<T>",          "Clone the vector"),
+        ]),
+        ("Option", &[
+            ("is_some",   "(&self) -> bool",           "True if Some"),
+            ("is_none",   "(&self) -> bool",           "True if None"),
+            ("unwrap",    "(self) -> T",                "Unwrap or panic"),
+            ("unwrap_or", "(self, default: T) -> T",   "Unwrap or default"),
+            ("map",       "(self, f: FnOnce(T) -> U) -> Option<U>", "Transform inner value"),
+            ("and_then",  "(self, f: FnOnce(T) -> Option<U>) -> Option<U>", "Flat-map"),
+            ("or",        "(self, other: Option<T>) -> Option<T>", "Return self or other"),
+            ("clone",     "(&self) -> Option<T>",      "Clone the option"),
+        ]),
+        ("HashMap", &[
+            ("get",      "(&self, key: &K) -> Option<&V>", "Lookup by key"),
+            ("insert",   "(&mut self, key: K, value: V) -> Option<V>", "Insert key-value"),
+            ("remove",   "(&mut self, key: &K) -> Option<V>", "Remove by key"),
+            ("contains_key","(&self, key: &K) -> bool", "Check key existence"),
+            ("len",      "(&self) -> usize",            "Number of entries"),
+            ("is_empty", "(&self) -> bool",             "True if no entries"),
+            ("keys",     "(&self) -> Keys<K,V>",        "Iterator over keys"),
+            ("values",   "(&self) -> Values<K,V>",      "Iterator over values"),
+            ("iter",     "(&self) -> Iter<K,V>",        "Iterator over key-value pairs"),
+            ("entry",    "(&mut self, key: K) -> Entry<K,V>", "Entry API for upsert"),
+            ("clear",    "(&mut self)",                 "Remove all entries"),
+        ]),
+    ];
+
+    for (ty, methods) in std_methods {
+        if type_name == *ty || type_name.starts_with(ty) {
+            for (meth, sig, doc) in *methods {
+                let mut item = CompletionItem::new(meth, CompletionItemKind::Method);
+                item.detail = Some(sig.to_string());
+                item.documentation = Some(doc.to_string());
+                item.insert_text = Some(format!("{}(${{}}})", meth));
+                items.push(item);
+            }
+        }
+    }
+
+    items
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 8  MODULE PATH COMPLETIONS (use statements)
+// ─────────────────────────────────────────────────────────────
+
+fn get_use_completions() -> Vec<CompletionItem> {
+    let modules = vec![
+        ("std::collections::HashMap",   "Standard hash map"),
+        ("std::collections::HashSet",   "Standard hash set"),
+        ("std::collections::BTreeMap",  "Sorted map"),
+        ("std::io",                     "I/O traits and types"),
+        ("std::io::Read",               "Read trait"),
+        ("std::io::Write",              "Write trait"),
+        ("std::fmt",                    "Formatting utilities"),
+        ("std::str",                    "String utilities"),
+        ("std::string::String",         "Owned string type"),
+        ("std::vec::Vec",               "Growable array"),
+        ("std::option::Option",         "Optional value"),
+        ("std::result::Result",         "Result type"),
+        ("LspProtocol",                 "LSP protocol types"),
+        ("LanguageAnalyzer",            "Language analysis engine"),
+        ("CompletionProvider",          "Auto-completion provider"),
+        ("DiagnosticsProvider",         "Diagnostics engine"),
+        ("Omnisystem::core",            "Core Omnisystem APIs"),
+        ("Omnisystem::runtime",         "Runtime APIs"),
+        ("Omnisystem::desktop",         "Desktop environment APIs"),
+        ("Omnisystem::graphics",        "Graphics/HELIX APIs"),
+        ("Omnisystem::network",         "Networking APIs"),
+        ("Omnisystem::security",        "Security APIs"),
+        ("Omnisystem::analytics",       "Analytics APIs"),
+    ];
+    modules.into_iter().map(|(path, doc)| {
+        let mut item = CompletionItem::new(path, CompletionItemKind::Module);
+        item.documentation = Some(doc.to_string());
+        item
+    }).collect()
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 9  SYMBOL COMPLETIONS FROM SYMBOL TABLE
+// ─────────────────────────────────────────────────────────────
+
+fn symbol_kind_to_completion_kind(kind: &SymbolKindEx) -> CompletionItemKind {
+    match kind {
+        SymbolKindEx::Function    => CompletionItemKind::Function,
+        SymbolKindEx::Struct      => CompletionItemKind::Struct,
+        SymbolKindEx::Enum        => CompletionItemKind::Enum,
+        SymbolKindEx::EnumVariant => CompletionItemKind::EnumMember,
+        SymbolKindEx::Field       => CompletionItemKind::Field,
+        SymbolKindEx::Variable    => CompletionItemKind::Variable,
+        SymbolKindEx::Parameter   => CompletionItemKind::Variable,
+        SymbolKindEx::Constant    => CompletionItemKind::Constant,
+        SymbolKindEx::Module      => CompletionItemKind::Module,
+        SymbolKindEx::Trait       => CompletionItemKind::Interface,
+        SymbolKindEx::TypeAlias   => CompletionItemKind::TypeParameter,
+        SymbolKindEx::Component   => CompletionItemKind::Class,
+        SymbolKindEx::Prop        => CompletionItemKind::Property,
+        SymbolKindEx::State       => CompletionItemKind::Variable,
+        SymbolKindEx::Pipeline    => CompletionItemKind::Module,
+        SymbolKindEx::Shader      => CompletionItemKind::Function,
+        SymbolKindEx::Uniform     => CompletionItemKind::Variable,
+        SymbolKindEx::StorageBuffer => CompletionItemKind::Variable,
+        SymbolKindEx::Actor       => CompletionItemKind::Class,
+        SymbolKindEx::Message     => CompletionItemKind::Struct,
+        SymbolKindEx::Handler     => CompletionItemKind::Method,
+        SymbolKindEx::Layer       => CompletionItemKind::Class,
+        SymbolKindEx::Model       => CompletionItemKind::Class,
+        SymbolKindEx::Theorem     => CompletionItemKind::Function,
+        SymbolKindEx::Precondition| SymbolKindEx::Postcondition |
+        SymbolKindEx::Invariant   => CompletionItemKind::Keyword,
+        SymbolKindEx::Layout      => CompletionItemKind::Module,
+        SymbolKindEx::Breakpoint  => CompletionItemKind::Constant,
+    }
+}
+
+fn completions_from_symbols(symbols: &SymbolTable, prefix: &str) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    for sym in symbols.all_symbols() {
+        if !fuzzy_match(prefix, &sym.name) { continue; }
+        let ck = symbol_kind_to_completion_kind(&sym.kind);
+        let mut item = CompletionItem::new(&sym.name, ck);
+        if !sym.type_str.is_empty() {
+            item.detail = Some(sym.type_str.clone());
+        }
+        if !sym.doc_comment.is_empty() {
+            item.documentation = Some(sym.doc_comment.clone());
+        }
+        let score = score_completion(&sym.name, prefix);
+        item.sort_text = Some(format!("{:04}", score));
+        items.push(item);
+    }
+    items
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 10  MAIN ENTRY POINT
+// ─────────────────────────────────────────────────────────────
+
+pub fn get_completions(
+    source:  &str,
+    pos:     &Position,
+    symbols: &SymbolTable,
+    lang:    &str,
+    ctx:     &CompletionContext,
+) -> Vec<CompletionItem> {
+    let prefix_line = line_prefix(source, pos);
+    let context     = detect_context(&prefix_line);
+    let word_prefix = prefix_line.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .last().unwrap_or("").to_string();
+
+    let mut items: Vec<CompletionItem> = Vec::new();
+
+    match context {
+        CompletionKind::MemberAccess { ref object } => {
+            // Try to resolve type of the object from symbol table
+            let type_name = if let Some(sym) = symbols.lookup(object) {
+                sym.type_str.trim().to_string()
+            } else {
+                object.clone()
+            };
+            let mut member_items = get_member_completions(&type_name, symbols, "");
+            // Filter by word_prefix if any (e.g., "obj.le" → filter to "len")
+            member_items.retain(|i| fuzzy_match(&word_prefix, &i.label));
+            items.extend(member_items);
+        }
+
+        CompletionKind::UseStatement => {
+            let mut use_items = get_use_completions();
+            use_items.retain(|i| fuzzy_match(&word_prefix, &i.label));
+            items.extend(use_items);
+        }
+
+        CompletionKind::TypePosition => {
+            // Type names: primitives + user types
+            for (name, doc) in primitive_types() {
+                if !fuzzy_match(&word_prefix, name) { continue; }
+                let mut item = CompletionItem::new(name, CompletionItemKind::TypeParameter);
+                item.documentation = Some(doc.to_string());
+                let score = score_completion(name, &word_prefix);
+                item.sort_text = Some(format!("{:04}", score));
+                items.push(item);
+            }
+            items.extend(completions_from_symbols(symbols, &word_prefix));
+        }
+
+        CompletionKind::Keyword | CompletionKind::General => {
+            // 1. Keywords
+            for (kw, doc) in keywords_for_lang(lang) {
+                if !fuzzy_match(&word_prefix, kw) { continue; }
+                let mut item = CompletionItem::new(kw, CompletionItemKind::Keyword);
+                item.documentation = Some(doc.to_string());
+                let score = score_completion(kw, &word_prefix);
+                item.sort_text = Some(format!("0{:04}", score)); // keywords first
+                items.push(item);
+            }
+
+            // 2. Snippets
+            for (trigger, label, body) in snippets_for_lang(lang) {
+                if !fuzzy_match(&word_prefix, trigger) { continue; }
+                let mut item = CompletionItem::new(label, CompletionItemKind::Snippet);
+                item.insert_text = Some(body.to_string());
+                item.documentation = Some(format!("Snippet: {}", label));
+                item.sort_text = Some(format!("1{}", label));
+                items.push(item);
+            }
+
+            // 3. User symbols
+            let mut sym_items = completions_from_symbols(symbols, &word_prefix);
+            for i in sym_items.iter_mut() {
+                if let Some(ref s) = i.sort_text.clone() {
+                    i.sort_text = Some(format!("2{}", s));
+                }
+            }
+            items.extend(sym_items);
+
+            // 4. Primitives (in general context)
+            if word_prefix.len() >= 1 {
+                for (name, doc) in primitive_types() {
+                    if !fuzzy_match(&word_prefix, name) { continue; }
+                    let mut item = CompletionItem::new(name, CompletionItemKind::TypeParameter);
+                    item.documentation = Some(doc.to_string());
+                    item.sort_text = Some(format!("3{}", name));
+                    items.push(item);
+                }
+            }
+        }
+    }
+
+    // Deduplicate by label
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|i| seen.insert(i.label.clone()));
+
+    // Sort by sort_text
+    items.sort_by(|a, b| {
+        a.sort_text.as_deref().unwrap_or(&a.label)
+         .cmp(b.sort_text.as_deref().unwrap_or(&b.label))
+    });
+
+    // Cap at 100 items to avoid overwhelming the client
+    items.truncate(100);
+    items
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 11  UNIT TESTS
+// ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use LanguageAnalyzer::SymbolTable;
+
+    fn empty_table() -> SymbolTable { SymbolTable::new() }
+
+    #[test]
+    fn test_edit_distance_identity() {
+        assert_eq!(edit_distance("hello", "hello"), 0);
+    }
+
+    #[test]
+    fn test_edit_distance_basic() {
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn test_fuzzy_match_prefix() {
+        assert!(fuzzy_match("fn",    "fn"));
+        assert!(fuzzy_match("fn",    "function"));
+        assert!(fuzzy_match("stru",  "struct"));
+        assert!(!fuzzy_match("xyz",  "struct"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_subsequence() {
+        assert!(fuzzy_match("sc", "struct"));  // s..c in struct
+        assert!(fuzzy_match("sm", "some_method"));
+    }
+
+    #[test]
+    fn test_keyword_completions_titan() {
+        let table = empty_table();
+        let ctx   = CompletionContext::invoked();
+        let items = get_completions("fn ", &Position::new(0, 3), &table, "titan", &ctx);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // "fn" snippet/keyword should be present when prefix is empty
+        assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn test_keyword_completions_filtered() {
+        let table = empty_table();
+        let ctx   = CompletionContext::invoked();
+        // prefix "stru" should return struct-related completions
+        let items = get_completions("stru", &Position::new(0, 4), &table, "titan", &ctx);
+        assert!(items.iter().any(|i| i.label.contains("struct")));
+    }
+
+    #[test]
+    fn test_member_access_context() {
+        let ctx = detect_context("my_string.");
+        assert!(matches!(ctx, CompletionKind::MemberAccess { .. }));
+    }
+
+    #[test]
+    fn test_use_statement_context() {
+        let ctx = detect_context("use std::");
+        assert!(matches!(ctx, CompletionKind::UseStatement));
+    }
+
+    #[test]
+    fn test_type_position_context() {
+        let ctx = detect_context("fn foo() ->");
+        assert!(matches!(ctx, CompletionKind::TypePosition));
+    }
+
+    #[test]
+    fn test_member_completions_string() {
+        let table = empty_table();
+        let items = get_member_completions("String", &table, "");
+        assert!(items.iter().any(|i| i.label == "len"));
+        assert!(items.iter().any(|i| i.label == "push_str"));
+        assert!(items.iter().any(|i| i.label == "trim"));
+    }
+
+    #[test]
+    fn test_member_completions_vec() {
+        let table = empty_table();
+        let items = get_member_completions("Vec", &table, "");
+        assert!(items.iter().any(|i| i.label == "push"));
+        assert!(items.iter().any(|i| i.label == "len"));
+        assert!(items.iter().any(|i| i.label == "iter"));
+    }
+
+    #[test]
+    fn test_snippets_for_vera() {
+        let snips = snippets_for_lang("vera");
+        assert!(snips.iter().any(|(t, _, _)| *t == "component"));
+    }
+
+    #[test]
+    fn test_snippets_for_helix() {
+        let snips = snippets_for_lang("helix");
+        assert!(snips.iter().any(|(t, _, _)| *t == "pipeline"));
+    }
+
+    #[test]
+    fn test_deduplication() {
+        let table = empty_table();
+        let ctx   = CompletionContext::invoked();
+        let items = get_completions("", &Position::new(0, 0), &table, "titan", &ctx);
+        let mut labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+        let orig_len = labels.len();
+        labels.dedup();
+        // No duplicates
+        assert_eq!(orig_len, labels.len());
+    }
+
+    #[test]
+    fn test_capped_at_100() {
+        let table = empty_table();
+        let ctx   = CompletionContext::invoked();
+        let items = get_completions("", &Position::new(0, 0), &table, "titan", &ctx);
+        assert!(items.len() <= 100);
+    }
+
+    #[test]
+    fn test_aether_completions() {
+        let table = empty_table();
+        let ctx   = CompletionContext::invoked();
+        let items = get_completions("act", &Position::new(0, 3), &table, "aether", &ctx);
+        assert!(items.iter().any(|i| i.label.contains("actor")));
+    }
+
+    #[test]
+    fn test_axiom_theorem_snippet() {
+        let snips = snippets_for_lang("axiom");
+        assert!(snips.iter().any(|(_, label, body)| label.contains("theorem") && body.contains("precondition")));
+    }
+}

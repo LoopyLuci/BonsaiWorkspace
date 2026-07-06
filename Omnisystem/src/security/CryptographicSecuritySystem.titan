@@ -374,9 +374,224 @@ pub struct CryptoStatistics {
 // CRYPTOGRAPHIC PRIMITIVES
 // ============================================================================
 
+// ============================================================================
+// OS RANDOM NUMBER GENERATOR
+// ============================================================================
+
+extern "Win32"  { fn BCryptGenRandom(alg: *mut u8, buf: *mut u8, n: u32, flags: u32) -> i32 }
+extern "POSIX"  { fn getrandom(buf: *mut u8, n: usize, flags: u32) -> isize }
+
 fn generate_secure_random(length: usize) -> Vec<u8> {
-    // Generate cryptographically secure random bytes
-    Vec::new()  // Placeholder
+    let mut buf = vec![0u8; length]
+    #[cfg(target_os = "windows")]
+    unsafe { BCryptGenRandom(std::ptr::null_mut(), buf.as_mut_ptr(), length as u32, 2) }
+    #[cfg(not(target_os = "windows"))]
+    unsafe { getrandom(buf.as_mut_ptr(), length, 0) }
+    buf
+}
+
+// ============================================================================
+// AES-256 CORE (FIPS 197)
+// ============================================================================
+
+const SBOX: [u8; 256] = [
+    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16,
+]
+
+const INV_SBOX: [u8; 256] = [
+    0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
+    0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
+    0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
+    0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
+    0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
+    0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
+    0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
+    0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
+    0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
+    0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
+    0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
+    0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
+    0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
+    0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
+    0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
+    0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d,
+]
+
+fn xtime(x: u8) -> u8 {
+    if x & 0x80 != 0 { (x << 1) ^ 0x1b } else { x << 1 }
+}
+
+fn gmul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0u8
+    for _ in 0..8 {
+        if b & 1 != 0 { p ^= a }
+        b >>= 1
+        a = xtime(a)
+    }
+    p
+}
+
+fn aes_sub_bytes(state: &mut [u8; 16]) {
+    for i in 0..16 { state[i] = SBOX[state[i] as usize] }
+}
+
+fn aes_inv_sub_bytes(state: &mut [u8; 16]) {
+    for i in 0..16 { state[i] = INV_SBOX[state[i] as usize] }
+}
+
+fn aes_shift_rows(s: &mut [u8; 16]) {
+    let t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t
+    let t = s[2]; s[2] = s[10]; s[10] = t; let t = s[6]; s[6] = s[14]; s[14] = t
+    let t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t
+}
+
+fn aes_inv_shift_rows(s: &mut [u8; 16]) {
+    let t = s[13]; s[13] = s[9]; s[9] = s[5]; s[5] = s[1]; s[1] = t
+    let t = s[2]; s[2] = s[10]; s[10] = t; let t = s[6]; s[6] = s[14]; s[14] = t
+    let t = s[3]; s[3] = s[7]; s[7] = s[11]; s[11] = s[15]; s[15] = t
+}
+
+fn aes_mix_columns(s: &mut [u8; 16]) {
+    for i in 0..4 {
+        let c = i * 4
+        let (s0, s1, s2, s3) = (s[c], s[c+1], s[c+2], s[c+3])
+        s[c]   = gmul(s0,2) ^ gmul(s1,3) ^ s2       ^ s3
+        s[c+1] = s0         ^ gmul(s1,2) ^ gmul(s2,3) ^ s3
+        s[c+2] = s0         ^ s1         ^ gmul(s2,2) ^ gmul(s3,3)
+        s[c+3] = gmul(s0,3) ^ s1         ^ s2         ^ gmul(s3,2)
+    }
+}
+
+fn aes_inv_mix_columns(s: &mut [u8; 16]) {
+    for i in 0..4 {
+        let c = i * 4
+        let (s0, s1, s2, s3) = (s[c], s[c+1], s[c+2], s[c+3])
+        s[c]   = gmul(s0,0x0e) ^ gmul(s1,0x0b) ^ gmul(s2,0x0d) ^ gmul(s3,0x09)
+        s[c+1] = gmul(s0,0x09) ^ gmul(s1,0x0e) ^ gmul(s2,0x0b) ^ gmul(s3,0x0d)
+        s[c+2] = gmul(s0,0x0d) ^ gmul(s1,0x09) ^ gmul(s2,0x0e) ^ gmul(s3,0x0b)
+        s[c+3] = gmul(s0,0x0b) ^ gmul(s1,0x0d) ^ gmul(s2,0x09) ^ gmul(s3,0x0e)
+    }
+}
+
+fn aes_add_round_key(state: &mut [u8; 16], rk: &[u8]) {
+    for i in 0..16 { state[i] ^= rk[i] }
+}
+
+fn aes256_key_schedule(key: &[u8; 32]) -> Vec<u8> {
+    let mut w = vec![0u8; 240]
+    w[..32].copy_from_slice(key)
+    let rcon = [0x01u8,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36,0x6c,0xd8,0xab,0x4d]
+    let mut i = 8usize
+    while i < 60 {
+        let mut temp = [w[(i-1)*4], w[(i-1)*4+1], w[(i-1)*4+2], w[(i-1)*4+3]]
+        if i % 8 == 0 {
+            let t = temp[0]; temp[0] = SBOX[temp[1] as usize] ^ rcon[i/8 - 1]
+            temp[1] = SBOX[temp[2] as usize]; temp[2] = SBOX[temp[3] as usize]; temp[3] = SBOX[t as usize]
+        } else if i % 8 == 4 {
+            for j in 0..4 { temp[j] = SBOX[temp[j] as usize] }
+        }
+        for j in 0..4 { w[i*4+j] = w[(i-8)*4+j] ^ temp[j] }
+        i += 1
+    }
+    w
+}
+
+fn aes256_encrypt_block(block: &[u8; 16], rk: &[u8]) -> [u8; 16] {
+    let mut s = *block
+    aes_add_round_key(&mut s, &rk[0..16])
+    for r in 1..14 {
+        aes_sub_bytes(&mut s)
+        aes_shift_rows(&mut s)
+        aes_mix_columns(&mut s)
+        aes_add_round_key(&mut s, &rk[r*16..(r+1)*16])
+    }
+    aes_sub_bytes(&mut s)
+    aes_shift_rows(&mut s)
+    aes_add_round_key(&mut s, &rk[224..240])
+    s
+}
+
+fn aes256_decrypt_block(block: &[u8; 16], rk: &[u8]) -> [u8; 16] {
+    let mut s = *block
+    aes_add_round_key(&mut s, &rk[224..240])
+    for r in (1..14).rev() {
+        aes_inv_shift_rows(&mut s)
+        aes_inv_sub_bytes(&mut s)
+        aes_add_round_key(&mut s, &rk[r*16..(r+1)*16])
+        aes_inv_mix_columns(&mut s)
+    }
+    aes_inv_shift_rows(&mut s)
+    aes_inv_sub_bytes(&mut s)
+    aes_add_round_key(&mut s, &rk[0..16])
+    s
+}
+
+// ============================================================================
+// AES-256-GCM (NIST SP 800-38D)
+// ============================================================================
+
+fn ghash(h: &[u8; 16], data: &[u8]) -> [u8; 16] {
+    let mut y = [0u8; 16]
+    let blocks = (data.len() + 15) / 16
+    for i in 0..blocks {
+        let start = i * 16
+        let end = (start + 16).min(data.len())
+        for j in 0..(end - start) { y[j] ^= data[start + j] }
+        // GF(2^128) multiply y by H
+        let x = y
+        y = [0u8; 16]
+        let mut v = *h
+        for bit in 0..128 {
+            let byte = bit / 8
+            let mask = 0x80u8 >> (bit % 8)
+            if x[byte] & mask != 0 {
+                for j in 0..16 { y[j] ^= v[j] }
+            }
+            let carry = v[15] & 1
+            // right shift v by 1
+            let mut prev = 0u8
+            for j in 0..16 {
+                let next = v[j] & 1
+                v[j] = (v[j] >> 1) | (prev << 7)
+                prev = next
+            }
+            if carry != 0 { v[0] ^= 0xe1 } // x^128 + x^7 + x^2 + x + 1
+        }
+    }
+    y
+}
+
+fn gcm_ctr_encrypt(plaintext: &[u8], key_schedule: &[u8], counter: &[u8; 16]) -> Vec<u8> {
+    let mut ciphertext = Vec::with_capacity(plaintext.len())
+    let mut ctr = *counter
+    let blocks = (plaintext.len() + 15) / 16
+    for i in 0..blocks {
+        let keystream = aes256_encrypt_block(&ctr, key_schedule)
+        let start = i * 16
+        let end = (start + 16).min(plaintext.len())
+        for j in 0..(end - start) { ciphertext.push(plaintext[start + j] ^ keystream[j]) }
+        // increment counter (last 4 bytes, big-endian)
+        let mut c = u32::from_be_bytes([ctr[12], ctr[13], ctr[14], ctr[15]])
+        c = c.wrapping_add(1)
+        let cb = c.to_be_bytes()
+        ctr[12] = cb[0]; ctr[13] = cb[1]; ctr[14] = cb[2]; ctr[15] = cb[3]
+    }
+    ciphertext
 }
 
 fn encrypt_aes256_gcm(
@@ -384,7 +599,52 @@ fn encrypt_aes256_gcm(
     key: &Vec<u8>,
     iv: &Vec<u8>
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    Ok((Vec::new(), Vec::new()))  // Placeholder
+    if key.len() != 32 { return Err("AES-256 key must be 32 bytes".to_string()) }
+    let mut key_arr = [0u8; 32]
+    key_arr.copy_from_slice(&key[..32])
+    let rk = aes256_key_schedule(&key_arr)
+
+    // H = AES_K(0^128)
+    let h = aes256_encrypt_block(&[0u8; 16], &rk)
+
+    // Build J0 (initial counter)
+    let mut j0 = [0u8; 16]
+    if iv.len() == 12 {
+        j0[..12].copy_from_slice(&iv[..12])
+        j0[15] = 1
+    } else {
+        let padded_len = ((iv.len() + 15) / 16) * 16 + 8
+        let mut padded = vec![0u8; padded_len]
+        padded[..iv.len()].copy_from_slice(iv)
+        // length field: 64-bit big-endian of (iv.len() * 8)
+        let blen = (iv.len() as u64 * 8).to_be_bytes()
+        padded[padded_len-8..].copy_from_slice(&blen)
+        let gh = ghash(&h, &padded)
+        j0.copy_from_slice(&gh)
+    }
+
+    // CTR starts at J0 + 1
+    let mut ctr1 = j0
+    let mut c = u32::from_be_bytes([ctr1[12], ctr1[13], ctr1[14], ctr1[15]])
+    c = c.wrapping_add(1)
+    let cb = c.to_be_bytes()
+    ctr1[12] = cb[0]; ctr1[13] = cb[1]; ctr1[14] = cb[2]; ctr1[15] = cb[3]
+
+    let ciphertext = gcm_ctr_encrypt(plaintext, &rk, &ctr1)
+
+    // GHASH over ciphertext, then EK(J0)
+    let ct_padded_len = ((ciphertext.len() + 15) / 16) * 16 + 16
+    let mut ct_padded = vec![0u8; ct_padded_len]
+    ct_padded[..ciphertext.len()].copy_from_slice(&ciphertext)
+    // len(A)||len(C) with A=0
+    let clen = (ciphertext.len() as u64 * 8).to_be_bytes()
+    ct_padded[ct_padded_len-8..].copy_from_slice(&clen)
+    let s = ghash(&h, &ct_padded)
+    let ek_j0 = aes256_encrypt_block(&j0, &rk)
+    let mut tag = [0u8; 16]
+    for i in 0..16 { tag[i] = s[i] ^ ek_j0[i] }
+
+    Ok((ciphertext, tag.to_vec()))
 }
 
 fn decrypt_aes256_gcm(
@@ -393,7 +653,175 @@ fn decrypt_aes256_gcm(
     iv: &Vec<u8>,
     auth_tag: &Vec<u8>
 ) -> Result<Vec<u8>, String> {
-    Ok(Vec::new())  // Placeholder
+    if key.len() != 32 { return Err("AES-256 key must be 32 bytes".to_string()) }
+    let mut key_arr = [0u8; 32]
+    key_arr.copy_from_slice(&key[..32])
+    let rk = aes256_key_schedule(&key_arr)
+    let h = aes256_encrypt_block(&[0u8; 16], &rk)
+
+    let mut j0 = [0u8; 16]
+    if iv.len() == 12 { j0[..12].copy_from_slice(&iv[..12]); j0[15] = 1 }
+
+    // Verify tag
+    let ct_padded_len = ((ciphertext.len() + 15) / 16) * 16 + 16
+    let mut ct_padded = vec![0u8; ct_padded_len]
+    ct_padded[..ciphertext.len()].copy_from_slice(ciphertext)
+    let clen = (ciphertext.len() as u64 * 8).to_be_bytes()
+    ct_padded[ct_padded_len-8..].copy_from_slice(&clen)
+    let s = ghash(&h, &ct_padded)
+    let ek_j0 = aes256_encrypt_block(&j0, &rk)
+    let mut expected_tag = [0u8; 16]
+    for i in 0..16 { expected_tag[i] = s[i] ^ ek_j0[i] }
+
+    if auth_tag.len() < 16 || auth_tag[..16] != expected_tag { return Err("GCM authentication failed".to_string()) }
+
+    let mut ctr1 = j0
+    let mut c = u32::from_be_bytes([ctr1[12], ctr1[13], ctr1[14], ctr1[15]])
+    c = c.wrapping_add(1)
+    let cb = c.to_be_bytes()
+    ctr1[12] = cb[0]; ctr1[13] = cb[1]; ctr1[14] = cb[2]; ctr1[15] = cb[3]
+
+    Ok(gcm_ctr_encrypt(ciphertext, &rk, &ctr1))
+}
+
+// ============================================================================
+// ChaCha20-Poly1305 (RFC 8439)
+// ============================================================================
+
+fn chacha20_quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+    state[a] = state[a].wrapping_add(state[b]); state[d] ^= state[a]; state[d] = state[d].rotate_left(16)
+    state[c] = state[c].wrapping_add(state[d]); state[b] ^= state[c]; state[b] = state[b].rotate_left(12)
+    state[a] = state[a].wrapping_add(state[b]); state[d] ^= state[a]; state[d] = state[d].rotate_left(8)
+    state[c] = state[c].wrapping_add(state[d]); state[b] ^= state[c]; state[b] = state[b].rotate_left(7)
+}
+
+fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+    let mut s: [u32; 16] = [
+        0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
+        u32::from_le_bytes([key[0],key[1],key[2],key[3]]),
+        u32::from_le_bytes([key[4],key[5],key[6],key[7]]),
+        u32::from_le_bytes([key[8],key[9],key[10],key[11]]),
+        u32::from_le_bytes([key[12],key[13],key[14],key[15]]),
+        u32::from_le_bytes([key[16],key[17],key[18],key[19]]),
+        u32::from_le_bytes([key[20],key[21],key[22],key[23]]),
+        u32::from_le_bytes([key[24],key[25],key[26],key[27]]),
+        u32::from_le_bytes([key[28],key[29],key[30],key[31]]),
+        counter,
+        u32::from_le_bytes([nonce[0],nonce[1],nonce[2],nonce[3]]),
+        u32::from_le_bytes([nonce[4],nonce[5],nonce[6],nonce[7]]),
+        u32::from_le_bytes([nonce[8],nonce[9],nonce[10],nonce[11]]),
+    ]
+    let init = s
+    for _ in 0..10 {
+        chacha20_quarter_round(&mut s, 0, 4, 8,12)
+        chacha20_quarter_round(&mut s, 1, 5, 9,13)
+        chacha20_quarter_round(&mut s, 2, 6,10,14)
+        chacha20_quarter_round(&mut s, 3, 7,11,15)
+        chacha20_quarter_round(&mut s, 0, 5,10,15)
+        chacha20_quarter_round(&mut s, 1, 6,11,12)
+        chacha20_quarter_round(&mut s, 2, 7, 8,13)
+        chacha20_quarter_round(&mut s, 3, 4, 9,14)
+    }
+    for i in 0..16 { s[i] = s[i].wrapping_add(init[i]) }
+    let mut out = [0u8; 64]
+    for i in 0..16 { let b = s[i].to_le_bytes(); out[i*4..i*4+4].copy_from_slice(&b) }
+    out
+}
+
+fn poly1305_mac(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
+    // r clamped, s = key[16..32]
+    let mut r = [0u8; 17]
+    r[..16].copy_from_slice(&key[..16])
+    // Clamp r
+    r[3]  &= 15; r[7]  &= 15; r[11] &= 15; r[15] &= 15
+    r[4]  &= 252; r[8]  &= 252; r[12] &= 252
+
+    // Use 130-bit arithmetic as five 26-bit limbs (simplified u128-based impl)
+    let r0 = u32::from_le_bytes([r[0],r[1],r[2],r[3]]) as u64 & 0x3ffffff
+    let r1 = (u32::from_le_bytes([r[3],r[4],r[5],r[6]]) as u64 >> 2) & 0x3ffffff
+    let r2 = (u32::from_le_bytes([r[6],r[7],r[8],r[9]]) as u64 >> 4) & 0x3ffffff
+    let r3 = (u32::from_le_bytes([r[9],r[10],r[11],r[12]]) as u64 >> 6) & 0x3ffffff
+    let r4 = (u32::from_le_bytes([r[12],r[13],r[14],r[15]]) as u64 >> 8) & 0x3ffffff
+
+    let (mut h0, mut h1, mut h2, mut h3, mut h4) = (0u64, 0u64, 0u64, 0u64, 0u64)
+
+    let blocks = (msg.len() + 15) / 16
+    for i in 0..blocks {
+        let start = i * 16
+        let end = (start + 16).min(msg.len())
+        let mut block = [0u8; 17]
+        block[..end-start].copy_from_slice(&msg[start..end])
+        block[end-start] = 1
+
+        let n0 = u32::from_le_bytes([block[0],block[1],block[2],block[3]]) as u64 & 0x3ffffff
+        let n1 = (u32::from_le_bytes([block[3],block[4],block[5],block[6]]) as u64 >> 2) & 0x3ffffff
+        let n2 = (u32::from_le_bytes([block[6],block[7],block[8],block[9]]) as u64 >> 4) & 0x3ffffff
+        let n3 = (u32::from_le_bytes([block[9],block[10],block[11],block[12]]) as u64 >> 6) & 0x3ffffff
+        let n4 = (u32::from_le_bytes([block[12],block[13],block[14],block[15]]) as u64 >> 8) | if end-start == 16 { (block[16] as u64) << 24 } else { 0 }
+
+        h0 += n0; h1 += n1; h2 += n2; h3 += n3; h4 += n4
+
+        // Multiply h * r (mod 2^130-5), using 5r4..5r1 shortcut
+        let (rr1, rr2, rr3, rr4) = (r1*5, r2*5, r3*5, r4*5)
+        let (mut t0, mut t1, mut t2, mut t3, mut t4);
+        t0 = h0*r0 + h1*rr4 + h2*rr3 + h3*rr2 + h4*rr1
+        t1 = h0*r1 + h1*r0  + h2*rr4 + h3*rr3 + h4*rr2
+        t2 = h0*r2 + h1*r1  + h2*r0  + h3*rr4 + h4*rr3
+        t3 = h0*r3 + h1*r2  + h2*r1  + h3*r0  + h4*rr4
+        t4 = h0*r4 + h1*r3  + h2*r2  + h3*r1  + h4*r0
+        // Partial reduce
+        h0 = t0 & 0x3ffffff; let c = t0 >> 26
+        h1 = (t1 + c) & 0x3ffffff; let c = (t1 + c) >> 26
+        h2 = (t2 + c) & 0x3ffffff; let c = (t2 + c) >> 26
+        h3 = (t3 + c) & 0x3ffffff; let c = (t3 + c) >> 26
+        h4 = (t4 + c) & 0x3ffffff; let c = (t4 + c) >> 26
+        h0 += c * 5; let c = h0 >> 26; h0 &= 0x3ffffff; h1 += c
+    }
+
+    // Final reduce mod 2^130-5
+    let c = h1 >> 26; h1 &= 0x3ffffff; h2 += c
+    let c = h2 >> 26; h2 &= 0x3ffffff; h3 += c
+    let c = h3 >> 26; h3 &= 0x3ffffff; h4 += c
+    let c = h4 >> 26; h4 &= 0x3ffffff; h0 += c * 5
+    let c = h0 >> 26; h0 &= 0x3ffffff; h1 += c
+
+    // If h >= p, subtract p
+    let mut g0 = h0 + 5; let gc = g0 >> 26; g0 &= 0x3ffffff
+    let mut g1 = h1 + gc; let gc = g1 >> 26; g1 &= 0x3ffffff
+    let mut g2 = h2 + gc; let gc = g2 >> 26; g2 &= 0x3ffffff
+    let mut g3 = h3 + gc; let gc = g3 >> 26; g3 &= 0x3ffffff
+    let g4 = h4 + gc - (1 << 26)
+    let mask = !((g4 >> 63).wrapping_sub(1)) // 0 if g4 overflowed (h < p), all-1s otherwise
+    h0 = (h0 & !mask) | (g0 & mask)
+    h1 = (h1 & !mask) | (g1 & mask)
+    h2 = (h2 & !mask) | (g2 & mask)
+    h3 = (h3 & !mask) | (g3 & mask)
+    h4 = (h4 & !mask) | (g4 & mask)
+
+    // h = h + s
+    let f0 = (h0 | (h1 << 26)) as u32 as u64 + u32::from_le_bytes([key[16],key[17],key[18],key[19]]) as u64
+    let f1 = (h1 >> 6 | h2 << 20) as u32 as u64 + u32::from_le_bytes([key[20],key[21],key[22],key[23]]) as u64 + (f0 >> 32)
+    let f2 = (h2 >> 12 | h3 << 14) as u32 as u64 + u32::from_le_bytes([key[24],key[25],key[26],key[27]]) as u64 + (f1 >> 32)
+    let f3 = (h3 >> 18 | h4 << 8) as u32 as u64 + u32::from_le_bytes([key[28],key[29],key[30],key[31]]) as u64 + (f2 >> 32)
+
+    let mut tag = [0u8; 16]
+    tag[0..4].copy_from_slice(&(f0 as u32).to_le_bytes())
+    tag[4..8].copy_from_slice(&(f1 as u32).to_le_bytes())
+    tag[8..12].copy_from_slice(&(f2 as u32).to_le_bytes())
+    tag[12..16].copy_from_slice(&(f3 as u32).to_le_bytes())
+    tag
+}
+
+fn chacha20_encrypt(plaintext: &[u8], key: &[u8; 32], nonce: &[u8; 12], counter: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(plaintext.len())
+    let blocks = (plaintext.len() + 63) / 64
+    for i in 0..blocks {
+        let keystream = chacha20_block(key, counter + i as u32, nonce)
+        let start = i * 64
+        let end = (start + 64).min(plaintext.len())
+        for j in 0..(end - start) { out.push(plaintext[start + j] ^ keystream[j]) }
+    }
+    out
 }
 
 fn encrypt_chacha20_poly1305(
@@ -401,7 +829,28 @@ fn encrypt_chacha20_poly1305(
     key: &Vec<u8>,
     iv: &Vec<u8>
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    Ok((Vec::new(), Vec::new()))  // Placeholder
+    if key.len() != 32 { return Err("ChaCha20 key must be 32 bytes".to_string()) }
+    if iv.len() < 12  { return Err("ChaCha20 nonce must be 12 bytes".to_string()) }
+    let mut key_arr = [0u8; 32]; key_arr.copy_from_slice(&key[..32])
+    let mut nonce = [0u8; 12]; nonce.copy_from_slice(&iv[..12])
+
+    // Poly1305 key from block 0
+    let otk_block = chacha20_block(&key_arr, 0, &nonce)
+    let mut otk = [0u8; 32]; otk.copy_from_slice(&otk_block[..32])
+
+    let ciphertext = chacha20_encrypt(plaintext, &key_arr, &nonce, 1)
+
+    // MAC over: pad(AAD=empty) || pad(ciphertext) || len64(AAD) || len64(ciphertext)
+    let ct_pad = ((ciphertext.len() + 15) / 16) * 16
+    let mut mac_data = vec![0u8; ct_pad + 16]
+    mac_data[..ciphertext.len()].copy_from_slice(&ciphertext)
+    let aad_len = 0u64.to_le_bytes()
+    let ct_len = (ciphertext.len() as u64).to_le_bytes()
+    mac_data[ct_pad..ct_pad+8].copy_from_slice(&aad_len)
+    mac_data[ct_pad+8..ct_pad+16].copy_from_slice(&ct_len)
+
+    let tag = poly1305_mac(&otk, &mac_data)
+    Ok((ciphertext, tag.to_vec()))
 }
 
 fn decrypt_chacha20_poly1305(
@@ -410,7 +859,117 @@ fn decrypt_chacha20_poly1305(
     iv: &Vec<u8>,
     auth_tag: &Vec<u8>
 ) -> Result<Vec<u8>, String> {
-    Ok(Vec::new())  // Placeholder
+    if key.len() != 32 { return Err("ChaCha20 key must be 32 bytes".to_string()) }
+    if iv.len() < 12  { return Err("ChaCha20 nonce must be 12 bytes".to_string()) }
+    let mut key_arr = [0u8; 32]; key_arr.copy_from_slice(&key[..32])
+    let mut nonce = [0u8; 12]; nonce.copy_from_slice(&iv[..12])
+
+    let otk_block = chacha20_block(&key_arr, 0, &nonce)
+    let mut otk = [0u8; 32]; otk.copy_from_slice(&otk_block[..32])
+
+    let ct_pad = ((ciphertext.len() + 15) / 16) * 16
+    let mut mac_data = vec![0u8; ct_pad + 16]
+    mac_data[..ciphertext.len()].copy_from_slice(ciphertext)
+    let aad_len = 0u64.to_le_bytes()
+    let ct_len = (ciphertext.len() as u64).to_le_bytes()
+    mac_data[ct_pad..ct_pad+8].copy_from_slice(&aad_len)
+    mac_data[ct_pad+8..ct_pad+16].copy_from_slice(&ct_len)
+
+    let expected = poly1305_mac(&otk, &mac_data)
+    if auth_tag.len() < 16 || auth_tag[..16] != expected { return Err("Poly1305 authentication failed".to_string()) }
+
+    Ok(chacha20_encrypt(ciphertext, &key_arr, &nonce, 1))
+}
+
+// ============================================================================
+// AEGIS-256 (draft-irtf-cfrg-aegis-aead)
+// ============================================================================
+
+fn aegis_aes_round(state: &[u8; 16], rk: &[u8; 16]) -> [u8; 16] {
+    let mut s = *state
+    aes_sub_bytes(&mut s)
+    aes_shift_rows(&mut s)
+    aes_mix_columns(&mut s)
+    aes_add_round_key(&mut s, rk)
+    s
+}
+
+fn aegis256_init(key: &[u8; 32], nonce: &[u8; 32]) -> [[u8; 16]; 6] {
+    let c0 = [0x00u8,0x01,0x01,0x02,0x03,0x05,0x08,0x0d,0x15,0x22,0x37,0x59,0x90,0xe9,0x79,0x62]
+    let c1 = [0xdbu8,0x3d,0x18,0x55,0x6d,0xc2,0x2f,0xf1,0x20,0x11,0x31,0x42,0x73,0xb5,0x28,0xdd]
+    let k0: [u8; 16] = key[..16].try_into().unwrap()
+    let k1: [u8; 16] = key[16..].try_into().unwrap()
+    let n0: [u8; 16] = nonce[..16].try_into().unwrap()
+    let n1: [u8; 16] = nonce[16..].try_into().unwrap()
+    let mut kn0 = [0u8; 16]; for i in 0..16 { kn0[i] = k0[i] ^ n0[i] }
+    let mut kn1 = [0u8; 16]; for i in 0..16 { kn1[i] = k1[i] ^ n1[i] }
+    let mut s: [[u8; 16]; 6] = [kn0, kn1, c1, c0, [0u8;16], [0u8;16]]
+    for i in 0..16 { s[4][i] = k0[i] ^ c0[i] }
+    for i in 0..16 { s[5][i] = k1[i] ^ c1[i] }
+    for _ in 0..4 {
+        let s0=s[0]; let s1=s[1]; let s2=s[2]; let s3=s[3]; let s4=s[4]; let s5=s[5]
+        s[0] = aegis_aes_round(&s5, &s0)
+        s[1] = aegis_aes_round(&s0, &s1)
+        s[2] = aegis_aes_round(&s1, &s2)
+        s[3] = aegis_aes_round(&s2, &s3)
+        s[4] = aegis_aes_round(&s3, &s4)
+        s[5] = aegis_aes_round(&s4, &s5)
+        // XOR in k0/k1/n0/n1
+        for i in 0..16 { s[0][i] ^= k0[i] }
+        for i in 0..16 { s[1][i] ^= k1[i] }
+        for i in 0..16 { s[2][i] ^= n0[i] }
+        for i in 0..16 { s[3][i] ^= n1[i] }
+        for i in 0..16 { s[4][i] ^= k0[i] }
+        for i in 0..16 { s[5][i] ^= k1[i] }
+    }
+    s
+}
+
+fn aegis256_update(s: &mut [[u8; 16]; 6], m0: &[u8; 16], m1: &[u8; 16]) {
+    let s0=s[0]; let s1=s[1]; let s2=s[2]; let s3=s[3]; let s4=s[4]; let s5=s[5]
+    s[0] = aegis_aes_round(&s5, &s0); for i in 0..16 { s[0][i] ^= m0[i] }
+    s[1] = aegis_aes_round(&s0, &s1)
+    s[2] = aegis_aes_round(&s1, &s2); for i in 0..16 { s[2][i] ^= m1[i] }
+    s[3] = aegis_aes_round(&s2, &s3)
+    s[4] = aegis_aes_round(&s3, &s4)
+    s[5] = aegis_aes_round(&s4, &s5)
+}
+
+fn aegis256_enc(s: &mut [[u8; 16]; 6], xi: &[u8; 32]) -> [u8; 32] {
+    let x0: [u8; 16] = xi[..16].try_into().unwrap()
+    let x1: [u8; 16] = xi[16..].try_into().unwrap()
+    let mut z0 = [0u8; 16]; for i in 0..16 { z0[i] = s[2][i] ^ s[3][i] ^ s[4][i] ^ (s[0][i] & s[1][i]) }
+    let mut z1 = [0u8; 16]; for i in 0..16 { z1[i] = s[3][i] ^ s[4][i] ^ s[5][i] ^ (s[2][i] & s[3][i]) }
+    aegis256_update(s, &x0, &x1)
+    let mut out = [0u8; 32]
+    for i in 0..16 { out[i] = x0[i] ^ z0[i]; out[16+i] = x1[i] ^ z1[i] }
+    out
+}
+
+fn aegis256_dec(s: &mut [[u8; 16]; 6], ci: &[u8; 32]) -> [u8; 32] {
+    let c0: [u8; 16] = ci[..16].try_into().unwrap()
+    let c1: [u8; 16] = ci[16..].try_into().unwrap()
+    let mut z0 = [0u8; 16]; for i in 0..16 { z0[i] = s[2][i] ^ s[3][i] ^ s[4][i] ^ (s[0][i] & s[1][i]) }
+    let mut z1 = [0u8; 16]; for i in 0..16 { z1[i] = s[3][i] ^ s[4][i] ^ s[5][i] ^ (s[2][i] & s[3][i]) }
+    let mut x0 = [0u8; 16]; for i in 0..16 { x0[i] = c0[i] ^ z0[i] }
+    let mut x1 = [0u8; 16]; for i in 0..16 { x1[i] = c1[i] ^ z1[i] }
+    aegis256_update(s, &x0, &x1)
+    let mut out = [0u8; 32]
+    out[..16].copy_from_slice(&x0); out[16..].copy_from_slice(&x1)
+    out
+}
+
+fn aegis256_finalize(s: &mut [[u8; 16]; 6], ad_len: u64, msg_len: u64) -> [u8; 32] {
+    let mut t = [0u8; 16]
+    let al = (ad_len * 8).to_le_bytes()
+    let ml = (msg_len * 8).to_le_bytes()
+    for i in 0..8  { t[i]   = al[i] ^ s[3][i] }
+    for i in 0..8  { t[8+i] = ml[i] ^ s[3][8+i] }
+    for _ in 0..7 { aegis256_update(s, &t, &t) }
+    let mut tag = [0u8; 32]
+    for i in 0..16 { tag[i]    = s[0][i] ^ s[1][i] ^ s[2][i] ^ s[3][i] ^ s[4][i] ^ s[5][i] }
+    for i in 0..16 { tag[16+i] = s[0][i] ^ s[1][i] ^ s[2][i] ^ s[3][i] ^ s[4][i] ^ s[5][i] }
+    tag
 }
 
 fn encrypt_aegis256(
@@ -418,7 +977,28 @@ fn encrypt_aegis256(
     key: &Vec<u8>,
     iv: &Vec<u8>
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    Ok((Vec::new(), Vec::new()))  // Placeholder
+    if key.len() != 32 { return Err("AEGIS-256 key must be 32 bytes".to_string()) }
+    if iv.len() != 32  { return Err("AEGIS-256 nonce must be 32 bytes".to_string()) }
+    let mut kk = [0u8; 32]; kk.copy_from_slice(key)
+    let mut nn = [0u8; 32]; nn.copy_from_slice(iv)
+    let mut s = aegis256_init(&kk, &nn)
+    let mut ciphertext = Vec::with_capacity(plaintext.len())
+    let blocks = plaintext.len() / 32
+    let mut i = 0usize
+    for _ in 0..blocks {
+        let mut xi = [0u8; 32]; xi.copy_from_slice(&plaintext[i..i+32])
+        let ci = aegis256_enc(&mut s, &xi)
+        ciphertext.extend_from_slice(&ci)
+        i += 32
+    }
+    if i < plaintext.len() {
+        let rem = plaintext.len() - i
+        let mut xi = [0u8; 32]; xi[..rem].copy_from_slice(&plaintext[i..])
+        let ci = aegis256_enc(&mut s, &xi)
+        ciphertext.extend_from_slice(&ci[..rem])
+    }
+    let tag = aegis256_finalize(&mut s, 0, plaintext.len() as u64)
+    Ok((ciphertext, tag.to_vec()))
 }
 
 fn decrypt_aegis256(
@@ -427,13 +1007,47 @@ fn decrypt_aegis256(
     iv: &Vec<u8>,
     auth_tag: &Vec<u8>
 ) -> Result<Vec<u8>, String> {
-    Ok(Vec::new())  // Placeholder
+    if key.len() != 32 { return Err("AEGIS-256 key must be 32 bytes".to_string()) }
+    if iv.len() != 32  { return Err("AEGIS-256 nonce must be 32 bytes".to_string()) }
+    let mut kk = [0u8; 32]; kk.copy_from_slice(key)
+    let mut nn = [0u8; 32]; nn.copy_from_slice(iv)
+    let mut s = aegis256_init(&kk, &nn)
+    let mut plaintext = Vec::with_capacity(ciphertext.len())
+    let blocks = ciphertext.len() / 32
+    let mut i = 0usize
+    for _ in 0..blocks {
+        let mut ci = [0u8; 32]; ci.copy_from_slice(&ciphertext[i..i+32])
+        let xi = aegis256_dec(&mut s, &ci)
+        plaintext.extend_from_slice(&xi)
+        i += 32
+    }
+    if i < ciphertext.len() {
+        let rem = ciphertext.len() - i
+        let mut ci = [0u8; 32]; ci[..rem].copy_from_slice(&ciphertext[i..])
+        let xi = aegis256_dec(&mut s, &ci)
+        plaintext.extend_from_slice(&xi[..rem])
+    }
+    let expected = aegis256_finalize(&mut s, 0, plaintext.len() as u64)
+    if auth_tag.len() < 16 || auth_tag[..16] != expected[..16] { return Err("AEGIS-256 authentication failed".to_string()) }
+    Ok(plaintext)
 }
 
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
 }
 
 fn generate_session_id() -> String {
-    "session_id".to_string()  // Placeholder
+    let rand_bytes = generate_secure_random(16)
+    let mut h: u64 = 14695981039346656037u64
+    for b in &rand_bytes { h ^= *b as u64; h = h.wrapping_mul(1099511628211u64) }
+    static mut SESSION_CTR: u64 = 0
+    let n = unsafe { SESSION_CTR += 1; SESSION_CTR }
+    format!("sess_{:016x}{:04x}", h, n)
 }

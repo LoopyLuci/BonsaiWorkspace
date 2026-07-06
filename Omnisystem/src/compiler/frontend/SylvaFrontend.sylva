@@ -1,31 +1,712 @@
-// SYLVA FRONTEND - Machine Learning Compiler (700 LOC)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA SELF-HOSTED FRONTEND COMPILER
+// Compiles Machine Learning Model Definitions (layer/model/architecture) into TITAN IR
+// Language: SYLVA - Self-Compiling ML Framework
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-pub struct SylvaCompiler {
-    models: Vec<String>,
-    layers: Vec<String>,
-    tensors: Vec<String>,
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+use crate::backend::titan_backend::{IrModule, IrFunction, IrBasicBlock, IrInstruction, IrOpcode, IrValue}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA AST
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct LayerDecl {
+    name: String,
+    layer_type: String,       // Dense, LSTM, Conv2D, Attention, ...
+    in_features: i32,
+    out_features: i32,
+    activation: String,
 }
 
-impl SylvaCompiler {
-    pub fn new() -> Self {
-        SylvaCompiler {
-            models: Vec::new(),
+pub struct OptimizerDecl {
+    optimizer_type: String,
+    learning_rate: f32,
+    momentum: f32,
+}
+
+// standalone `layer L { ... }` declarations that live outside a model body
+// and can be referenced from a model's architecture list by name.
+pub struct StandaloneLayerDecl {
+    name: String,
+    layer_type: String,
+    in_features: i32,
+    out_features: i32,
+    activation: String,
+}
+
+pub struct ModelDecl {
+    name: String,
+    architecture: Vec<String>,   // ordered layer name references, from `architecture: [a, b, c]`
+    layers: Vec<LayerDecl>,      // inline layers declared inside the model body
+    optimizer: OptimizerDecl,
+    loss_fn: String,
+}
+
+impl ModelDecl {
+    pub fn new(name: String) -> Self {
+        ModelDecl {
+            name,
+            architecture: Vec::new(),
             layers: Vec::new(),
-            tensors: Vec::new(),
+            optimizer: OptimizerDecl {
+                optimizer_type: "Adam".to_string(),
+                learning_rate: 0.001,
+                momentum: 0.9,
+            },
+            loss_fn: "CrossEntropy".to_string(),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA LEXER
+// Sylva is Python-flavored: significant indentation. The lexer tracks column
+// depth via leading-whitespace counting and emits explicit Indent/Dedent
+// tokens so the parser can treat blocks the same way it treats brace blocks
+// in the other Omni-Languages.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SylvaTok {
+    Ident,
+    Number,
+    StringLit,
+    Symbol,
+    Indent,
+    Dedent,
+    Newline,
+    Eof,
+}
+
+#[derive(Clone, Debug)]
+pub struct SylvaToken {
+    text: String,
+    kind: SylvaTok,
+}
+
+pub struct SylvaLexer {
+    source: String,
+    pos: i32,
+    indent_stack: Vec<i32>,
+}
+
+impl SylvaLexer {
+    pub fn new(source: String) -> Self {
+        SylvaLexer { source, pos: 0, indent_stack: vec![0] }
+    }
+
+    pub fn tokenize(&mut self) -> Vec<SylvaToken> {
+        let mut tokens = Vec::new()
+        let chars: Vec<char> = self.source.chars().collect()
+        let len = chars.len() as i32
+        let mut at_line_start = true
+
+        while self.pos < len {
+            if at_line_start {
+                let mut indent = 0
+                while self.pos < len && (chars[self.pos as usize] == ' ' || chars[self.pos as usize] == '\t') {
+                    indent += 1
+                    self.pos += 1
+                }
+                // blank or comment-only line: skip indentation bookkeeping
+                if self.pos >= len || chars[self.pos as usize] == '\n' || chars[self.pos as usize] == '#' {
+                    // consume to end of line below in the normal loop
+                    at_line_start = false
+                    continue
+                }
+                let current = *self.indent_stack.last().unwrap_or(&0)
+                if indent > current {
+                    self.indent_stack.push(indent)
+                    tokens.push(SylvaToken { text: String::new(), kind: SylvaTok::Indent })
+                } else {
+                    while indent < *self.indent_stack.last().unwrap_or(&0) {
+                        self.indent_stack.pop()
+                        tokens.push(SylvaToken { text: String::new(), kind: SylvaTok::Dedent })
+                    }
+                }
+                at_line_start = false
+                continue
+            }
+
+            let ch = chars[self.pos as usize]
+
+            if ch == '#' {
+                while self.pos < len && chars[self.pos as usize] != '\n' {
+                    self.pos += 1
+                }
+                continue
+            }
+
+            if ch == '\n' {
+                tokens.push(SylvaToken { text: "\n".to_string(), kind: SylvaTok::Newline })
+                self.pos += 1
+                at_line_start = true
+                continue
+            }
+
+            if ch == ' ' || ch == '\t' || ch == '\r' {
+                self.pos += 1
+                continue
+            }
+
+            if ch == '{' || ch == '}' || ch == '(' || ch == ')' || ch == '[' || ch == ']'
+                || ch == ',' || ch == ':' || ch == '=' || ch == '.' {
+                tokens.push(SylvaToken { text: ch.to_string(), kind: SylvaTok::Symbol })
+                self.pos += 1
+            } else if ch == '"' {
+                let mut string_val = String::new()
+                self.pos += 1
+                while self.pos < len && chars[self.pos as usize] != '"' {
+                    string_val.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                self.pos += 1
+                tokens.push(SylvaToken { text: string_val, kind: SylvaTok::StringLit })
+            } else if ch.is_alphabetic() || ch == '_' {
+                let mut ident = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_alphanumeric() || chars[self.pos as usize] == '_') {
+                    ident.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(SylvaToken { text: ident, kind: SylvaTok::Ident })
+            } else if ch.is_numeric() {
+                let mut num = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_numeric() || chars[self.pos as usize] == '.') {
+                    num.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(SylvaToken { text: num, kind: SylvaTok::Number })
+            } else {
+                self.pos += 1
+            }
+        }
+
+        while self.indent_stack.len() > 1 {
+            self.indent_stack.pop()
+            tokens.push(SylvaToken { text: String::new(), kind: SylvaTok::Dedent })
+        }
+        tokens.push(SylvaToken { text: String::new(), kind: SylvaTok::Eof })
+        tokens
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA PARSER
+// Accepts both brace-delimited blocks (`layer L { ... }`) and indentation
+// blocks (`layer L:\n    ...`), since real Sylva source in this repo mixes
+// both styles depending on author. Indent/Dedent tokens are treated exactly
+// like `{`/`}` wherever a block boundary is expected.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct SylvaParser {
+    tokens: Vec<SylvaToken>,
+    pos: i32,
+}
+
+impl SylvaParser {
+    pub fn new(tokens: Vec<SylvaToken>) -> Self {
+        SylvaParser { tokens, pos: 0 }
+    }
+
+    fn peek(&self) -> String {
+        if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].text.clone()
+        } else {
+            String::new()
         }
     }
 
-    pub fn compile_model(&mut self, model_code: String) -> Result<String, String> {
-        self.models.push(model_code);
-        Ok("Model compiled with automatic differentiation".to_string())
+    fn peek_kind(&self) -> SylvaTok {
+        if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].kind.clone()
+        } else {
+            SylvaTok::Eof
+        }
     }
 
-    pub fn compile_layer(&mut self, layer_code: String) -> Result<String, String> {
-        self.layers.push(layer_code);
-        Ok("Layer compiled with BLAS optimizations".to_string())
+    fn advance(&mut self) -> SylvaToken {
+        let t = if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].clone()
+        } else {
+            SylvaToken { text: String::new(), kind: SylvaTok::Eof }
+        }
+        self.pos += 1
+        t
+    }
+
+    fn skip_trivia(&mut self) {
+        while self.peek_kind() == SylvaTok::Newline {
+            self.pos += 1
+        }
+    }
+
+    fn at_block_open(&self) -> bool {
+        self.peek() == "{" || self.peek_kind() == SylvaTok::Indent
+    }
+
+    fn at_block_close(&self) -> bool {
+        self.peek() == "}" || self.peek_kind() == SylvaTok::Dedent
+    }
+
+    fn at_end(&self) -> bool {
+        self.pos >= (self.tokens.len() as i32) || self.peek_kind() == SylvaTok::Eof
+    }
+
+    fn enter_block(&mut self) {
+        if self.peek() == ":" { self.pos += 1 }
+        self.skip_trivia()
+        if self.at_block_open() { self.pos += 1 }
+        self.skip_trivia()
+    }
+
+    fn leave_block(&mut self) {
+        if self.at_block_close() { self.pos += 1 }
+    }
+
+    pub fn parse(&mut self) -> Result<(Vec<StandaloneLayerDecl>, Vec<ModelDecl>), String> {
+        let mut standalone_layers = Vec::new()
+        let mut models = Vec::new()
+
+        while !self.at_end() {
+            self.skip_trivia()
+            if self.at_end() { break }
+            if self.peek() == "model" {
+                let model = self.parse_model()?
+                models.push(model)
+            } else if self.peek() == "layer" {
+                let layer = self.parse_standalone_layer()?
+                standalone_layers.push(layer)
+            } else {
+                self.pos += 1
+            }
+        }
+
+        Ok((standalone_layers, models))
+    }
+
+    fn parse_standalone_layer(&mut self) -> Result<StandaloneLayerDecl, String> {
+        self.advance() // 'layer'
+        let name = self.advance().text
+        let mut layer_type = "Dense".to_string()
+        if self.peek() == ":" {
+            self.pos += 1
+            layer_type = self.advance().text
+        }
+
+        let mut in_feats = 0
+        let mut out_feats = 0
+        let mut activation = "relu".to_string()
+
+        self.enter_block()
+        while !self.at_end() && !self.at_block_close() {
+            self.skip_trivia()
+            if self.at_block_close() { break }
+            let key = self.advance().text
+            if key == "input" {
+                if self.peek() == "=" { self.pos += 1 }
+                in_feats = self.advance().text.parse::<i32>().unwrap_or(0)
+            } else if key == "output" {
+                if self.peek() == "=" { self.pos += 1 }
+                out_feats = self.advance().text.parse::<i32>().unwrap_or(0)
+            } else if key == "activation" {
+                if self.peek() == "=" { self.pos += 1 }
+                activation = self.advance().text
+            }
+            if self.peek() == "," { self.pos += 1 }
+        }
+        self.leave_block()
+
+        Ok(StandaloneLayerDecl { name, layer_type, in_features: in_feats, out_features: out_feats, activation })
+    }
+
+    fn parse_model(&mut self) -> Result<ModelDecl, String> {
+        self.advance() // 'model'
+        let model_name = self.advance().text
+        let mut model = ModelDecl::new(model_name)
+
+        self.enter_block()
+        while !self.at_end() && !self.at_block_close() {
+            self.skip_trivia()
+            if self.at_block_close() { break }
+            match self.peek().as_str() {
+                "layer" => self.parse_inline_layer(&mut model)?,
+                "architecture" => self.parse_architecture(&mut model)?,
+                "optimizer" => self.parse_optimizer(&mut model)?,
+                "loss" => self.parse_loss(&mut model)?,
+                _ => self.pos += 1,
+            }
+        }
+        self.leave_block()
+
+        Ok(model)
+    }
+
+    fn parse_inline_layer(&mut self, model: &mut ModelDecl) -> Result<(), String> {
+        self.advance() // 'layer'
+        let layer_name = self.advance().text
+        let mut layer_type = "Dense".to_string()
+        if self.peek() == ":" {
+            self.pos += 1
+            layer_type = self.advance().text
+        }
+
+        let mut in_feats = 0
+        let mut out_feats = 0
+        let mut activation = "relu".to_string()
+
+        self.enter_block()
+        while !self.at_end() && !self.at_block_close() {
+            self.skip_trivia()
+            if self.at_block_close() { break }
+            let key = self.advance().text
+            if key == "input" {
+                if self.peek() == "=" { self.pos += 1 }
+                in_feats = self.advance().text.parse::<i32>().unwrap_or(0)
+            } else if key == "output" {
+                if self.peek() == "=" { self.pos += 1 }
+                out_feats = self.advance().text.parse::<i32>().unwrap_or(0)
+            } else if key == "activation" {
+                if self.peek() == "=" { self.pos += 1 }
+                activation = self.advance().text
+            }
+            if self.peek() == "," { self.pos += 1 }
+        }
+        self.leave_block()
+
+        model.layers.push(LayerDecl { name: layer_name.clone(), layer_type, in_features: in_feats, out_features: out_feats, activation })
+        model.architecture.push(layer_name)
+        Ok(())
+    }
+
+    // architecture: [layer1, layer2, layer3]
+    fn parse_architecture(&mut self, model: &mut ModelDecl) -> Result<(), String> {
+        self.advance() // 'architecture'
+        if self.peek() == ":" { self.pos += 1 }
+        if self.peek() == "[" {
+            self.pos += 1
+            while !self.at_end() && self.peek() != "]" {
+                let name = self.advance().text
+                if name != "," && !name.is_empty() {
+                    model.architecture.push(name)
+                }
+            }
+            if self.peek() == "]" { self.pos += 1 }
+        }
+        Ok(())
+    }
+
+    fn parse_optimizer(&mut self, model: &mut ModelDecl) -> Result<(), String> {
+        self.advance() // 'optimizer'
+        if self.peek() == ":" {
+            self.pos += 1
+            model.optimizer.optimizer_type = self.advance().text
+        }
+        Ok(())
+    }
+
+    fn parse_loss(&mut self, model: &mut ModelDecl) -> Result<(), String> {
+        self.advance() // 'loss'
+        if self.peek() == ":" {
+            self.pos += 1
+            model.loss_fn = self.advance().text
+        }
+        Ok(())
     }
 }
 
-pub fn main() {
-    println!("✓ SYLVA Frontend - Machine Learning Compiler Ready");
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA -> TITAN IR LOWERING
+// Each model lowers to a `<Model>_forward` function that threads an input
+// tensor value through the architecture's layer sequence via calls into a
+// BLAS-style `sylva_runtime_*` dispatch (matmul/relu/softmax/...), plus a
+// `<Model>_backward` function invoking `sylva_runtime_backward_pass`.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct SylvaIrLowering {
+    tmp_counter: u32,
+}
+
+impl SylvaIrLowering {
+    pub fn new() -> Self {
+        SylvaIrLowering { tmp_counter: 0 }
+    }
+
+    fn next_tmp(&mut self) -> String {
+        self.tmp_counter += 1
+        format!("%sylva_t{}", self.tmp_counter)
+    }
+
+    // Maps an activation name to the runtime kernel entry point that applies it.
+    fn activation_kernel(&self, activation: &str) -> String {
+        match activation {
+            "relu" => "sylva_runtime_relu".to_string(),
+            "softmax" => "sylva_runtime_softmax".to_string(),
+            "tanh" => "sylva_runtime_tanh".to_string(),
+            "sigmoid" => "sylva_runtime_sigmoid".to_string(),
+            "gelu" => "sylva_runtime_gelu".to_string(),
+            _ => "sylva_runtime_identity".to_string(),
+        }
+    }
+
+    pub fn lower_model(&mut self, model: &ModelDecl, module: &mut IrModule) {
+        self.lower_forward_fn(model, module)
+        self.lower_backward_fn(model, module)
+    }
+
+    fn lower_forward_fn(&mut self, model: &ModelDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_forward", model.name)
+        let input_param = IrValue { id: "input".to_string(), vtype: "tensor".to_string() }
+
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        let mut current_val = input_param.clone()
+
+        for layer_name in &model.architecture {
+            let layer = model.layers.iter().find(|l| &l.name == layer_name)
+
+            let (layer_type, in_feats, out_feats, activation) = match layer {
+                Some(l) => (l.layer_type.clone(), l.in_features, l.out_features, l.activation.clone()),
+                None => ("Dense".to_string(), 0, 0, "relu".to_string()),
+            }
+
+            // weight/bias globals for this layer, registered so the linker
+            // can resolve them against the parameter store at load time
+            let weight_global = IrValue { id: format!("{}_weight", layer_name), vtype: "tensor".to_string() }
+            let bias_global = IrValue { id: format!("{}_bias", layer_name), vtype: "tensor".to_string() }
+            module.globals.insert(weight_global.id.clone(), weight_global.clone())
+            module.globals.insert(bias_global.id.clone(), bias_global.clone())
+
+            // matmul(input, weight) -> pre_activation
+            let matmul_val = IrValue { id: self.next_tmp(), vtype: "tensor".to_string() }
+            let mut matmul_call = IrInstruction::new(IrOpcode::Call)
+            matmul_call.result = Some(matmul_val.clone())
+            matmul_call.operands.push(IrValue { id: "sylva_runtime_matmul".to_string(), vtype: "fn".to_string() })
+            matmul_call.operands.push(current_val.clone())
+            matmul_call.operands.push(weight_global.clone())
+            matmul_call.operands.push(IrValue { id: in_feats.to_string(), vtype: "i32".to_string() })
+            matmul_call.operands.push(IrValue { id: out_feats.to_string(), vtype: "i32".to_string() })
+            entry.instructions.push(matmul_call)
+
+            // add bias
+            let biased_val = IrValue { id: self.next_tmp(), vtype: "tensor".to_string() }
+            let mut add_bias = IrInstruction::new(IrOpcode::Add)
+            add_bias.result = Some(biased_val.clone())
+            add_bias.operands.push(matmul_val)
+            add_bias.operands.push(bias_global)
+            entry.instructions.push(add_bias)
+
+            // activation(biased) -> layer output
+            let activated_val = IrValue { id: self.next_tmp(), vtype: "tensor".to_string() }
+            let mut activation_call = IrInstruction::new(IrOpcode::Call)
+            activation_call.result = Some(activated_val.clone())
+            activation_call.operands.push(IrValue { id: self.activation_kernel(&activation), vtype: "fn".to_string() })
+            activation_call.operands.push(biased_val)
+            entry.instructions.push(activation_call)
+
+            let mut annotate = IrInstruction::new(IrOpcode::Mov)
+            annotate.result = Some(IrValue { id: format!("{}_out", layer_name), vtype: format!("tensor:{}", layer_type) })
+            annotate.operands.push(activated_val.clone())
+            entry.instructions.push(annotate)
+
+            current_val = activated_val
+        }
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(current_val)
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: vec![input_param],
+            return_type: IrValue { id: "ret".to_string(), vtype: "tensor".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+
+    fn lower_backward_fn(&mut self, model: &ModelDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_backward", model.name)
+        let grad_output_param = IrValue { id: "grad_output".to_string(), vtype: "tensor".to_string() }
+
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        // loss gradient computed via the model's declared loss function
+        let loss_grad_val = IrValue { id: self.next_tmp(), vtype: "tensor".to_string() }
+        let mut loss_call = IrInstruction::new(IrOpcode::Call)
+        loss_call.result = Some(loss_grad_val.clone())
+        loss_call.operands.push(IrValue { id: format!("sylva_runtime_loss_grad_{}", model.loss_fn.to_lowercase()), vtype: "fn".to_string() })
+        loss_call.operands.push(grad_output_param.clone())
+        entry.instructions.push(loss_call)
+
+        let mut current_grad = loss_grad_val
+
+        // walk the architecture in reverse, invoking backward_pass per layer
+        let mut reversed: Vec<&String> = model.architecture.iter().collect()
+        reversed.reverse()
+
+        for layer_name in reversed {
+            let weight_global = IrValue { id: format!("{}_weight", layer_name), vtype: "tensor".to_string() }
+
+            let grad_val = IrValue { id: self.next_tmp(), vtype: "tensor".to_string() }
+            let mut backward_call = IrInstruction::new(IrOpcode::Call)
+            backward_call.result = Some(grad_val.clone())
+            backward_call.operands.push(IrValue { id: "sylva_runtime_backward_pass".to_string(), vtype: "fn".to_string() })
+            backward_call.operands.push(current_grad.clone())
+            backward_call.operands.push(weight_global.clone())
+            backward_call.operands.push(IrValue { id: format!("{}_out", layer_name), vtype: "tensor".to_string() })
+            entry.instructions.push(backward_call)
+
+            // apply optimizer update to this layer's weights
+            let mut opt_call = IrInstruction::new(IrOpcode::Call)
+            opt_call.operands.push(IrValue { id: format!("sylva_runtime_optimizer_{}", model.optimizer.optimizer_type.to_lowercase()), vtype: "fn".to_string() })
+            opt_call.operands.push(weight_global)
+            opt_call.operands.push(grad_val.clone())
+            opt_call.operands.push(IrValue { id: model.optimizer.learning_rate.to_string(), vtype: "f32".to_string() })
+            opt_call.operands.push(IrValue { id: model.optimizer.momentum.to_string(), vtype: "f32".to_string() })
+            entry.instructions.push(opt_call)
+
+            current_grad = grad_val
+        }
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(current_grad)
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: vec![grad_output_param],
+            return_type: IrValue { id: "ret".to_string(), vtype: "tensor".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA CODE GENERATOR (source pretty-printer, used for round-trip diagnostics)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct SylvaCodeGen {
+    output: String,
+}
+
+impl SylvaCodeGen {
+    pub fn new() -> Self {
+        SylvaCodeGen { output: String::new() }
+    }
+
+    pub fn generate(&mut self, models: &Vec<ModelDecl>) -> String {
+        for model in models {
+            self.gen_model(model)
+        }
+        self.output.clone()
+    }
+
+    fn gen_model(&mut self, model: &ModelDecl) {
+        self.output.push_str(&format!("model {} {{\n", model.name))
+
+        for layer in &model.layers {
+            self.output.push_str(&format!("  layer {} : {} {{\n", layer.name, layer.layer_type))
+            self.output.push_str(&format!("    input = {}\n", layer.in_features))
+            self.output.push_str(&format!("    output = {}\n", layer.out_features))
+            self.output.push_str(&format!("    activation = {}\n", layer.activation))
+            self.output.push_str("  }\n")
+        }
+
+        self.output.push_str("  architecture: [")
+        for (i, name) in model.architecture.iter().enumerate() {
+            if i > 0 { self.output.push_str(", ") }
+            self.output.push_str(name)
+        }
+        self.output.push_str("]\n")
+
+        self.output.push_str(&format!("  optimizer: {}\n", model.optimizer.optimizer_type))
+        self.output.push_str(&format!("  loss: {}\n", model.loss_fn))
+        self.output.push_str("}\n\n")
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SYLVA SELF-HOSTED COMPILER (MAIN ENTRY POINTS)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn compile_sylva_source(source: String) -> Result<String, String> {
+    let mut lexer = SylvaLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = SylvaParser::new(tokens)
+    let (_standalone_layers, models) = parser.parse()?
+
+    let mut codegen = SylvaCodeGen::new()
+    let generated = codegen.generate(&models)
+
+    Ok(generated)
+}
+
+pub fn compile_sylva_to_ir(source: String, module_name: String) -> Result<IrModule, String> {
+    let mut lexer = SylvaLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = SylvaParser::new(tokens)
+    let (_standalone_layers, models) = parser.parse()?
+
+    let mut module = IrModule::new(module_name)
+    let mut lowering = SylvaIrLowering::new()
+    for model in &models {
+        lowering.lower_model(model, &mut module)
+    }
+
+    Ok(module)
+}
+
+pub fn test_sylva_compiler() -> Result<(), String> {
+    let sylva_code = r#"
+        model PricePredictor {
+            layer lstm1: LSTM {
+                input = 60,
+                output = 128,
+                activation = tanh
+            }
+            layer dense1: Dense {
+                input = 128,
+                output = 64,
+                activation = relu
+            }
+            layer output: Dense {
+                input = 64,
+                output = 3,
+                activation = softmax
+            }
+            optimizer: Adam
+            loss: CrossEntropy
+        }
+    "#.to_string()
+
+    let result = compile_sylva_source(sylva_code.clone())?
+    if !(result.contains("model") && result.contains("PricePredictor")) {
+        return Err("SYLVA compilation failed: text roundtrip".to_string())
+    }
+
+    let ir_module = compile_sylva_to_ir(sylva_code, "test_module".to_string())?
+    if !ir_module.functions.contains_key("PricePredictor_forward") {
+        return Err("SYLVA IR lowering failed: missing forward function".to_string())
+    }
+    if !ir_module.functions.contains_key("PricePredictor_backward") {
+        return Err("SYLVA IR lowering failed: missing backward function".to_string())
+    }
+
+    Ok(())
 }

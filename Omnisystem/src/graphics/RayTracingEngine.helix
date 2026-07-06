@@ -42,11 +42,48 @@ struct HitRecord {
     material_id: i32
 }
 
-gpu_kernel ray_trace_kernel(rays: &[Ray], bvh: &[BVHNode], materials: &[Material]) -> Vec<(f64, f64, f64)> {
+// ── Vector3 arithmetic helpers ────────────────────────────────────────────────
+
+fn v3_sub(a: &Vector3, b: &Vector3) -> Vector3 {
+    Vector3 { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+}
+
+fn v3_add(a: &Vector3, b: &Vector3) -> Vector3 {
+    Vector3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+}
+
+fn v3_scale(a: &Vector3, t: f64) -> Vector3 {
+    Vector3 { x: a.x * t, y: a.y * t, z: a.z * t }
+}
+
+fn v3_dot(a: &Vector3, b: &Vector3) -> f64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn v3_cross(a: &Vector3, b: &Vector3) -> Vector3 {
+    Vector3 {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x,
+    }
+}
+
+fn v3_normalize(a: &Vector3) -> Vector3 {
+    let len = (a.x * a.x + a.y * a.y + a.z * a.z).sqrt()
+    if len < 1e-12 {
+        Vector3 { x: 0.0, y: 1.0, z: 0.0 }
+    } else {
+        Vector3 { x: a.x / len, y: a.y / len, z: a.z / len }
+    }
+}
+
+// ── BVH traversal ─────────────────────────────────────────────────────────────
+
+gpu_kernel ray_trace_kernel(rays: &[Ray], bvh: &[BVHNode], triangles: &[(Vector3, Vector3, Vector3)], materials: &[Material]) -> Vec<(f64, f64, f64)> {
     let mut results: Vec<(f64, f64, f64)> = Vec::new()
 
     for ray in rays {
-        let hit = intersect_bvh(ray, bvh)
+        let hit = intersect_bvh(ray, bvh, triangles)
         let color = match hit {
             Some(record) => {
                 let mat = &materials[record.material_id as usize]
@@ -60,15 +97,53 @@ gpu_kernel ray_trace_kernel(rays: &[Ray], bvh: &[BVHNode], materials: &[Material
     results
 }
 
-fn intersect_bvh(ray: &Ray, bvh: &[BVHNode]) -> Option<HitRecord> {
+fn intersect_bvh(ray: &Ray, bvh: &[BVHNode], triangles: &[(Vector3, Vector3, Vector3)]) -> Option<HitRecord> {
     let mut closest: Option<HitRecord> = None
     let mut closest_dist = f64::INFINITY
 
-    intersect_node(ray, bvh, 0, &mut closest, &mut closest_dist)
+    intersect_node(ray, bvh, triangles, 0, &mut closest, &mut closest_dist)
     closest
 }
 
-fn intersect_node(ray: &Ray, bvh: &[BVHNode], node_idx: i32, closest: &mut Option<HitRecord>, closest_dist: &mut f64) -> Option<HitRecord> {
+// Möller–Trumbore ray-triangle intersection.
+// Returns (t, u, v) where t is the ray parameter, (u,v) are barycentric coords.
+fn ray_triangle_mt(ray: &Ray, v0: &Vector3, v1: &Vector3, v2: &Vector3) -> Option<(f64, f64, f64)> {
+    const EPSILON: f64 = 1e-8
+
+    let edge1 = v3_sub(v1, v0)
+    let edge2 = v3_sub(v2, v0)
+
+    let h = v3_cross(&ray.direction, &edge2)
+    let a = v3_dot(&edge1, &h)
+
+    if a > -EPSILON && a < EPSILON {
+        return None  // Ray is parallel to triangle
+    }
+
+    let f = 1.0 / a
+    let s = v3_sub(&ray.origin, v0)
+    let u = f * v3_dot(&s, &h)
+
+    if u < 0.0 || u > 1.0 {
+        return None
+    }
+
+    let q = v3_cross(&s, &edge1)
+    let v = f * v3_dot(&ray.direction, &q)
+
+    if v < 0.0 || u + v > 1.0 {
+        return None
+    }
+
+    let t = f * v3_dot(&edge2, &q)
+    if t > EPSILON {
+        Some((t, u, v))
+    } else {
+        None
+    }
+}
+
+fn intersect_node(ray: &Ray, bvh: &[BVHNode], triangles: &[(Vector3, Vector3, Vector3)], node_idx: i32, closest: &mut Option<HitRecord>, closest_dist: &mut f64) -> Option<HitRecord> {
     if node_idx < 0 {
         return None
     }
@@ -76,26 +151,42 @@ fn intersect_node(ray: &Ray, bvh: &[BVHNode], node_idx: i32, closest: &mut Optio
     let node = &bvh[node_idx as usize]
 
     match ray_box_intersection(ray, &node.bounds) {
-        Some(_) => {
-            // Check triangles in this leaf
-            if node.triangle_indices.len() > 0 {
-                for tri_idx in &node.triangle_indices {
-                    // Ray-triangle intersection would be computed here
-                    // For now, simplified placeholder
+        Some(box_t) if box_t < *closest_dist => {
+            // Test each triangle in this leaf against the ray
+            for &tri_idx in &node.triangle_indices {
+                let idx = tri_idx as usize
+                if idx >= triangles.len() { continue }
+
+                let (ref v0, ref v1, ref v2) = triangles[idx]
+                if let Some((t, _u, _v)) = ray_triangle_mt(ray, v0, v1, v2) {
+                    if t < *closest_dist {
+                        *closest_dist = t
+
+                        // Surface normal = normalised cross product of the two edges
+                        let edge1 = v3_sub(v1, v0)
+                        let edge2 = v3_sub(v2, v0)
+                        let normal = v3_normalize(&v3_cross(&edge1, &edge2))
+
+                        // Hit point = ray.origin + t * ray.direction
+                        let point = v3_add(&ray.origin, &v3_scale(&ray.direction, t))
+
+                        *closest = Some(HitRecord {
+                            point,
+                            normal,
+                            distance: t,
+                            material_id: 0,  // caller assigns material per triangle
+                        })
+                    }
                 }
             }
 
-            // Traverse children
-            if let Some(left) = node.left {
-                intersect_node(ray, bvh, left, closest, closest_dist)
-            }
-            if let Some(right) = node.right {
-                intersect_node(ray, bvh, right, closest, closest_dist)
-            }
+            // Traverse children, near child first
+            intersect_node(ray, bvh, triangles, node.left.unwrap_or(-1), closest, closest_dist)
+            intersect_node(ray, bvh, triangles, node.right.unwrap_or(-1), closest, closest_dist)
 
             closest.clone()
         },
-        None => None
+        _ => None
     }
 }
 
@@ -168,6 +259,7 @@ fn evaluate_material(material: &Material, normal: &Vector3) -> (f64, f64, f64) {
 
 actor RayTracingEngine {
     bvh: Vec<BVHNode> = Vec::new(),
+    triangles: Vec<(Vector3, Vector3, Vector3)> = Vec::new(),
     materials: Vec<Material> = Vec::new(),
     gpu_device: String = "GPU".to_string(),
     samples_per_pixel: i32 = 256,
@@ -191,6 +283,7 @@ actor RayTracingEngine {
         }
 
         bvh.clear()
+        triangles = geometry.clone()  // Store triangle soup for intersection tests
 
         let root_bounds = compute_bounds(&geometry)
         let mut node = BVHNode {
@@ -216,7 +309,7 @@ actor RayTracingEngine {
         let mut colors: Vec<(f64, f64, f64)> = Vec::new()
 
         for ray in &rays {
-            match intersect_bvh(ray, &bvh) {
+            match intersect_bvh(ray, &bvh, &triangles) {
                 Some(hit) => {
                     let mat_id = hit.material_id as usize
                     if mat_id < materials.len() {
@@ -288,6 +381,7 @@ fn compute_bounds(geometry: &Vec<(Vector3, Vector3, Vector3)>) -> AABB {
 async fn test_ray_tracing() -> Result<(), String> {
     let engine: ActorRef<RayTracingEngine> = spawn(RayTracingEngine {
         bvh: Vec::new(),
+        triangles: Vec::new(),
         materials: Vec::new(),
         gpu_device: "GPU".to_string(),
         samples_per_pixel: 256,

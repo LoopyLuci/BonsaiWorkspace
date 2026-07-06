@@ -1,32 +1,819 @@
-// VERA FRONTEND - UI Language Compiler (700 LOC)
-use std::collections::HashMap;
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA SELF-HOSTED FRONTEND COMPILER
+// Compiles VERA UI Components (component/props/state/render) into TITAN IR
+// Language: VERA - Self-Compiling
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-pub struct VeraCompiler {
-    components: HashMap<String, String>,
-    state_vars: HashMap<String, String>,
-    render_methods: Vec<String>,
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+use crate::backend::titan_backend::{IrModule, IrFunction, IrBasicBlock, IrInstruction, IrOpcode, IrValue}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA AST NODES
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct PropDecl {
+    name: String,
+    prop_type: String,
+    default_value: Option<String>,
 }
 
-impl VeraCompiler {
-    pub fn new() -> Self {
-        VeraCompiler {
-            components: HashMap::new(),
-            state_vars: HashMap::new(),
-            render_methods: Vec::new(),
+pub struct StateDecl {
+    name: String,
+    state_type: String,
+    initial_value: String,
+}
+
+pub struct AttrExpr {
+    name: String,
+    // literal text OR bound expression, e.g. label="x" vs onClick={handleClick}
+    value: String,
+    is_binding: bool,
+}
+
+pub struct MarkupNode {
+    tag: String,
+    attrs: Vec<AttrExpr>,
+    children: Vec<MarkupNode>,
+    text_content: Option<String>,
+    is_text_node: bool,
+}
+
+impl MarkupNode {
+    pub fn new(tag: String) -> Self {
+        MarkupNode {
+            tag,
+            attrs: Vec::new(),
+            children: Vec::new(),
+            text_content: None,
+            is_text_node: false,
         }
     }
 
-    pub fn compile_component(&mut self, name: String, code: String) -> Result<String, String> {
-        self.components.insert(name.clone(), code);
-        Ok(format!("Component {} compiled", name))
-    }
-
-    pub fn compile_render(&mut self, code: String) -> Result<String, String> {
-        self.render_methods.push(code);
-        Ok("Render method compiled".to_string())
+    pub fn text(content: String) -> Self {
+        MarkupNode {
+            tag: String::new(),
+            attrs: Vec::new(),
+            children: Vec::new(),
+            text_content: Some(content),
+            is_text_node: true,
+        }
     }
 }
 
-pub fn main() {
-    println!("✓ VERA Frontend - UI Language Compiler Ready");
+pub struct EventHandlerDecl {
+    event_name: String,   // e.g. "onClick"
+    param_name: String,   // e.g. "evt"
+    body_tokens: Vec<String>,
+}
+
+pub struct MethodDecl {
+    name: String,
+    params: Vec<(String, String)>,
+    body_tokens: Vec<String>,
+}
+
+pub struct ComponentDecl {
+    name: String,
+    props: Vec<PropDecl>,
+    state: Vec<StateDecl>,
+    render_tree: Vec<MarkupNode>,
+    handlers: Vec<EventHandlerDecl>,
+    methods: Vec<MethodDecl>,
+}
+
+impl ComponentDecl {
+    pub fn new(name: String) -> Self {
+        ComponentDecl {
+            name,
+            props: Vec::new(),
+            state: Vec::new(),
+            render_tree: Vec::new(),
+            handlers: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+}
+
+pub enum ASTNode {
+    Component(ComponentDecl),
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA TOKEN KIND
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenKind {
+    Ident,
+    StringLit,
+    NumberLit,
+    Symbol,
+    LAngle,      // <
+    RAngle,      // >
+    SlashAngle,  // </ handled as two tokens: Slash then Ident then RAngle in practice
+    Eof,
+}
+
+#[derive(Clone, Debug)]
+pub struct VeraToken {
+    text: String,
+    kind: TokenKind,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA LEXER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct VeraLexer {
+    source: String,
+    pos: i32,
+}
+
+impl VeraLexer {
+    pub fn new(source: String) -> Self {
+        VeraLexer {
+            source: source,
+            pos: 0,
+        }
+    }
+
+    pub fn tokenize(&mut self) -> Vec<VeraToken> {
+        let mut tokens = Vec::new()
+        let chars: Vec<char> = self.source.chars().collect()
+        let len = chars.len() as i32
+
+        while self.pos < len {
+            let ch = chars[self.pos as usize]
+
+            if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+                self.pos += 1
+                continue
+            }
+
+            // line comments
+            if ch == '/' && self.pos + 1 < len && chars[(self.pos + 1) as usize] == '/' {
+                while self.pos < len && chars[self.pos as usize] != '\n' {
+                    self.pos += 1
+                }
+                continue
+            }
+
+            if ch == '<' {
+                tokens.push(VeraToken { text: "<".to_string(), kind: TokenKind::LAngle })
+                self.pos += 1
+            } else if ch == '>' {
+                tokens.push(VeraToken { text: ">".to_string(), kind: TokenKind::RAngle })
+                self.pos += 1
+            } else if ch == '{' || ch == '}' || ch == '(' || ch == ')' || ch == ',' || ch == ':'
+                || ch == '=' || ch == ';' || ch == '/' || ch == '.' {
+                tokens.push(VeraToken { text: ch.to_string(), kind: TokenKind::Symbol })
+                self.pos += 1
+            } else if ch == '"' {
+                let mut string_val = String::new()
+                self.pos += 1
+                while self.pos < len && chars[self.pos as usize] != '"' {
+                    string_val.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                self.pos += 1
+                tokens.push(VeraToken { text: string_val, kind: TokenKind::StringLit })
+            } else if ch.is_alphabetic() || ch == '_' {
+                let mut ident = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_alphanumeric() || chars[self.pos as usize] == '_') {
+                    ident.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(VeraToken { text: ident, kind: TokenKind::Ident })
+            } else if ch.is_numeric() {
+                let mut num = String::new()
+                while self.pos < len && (chars[self.pos as usize].is_numeric() || chars[self.pos as usize] == '.') {
+                    num.push(chars[self.pos as usize])
+                    self.pos += 1
+                }
+                tokens.push(VeraToken { text: num, kind: TokenKind::NumberLit })
+            } else {
+                self.pos += 1
+            }
+        }
+
+        tokens.push(VeraToken { text: String::new(), kind: TokenKind::Eof })
+        tokens
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA PARSER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct VeraParser {
+    tokens: Vec<VeraToken>,
+    pos: i32,
+}
+
+impl VeraParser {
+    pub fn new(tokens: Vec<VeraToken>) -> Self {
+        VeraParser {
+            tokens: tokens,
+            pos: 0,
+        }
+    }
+
+    fn peek(&self) -> String {
+        if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].text.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    fn peek_kind(&self) -> TokenKind {
+        if self.pos < (self.tokens.len() as i32) {
+            self.tokens[self.pos as usize].kind.clone()
+        } else {
+            TokenKind::Eof
+        }
+    }
+
+    fn advance(&mut self) -> String {
+        let tok = self.peek()
+        self.pos += 1
+        tok
+    }
+
+    fn at_end(&self) -> bool {
+        self.pos >= (self.tokens.len() as i32) || self.peek_kind() == TokenKind::Eof
+    }
+
+    pub fn parse(&mut self) -> Result<Vec<ComponentDecl>, String> {
+        let mut components = Vec::new()
+
+        while !self.at_end() {
+            if self.peek() == "component" {
+                let comp = self.parse_component()?
+                components.push(comp)
+            } else {
+                self.pos += 1
+            }
+        }
+
+        Ok(components)
+    }
+
+    fn parse_component(&mut self) -> Result<ComponentDecl, String> {
+        self.advance() // 'component'
+        let comp_name = self.advance()
+        let mut component = ComponentDecl::new(comp_name)
+
+        if self.peek() != "{" {
+            return Err("Expected '{' after component name".to_string())
+        }
+        self.advance() // '{'
+
+        while !self.at_end() && self.peek() != "}" {
+            match self.peek().as_str() {
+                "props" => self.parse_props(&mut component)?,
+                "state" => self.parse_state(&mut component)?,
+                "render" => self.parse_render(&mut component)?,
+                _ => {
+                    if self.peek().starts_with("on") && self.peek().len() > 2 {
+                        self.parse_handler(&mut component)?
+                    } else if self.peek() == "fn" || self.peek() == "method" {
+                        self.parse_method(&mut component)?
+                    } else {
+                        self.pos += 1
+                    }
+                }
+            }
+        }
+
+        if self.peek() == "}" {
+            self.advance()
+        }
+
+        Ok(component)
+    }
+
+    fn parse_props(&mut self, component: &mut ComponentDecl) -> Result<(), String> {
+        self.advance() // 'props'
+        self.advance() // '{'
+        while !self.at_end() && self.peek() != "}" {
+            let prop_name = self.advance()
+            if prop_name == "," { continue }
+            let mut prop_type = "Any".to_string()
+            let mut default_value: Option<String> = None
+            if self.peek() == ":" {
+                self.advance()
+                prop_type = self.advance()
+            }
+            if self.peek() == "=" {
+                self.advance()
+                default_value = Some(self.advance())
+            }
+            component.props.push(PropDecl { name: prop_name, prop_type, default_value })
+            if self.peek() == "," {
+                self.advance()
+            }
+        }
+        if self.peek() == "}" { self.advance() }
+        Ok(())
+    }
+
+    fn parse_state(&mut self, component: &mut ComponentDecl) -> Result<(), String> {
+        self.advance() // 'state'
+        self.advance() // '{'
+        while !self.at_end() && self.peek() != "}" {
+            let state_name = self.advance()
+            if state_name == "," { continue }
+            let mut state_type = "Any".to_string()
+            let mut initial_value = "nil".to_string()
+            if self.peek() == ":" {
+                self.advance()
+                state_type = self.advance()
+            }
+            if self.peek() == "=" {
+                self.advance()
+                initial_value = self.advance()
+            }
+            component.state.push(StateDecl { name: state_name, state_type, initial_value })
+            if self.peek() == "," {
+                self.advance()
+            }
+        }
+        if self.peek() == "}" { self.advance() }
+        Ok(())
+    }
+
+    fn parse_handler(&mut self, component: &mut ComponentDecl) -> Result<(), String> {
+        let event_name = self.advance()
+        let mut param_name = "evt".to_string()
+        if self.peek() == "(" {
+            self.advance()
+            if self.peek() != ")" {
+                param_name = self.advance()
+            }
+            if self.peek() == ")" { self.advance() }
+        }
+        let mut body_tokens = Vec::new()
+        if self.peek() == "{" {
+            self.advance()
+            let mut depth = 1
+            while !self.at_end() && depth > 0 {
+                let t = self.advance()
+                if t == "{" { depth += 1 }
+                else if t == "}" { depth -= 1; if depth == 0 { break } }
+                body_tokens.push(t)
+            }
+        }
+        component.handlers.push(EventHandlerDecl { event_name, param_name, body_tokens })
+        Ok(())
+    }
+
+    fn parse_method(&mut self, component: &mut ComponentDecl) -> Result<(), String> {
+        self.advance() // 'fn'/'method'
+        let name = self.advance()
+        let mut params = Vec::new()
+        if self.peek() == "(" {
+            self.advance()
+            while !self.at_end() && self.peek() != ")" {
+                let pname = self.advance()
+                if pname == "," { continue }
+                let mut ptype = "Any".to_string()
+                if self.peek() == ":" {
+                    self.advance()
+                    ptype = self.advance()
+                }
+                params.push((pname, ptype))
+                if self.peek() == "," { self.advance() }
+            }
+            if self.peek() == ")" { self.advance() }
+        }
+        let mut body_tokens = Vec::new()
+        if self.peek() == "{" {
+            self.advance()
+            let mut depth = 1
+            while !self.at_end() && depth > 0 {
+                let t = self.advance()
+                if t == "{" { depth += 1 }
+                else if t == "}" { depth -= 1; if depth == 0 { break } }
+                body_tokens.push(t)
+            }
+        }
+        component.methods.push(MethodDecl { name, params, body_tokens })
+        Ok(())
+    }
+
+    fn parse_render(&mut self, component: &mut ComponentDecl) -> Result<(), String> {
+        self.advance() // 'render'
+        self.advance() // '{'
+        let mut nodes = Vec::new()
+        while !self.at_end() && self.peek() != "}" {
+            if self.peek_kind() == TokenKind::LAngle {
+                let node = self.parse_markup_node()?
+                nodes.push(node)
+            } else {
+                self.pos += 1
+            }
+        }
+        if self.peek() == "}" { self.advance() }
+        component.render_tree = nodes
+        Ok(())
+    }
+
+    // Parses <Tag attr="v" onClick={handler}>children...</Tag> or self-closing <Tag/>
+    fn parse_markup_node(&mut self) -> Result<MarkupNode, String> {
+        self.advance() // '<'
+        let tag_name = self.advance()
+        let mut node = MarkupNode::new(tag_name.clone())
+
+        // attributes
+        while !self.at_end() && self.peek_kind() != TokenKind::RAngle && self.peek() != "/" {
+            let attr_name = self.advance()
+            let mut attr_val = String::new()
+            let mut is_binding = false
+            if self.peek() == "=" {
+                self.advance()
+                if self.peek_kind() == TokenKind::StringLit {
+                    attr_val = self.advance()
+                } else if self.peek() == "{" {
+                    self.advance()
+                    is_binding = true
+                    let mut depth = 1
+                    while !self.at_end() && depth > 0 {
+                        let t = self.advance()
+                        if t == "{" { depth += 1; continue }
+                        if t == "}" { depth -= 1; if depth == 0 { break } }
+                        if !attr_val.is_empty() { attr_val.push(' ') }
+                        attr_val.push_str(&t)
+                    }
+                }
+            }
+            node.attrs.push(AttrExpr { name: attr_name, value: attr_val, is_binding })
+        }
+
+        // self-closing: '/' '>'
+        if self.peek() == "/" {
+            self.advance() // '/'
+            if self.peek_kind() == TokenKind::RAngle { self.advance() }
+            return Ok(node)
+        }
+
+        if self.peek_kind() == TokenKind::RAngle { self.advance() } // '>'
+
+        // children until closing tag
+        loop {
+            if self.at_end() { break }
+            if self.peek_kind() == TokenKind::LAngle {
+                // lookahead for closing tag '</Tag>'
+                if self.pos + 1 < (self.tokens.len() as i32) && self.tokens[(self.pos + 1) as usize].text == "/" {
+                    self.advance() // '<'
+                    self.advance() // '/'
+                    self.advance() // tag name
+                    if self.peek_kind() == TokenKind::RAngle { self.advance() }
+                    break
+                } else {
+                    let child = self.parse_markup_node()?
+                    node.children.push(child)
+                }
+            } else if self.peek() == "{" {
+                self.advance()
+                let mut text = String::new()
+                let mut depth = 1
+                while !self.at_end() && depth > 0 {
+                    let t = self.advance()
+                    if t == "{" { depth += 1; continue }
+                    if t == "}" { depth -= 1; if depth == 0 { break } }
+                    if !text.is_empty() { text.push(' ') }
+                    text.push_str(&t)
+                }
+                node.children.push(MarkupNode::text(format!("{{{}}}", text)))
+            } else {
+                let text = self.advance()
+                node.children.push(MarkupNode::text(text))
+            }
+        }
+
+        Ok(node)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA -> TITAN IR LOWERING
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct VeraIrLowering {
+    tmp_counter: u32,
+}
+
+impl VeraIrLowering {
+    pub fn new() -> Self {
+        VeraIrLowering { tmp_counter: 0 }
+    }
+
+    fn next_tmp(&mut self) -> String {
+        self.tmp_counter += 1
+        format!("%vera_t{}", self.tmp_counter)
+    }
+
+    pub fn lower_component(&mut self, component: &ComponentDecl, module: &mut IrModule) {
+        self.lower_render_fn(component, module)
+        for handler in &component.handlers {
+            self.lower_handler_fn(component, handler, module)
+        }
+        for method in &component.methods {
+            self.lower_method_fn(component, method, module)
+        }
+    }
+
+    fn lower_render_fn(&mut self, component: &ComponentDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_render", component.name)
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        // create root element handle
+        let root_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+        let mut create_root = IrInstruction::new(IrOpcode::Call)
+        create_root.result = Some(root_val.clone())
+        create_root.operands.push(IrValue { id: "vera_runtime_create_fragment".to_string(), vtype: "fn".to_string() })
+        entry.instructions.push(create_root)
+
+        for node in &component.render_tree {
+            let child_val = self.lower_markup_node(node, &mut entry)
+            let mut append = IrInstruction::new(IrOpcode::Call)
+            append.operands.push(IrValue { id: "vera_runtime_append_child".to_string(), vtype: "fn".to_string() })
+            append.operands.push(root_val.clone())
+            append.operands.push(child_val)
+            entry.instructions.push(append)
+        }
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(root_val)
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: Vec::new(),
+            return_type: IrValue { id: "ret".to_string(), vtype: "ptr".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+
+    // Emits IR that constructs a DOM/element node tree via vera_runtime_* calls, returns the IrValue handle
+    fn lower_markup_node(&mut self, node: &MarkupNode, block: &mut IrBasicBlock) -> IrValue {
+        if node.is_text_node {
+            let text_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+            let mut instr = IrInstruction::new(IrOpcode::Call)
+            instr.result = Some(text_val.clone())
+            instr.operands.push(IrValue { id: "vera_runtime_create_text_node".to_string(), vtype: "fn".to_string() })
+            instr.operands.push(IrValue { id: node.text_content.clone().unwrap_or_default(), vtype: "str".to_string() })
+            block.instructions.push(instr)
+            return text_val
+        }
+
+        let elem_val = IrValue { id: self.next_tmp(), vtype: "ptr".to_string() }
+        let mut create = IrInstruction::new(IrOpcode::Call)
+        create.result = Some(elem_val.clone())
+        create.operands.push(IrValue { id: "vera_runtime_create_element".to_string(), vtype: "fn".to_string() })
+        create.operands.push(IrValue { id: node.tag.clone(), vtype: "str".to_string() })
+        block.instructions.push(create)
+
+        for attr in &node.attrs {
+            let mut set_attr = IrInstruction::new(IrOpcode::Call)
+            if attr.name.starts_with("on") {
+                set_attr.operands.push(IrValue { id: "vera_runtime_bind_event".to_string(), vtype: "fn".to_string() })
+                set_attr.operands.push(elem_val.clone())
+                set_attr.operands.push(IrValue { id: attr.name.clone(), vtype: "str".to_string() })
+                set_attr.operands.push(IrValue { id: attr.value.clone(), vtype: "fnref".to_string() })
+            } else {
+                set_attr.operands.push(IrValue { id: "vera_runtime_set_attr".to_string(), vtype: "fn".to_string() })
+                set_attr.operands.push(elem_val.clone())
+                set_attr.operands.push(IrValue { id: attr.name.clone(), vtype: "str".to_string() })
+                set_attr.operands.push(IrValue { id: attr.value.clone(), vtype: "str".to_string() })
+            }
+            block.instructions.push(set_attr)
+        }
+
+        for child in &node.children {
+            let child_val = self.lower_markup_node(child, block)
+            let mut append = IrInstruction::new(IrOpcode::Call)
+            append.operands.push(IrValue { id: "vera_runtime_append_child".to_string(), vtype: "fn".to_string() })
+            append.operands.push(elem_val.clone())
+            append.operands.push(child_val)
+            block.instructions.push(append)
+        }
+
+        elem_val
+    }
+
+    fn lower_handler_fn(&mut self, component: &ComponentDecl, handler: &EventHandlerDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_{}", component.name, handler.event_name)
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        // dispatch the raw handler body as a single opaque call into the runtime
+        // interpreter with the joined source text; real statement-level lowering
+        // is intentionally deferred to a later expression-lowering pass.
+        let body_src: String = handler.body_tokens.join(" ")
+        let mut call = IrInstruction::new(IrOpcode::Call)
+        call.operands.push(IrValue { id: "vera_runtime_eval_handler_body".to_string(), vtype: "fn".to_string() })
+        call.operands.push(IrValue { id: body_src, vtype: "str".to_string() })
+        entry.instructions.push(call)
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(IrValue { id: "zero".to_string(), vtype: "i64".to_string() })
+        entry.instructions.push(ret)
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params: vec![IrValue { id: handler.param_name.clone(), vtype: "ptr".to_string() }],
+            return_type: IrValue { id: "ret".to_string(), vtype: "i64".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+
+    fn lower_method_fn(&mut self, component: &ComponentDecl, method: &MethodDecl, module: &mut IrModule) {
+        let fn_name = format!("{}_{}", component.name, method.name)
+        let mut entry = IrBasicBlock {
+            label: "entry".to_string(),
+            instructions: Vec::new(),
+            successors: Vec::new(),
+            predecessors: Vec::new(),
+        }
+
+        let body_src: String = method.body_tokens.join(" ")
+        let mut call = IrInstruction::new(IrOpcode::Call)
+        call.operands.push(IrValue { id: "vera_runtime_eval_method_body".to_string(), vtype: "fn".to_string() })
+        call.operands.push(IrValue { id: body_src, vtype: "str".to_string() })
+        entry.instructions.push(call)
+
+        let mut ret = IrInstruction::new(IrOpcode::Return)
+        ret.operands.push(IrValue { id: "zero".to_string(), vtype: "i64".to_string() })
+        entry.instructions.push(ret)
+
+        let params: Vec<IrValue> = method.params.iter()
+            .map(|(name, ptype)| IrValue { id: name.clone(), vtype: ptype.clone() })
+            .collect()
+
+        let func = IrFunction {
+            name: fn_name.clone(),
+            params,
+            return_type: IrValue { id: "ret".to_string(), vtype: "i64".to_string() },
+            blocks: vec![entry],
+            entry_block: "entry".to_string(),
+        }
+        module.functions.insert(fn_name, func)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA CODE GENERATOR (source pretty-printer, used for round-trip diagnostics)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct VeraCodeGen {
+    output: String,
+}
+
+impl VeraCodeGen {
+    pub fn new() -> Self {
+        VeraCodeGen {
+            output: String::new(),
+        }
+    }
+
+    pub fn generate(&mut self, components: &Vec<ComponentDecl>) -> String {
+        for comp in components {
+            self.gen_component(comp)
+        }
+        self.output.clone()
+    }
+
+    fn gen_component(&mut self, comp: &ComponentDecl) {
+        self.output.push_str(&format!("component {} {{\n", comp.name))
+
+        if !comp.props.is_empty() {
+            self.output.push_str("  props {\n")
+            for prop in &comp.props {
+                self.output.push_str(&format!("    {}: {}\n", prop.name, prop.prop_type))
+            }
+            self.output.push_str("  }\n")
+        }
+
+        if !comp.state.is_empty() {
+            self.output.push_str("  state {\n")
+            for st in &comp.state {
+                self.output.push_str(&format!("    {}: {} = {}\n", st.name, st.state_type, st.initial_value))
+            }
+            self.output.push_str("  }\n")
+        }
+
+        self.output.push_str("  render {\n")
+        for node in &comp.render_tree {
+            self.gen_markup(node, 4)
+        }
+        self.output.push_str("  }\n")
+
+        for handler in &comp.handlers {
+            self.output.push_str(&format!("  {}({}) {{ {} }}\n", handler.event_name, handler.param_name, handler.body_tokens.join(" ")))
+        }
+
+        self.output.push_str("}\n\n")
+    }
+
+    fn gen_markup(&mut self, node: &MarkupNode, indent: usize) {
+        let pad = " ".repeat(indent)
+        if node.is_text_node {
+            self.output.push_str(&format!("{}{}\n", pad, node.text_content.clone().unwrap_or_default()))
+            return
+        }
+        self.output.push_str(&format!("{}<{}", pad, node.tag))
+        for attr in &node.attrs {
+            if attr.is_binding {
+                self.output.push_str(&format!(" {}={{{}}}", attr.name, attr.value))
+            } else {
+                self.output.push_str(&format!(" {}=\"{}\"", attr.name, attr.value))
+            }
+        }
+        if node.children.is_empty() {
+            self.output.push_str("/>\n")
+            return
+        }
+        self.output.push_str(">\n")
+        for child in &node.children {
+            self.gen_markup(child, indent + 2)
+        }
+        self.output.push_str(&format!("{}</{}>\n", pad, node.tag))
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA SELF-HOSTED COMPILER (MAIN ENTRY POINTS)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn compile_vera_source(source: String) -> Result<String, String> {
+    let mut lexer = VeraLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = VeraParser::new(tokens)
+    let components = parser.parse()?
+
+    let mut codegen = VeraCodeGen::new()
+    let generated = codegen.generate(&components)
+
+    Ok(generated)
+}
+
+pub fn compile_vera_to_ir(source: String, module_name: String) -> Result<IrModule, String> {
+    let mut lexer = VeraLexer::new(source)
+    let tokens = lexer.tokenize()
+
+    let mut parser = VeraParser::new(tokens)
+    let components = parser.parse()?
+
+    let mut module = IrModule::new(module_name)
+    let mut lowering = VeraIrLowering::new()
+    for component in &components {
+        lowering.lower_component(component, &mut module)
+    }
+
+    Ok(module)
+}
+
+pub fn test_vera_compiler() -> Result<(), String> {
+    let vera_code = r#"
+        component Button {
+            props {
+                label: String,
+                onClick: Function
+            }
+            state {
+                disabled: bool = false
+            }
+            render {
+                <button onClick={handleClick}>{this.label}</button>
+            }
+        }
+    "#.to_string()
+
+    let result = compile_vera_source(vera_code.clone())?
+    if !(result.contains("component") && result.contains("Button")) {
+        return Err("VERA compilation failed: text roundtrip".to_string())
+    }
+
+    let ir_module = compile_vera_to_ir(vera_code, "test_module".to_string())?
+    if !ir_module.functions.contains_key("Button_render") {
+        return Err("VERA IR lowering failed: missing render function".to_string())
+    }
+
+    Ok(())
 }

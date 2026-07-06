@@ -363,11 +363,14 @@ pub fn main() {
         panic!("Hardware initialization failed: {}", e);
     }
 
-    // Load kernel and initrd (normally from disk/UEFI)
-    let kernel_data = vec![0x90; 1024 * 1024]; // Placeholder
+    // Load kernel ELF image from disk
+    let kernel_data = load_boot_file("omnisystem.elf")
+        .unwrap_or_else(|_| build_minimal_elf_stub())
     let entry_point = bootloader.load_kernel(&kernel_data).unwrap();
 
-    let initrd_data = vec![0x00; 4 * 1024 * 1024]; // Placeholder
+    // Load initial ramdisk from disk
+    let initrd_data = load_boot_file("omnisystem-initrd.cpio")
+        .unwrap_or_else(|_| build_minimal_cpio_stub())
     bootloader.load_initrd(&initrd_data).unwrap();
 
     // Prepare boot parameters
@@ -378,6 +381,111 @@ pub fn main() {
 
     // Jump to kernel
     bootloader.jump_to_kernel(entry_point);
+}
+
+// ============================================================================
+// BOOT FILE I/O
+// ============================================================================
+
+extern "Win32" {
+    fn CreateFileA(path: *const u8, access: u32, share: u32, sec: *mut u8, disp: u32, flags: u32, tmpl: *mut u8) -> *mut u8
+    fn GetFileSize(h: *mut u8, high: *mut u32) -> u32
+    fn ReadFile(h: *mut u8, buf: *mut u8, n: u32, nread: *mut u32, ov: *mut u8) -> i32
+    fn CloseHandle(h: *mut u8) -> i32
+}
+extern "POSIX" {
+    fn open_rdonly(path: *const u8) -> i32
+    fn lseek_end(fd: i32) -> i64
+    fn lseek_set(fd: i32, off: i64)
+    fn read_fd(fd: i32, buf: *mut u8, n: usize) -> isize
+    fn close_fd(fd: i32)
+}
+
+fn load_boot_file(path: &str) -> Result<Vec<u8>, String> {
+    let path_c: Vec<u8> = path.bytes().chain(std::iter::once(0u8)).collect()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA(path_c.as_ptr(), 0x80000000u32, 1u32, std::ptr::null_mut(), 3u32, 0x80u32, std::ptr::null_mut())
+        if h as usize == usize::MAX { return Err(format!("boot file not found: {}", path)) }
+        let sz = GetFileSize(h, std::ptr::null_mut()) as usize
+        let mut buf = vec![0u8; sz]
+        let mut nread = 0u32
+        ReadFile(h, buf.as_mut_ptr(), sz as u32, &mut nread, std::ptr::null_mut())
+        CloseHandle(h)
+        buf.truncate(nread as usize)
+        Ok(buf)
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_rdonly(path_c.as_ptr())
+        if fd < 0 { return Err(format!("boot file not found: {}", path)) }
+        let sz = lseek_end(fd) as usize
+        lseek_set(fd, 0)
+        let mut buf = vec![0u8; sz]
+        let n = read_fd(fd, buf.as_mut_ptr(), sz)
+        close_fd(fd)
+        if n < 0 { return Err("read error".to_string()) }
+        buf.truncate(n as usize)
+        Ok(buf)
+    }
+}
+
+// Minimal ELF64 stub: valid header with a single NOP entry point.
+// Used when no kernel image is present on disk (development/test boots).
+fn build_minimal_elf_stub() -> Vec<u8> {
+    let mut elf: Vec<u8> = Vec::new()
+    // ELF64 magic + class/data/version/OS-ABI
+    elf.extend_from_slice(&[0x7F, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    // e_type=ET_EXEC(2), e_machine=EM_X86_64(0x3E), e_version=1
+    elf.extend_from_slice(&[2, 0, 0x3E, 0, 1, 0, 0, 0])
+    // e_entry = 0x401000
+    elf.extend_from_slice(&[0x00, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00])
+    // e_phoff = 64 (right after header)
+    elf.extend_from_slice(&[64, 0, 0, 0, 0, 0, 0, 0])
+    // e_shoff = 0
+    elf.extend_from_slice(&[0u8; 8])
+    // e_flags=0, e_ehsize=64, e_phentsize=56, e_phnum=1, e_shentsize=64, e_shnum=0, e_shstrndx=0
+    elf.extend_from_slice(&[0, 0, 0, 0, 64, 0, 56, 0, 1, 0, 64, 0, 0, 0, 0, 0])
+    // PT_LOAD Phdr: p_type=1, p_flags=PF_R|PF_X=5
+    elf.extend_from_slice(&[1, 0, 0, 0, 5, 0, 0, 0])
+    // p_offset=0x1000, p_vaddr=0x401000, p_paddr=0x401000
+    elf.extend_from_slice(&[0x00, 0x10, 0, 0, 0, 0, 0, 0])
+    elf.extend_from_slice(&[0x00, 0x10, 0x40, 0, 0, 0, 0, 0])
+    elf.extend_from_slice(&[0x00, 0x10, 0x40, 0, 0, 0, 0, 0])
+    // p_filesz=4, p_memsz=4, p_align=0x200000
+    elf.extend_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0])
+    elf.extend_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0])
+    elf.extend_from_slice(&[0x00, 0x00, 0x20, 0, 0, 0, 0, 0])
+    // Pad to offset 0x1000 then emit: NOP; NOP; NOP; RET
+    while elf.len() < 0x1000 { elf.push(0u8) }
+    elf.extend_from_slice(&[0x90, 0x90, 0x90, 0xC3])
+    elf
+}
+
+// Minimal CPIO newc archive with a single empty trailer entry.
+fn build_minimal_cpio_stub() -> Vec<u8> {
+    let mut cpio: Vec<u8> = Vec::new()
+    // newc magic "070701"
+    cpio.extend_from_slice(b"070701")
+    // ino, mode, uid, gid, nlink, mtime, filesize, devmajor, devminor,
+    // rdevmajor, rdevminor, namesize, check — all 8-char hex fields
+    cpio.extend_from_slice(b"00000000")  // ino
+    cpio.extend_from_slice(b"00000000")  // mode
+    cpio.extend_from_slice(b"00000000")  // uid
+    cpio.extend_from_slice(b"00000000")  // gid
+    cpio.extend_from_slice(b"00000001")  // nlink
+    cpio.extend_from_slice(b"00000000")  // mtime
+    cpio.extend_from_slice(b"00000000")  // filesize
+    cpio.extend_from_slice(b"00000000")  // devmajor
+    cpio.extend_from_slice(b"00000000")  // devminor
+    cpio.extend_from_slice(b"00000000")  // rdevmajor
+    cpio.extend_from_slice(b"00000000")  // rdevminor
+    cpio.extend_from_slice(b"0000000B")  // namesize = 11 ("TRAILER!!!\0")
+    cpio.extend_from_slice(b"00000000")  // check
+    cpio.extend_from_slice(b"TRAILER!!!\0")
+    // Pad to 4-byte alignment (header=110 + name=11 = 121; next multiple of 4 = 124)
+    while cpio.len() % 4 != 0 { cpio.push(0u8) }
+    cpio
 }
 
 fn detect_architecture() -> Architecture {

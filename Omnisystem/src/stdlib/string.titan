@@ -1,0 +1,1200 @@
+// string.titan — Omnisystem Standard Library: String Utilities
+// Language: TITAN  |  Part of the 7-language Omni-Languages ecosystem
+// Provides: OmniString, StringBuilder, Regex, format!, split/join/trim/etc., base64, HTML escape
+
+module stdlib::string
+
+use core::mem
+use core::fmt::Write
+
+// ============================================================
+// SECTION 1: OmniString — UTF-8 string with capacity management
+// ============================================================
+
+pub struct OmniString {
+    buf: Vec<u8>,
+    len: usize,   // byte length (not char count)
+}
+
+impl OmniString {
+    pub fn new() -> Self {
+        OmniString { buf: Vec::new(), len: 0 }
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        OmniString { buf: Vec::with_capacity(cap), len: 0 }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        let bytes = s.as_bytes().to_vec()
+        let len   = bytes.len()
+        OmniString { buf: bytes, len }
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+        if core::str::from_utf8(&bytes).is_err() { return None }
+        let len = bytes.len()
+        Some(OmniString { buf: bytes, len })
+    }
+
+    pub fn as_str(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(&self.buf[..self.len]) }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] { &self.buf[..self.len] }
+
+    pub fn len(&self) -> usize { self.len }
+    pub fn byte_len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    // Count Unicode code points (chars)
+    pub fn char_count(&self) -> usize {
+        self.as_str().chars().count()
+    }
+
+    pub fn capacity(&self) -> usize { self.buf.capacity() }
+
+    pub fn push_str(&mut self, s: &str) {
+        let bytes = s.as_bytes()
+        self.reserve(bytes.len())
+        let new_len = self.len + bytes.len()
+        self.buf.resize(new_len, 0)
+        self.buf[self.len..new_len].copy_from_slice(bytes)
+        self.len = new_len
+    }
+
+    pub fn push(&mut self, ch: char) {
+        let mut encode_buf = [0u8; 4]
+        let s = ch.encode_utf8(&mut encode_buf)
+        self.push_str(s)
+    }
+
+    pub fn pop(&mut self) -> Option<char> {
+        if self.is_empty() { return None }
+        let s = self.as_str()
+        let ch = s.chars().next_back()?
+        self.len -= ch.len_utf8()
+        Some(ch)
+    }
+
+    pub fn insert_str(&mut self, byte_pos: usize, s: &str) {
+        assert!(byte_pos <= self.len, "OmniString::insert_str out of bounds")
+        let bytes = s.as_bytes()
+        let new_len = self.len + bytes.len()
+        self.buf.resize(new_len, 0)
+        // Shift existing bytes right
+        self.buf.copy_within(byte_pos..self.len, byte_pos + bytes.len())
+        self.buf[byte_pos..byte_pos + bytes.len()].copy_from_slice(bytes)
+        self.len = new_len
+    }
+
+    pub fn remove_range(&mut self, start: usize, end: usize) {
+        assert!(start <= end && end <= self.len)
+        self.buf.copy_within(end..self.len, start)
+        self.len -= end - start
+    }
+
+    pub fn truncate(&mut self, new_len: usize) {
+        assert!(new_len <= self.len)
+        self.len = new_len
+    }
+
+    pub fn clear(&mut self) { self.len = 0 }
+
+    pub fn reserve(&mut self, additional: usize) {
+        let needed = self.len + additional
+        if needed > self.buf.len() {
+            let new_cap = (needed * 2).max(16)
+            self.buf.resize(new_cap, 0)
+        }
+    }
+
+    pub fn to_uppercase(&self) -> OmniString {
+        OmniString::from_str(&to_upper(self.as_str()))
+    }
+
+    pub fn to_lowercase(&self) -> OmniString {
+        OmniString::from_str(&to_lower(self.as_str()))
+    }
+
+    pub fn trim(&self) -> &str { self.as_str().trim() }
+    pub fn trim_start(&self) -> &str { self.as_str().trim_start() }
+    pub fn trim_end(&self) -> &str { self.as_str().trim_end() }
+
+    pub fn contains(&self, pat: &str) -> bool { self.as_str().contains(pat) }
+    pub fn starts_with(&self, pat: &str) -> bool { self.as_str().starts_with(pat) }
+    pub fn ends_with(&self, pat: &str) -> bool { self.as_str().ends_with(pat) }
+
+    pub fn find(&self, pat: &str) -> Option<usize> { self.as_str().find(pat) }
+
+    pub fn replace(&self, from: &str, to: &str) -> OmniString {
+        OmniString::from_str(&str_replace(self.as_str(), from, to))
+    }
+
+    pub fn repeat(&self, n: usize) -> OmniString {
+        let mut out = OmniString::with_capacity(self.len * n)
+        for _ in 0..n { out.push_str(self.as_str()) }
+        out
+    }
+
+    pub fn chars(&self) -> Vec<char> {
+        self.as_str().chars().collect()
+    }
+
+    pub fn split<'a>(&'a self, delimiter: &'a str) -> Vec<&'a str> {
+        split(self.as_str(), delimiter)
+    }
+
+    pub fn to_string(&self) -> String {
+        self.as_str().to_string()
+    }
+
+    pub fn equals(&self, other: &OmniString) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+// ============================================================
+// SECTION 2: StringBuilder — efficient concatenation
+// ============================================================
+
+pub struct StringBuilder {
+    parts: Vec<String>,
+    total: usize,
+}
+
+impl StringBuilder {
+    pub fn new() -> Self {
+        StringBuilder { parts: Vec::new(), total: 0 }
+    }
+
+    pub fn with_capacity(_cap: usize) -> Self {
+        StringBuilder { parts: Vec::new(), total: 0 }
+    }
+
+    pub fn append(&mut self, s: &str) -> &mut Self {
+        self.total += s.len()
+        self.parts.push(s.to_string())
+        self
+    }
+
+    pub fn append_char(&mut self, ch: char) -> &mut Self {
+        let mut buf = [0u8; 4]
+        let s = ch.encode_utf8(&mut buf)
+        self.total += s.len()
+        self.parts.push(s.to_string())
+        self
+    }
+
+    pub fn append_line(&mut self, s: &str) -> &mut Self {
+        self.append(s);
+        self.append("\n")
+    }
+
+    pub fn append_i64(&mut self, n: i64) -> &mut Self {
+        self.append(&format_int(n))
+    }
+
+    pub fn append_f64(&mut self, f: f64) -> &mut Self {
+        self.append(&format_float(f, 6))
+    }
+
+    pub fn append_bool(&mut self, b: bool) -> &mut Self {
+        self.append(if b { "true" } else { "false" })
+    }
+
+    pub fn len(&self) -> usize { self.total }
+    pub fn is_empty(&self) -> bool { self.total == 0 }
+
+    pub fn to_string(&self) -> String {
+        let mut out = String::with_capacity(self.total)
+        for part in &self.parts { out.push_str(part) }
+        out
+    }
+
+    pub fn clear(&mut self) {
+        self.parts.clear()
+        self.total = 0
+    }
+
+    pub fn to_omni_string(&self) -> OmniString {
+        OmniString::from_str(&self.to_string())
+    }
+}
+
+// ============================================================
+// SECTION 3: String utility functions
+// ============================================================
+
+pub fn split<'a>(s: &'a str, delimiter: &str) -> Vec<&'a str> {
+    if delimiter.is_empty() {
+        return s.char_indices().map(|(i, _)| &s[i..i+1]).collect()
+    }
+    let mut result = Vec::new()
+    let mut start  = 0
+    let dlen       = delimiter.len()
+    loop {
+        match s[start..].find(delimiter) {
+            None      => { result.push(&s[start..]); break }
+            Some(pos) => {
+                result.push(&s[start..start+pos])
+                start += pos + dlen
+            }
+        }
+    }
+    result
+}
+
+pub fn join(parts: &[&str], separator: &str) -> String {
+    let mut sb = StringBuilder::new()
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 { sb.append(separator) }
+        sb.append(part)
+    }
+    sb.to_string()
+}
+
+pub fn join_strings(parts: &[String], separator: &str) -> String {
+    let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect()
+    join(&refs, separator)
+}
+
+pub fn trim(s: &str) -> &str { s.trim() }
+pub fn trim_start(s: &str) -> &str { s.trim_start() }
+pub fn trim_end(s: &str) -> &str { s.trim_end() }
+
+pub fn to_upper(s: &str) -> String {
+    s.chars().map(|c| c.to_uppercase().next().unwrap_or(c)).collect()
+}
+
+pub fn to_lower(s: &str) -> String {
+    s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
+}
+
+pub fn contains(s: &str, pat: &str) -> bool { s.contains(pat) }
+pub fn starts_with(s: &str, prefix: &str) -> bool { s.starts_with(prefix) }
+pub fn ends_with(s: &str, suffix: &str) -> bool { s.ends_with(suffix) }
+
+pub fn str_replace(s: &str, from: &str, to: &str) -> String {
+    s.replace(from, to)
+}
+
+pub fn str_replace_all(s: &str, from: &str, to: &str) -> String {
+    let mut out   = String::new()
+    let mut start = 0
+    let flen      = from.len()
+    while start < s.len() {
+        match s[start..].find(from) {
+            None      => { out.push_str(&s[start..]); break }
+            Some(pos) => {
+                out.push_str(&s[start..start+pos])
+                out.push_str(to)
+                start += pos + flen
+            }
+        }
+    }
+    out
+}
+
+pub fn repeat_str(s: &str, n: usize) -> String {
+    s.repeat(n)
+}
+
+pub fn reverse_str(s: &str) -> String {
+    s.chars().rev().collect()
+}
+
+pub fn pad_left(s: &str, width: usize, pad_char: char) -> String {
+    let len = s.chars().count()
+    if len >= width { return s.to_string() }
+    let padding: String = core::iter::repeat(pad_char).take(width - len).collect()
+    format!("{}{}", padding, s)
+}
+
+pub fn pad_right(s: &str, width: usize, pad_char: char) -> String {
+    let len = s.chars().count()
+    if len >= width { return s.to_string() }
+    let padding: String = core::iter::repeat(pad_char).take(width - len).collect()
+    format!("{}{}", s, padding)
+}
+
+pub fn center(s: &str, width: usize, pad_char: char) -> String {
+    let len = s.chars().count()
+    if len >= width { return s.to_string() }
+    let total_pad = width - len
+    let left_pad  = total_pad / 2
+    let right_pad = total_pad - left_pad
+    let lp: String = core::iter::repeat(pad_char).take(left_pad).collect()
+    let rp: String = core::iter::repeat(pad_char).take(right_pad).collect()
+    format!("{}{}{}", lp, s, rp)
+}
+
+// ============================================================
+// SECTION 4: Parse utilities
+// ============================================================
+
+pub fn parse_i64(s: &str) -> Option<i64> {
+    let s = s.trim()
+    if s.is_empty() { return None }
+    let (neg, digits) = if s.starts_with('-') { (true, &s[1..]) } else { (false, s) }
+    let mut result: i64 = 0
+    for ch in digits.chars() {
+        if !ch.is_ascii_digit() { return None }
+        result = result.checked_mul(10)?.checked_add((ch as u8 - b'0') as i64)?
+    }
+    Some(if neg { -result } else { result })
+}
+
+pub fn parse_i32(s: &str) -> Option<i32> {
+    parse_i64(s).and_then(|v| if v >= i32::MIN as i64 && v <= i32::MAX as i64 { Some(v as i32) } else { None })
+}
+
+pub fn parse_u64(s: &str) -> Option<u64> {
+    let s = s.trim()
+    let mut result: u64 = 0
+    for ch in s.chars() {
+        if !ch.is_ascii_digit() { return None }
+        result = result.checked_mul(10)?.checked_add((ch as u8 - b'0') as u64)?
+    }
+    Some(result)
+}
+
+pub fn parse_f64(s: &str) -> Option<f64> {
+    let s = s.trim()
+    if s.is_empty() { return None }
+    // Delegate to built-in float parse
+    s.parse::<f64>().ok()
+}
+
+pub fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_lowercase().as_str() {
+        "true"  | "yes" | "1" | "on"  => Some(true),
+        "false" | "no"  | "0" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+// Generic parse dispatching via trait
+pub trait FromStr: Sized {
+    fn from_str(s: &str) -> Option<Self>
+}
+
+impl FromStr for i32 { fn from_str(s: &str) -> Option<i32> { parse_i32(s) } }
+impl FromStr for i64 { fn from_str(s: &str) -> Option<i64> { parse_i64(s) } }
+impl FromStr for u64 { fn from_str(s: &str) -> Option<u64> { parse_u64(s) } }
+impl FromStr for f64 { fn from_str(s: &str) -> Option<f64> { parse_f64(s) } }
+impl FromStr for bool { fn from_str(s: &str) -> Option<bool> { parse_bool(s) } }
+
+pub fn parse<T: FromStr>(s: &str) -> Option<T> { T::from_str(s) }
+
+// ============================================================
+// SECTION 5: Number formatting
+// ============================================================
+
+pub fn format_int(n: i64) -> String {
+    if n == 0 { return "0".to_string() }
+    let mut digits = Vec::new()
+    let (neg, mut n) = if n < 0 { (true, -(n as i128) as u64) } else { (false, n as u64) }
+    while n > 0 {
+        digits.push((b'0' + (n % 10) as u8) as char)
+        n /= 10
+    }
+    if neg { digits.push('-') }
+    digits.iter().rev().collect()
+}
+
+pub fn format_float(f: f64, precision: usize) -> String {
+    let neg     = f < 0.0
+    let f       = if neg { -f } else { f }
+    let int_part = f as u64
+    let frac_f   = f - int_part as f64
+    let scale    = 10u64.pow(precision as u32) as f64
+    let frac_int = (frac_f * scale).round() as u64
+    let frac_str = format!("{:0>width$}", frac_int, width = precision)
+    let sign     = if neg { "-" } else { "" }
+    format!("{}{}.{}", sign, int_part, frac_str)
+}
+
+pub fn format_hex(n: u64) -> String {
+    if n == 0 { return "0".to_string() }
+    let hex_chars = b"0123456789abcdef"
+    let mut digits = Vec::new()
+    let mut n = n
+    while n > 0 {
+        digits.push(hex_chars[(n & 0xf) as usize] as char)
+        n >>= 4
+    }
+    digits.iter().rev().collect()
+}
+
+pub fn format_binary(n: u64, min_width: usize) -> String {
+    if n == 0 && min_width == 0 { return "0".to_string() }
+    let mut bits = Vec::new()
+    let mut n = n
+    while n > 0 {
+        bits.push(if n & 1 == 1 { '1' } else { '0' })
+        n >>= 1
+    }
+    while bits.len() < min_width { bits.push('0') }
+    bits.iter().rev().collect()
+}
+
+// ============================================================
+// SECTION 6: String formatting — format!() macro equivalent
+// ============================================================
+
+// format_args replaces {} placeholders with provided string arguments
+pub fn format_str(template: &str, args: &[&str]) -> String {
+    let mut result = String::new()
+    let mut chars  = template.chars().peekable()
+    let mut arg_idx = 0
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            match chars.peek() {
+                Some(&'}') => {
+                    chars.next()  // consume '}'
+                    if arg_idx < args.len() {
+                        result.push_str(args[arg_idx])
+                        arg_idx += 1
+                    } else {
+                        result.push_str("{}")
+                    }
+                }
+                Some(&'{') => {
+                    chars.next()  // consume second '{'
+                    result.push('{')
+                }
+                _ => {
+                    // Could be {0}, {name}, etc. — consume until '}'
+                    let mut inner = String::new()
+                    let mut found_close = false
+                    for c in chars.by_ref() {
+                        if c == '}' { found_close = true; break }
+                        inner.push(c)
+                    }
+                    if found_close {
+                        // Try to parse as positional index
+                        if let Some(idx) = parse_u64(&inner) {
+                            let idx = idx as usize
+                            if idx < args.len() {
+                                result.push_str(args[idx])
+                            } else {
+                                result.push_str(&format!("{{{}}}", inner))
+                            }
+                        } else {
+                            result.push_str(&format!("{{{}}}", inner))
+                        }
+                    } else {
+                        result.push('{')
+                        result.push_str(&inner)
+                    }
+                }
+            }
+        } else if ch == '}' && chars.peek() == Some(&'}') {
+            chars.next()
+            result.push('}')
+        } else {
+            result.push(ch)
+        }
+    }
+    result
+}
+
+// Convenience macro-style function with varargs via slice
+pub fn fmt(template: &str, args: &[&str]) -> String {
+    format_str(template, args)
+}
+
+// ============================================================
+// SECTION 7: HTML escaping
+// ============================================================
+
+pub fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len())
+    for ch in s.chars() {
+        match ch {
+            '&'  => out.push_str("&amp;"),
+            '<'  => out.push_str("&lt;"),
+            '>'  => out.push_str("&gt;"),
+            '"'  => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            '/'  => out.push_str("&#x2F;"),
+            _    => out.push(ch),
+        }
+    }
+    out
+}
+
+pub fn unescape_html(s: &str) -> String {
+    let entities: &[(&str, char)] = &[
+        ("&amp;",  '&'),
+        ("&lt;",   '<'),
+        ("&gt;",   '>'),
+        ("&quot;", '"'),
+        ("&#x27;", '\''),
+        ("&#x2F;", '/'),
+        ("&apos;", '\''),
+        ("&nbsp;", '\u{00A0}'),
+    ]
+    let mut result = s.to_string()
+    for (entity, ch) in entities {
+        result = str_replace_all(&result, entity, &ch.to_string())
+    }
+    result
+}
+
+// ============================================================
+// SECTION 8: Base64 encoding/decoding
+// ============================================================
+
+const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const BASE64_PADDING: u8   = b'='
+
+pub fn base64_encode(data: &[u8]) -> String {
+    let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4)
+    let mut i   = 0
+
+    while i + 3 <= data.len() {
+        let b0 = data[i] as usize
+        let b1 = data[i+1] as usize
+        let b2 = data[i+2] as usize
+        out.push(BASE64_CHARS[(b0 >> 2)])
+        out.push(BASE64_CHARS[((b0 & 0x03) << 4) | (b1 >> 4)])
+        out.push(BASE64_CHARS[((b1 & 0x0f) << 2) | (b2 >> 6)])
+        out.push(BASE64_CHARS[(b2 & 0x3f)])
+        i += 3
+    }
+
+    let rem = data.len() - i
+    if rem == 1 {
+        let b0 = data[i] as usize
+        out.push(BASE64_CHARS[(b0 >> 2)])
+        out.push(BASE64_CHARS[(b0 & 0x03) << 4])
+        out.push(BASE64_PADDING)
+        out.push(BASE64_PADDING)
+    } else if rem == 2 {
+        let b0 = data[i] as usize
+        let b1 = data[i+1] as usize
+        out.push(BASE64_CHARS[(b0 >> 2)])
+        out.push(BASE64_CHARS[((b0 & 0x03) << 4) | (b1 >> 4)])
+        out.push(BASE64_CHARS[(b1 & 0x0f) << 2])
+        out.push(BASE64_PADDING)
+    }
+
+    String::from_utf8(out).unwrap()
+}
+
+fn base64_decode_char(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+'        => Some(62),
+        b'/'        => Some(63),
+        _           => None,
+    }
+}
+
+pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim()
+    if s.len() % 4 != 0 {
+        return Err(format!("Invalid base64 length: {}", s.len()))
+    }
+
+    let bytes  = s.as_bytes()
+    let mut out = Vec::with_capacity(s.len() / 4 * 3)
+    let mut i   = 0
+
+    while i < bytes.len() {
+        let c0 = base64_decode_char(bytes[i])
+            .ok_or_else(|| format!("Invalid base64 char at {}: {:?}", i, bytes[i] as char))?
+        let c1 = base64_decode_char(bytes[i+1])
+            .ok_or_else(|| format!("Invalid base64 char at {}", i+1))?
+
+        out.push((c0 << 2) | (c1 >> 4))
+
+        if bytes[i+2] != BASE64_PADDING {
+            let c2 = base64_decode_char(bytes[i+2])
+                .ok_or_else(|| format!("Invalid base64 char at {}", i+2))?
+            out.push(((c1 & 0x0f) << 4) | (c2 >> 2))
+            if bytes[i+3] != BASE64_PADDING {
+                let c3 = base64_decode_char(bytes[i+3])
+                    .ok_or_else(|| format!("Invalid base64 char at {}", i+3))?
+                out.push(((c2 & 0x03) << 6) | c3)
+            }
+        }
+        i += 4
+    }
+
+    Ok(out)
+}
+
+// URL-safe base64 (replaces +/ with -_)
+pub fn base64url_encode(data: &[u8]) -> String {
+    base64_encode(data).replace('+', "-").replace('/', "_").trim_end_matches('=').to_string()
+}
+
+pub fn base64url_decode(s: &str) -> Result<Vec<u8>, String> {
+    let mut padded = s.replace('-', "+").replace('_', "/")
+    while padded.len() % 4 != 0 { padded.push('=') }
+    base64_decode(&padded)
+}
+
+// ============================================================
+// SECTION 9: Regex — simple NFA-based engine
+// ============================================================
+
+// Supported metacharacters: . * + ? | ^ $ [] [^] \d \w \s
+// Groups: () for capturing, (?:) for non-capturing (simplified)
+
+#[derive(Debug, Clone)]
+enum RegexNode {
+    Literal(char),
+    AnyChar,          // .
+    CharClass(Vec<CharRange>, bool),  // [ranges], negated
+    Anchor(AnchorType),
+    Group(Vec<RegexNode>),
+    Alternation(Vec<Vec<RegexNode>>),
+    Quantifier { node: Box<RegexNode>, min: usize, max: Option<usize>, greedy: bool },
+    Digit,     // \d
+    Word,      // \w
+    Space,     // \s
+}
+
+#[derive(Debug, Clone)]
+enum AnchorType { Start, End }
+
+#[derive(Debug, Clone)]
+struct CharRange {
+    from: char,
+    to:   char,
+}
+
+impl CharRange {
+    fn matches(&self, c: char) -> bool { c >= self.from && c <= self.to }
+}
+
+pub struct Regex {
+    pattern: String,
+    nodes:   Vec<RegexNode>,
+}
+
+impl Regex {
+    pub fn compile(pattern: &str) -> Result<Regex, String> {
+        let nodes = parse_pattern(pattern)?
+        Ok(Regex { pattern: pattern.to_string(), nodes })
+    }
+
+    pub fn is_match(&self, input: &str) -> bool {
+        self.find(input).is_some()
+    }
+
+    // Return the first match's start/end byte positions
+    pub fn find(&self, input: &str) -> Option<(usize, usize)> {
+        let chars: Vec<char> = input.chars().collect()
+        let anchored_start = self.nodes.first().map_or(false, |n| matches!(n, RegexNode::Anchor(AnchorType::Start)))
+
+        let search_start = if anchored_start { 0..1 } else { 0..chars.len()+1 }
+
+        for start in search_start {
+            if let Some(end) = try_match(&self.nodes, &chars, start) {
+                // Convert char positions back to byte positions
+                let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum()
+                let byte_end:   usize = chars[..end].iter().map(|c| c.len_utf8()).sum()
+                return Some((byte_start, byte_end))
+            }
+        }
+        None
+    }
+
+    // Return all non-overlapping matches as byte-position pairs
+    pub fn find_all(&self, input: &str) -> Vec<(usize, usize)> {
+        let chars: Vec<char> = input.chars().collect()
+        let mut results = Vec::new()
+        let mut pos     = 0
+
+        while pos <= chars.len() {
+            match try_match(&self.nodes, &chars, pos) {
+                None => { pos += 1 }
+                Some(end) => {
+                    let byte_start: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum()
+                    let byte_end:   usize = chars[..end].iter().map(|c| c.len_utf8()).sum()
+                    results.push((byte_start, byte_end))
+                    pos = if end > pos { end } else { pos + 1 }
+                }
+            }
+        }
+        results
+    }
+
+    // Return all matching substrings
+    pub fn find_all_str<'a>(&self, input: &'a str) -> Vec<&'a str> {
+        self.find_all(input).into_iter().map(|(s, e)| &input[s..e]).collect()
+    }
+
+    // Replace first match
+    pub fn replace(&self, input: &str, replacement: &str) -> String {
+        match self.find(input) {
+            None => input.to_string(),
+            Some((s, e)) => format!("{}{}{}", &input[..s], replacement, &input[e..]),
+        }
+    }
+
+    // Replace all matches
+    pub fn replace_all(&self, input: &str, replacement: &str) -> String {
+        let mut result = String::new()
+        let mut last   = 0
+        for (s, e) in self.find_all(input) {
+            result.push_str(&input[last..s])
+            result.push_str(replacement)
+            last = e
+        }
+        result.push_str(&input[last..])
+        result
+    }
+
+    pub fn pattern(&self) -> &str { &self.pattern }
+}
+
+fn parse_pattern(pattern: &str) -> Result<Vec<RegexNode>, String> {
+    let chars: Vec<char> = pattern.chars().collect()
+    let (nodes, _) = parse_alternation(&chars, 0)?
+    Ok(nodes)
+}
+
+fn parse_alternation(chars: &[char], start: usize) -> Result<(Vec<RegexNode>, usize), String> {
+    let mut alternatives: Vec<Vec<RegexNode>> = Vec::new()
+    let mut current: Vec<RegexNode> = Vec::new()
+    let mut i = start
+
+    while i < chars.len() && chars[i] != ')' {
+        if chars[i] == '|' {
+            alternatives.push(current.take_and_reset())
+            i += 1
+        } else {
+            let (node, new_i) = parse_atom(chars, i)?
+            let (quant_node, new_i2) = parse_quantifier(node, chars, new_i)?
+            current.push(quant_node)
+            i = new_i2
+        }
+    }
+
+    if alternatives.is_empty() {
+        Ok((current, i))
+    } else {
+        alternatives.push(current)
+        Ok((vec![RegexNode::Alternation(alternatives)], i))
+    }
+}
+
+fn parse_atom(chars: &[char], i: usize) -> Result<(RegexNode, usize), String> {
+    if i >= chars.len() { return Err("Unexpected end of pattern".to_string()) }
+    match chars[i] {
+        '^' => Ok((RegexNode::Anchor(AnchorType::Start), i+1)),
+        '$' => Ok((RegexNode::Anchor(AnchorType::End),   i+1)),
+        '.' => Ok((RegexNode::AnyChar, i+1)),
+        '(' => {
+            let (nodes, end) = parse_alternation(chars, i+1)?
+            if end >= chars.len() || chars[end] != ')' {
+                return Err("Unclosed group '('".to_string())
+            }
+            Ok((RegexNode::Group(nodes), end+1))
+        }
+        '[' => {
+            let (node, end) = parse_char_class(chars, i+1)?
+            Ok((node, end))
+        }
+        '\\' => {
+            if i+1 >= chars.len() { return Err("Trailing backslash".to_string()) }
+            let node = match chars[i+1] {
+                'd' => RegexNode::Digit,
+                'w' => RegexNode::Word,
+                's' => RegexNode::Space,
+                'D' => RegexNode::CharClass(vec![], true),  // non-digit: simplified
+                c   => RegexNode::Literal(c),
+            }
+            Ok((node, i+2))
+        }
+        c => Ok((RegexNode::Literal(c), i+1)),
+    }
+}
+
+fn parse_char_class(chars: &[char], start: usize) -> Result<(RegexNode, usize), String> {
+    let mut ranges  = Vec::new()
+    let mut negated = false
+    let mut i       = start
+
+    if i < chars.len() && chars[i] == '^' { negated = true; i += 1 }
+
+    while i < chars.len() && chars[i] != ']' {
+        let from = chars[i]
+        i += 1
+        if i + 1 < chars.len() && chars[i] == '-' && chars[i+1] != ']' {
+            let to = chars[i+1]
+            ranges.push(CharRange { from, to })
+            i += 2
+        } else {
+            ranges.push(CharRange { from, to: from })
+        }
+    }
+    if i < chars.len() { i += 1 }  // consume ']'
+    Ok((RegexNode::CharClass(ranges, negated), i))
+}
+
+fn parse_quantifier(node: RegexNode, chars: &[char], i: usize) -> Result<(RegexNode, usize), String> {
+    if i >= chars.len() { return Ok((node, i)) }
+    let (min, max, consumed) = match chars[i] {
+        '*' => (0, None, 1),
+        '+' => (1, None, 1),
+        '?' => (0, Some(1), 1),
+        '{' => {
+            // Parse {m} or {m,n} or {m,}
+            let mut j = i + 1
+            let mut min_s = String::new()
+            while j < chars.len() && chars[j].is_ascii_digit() { min_s.push(chars[j]); j += 1 }
+            if j >= chars.len() { return Ok((node, i)) }
+            if chars[j] == '}' {
+                let m = parse_u64(&min_s).unwrap_or(0) as usize
+                (m, Some(m), j - i + 1)
+            } else if chars[j] == ',' {
+                j += 1
+                let mut max_s = String::new()
+                while j < chars.len() && chars[j].is_ascii_digit() { max_s.push(chars[j]); j += 1 }
+                let max = if max_s.is_empty() { None } else { Some(parse_u64(&max_s).unwrap_or(0) as usize) }
+                let min = parse_u64(&min_s).unwrap_or(0) as usize
+                if j < chars.len() && chars[j] == '}' {
+                    (min, max, j - i + 1)
+                } else {
+                    return Ok((node, i))
+                }
+            } else {
+                return Ok((node, i))
+            }
+        }
+        _ => return Ok((node, i)),
+    }
+
+    let mut greedy = true
+    let extra = if i + consumed < chars.len() && chars[i + consumed] == '?' {
+        greedy = false; 1
+    } else { 0 }
+
+    Ok((RegexNode::Quantifier {
+        node: Box::new(node),
+        min,
+        max,
+        greedy,
+    }, i + consumed + extra))
+}
+
+fn node_matches_char(node: &RegexNode, c: char) -> bool {
+    match node {
+        RegexNode::Literal(ch)          => *ch == c,
+        RegexNode::AnyChar              => c != '\n',
+        RegexNode::Digit                => c.is_ascii_digit(),
+        RegexNode::Word                 => c.is_alphanumeric() || c == '_',
+        RegexNode::Space                => c.is_whitespace(),
+        RegexNode::CharClass(ranges, neg) => {
+            let matched = ranges.iter().any(|r| r.matches(c))
+            if *neg { !matched } else { matched }
+        }
+        _ => false,
+    }
+}
+
+fn try_match(nodes: &[RegexNode], chars: &[char], start: usize) -> Option<usize> {
+    try_match_nodes(nodes, 0, chars, start)
+}
+
+fn try_match_nodes(nodes: &[RegexNode], node_idx: usize, chars: &[char], pos: usize) -> Option<usize> {
+    if node_idx >= nodes.len() { return Some(pos) }
+    let node = &nodes[node_idx]
+
+    match node {
+        RegexNode::Anchor(AnchorType::Start) => {
+            if pos == 0 { try_match_nodes(nodes, node_idx+1, chars, pos) } else { None }
+        }
+        RegexNode::Anchor(AnchorType::End) => {
+            if pos == chars.len() { try_match_nodes(nodes, node_idx+1, chars, pos) } else { None }
+        }
+        RegexNode::Literal(_) | RegexNode::AnyChar | RegexNode::Digit
+            | RegexNode::Word | RegexNode::Space | RegexNode::CharClass(..) =>
+        {
+            if pos < chars.len() && node_matches_char(node, chars[pos]) {
+                try_match_nodes(nodes, node_idx+1, chars, pos+1)
+            } else {
+                None
+            }
+        }
+        RegexNode::Group(inner) => {
+            let end = try_match_nodes(inner, 0, chars, pos)?
+            try_match_nodes(nodes, node_idx+1, chars, end)
+        }
+        RegexNode::Alternation(alts) => {
+            for alt in alts {
+                if let Some(end) = try_match_nodes(alt, 0, chars, pos) {
+                    if let Some(final_end) = try_match_nodes(nodes, node_idx+1, chars, end) {
+                        return Some(final_end)
+                    }
+                }
+            }
+            None
+        }
+        RegexNode::Quantifier { node: inner, min, max, greedy } => {
+            // Try all possible repeat counts
+            let mut positions = vec![pos]
+            let mut cur = pos
+            let mut count = 0
+
+            // Collect all valid end positions for the inner node
+            let all_ends: Vec<(usize, usize)> = {
+                let mut ends = Vec::new()
+                let mut c    = pos
+                let mut cnt  = 0
+                loop {
+                    match max { Some(m) if cnt >= *m => break, _ => {} }
+                    match try_match_nodes(core::slice::from_ref(inner.as_ref()), 0, chars, c) {
+                        None => break,
+                        Some(end) => {
+                            if end == c { break }  // Prevent infinite loop on zero-width match
+                            cnt += 1
+                            ends.push((cnt, end))
+                            c = end
+                        }
+                    }
+                }
+                ends
+            }
+
+            // Filter by minimum
+            let valid: Vec<usize> = all_ends.iter()
+                .filter(|(cnt, _)| *cnt >= *min)
+                .map(|(_, end)| *end)
+                .collect()
+
+            // Also include zero-repetition if min == 0
+            let mut candidates = if *min == 0 { vec![pos] } else { Vec::new() }
+            candidates.extend(valid)
+
+            let candidates = if *greedy { candidates.iter().rev().cloned().collect::<Vec<_>>() } else { candidates }
+
+            for end in candidates {
+                if let Some(final_end) = try_match_nodes(nodes, node_idx+1, chars, end) {
+                    return Some(final_end)
+                }
+            }
+            None
+        }
+    }
+}
+
+// Helper trait extension for Vec to "take and reset"
+trait TakeAndReset {
+    fn take_and_reset(&mut self) -> Self
+}
+
+impl<T> TakeAndReset for Vec<T> {
+    fn take_and_reset(&mut self) -> Self {
+        let mut new = Vec::new()
+        core::mem::swap(self, &mut new)
+        new
+    }
+}
+
+// ============================================================
+// UNIT TESTS
+// ============================================================
+
+#[test_suite]
+mod tests {
+
+    // --- OmniString ---
+
+    #[test]
+    fn omni_string_push_pop() {
+        let mut s = OmniString::from_str("Hello")
+        s.push(',')
+        s.push_str(" world")
+        assert_eq!(s.as_str(), "Hello, world")
+        s.pop()
+        assert_eq!(s.as_str(), "Hello, worl")
+    }
+
+    #[test]
+    fn omni_string_insert_remove() {
+        let mut s = OmniString::from_str("Hello world")
+        s.insert_str(5, " beautiful")
+        assert_eq!(s.as_str(), "Hello beautiful world")
+        s.remove_range(5, 15)
+        assert_eq!(s.as_str(), "Hello world")
+    }
+
+    #[test]
+    fn omni_string_case() {
+        let s = OmniString::from_str("Hello World")
+        assert_eq!(s.to_uppercase().as_str(), "HELLO WORLD")
+        assert_eq!(s.to_lowercase().as_str(), "hello world")
+    }
+
+    // --- StringBuilder ---
+
+    #[test]
+    fn string_builder_concat() {
+        let mut sb = StringBuilder::new()
+        sb.append("foo").append_char('-').append("bar")
+        assert_eq!(sb.to_string(), "foo-bar")
+        assert_eq!(sb.len(), 7)
+    }
+
+    #[test]
+    fn string_builder_numbers() {
+        let mut sb = StringBuilder::new()
+        sb.append_i64(42).append(" ").append_f64(3.14)
+        let s = sb.to_string()
+        assert!(s.starts_with("42 3.14"))
+    }
+
+    // --- split/join ---
+
+    #[test]
+    fn split_basic() {
+        let parts = split("a,b,c,d", ",")
+        assert_eq!(parts, vec!["a", "b", "c", "d"])
+    }
+
+    #[test]
+    fn join_basic() {
+        let parts = vec!["alpha", "beta", "gamma"]
+        let s = join(&parts, " | ")
+        assert_eq!(s, "alpha | beta | gamma")
+    }
+
+    #[test]
+    fn split_join_roundtrip() {
+        let original  = "one::two::three"
+        let parts     = split(original, "::")
+        let rejoined  = join(&parts, "::")
+        assert_eq!(rejoined, original)
+    }
+
+    // --- parse utilities ---
+
+    #[test]
+    fn parse_numbers() {
+        assert_eq!(parse_i64("42"),   Some(42))
+        assert_eq!(parse_i64("-99"),  Some(-99))
+        assert_eq!(parse_i64("abc"),  None)
+        assert_eq!(parse_u64("1000"), Some(1000))
+        assert_eq!(parse_f64("3.14"), Some(3.14))
+    }
+
+    #[test]
+    fn parse_bool_values() {
+        assert_eq!(parse_bool("true"),  Some(true))
+        assert_eq!(parse_bool("FALSE"), Some(false))
+        assert_eq!(parse_bool("yes"),   Some(true))
+        assert_eq!(parse_bool("0"),     Some(false))
+        assert_eq!(parse_bool("maybe"), None)
+    }
+
+    // --- format_str ---
+
+    #[test]
+    fn format_str_positional() {
+        let s = format_str("{} + {} = {}", &["1", "2", "3"])
+        assert_eq!(s, "1 + 2 = 3")
+    }
+
+    #[test]
+    fn format_str_indexed() {
+        let s = format_str("{0}, {1}, {0}", &["Alice", "Bob"])
+        assert_eq!(s, "Alice, Bob, Alice")
+    }
+
+    // --- HTML escape ---
+
+    #[test]
+    fn html_escape_unescape_roundtrip() {
+        let raw     = "<script>alert('xss & evil');</script>"
+        let escaped = escape_html(raw)
+        assert!(!escaped.contains('<'))
+        assert!(!escaped.contains('>'))
+        let unescaped = unescape_html(&escaped)
+        assert_eq!(unescaped, raw)
+    }
+
+    // --- Base64 ---
+
+    #[test]
+    fn base64_encode_decode_roundtrip() {
+        let data = b"Hello, World! This is a base64 test."
+        let enc  = base64_encode(data)
+        let dec  = base64_decode(&enc).unwrap()
+        assert_eq!(dec, data.to_vec())
+    }
+
+    #[test]
+    fn base64_known_vector() {
+        // "Man" => "TWFu"
+        assert_eq!(base64_encode(b"Man"), "TWFu")
+        assert_eq!(base64_decode("TWFu").unwrap(), b"Man".to_vec())
+    }
+
+    #[test]
+    fn base64_padding() {
+        // "M"   => "TQ=="
+        // "Ma"  => "TWE="
+        assert_eq!(base64_encode(b"M"),  "TQ==")
+        assert_eq!(base64_encode(b"Ma"), "TWE=")
+    }
+
+    // --- Regex ---
+
+    #[test]
+    fn regex_literal_match() {
+        let re = Regex::compile("hello").unwrap()
+        assert!(re.is_match("say hello there"))
+        assert!(!re.is_match("goodbye"))
+    }
+
+    #[test]
+    fn regex_dot_star() {
+        let re = Regex::compile("a.*b").unwrap()
+        assert!(re.is_match("aXXXb"))
+        assert!(re.is_match("ab"))
+        assert!(!re.is_match("ba"))
+    }
+
+    #[test]
+    fn regex_char_class() {
+        let re = Regex::compile("[0-9]+").unwrap()
+        let matches = re.find_all_str("foo 42 bar 100 baz")
+        assert_eq!(matches, vec!["42", "100"])
+    }
+
+    #[test]
+    fn regex_anchors() {
+        let start = Regex::compile("^hello").unwrap()
+        assert!(start.is_match("hello world"))
+        assert!(!start.is_match("say hello"))
+
+        let end = Regex::compile("world$").unwrap()
+        assert!(end.is_match("hello world"))
+        assert!(!end.is_match("world hello"))
+    }
+
+    #[test]
+    fn regex_digit_word_class() {
+        let re = Regex::compile("\\d+").unwrap()
+        let ms = re.find_all_str("abc 123 def 456")
+        assert_eq!(ms, vec!["123", "456"])
+    }
+
+    #[test]
+    fn regex_replace_all() {
+        let re  = Regex::compile("[aeiou]").unwrap()
+        let out = re.replace_all("hello world", "*")
+        assert_eq!(out, "h*ll* w*rld")
+    }
+}

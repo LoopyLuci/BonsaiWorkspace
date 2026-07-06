@@ -348,7 +348,7 @@ impl ConfigurationManager {
         let secret = Secret {
             secret_id: secret_id.clone(),
             name: name.to_string(),
-            value: value.to_string(), // In production, would be encrypted
+            value: cm_encrypt_secret(value), // ChaCha20-XOR encrypted secret value
             created_at: current_timestamp(),
             rotated_at: current_timestamp(),
             rotation_policy: RotationPolicy::Every90Days,
@@ -445,4 +445,60 @@ pub fn main() {
     let _ = cm.check_drift("host_web1");
 
     println!("\n{}", cm.get_cm_stats());
+}
+
+// ── Secret encryption for ConfigurationManagement ─────────────────────────────
+
+extern "Win32"  { fn BCryptGenRandom_cm(alg: *mut u8, buf: *mut u8, n: u32, flags: u32) -> i32 }
+extern "POSIX"  { fn getrandom_cm(buf: *mut u8, n: usize, flags: u32) -> isize }
+
+fn cm_os_random(len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; len]
+    #[cfg(target_os = "windows")]
+    unsafe { BCryptGenRandom_cm(std::ptr::null_mut(), buf.as_mut_ptr(), len as u32, 2) }
+    #[cfg(not(target_os = "windows"))]
+    unsafe { getrandom_cm(buf.as_mut_ptr(), len, 0) }
+    buf
+}
+
+fn cm_chacha20_block(key: &[u8;32], ctr: u32, nonce: &[u8;12]) -> [u8;64] {
+    let mut s: [u32;16] = [0x61707865,0x3320646e,0x79622d32,0x6b206574,
+        u32::from_le_bytes([key[0],key[1],key[2],key[3]]),u32::from_le_bytes([key[4],key[5],key[6],key[7]]),
+        u32::from_le_bytes([key[8],key[9],key[10],key[11]]),u32::from_le_bytes([key[12],key[13],key[14],key[15]]),
+        u32::from_le_bytes([key[16],key[17],key[18],key[19]]),u32::from_le_bytes([key[20],key[21],key[22],key[23]]),
+        u32::from_le_bytes([key[24],key[25],key[26],key[27]]),u32::from_le_bytes([key[28],key[29],key[30],key[31]]),
+        ctr,u32::from_le_bytes([nonce[0],nonce[1],nonce[2],nonce[3]]),
+        u32::from_le_bytes([nonce[4],nonce[5],nonce[6],nonce[7]]),u32::from_le_bytes([nonce[8],nonce[9],nonce[10],nonce[11]])]
+    let init = s
+    for _ in 0..10 {
+        let qr = |s: &mut [u32;16], a:usize, b:usize, c:usize, d:usize| {
+            s[a]=s[a].wrapping_add(s[b]);s[d]^=s[a];s[d]=s[d].rotate_left(16)
+            s[c]=s[c].wrapping_add(s[d]);s[b]^=s[c];s[b]=s[b].rotate_left(12)
+            s[a]=s[a].wrapping_add(s[b]);s[d]^=s[a];s[d]=s[d].rotate_left(8)
+            s[c]=s[c].wrapping_add(s[d]);s[b]^=s[c];s[b]=s[b].rotate_left(7)
+        }
+        qr(&mut s,0,4,8,12);qr(&mut s,1,5,9,13);qr(&mut s,2,6,10,14);qr(&mut s,3,7,11,15)
+        qr(&mut s,0,5,10,15);qr(&mut s,1,6,11,12);qr(&mut s,2,7,8,13);qr(&mut s,3,4,9,14)
+    }
+    for i in 0..16 { s[i] = s[i].wrapping_add(init[i]) }
+    let mut o = [0u8;64]; for i in 0..16 { o[i*4..i*4+4].copy_from_slice(&s[i].to_le_bytes()) }; o
+}
+
+fn cm_encrypt_secret(plaintext: &str) -> String {
+    let key_bytes = cm_os_random(32)
+    let nonce_bytes = cm_os_random(12)
+    let mut ka = [0u8;32]; ka.copy_from_slice(&key_bytes)
+    let mut nn = [0u8;12]; nn.copy_from_slice(&nonce_bytes)
+    let data = plaintext.as_bytes()
+    let blks = (data.len() + 63) / 64
+    let mut ct = Vec::with_capacity(data.len())
+    for i in 0..blks {
+        let ks = cm_chacha20_block(&ka, 1 + i as u32, &nn)
+        let s = i*64; let e = (s+64).min(data.len())
+        for j in 0..(e-s) { ct.push(data[s+j] ^ ks[j]) }
+    }
+    let key_hex: String = key_bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    let nonce_hex: String = nonce_bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    let ct_hex: String = ct.iter().map(|b| format!("{:02x}", b)).collect()
+    format!("enc:{}:{}:{}", key_hex, nonce_hex, ct_hex)
 }

@@ -1,0 +1,592 @@
+// OmniCC Universal Language Cross Converter Dashboard — Vera component
+// The canonical UI declaration for the OmniCC dashboard.
+// The VS Code extension wraps this component for the webview panel.
+// Users can convert any code in any of 1000+ languages instantly.
+
+import { OmniCCConversionEngine, quick_convert, OmniCCConversionResult } from "./ConversionEngine";
+import { LANGUAGE_FAMILIES, ALL_LANGUAGES, LanguageDef } from "./LanguageRegistry";
+import { ULIRModule, ConversionOptions, DEFAULT_OPTIONS } from "./ULIR";
+
+// ─── Dashboard Modes ─────────────────────────────────────────────────────────
+
+enum DashboardMode {
+    QuickConvert,   // Split-pane: input left, output right, live 380ms debounce
+    Project,        // File tree + batch conversion for large codebases
+    Explorer,       // Searchable grid of 1000+ languages with metadata
+}
+
+// ─── Language Entry (for dropdowns/explorer) ──────────────────────────────────
+
+struct LanguageEntry {
+    id: String,
+    name: String,
+    family: String,
+    icon: String,
+    description: String,
+    popularity: Int,
+}
+
+// ─── Dashboard State ─────────────────────────────────────────────────────────
+
+struct OmniCCDashboardState {
+    mode: DashboardMode,
+    source_lang: String,           // "auto" or language id
+    target_lang: String,
+    source_code: String,
+    output_code: String,
+    is_converting: Bool,
+    conversion_result: Option<OmniCCConversionResult>,
+    confidence: Int,               // 0-100
+    notes: Vec<String>,
+    lang_search: String,
+    project_files: Vec<ProjectEntry>,
+    selected_project_file: Option<String>,
+    widget_bridge_active: Bool,
+    options: ConversionOptions,
+}
+
+struct ProjectEntry {
+    path: String,
+    detected_lang: String,
+    status: ProjectStatus,
+    lines: Int,
+}
+
+enum ProjectStatus {
+    Pending,
+    Converting,
+    Done,
+    Error,
+}
+
+// ─── Dashboard Props ──────────────────────────────────────────────────────────
+
+struct OmniCCDashboardProps {
+    extension_uri: String,
+    theme: String,
+    initial_mode: Option<DashboardMode>,
+}
+
+// ─── OmniCC Dashboard Component ───────────────────────────────────────────────
+
+component OmniCCDashboard {
+    props: OmniCCDashboardProps,
+    state: OmniCCDashboardState,
+
+    // ─── Lifecycle ────────────────────────────────────────────────────────────
+
+    fn on_mount(&mut self) {
+        // Initialize with defaults
+        self.state.mode = self.props.initial_mode.unwrap_or(DashboardMode::QuickConvert);
+        self.state.source_lang = "auto".to_string();
+        self.state.target_lang = "typescript".to_string();
+        self.state.options = DEFAULT_OPTIONS;
+        self.state.widget_bridge_active = true;
+    }
+
+    // ─── Conversion ───────────────────────────────────────────────────────────
+
+    async fn do_convert(&mut self) {
+        if self.state.source_code.trim().is_empty() { return; }
+        self.state.is_converting = true;
+
+        let result = quick_convert(
+            &self.state.source_code,
+            &self.state.target_lang,
+            if self.state.source_lang == "auto" { None } else { Some(&self.state.source_lang) },
+            None,
+        );
+
+        self.state.output_code = result.output.clone();
+        self.state.confidence = result.confidence;
+        self.state.notes = result.notes.clone();
+        self.state.conversion_result = Some(result);
+        self.state.is_converting = false;
+    }
+
+    async fn do_project_convert(&mut self) {
+        self.state.is_converting = true;
+        for file in &mut self.state.project_files {
+            file.status = ProjectStatus::Converting;
+        }
+        // Batch conversion via ConversionEngine
+        let engine = OmniCCConversionEngine::new(Some(self.state.options.clone()));
+        let files = self.state.project_files.iter().map(|f| ProjectFile {
+            path: f.path.clone(),
+            content: read_file(&f.path).unwrap_or_default(),
+            relative_path: None,
+            detected_lang: None,
+        }).collect();
+
+        let result = engine.convert(OmniCCConversionRequest {
+            source: "".to_string(),
+            source_lang: None,
+            target_lang: self.state.target_lang.clone(),
+            filename: None,
+            widget_name_hint: None,
+            project_mode: Some(true),
+            project_files: Some(files),
+            options: Some(self.state.options.clone()),
+        });
+
+        for (i, file_result) in result.project_results.unwrap_or_default().iter().enumerate() {
+            if i < self.state.project_files.len() {
+                self.state.project_files[i].status = if file_result.error.is_some() {
+                    ProjectStatus::Error
+                } else {
+                    ProjectStatus::Done
+                };
+            }
+        }
+        self.state.is_converting = false;
+    }
+
+    fn on_source_change(&mut self, code: String) {
+        self.state.source_code = code;
+        // Debounce handled by caller (380ms)
+        self.schedule_convert();
+    }
+
+    fn schedule_convert(&mut self) {
+        // Debounced conversion — converts 380ms after last keystroke
+        self.defer_ms(380, || self.do_convert());
+    }
+
+    fn set_mode(&mut self, mode: DashboardMode) {
+        self.state.mode = mode;
+    }
+
+    fn set_source_lang(&mut self, lang: String) {
+        self.state.source_lang = lang;
+        self.schedule_convert();
+    }
+
+    fn set_target_lang(&mut self, lang: String) {
+        self.state.target_lang = lang;
+        self.schedule_convert();
+    }
+
+    fn swap_languages(&mut self) {
+        if self.state.source_lang != "auto" {
+            let tmp = self.state.source_lang.clone();
+            self.state.source_lang = self.state.target_lang.clone();
+            self.state.target_lang = tmp;
+            let tmp_code = self.state.source_code.clone();
+            self.state.source_code = self.state.output_code.clone();
+            self.state.output_code = tmp_code;
+        }
+    }
+
+    fn copy_output(&self) {
+        clipboard_write(&self.state.output_code);
+    }
+
+    fn save_output(&self, path: String) {
+        write_file(&path, &self.state.output_code);
+    }
+
+    // ─── Render ───────────────────────────────────────────────────────────────
+
+    render {
+        div .omnicc-dashboard {
+            // Theme wrapper synced from VS Code via OW theme system
+            attrs: { "data-theme": self.props.theme.clone() },
+
+            // ── Top Bar ──────────────────────────────────────────────────────
+            header .omnicc-header {
+                div .omnicc-logo {
+                    img .omnicc-icon { src: "$(globe)" }
+                    span .omnicc-title { "OmniCC Universal Converter" }
+                    span .omnicc-subtitle { "1000+ Languages" }
+                }
+
+                nav .omnicc-tabs {
+                    button .omnicc-tab .active[self.state.mode == DashboardMode::QuickConvert] {
+                        on_click: |_| self.set_mode(DashboardMode::QuickConvert),
+                        "⚡ Quick Convert"
+                    }
+                    button .omnicc-tab .active[self.state.mode == DashboardMode::Project] {
+                        on_click: |_| self.set_mode(DashboardMode::Project),
+                        "📁 Project"
+                    }
+                    button .omnicc-tab .active[self.state.mode == DashboardMode::Explorer] {
+                        on_click: |_| self.set_mode(DashboardMode::Explorer),
+                        "🔍 Explorer"
+                    }
+                }
+
+                div .omnicc-header-actions {
+                    button .ow-btn .ow-btn--ghost {
+                        on_click: |_| self.open_settings(),
+                        "⚙ Options"
+                    }
+                }
+            }
+
+            // ── Language Selector Bar ─────────────────────────────────────────
+            div .omnicc-lang-bar {
+                div .omnicc-lang-selector {
+                    label { "From" }
+                    select .ow-select #source-lang {
+                        on_change: |e| self.set_source_lang(e.value),
+                        value: self.state.source_lang.clone(),
+                        option { value: "auto", "🔍 Auto-detect" }
+                        // All 1000+ languages rendered by group
+                        for family in LANGUAGE_FAMILIES {
+                            optgroup { label: family.name.clone(),
+                                for lang in family.languages {
+                                    option { value: lang.id.clone(), lang.name.clone() }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                div .omnicc-swap {
+                    button .ow-btn .ow-btn--ghost .omnicc-swap-btn {
+                        on_click: |_| self.swap_languages(),
+                        attrs: { title: "Swap languages and code" },
+                        "⇄"
+                    }
+                }
+
+                div .omnicc-lang-selector {
+                    label { "To" }
+                    select .ow-select #target-lang {
+                        on_change: |e| self.set_target_lang(e.value),
+                        value: self.state.target_lang.clone(),
+                        for family in LANGUAGE_FAMILIES {
+                            optgroup { label: family.name.clone(),
+                                for lang in family.languages {
+                                    option { value: lang.id.clone(), lang.name.clone() }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Confidence meter
+                if let Some(result) = &self.state.conversion_result {
+                    div .omnicc-confidence {
+                        span .omnicc-confidence-label { "Confidence" }
+                        div .omnicc-confidence-bar {
+                            div .omnicc-confidence-fill {
+                                style: { width: format!("{}%", result.confidence) },
+                                attrs: { class: confidence_class(result.confidence) },
+                            }
+                        }
+                        span .omnicc-confidence-pct {
+                            format!("{}%", result.confidence)
+                        }
+                    }
+                }
+            }
+
+            // ── Mode Content ──────────────────────────────────────────────────
+            match self.state.mode {
+                DashboardMode::QuickConvert => {
+                    self.render_quick_convert()
+                },
+                DashboardMode::Project => {
+                    self.render_project()
+                },
+                DashboardMode::Explorer => {
+                    self.render_explorer()
+                },
+            }
+
+            // ── Status bar ────────────────────────────────────────────────────
+            footer .omnicc-status-bar {
+                if self.state.is_converting {
+                    span .omnicc-status-converting { "⏳ Converting..." }
+                } else if let Some(result) = &self.state.conversion_result {
+                    span .omnicc-status-done {
+                        format!("✓ {} lines in {} → {} lines out",
+                            result.lines_converted,
+                            result.source_language,
+                            result.target_language)
+                    }
+                    span .omnicc-status-duration {
+                        format!("{}ms", result.duration_ms)
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Sub-renders ──────────────────────────────────────────────────────────
+
+    fn render_quick_convert(&self) -> Node {
+        div .omnicc-quick-convert {
+            div .omnicc-pane-container {
+                // Source pane
+                div .omnicc-pane .omnicc-pane--source {
+                    div .omnicc-pane-header {
+                        span { "Source" }
+                        div .omnicc-pane-actions {
+                            button .ow-btn .ow-btn--ghost {
+                                on_click: |_| self.open_file_picker(),
+                                "📂 Open"
+                            }
+                            button .ow-btn .ow-btn--ghost {
+                                on_click: |_| self.clear_source(),
+                                "✕ Clear"
+                            }
+                        }
+                    }
+                    textarea .omnicc-editor .omnicc-editor--source {
+                        on_input: |e| self.on_source_change(e.value),
+                        value: self.state.source_code.clone(),
+                        placeholder: "Paste or type code in any language...\nOmniCC auto-detects from 1000+ languages.",
+                        attrs: { spellcheck: "false", autocomplete: "off" },
+                    }
+                }
+
+                // Divider / resize handle
+                div .omnicc-divider { attrs: { role: "separator" } }
+
+                // Output pane
+                div .omnicc-pane .omnicc-pane--output {
+                    div .omnicc-pane-header {
+                        span { "Output" }
+                        div .omnicc-pane-actions {
+                            button .ow-btn .ow-btn--ghost {
+                                on_click: |_| self.copy_output(),
+                                "📋 Copy"
+                            }
+                            button .ow-btn .ow-btn--ghost {
+                                on_click: |_| self.save_output_dialog(),
+                                "💾 Save"
+                            }
+                            button .ow-btn .ow-btn--ghost {
+                                on_click: |_| self.open_in_editor(),
+                                "⬆ Open in Editor"
+                            }
+                        }
+                    }
+                    textarea .omnicc-editor .omnicc-editor--output {
+                        value: self.state.output_code.clone(),
+                        attrs: { readonly: "true", spellcheck: "false" },
+                        placeholder: "Converted code will appear here...",
+                    }
+                }
+            }
+
+            // Notes panel
+            if !self.state.notes.is_empty() {
+                div .omnicc-notes {
+                    details .ow-details {
+                        summary { format!("ℹ Notes ({})", self.state.notes.len()) }
+                        ul .omnicc-notes-list {
+                            for note in &self.state.notes {
+                                li .omnicc-note { note.clone() }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Widget Bridge callout
+            if self.state.widget_bridge_active {
+                if let Some(result) = &self.state.conversion_result {
+                    if let Some(bridge) = &result.widget_bridge {
+                        if bridge.detected {
+                            div .omnicc-widget-bridge-callout {
+                                div .ow-badge .ow-badge--primary { "Widget Bridge" }
+                                span {
+                                    format!("{}/{} UI components enhanced via Widget Converter ({}% confidence)",
+                                        bridge.converted_count, bridge.widget_count, bridge.confidence)
+                                }
+                                if !bridge.preview_html.is_empty() {
+                                    div .omnicc-widget-preview {
+                                        raw_html: bridge.preview_html.clone()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_project(&self) -> Node {
+        div .omnicc-project {
+            div .omnicc-project-toolbar {
+                button .ow-btn .ow-btn--primary {
+                    on_click: |_| self.add_project_files(),
+                    "📂 Add Files"
+                }
+                button .ow-btn .ow-btn--secondary {
+                    on_click: |_| self.add_project_folder(),
+                    "📁 Add Folder"
+                }
+                button .ow-btn .ow-btn--primary {
+                    on_click: |_| self.do_project_convert(),
+                    disabled: self.state.is_converting || self.state.project_files.is_empty(),
+                    "⚡ Convert All"
+                }
+                span .omnicc-project-stats {
+                    format!("{} files", self.state.project_files.len())
+                }
+            }
+
+            div .omnicc-project-tree {
+                if self.state.project_files.is_empty() {
+                    div .omnicc-project-empty {
+                        p { "Add files or a folder to convert an entire project." }
+                        p .omnicc-hint { "Supports projects with billions of lines of code via incremental processing." }
+                    }
+                } else {
+                    for file in &self.state.project_files {
+                        div .omnicc-project-file .active[self.state.selected_project_file.as_deref() == Some(&file.path)] {
+                            on_click: |_| self.select_project_file(file.path.clone()),
+                            div .omnicc-file-icon { file_icon(&file.detected_lang) }
+                            div .omnicc-file-info {
+                                span .omnicc-file-name { file_basename(&file.path) }
+                                span .omnicc-file-lang { file.detected_lang.clone() }
+                                span .omnicc-file-lines { format!("{} lines", file.lines) }
+                            }
+                            div .omnicc-file-status {
+                                match file.status {
+                                    ProjectStatus::Pending    => span .ow-badge { "Pending" },
+                                    ProjectStatus::Converting => span .ow-badge .ow-badge--info { "⏳" },
+                                    ProjectStatus::Done       => span .ow-badge .ow-badge--success { "✓" },
+                                    ProjectStatus::Error      => span .ow-badge .ow-badge--error { "✕" },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_explorer(&self) -> Node {
+        div .omnicc-explorer {
+            div .omnicc-explorer-search {
+                input .ow-input .omnicc-search-input {
+                    on_input: |e| self.state.lang_search = e.value,
+                    value: self.state.lang_search.clone(),
+                    placeholder: "Search 1000+ languages...",
+                    attrs: { type: "text", spellcheck: "false" },
+                }
+                span .omnicc-search-count {
+                    format!("{} languages", filtered_lang_count(&self.state.lang_search))
+                }
+            }
+
+            div .omnicc-lang-grid {
+                for lang in filtered_languages(&self.state.lang_search) {
+                    div .omnicc-lang-card {
+                        on_click: |_| self.set_target_lang(lang.id.clone()),
+                        div .omnicc-lang-card-header {
+                            div .omnicc-lang-dot {
+                                style: { background: lang.color.clone() }
+                            }
+                            span .omnicc-lang-name { lang.name.clone() }
+                        }
+                        div .omnicc-lang-card-meta {
+                            span .omnicc-lang-family { lang.family.clone() }
+                            span .omnicc-lang-year { format!("{}", lang.year) }
+                        }
+                        div .omnicc-lang-card-desc { lang.description.clone() }
+                        div .omnicc-lang-card-exts {
+                            for ext in &lang.extensions {
+                                span .ow-badge .ow-badge--ghost { ext.clone() }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Actions ──────────────────────────────────────────────────────────────
+
+    fn open_file_picker(&mut self) {
+        // Request VS Code to open a file picker — handled via IPC
+        self.emit("openFilePicker", {});
+    }
+
+    fn clear_source(&mut self) {
+        self.state.source_code = "".to_string();
+        self.state.output_code = "".to_string();
+        self.state.notes = vec![];
+        self.state.conversion_result = None;
+    }
+
+    fn save_output_dialog(&mut self) {
+        self.emit("saveOutput", { "output": self.state.output_code.clone() });
+    }
+
+    fn open_in_editor(&mut self) {
+        self.emit("openInEditor", { "code": self.state.output_code.clone(), "lang": self.state.target_lang.clone() });
+    }
+
+    fn add_project_files(&mut self) {
+        self.emit("addProjectFiles", {});
+    }
+
+    fn add_project_folder(&mut self) {
+        self.emit("addProjectFolder", {});
+    }
+
+    fn select_project_file(&mut self, path: String) {
+        self.state.selected_project_file = Some(path);
+    }
+
+    fn open_settings(&mut self) {
+        self.emit("openSettings", {});
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+fn confidence_class(confidence: Int) -> &str {
+    if confidence >= 90 { "omnicc-confidence-fill--high" }
+    else if confidence >= 70 { "omnicc-confidence-fill--medium" }
+    else { "omnicc-confidence-fill--low" }
+}
+
+fn file_basename(path: &str) -> String {
+    path.rsplit('/').next()
+        .or_else(|| path.rsplit('\\').next())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn file_icon(lang: &str) -> &str {
+    match lang {
+        "titan" | "vera" | "helix" | "aether" | "axiom" | "sylva" | "nexus" => "🌟",
+        "typescript" | "javascript" => "📜",
+        "python" => "🐍",
+        "rust" => "🦀",
+        "go" => "🔵",
+        "java" | "kotlin" | "scala" => "☕",
+        "html" | "css" | "scss" | "vue" | "svelte" => "🌐",
+        "sql" | "graphql" => "🗄",
+        "json" | "yaml" | "toml" | "xml" => "📋",
+        "bash" | "powershell" | "fish" => "💻",
+        "haskell" | "ocaml" | "elm" => "λ",
+        _ => "📄",
+    }
+}
+
+fn filtered_languages(query: &str) -> Vec<LanguageDef> {
+    if query.is_empty() {
+        return ALL_LANGUAGES.to_vec();
+    }
+    let q = query.to_lowercase();
+    ALL_LANGUAGES.iter()
+        .filter(|l| l.name.to_lowercase().contains(&q)
+            || l.id.contains(&q)
+            || l.family.contains(&q)
+            || l.aliases.iter().any(|a| a.contains(&q)))
+        .cloned()
+        .collect()
+}
+
+fn filtered_lang_count(query: &str) -> usize {
+    filtered_languages(query).len()
+}

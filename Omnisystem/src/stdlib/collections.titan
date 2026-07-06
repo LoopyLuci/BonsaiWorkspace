@@ -1,0 +1,1273 @@
+// collections.titan — Omnisystem Standard Library: Rich Collection Types
+// Language: TITAN  |  Part of the 7-language Omni-Languages ecosystem
+// Provides: BTreeMap, LinkedList, PriorityQueue, HashMap, RingBuffer, BitSet, SmallVec
+
+module stdlib::collections
+
+use core::mem
+use core::ops::{Index, IndexMut}
+use core::fmt::{Debug, Display}
+use core::cmp::{Ord, Eq, PartialEq}
+use core::hash::Hash
+
+// ============================================================
+// SECTION 1: BTreeMap<K, V>
+// Ordered map backed by a B-tree with branching factor 32.
+// ============================================================
+
+const BTREE_ORDER: usize = 32        // max keys per node = 2*ORDER - 1
+const BTREE_MIN_KEYS: usize = 15     // ORDER - 1
+const BTREE_MAX_KEYS: usize = 63     // 2*ORDER - 1
+
+struct BTreeNode<K, V> {
+    keys:     Vec<K>,
+    values:   Vec<V>,
+    children: Vec<Box<BTreeNode<K, V>>>,
+    is_leaf:  bool,
+    len:      usize,
+}
+
+impl<K: Ord + Clone, V: Clone> BTreeNode<K, V> {
+    fn new_leaf() -> Self {
+        BTreeNode {
+            keys:     Vec::with_capacity(BTREE_MAX_KEYS),
+            values:   Vec::with_capacity(BTREE_MAX_KEYS),
+            children: Vec::new(),
+            is_leaf:  true,
+            len:      0,
+        }
+    }
+
+    fn new_internal() -> Self {
+        BTreeNode {
+            keys:     Vec::with_capacity(BTREE_MAX_KEYS),
+            values:   Vec::with_capacity(BTREE_MAX_KEYS),
+            children: Vec::with_capacity(BTREE_MAX_KEYS + 1),
+            is_leaf:  false,
+            len:      0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.keys.len() >= BTREE_MAX_KEYS
+    }
+
+    // Find key position via binary search
+    fn find_pos(&self, key: &K) -> Result<usize, usize> {
+        self.keys.binary_search(key)
+    }
+
+    // Split child at index i; self must not be full
+    fn split_child(&mut self, i: usize) {
+        let mid = BTREE_MIN_KEYS
+        let child = &mut self.children[i]
+
+        // Create new sibling node
+        let mut sibling = if child.is_leaf {
+            BTreeNode::new_leaf()
+        } else {
+            BTreeNode::new_internal()
+        }
+
+        // Move upper half of child's keys/values to sibling
+        let promote_key   = child.keys[mid].clone()
+        let promote_value = child.values[mid].clone()
+
+        sibling.keys   = child.keys.split_off(mid + 1)
+        sibling.values = child.values.split_off(mid + 1)
+        child.keys.pop()
+        child.values.pop()
+
+        if !child.is_leaf {
+            sibling.children = child.children.split_off(mid + 1)
+        }
+
+        sibling.len = sibling.keys.len()
+        child.len   = child.keys.len()
+
+        // Insert promoted key/value into self
+        self.keys.insert(i, promote_key)
+        self.values.insert(i, promote_value)
+        self.children.insert(i + 1, Box::new(sibling))
+        self.len = self.keys.len()
+    }
+
+    // Insert into a non-full node (recursive)
+    fn insert_non_full(&mut self, key: K, value: V) -> Option<V> {
+        match self.find_pos(&key) {
+            Ok(pos) => {
+                // Key exists — update
+                let old = self.values[pos].clone()
+                self.values[pos] = value
+                Some(old)
+            }
+            Err(pos) => {
+                if self.is_leaf {
+                    self.keys.insert(pos, key)
+                    self.values.insert(pos, value)
+                    self.len += 1
+                    None
+                } else {
+                    let child_pos = pos
+                    if self.children[child_pos].is_full() {
+                        self.split_child(child_pos)
+                        // After split, decide which child to descend into
+                        if key > self.keys[child_pos] {
+                            self.children[child_pos + 1].insert_non_full(key, value)
+                        } else if key == self.keys[child_pos] {
+                            let old = self.values[child_pos].clone()
+                            self.values[child_pos] = value
+                            Some(old)
+                        } else {
+                            self.children[child_pos].insert_non_full(key, value)
+                        }
+                    } else {
+                        self.children[child_pos].insert_non_full(key, value)
+                    }
+                }
+            }
+        }
+    }
+
+    // Search this node and its subtree
+    fn get(&self, key: &K) -> Option<&V> {
+        match self.find_pos(key) {
+            Ok(pos)  => Some(&self.values[pos]),
+            Err(pos) => {
+                if self.is_leaf {
+                    None
+                } else {
+                    self.children[pos].get(key)
+                }
+            }
+        }
+    }
+
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        match self.find_pos(key) {
+            Ok(pos)  => Some(&mut self.values[pos]),
+            Err(pos) => {
+                if self.is_leaf {
+                    None
+                } else {
+                    self.children[pos].get_mut(key)
+                }
+            }
+        }
+    }
+
+    // In-order traversal — collect (key, value) pairs
+    fn collect_inorder(&self, out: &mut Vec<(K, V)>) {
+        if self.is_leaf {
+            for i in 0..self.keys.len() {
+                out.push((self.keys[i].clone(), self.values[i].clone()))
+            }
+        } else {
+            for i in 0..self.keys.len() {
+                self.children[i].collect_inorder(out)
+                out.push((self.keys[i].clone(), self.values[i].clone()))
+            }
+            self.children[self.keys.len()].collect_inorder(out)
+        }
+    }
+
+    // Remove key; returns removed value or None
+    fn remove(&mut self, key: &K) -> Option<V> {
+        match self.find_pos(key) {
+            Ok(pos) => {
+                if self.is_leaf {
+                    self.keys.remove(pos)
+                    let v = self.values.remove(pos)
+                    self.len -= 1
+                    Some(v)
+                } else {
+                    // Replace with in-order predecessor
+                    let pred_key   = self.children[pos].max_key().clone()
+                    let pred_value = self.children[pos].remove(&pred_key).unwrap()
+                    let old        = self.values[pos].clone()
+                    self.keys[pos]   = pred_key
+                    self.values[pos] = pred_value
+                    Some(old)
+                }
+            }
+            Err(pos) => {
+                if self.is_leaf {
+                    None
+                } else {
+                    self.children[pos].remove(key)
+                }
+            }
+        }
+    }
+
+    fn max_key(&self) -> &K {
+        if self.is_leaf {
+            &self.keys[self.keys.len() - 1]
+        } else {
+            self.children[self.children.len() - 1].max_key()
+        }
+    }
+}
+
+pub struct BTreeMap<K, V> {
+    root:  Option<Box<BTreeNode<K, V>>>,
+    count: usize,
+}
+
+impl<K: Ord + Clone, V: Clone> BTreeMap<K, V> {
+    pub fn new() -> Self {
+        BTreeMap { root: None, count: 0 }
+    }
+
+    pub fn len(&self) -> usize { self.count }
+    pub fn is_empty(&self) -> bool { self.count == 0 }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.root.is_none() {
+            let mut node = BTreeNode::new_leaf()
+            node.keys.push(key)
+            node.values.push(value)
+            node.len = 1
+            self.root = Some(Box::new(node))
+            self.count += 1
+            return None
+        }
+
+        let root = self.root.as_mut().unwrap()
+        if root.is_full() {
+            // Grow tree height: new root, old root becomes child
+            let mut new_root = BTreeNode::new_internal()
+            let old_root = self.root.take().unwrap()
+            new_root.children.push(old_root)
+            new_root.split_child(0)
+            let result = new_root.insert_non_full(key, value)
+            self.root = Some(Box::new(new_root))
+            if result.is_none() { self.count += 1 }
+            result
+        } else {
+            let result = root.insert_non_full(key, value)
+            if result.is_none() { self.count += 1 }
+            result
+        }
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.root.as_ref()?.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.root.as_mut()?.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let result = self.root.as_mut()?.remove(key)
+        if result.is_some() { self.count -= 1 }
+        result
+    }
+
+    // Return sorted (key, value) pairs
+    pub fn iter(&self) -> Vec<(K, V)> {
+        let mut out = Vec::with_capacity(self.count)
+        if let Some(root) = &self.root {
+            root.collect_inorder(&mut out)
+        }
+        out
+    }
+
+    pub fn keys(&self) -> Vec<K> {
+        self.iter().into_iter().map(|(k, _)| k).collect()
+    }
+
+    pub fn values(&self) -> Vec<V> {
+        self.iter().into_iter().map(|(_, v)| v).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.root  = None
+        self.count = 0
+    }
+}
+
+// ============================================================
+// SECTION 2: LinkedList<T>
+// Doubly-linked list with O(1) push/pop at both ends.
+// ============================================================
+
+struct ListNode<T> {
+    value: T,
+    prev:  Option<usize>,
+    next:  Option<usize>,
+}
+
+pub struct LinkedList<T> {
+    nodes: Vec<ListNode<T>>,
+    free:  Vec<usize>,
+    head:  Option<usize>,
+    tail:  Option<usize>,
+    len:   usize,
+}
+
+impl<T: Clone> LinkedList<T> {
+    pub fn new() -> Self {
+        LinkedList {
+            nodes: Vec::new(),
+            free:  Vec::new(),
+            head:  None,
+            tail:  None,
+            len:   0,
+        }
+    }
+
+    fn alloc_node(&mut self, value: T, prev: Option<usize>, next: Option<usize>) -> usize {
+        if let Some(idx) = self.free.pop() {
+            self.nodes[idx] = ListNode { value, prev, next }
+            idx
+        } else {
+            let idx = self.nodes.len()
+            self.nodes.push(ListNode { value, prev, next })
+            idx
+        }
+    }
+
+    pub fn push_front(&mut self, value: T) {
+        let idx = self.alloc_node(value, None, self.head)
+        if let Some(h) = self.head {
+            self.nodes[h].prev = Some(idx)
+        } else {
+            self.tail = Some(idx)
+        }
+        self.head = Some(idx)
+        self.len += 1
+    }
+
+    pub fn push_back(&mut self, value: T) {
+        let idx = self.alloc_node(value, self.tail, None)
+        if let Some(t) = self.tail {
+            self.nodes[t].next = Some(idx)
+        } else {
+            self.head = Some(idx)
+        }
+        self.tail = Some(idx)
+        self.len += 1
+    }
+
+    pub fn pop_front(&mut self) -> Option<T> {
+        let h = self.head?
+        let value = self.nodes[h].value.clone()
+        self.head = self.nodes[h].next
+        if let Some(new_h) = self.head {
+            self.nodes[new_h].prev = None
+        } else {
+            self.tail = None
+        }
+        self.free.push(h)
+        self.len -= 1
+        Some(value)
+    }
+
+    pub fn pop_back(&mut self) -> Option<T> {
+        let t = self.tail?
+        let value = self.nodes[t].value.clone()
+        self.tail = self.nodes[t].prev
+        if let Some(new_t) = self.tail {
+            self.nodes[new_t].next = None
+        } else {
+            self.head = None
+        }
+        self.free.push(t)
+        self.len -= 1
+        Some(value)
+    }
+
+    pub fn front(&self) -> Option<&T> {
+        Some(&self.nodes[self.head?].value)
+    }
+
+    pub fn back(&self) -> Option<&T> {
+        Some(&self.nodes[self.tail?].value)
+    }
+
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    // Collect into Vec in list order
+    pub fn iter(&self) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.len)
+        let mut cur = self.head
+        while let Some(idx) = cur {
+            out.push(self.nodes[idx].value.clone())
+            cur = self.nodes[idx].next
+        }
+        out
+    }
+
+    pub fn clear(&mut self) {
+        self.nodes.clear()
+        self.free.clear()
+        self.head = None
+        self.tail = None
+        self.len  = 0
+    }
+
+    // Insert after given index (internal helper for mid-list insert)
+    pub fn insert_after(&mut self, after_idx: usize, value: T) {
+        let next = self.nodes[after_idx].next
+        let new_idx = self.alloc_node(value, Some(after_idx), next)
+        self.nodes[after_idx].next = Some(new_idx)
+        if let Some(n) = next {
+            self.nodes[n].prev = Some(new_idx)
+        } else {
+            self.tail = Some(new_idx)
+        }
+        self.len += 1
+    }
+}
+
+// ============================================================
+// SECTION 3: PriorityQueue<T>
+// Binary min-heap; pop() returns the smallest element.
+// ============================================================
+
+pub struct PriorityQueue<T: Ord> {
+    data: Vec<T>,
+}
+
+impl<T: Ord + Clone> PriorityQueue<T> {
+    pub fn new() -> Self {
+        PriorityQueue { data: Vec::new() }
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        PriorityQueue { data: Vec::with_capacity(cap) }
+    }
+
+    pub fn len(&self) -> usize { self.data.len() }
+    pub fn is_empty(&self) -> bool { self.data.is_empty() }
+
+    pub fn peek(&self) -> Option<&T> {
+        self.data.first()
+    }
+
+    pub fn push(&mut self, item: T) {
+        self.data.push(item)
+        self.sift_up(self.data.len() - 1)
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.data.is_empty() { return None }
+        let last = self.data.len() - 1
+        self.data.swap(0, last)
+        let min = self.data.pop()
+        if !self.data.is_empty() {
+            self.sift_down(0)
+        }
+        min
+    }
+
+    fn sift_up(&mut self, mut i: usize) {
+        while i > 0 {
+            let parent = (i - 1) / 2
+            if self.data[i] < self.data[parent] {
+                self.data.swap(i, parent)
+                i = parent
+            } else {
+                break
+            }
+        }
+    }
+
+    fn sift_down(&mut self, mut i: usize) {
+        let n = self.data.len()
+        loop {
+            let left  = 2 * i + 1
+            let right = 2 * i + 2
+            let mut smallest = i
+
+            if left  < n && self.data[left]  < self.data[smallest] { smallest = left  }
+            if right < n && self.data[right] < self.data[smallest] { smallest = right }
+
+            if smallest == i { break }
+            self.data.swap(i, smallest)
+            i = smallest
+        }
+    }
+
+    // Build heap from existing vec — O(n)
+    pub fn from_vec(mut v: Vec<T>) -> Self {
+        let n = v.len()
+        let mut pq = PriorityQueue { data: v }
+        // Heapify bottom-up
+        if n > 1 {
+            let mut i = (n - 2) / 2
+            loop {
+                pq.sift_down(i)
+                if i == 0 { break }
+                i -= 1
+            }
+        }
+        pq
+    }
+
+    // Drain all elements in sorted order (destructive)
+    pub fn drain_sorted(&mut self) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.data.len())
+        while let Some(v) = self.pop() {
+            out.push(v)
+        }
+        out
+    }
+}
+
+// ============================================================
+// SECTION 4: HashMap<K, V>
+// Open-addressing with FNV-1a hash, load factor 0.75.
+// ============================================================
+
+const FNV_OFFSET: u64 = 14695981039346656037u64
+const FNV_PRIME:  u64 = 1099511628211u64
+const LOAD_DENOM: usize = 4   // resize when count > capacity * 3 / 4
+
+fn fnv1a_hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET
+    for &b in bytes {
+        h ^= b as u64
+        h  = h.wrapping_mul(FNV_PRIME)
+    }
+    h
+}
+
+enum HashSlot<K, V> {
+    Empty,
+    Deleted,
+    Occupied(K, V),
+}
+
+pub struct HashMap<K, V> {
+    buckets:  Vec<HashSlot<K, V>>,
+    count:    usize,
+    capacity: usize,
+}
+
+impl<K: Eq + Hash + Clone, V: Clone> HashMap<K, V> {
+    pub fn new() -> Self {
+        let cap = 16
+        HashMap {
+            buckets:  Self::make_buckets(cap),
+            count:    0,
+            capacity: cap,
+        }
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        let cap = cap.next_power_of_two().max(16)
+        HashMap {
+            buckets:  Self::make_buckets(cap),
+            count:    0,
+            capacity: cap,
+        }
+    }
+
+    fn make_buckets(cap: usize) -> Vec<HashSlot<K, V>> {
+        (0..cap).map(|_| HashSlot::Empty).collect()
+    }
+
+    fn hash_key(key: &K) -> u64 {
+        // Use the key's hash implementation through the Hash trait
+        let mut state = FNV_OFFSET
+        key.hash_into(&mut state)
+        state
+    }
+
+    fn probe_index(&self, key: &K) -> (usize, Option<usize>) {
+        let h     = Self::hash_key(key) as usize
+        let mask  = self.capacity - 1
+        let mut i = h & mask
+        let mut first_deleted: Option<usize> = None
+
+        loop {
+            match &self.buckets[i] {
+                HashSlot::Empty => return (i, first_deleted),
+                HashSlot::Deleted => {
+                    if first_deleted.is_none() { first_deleted = Some(i) }
+                    i = (i + 1) & mask
+                }
+                HashSlot::Occupied(k, _) => {
+                    if k == key { return (i, None) }
+                    i = (i + 1) & mask
+                }
+            }
+        }
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.count * 4 >= self.capacity * 3 {
+            self.resize()
+        }
+        let (idx, deleted_idx) = self.probe_index(&key)
+        match &self.buckets[idx] {
+            HashSlot::Occupied(_, _) => {
+                // Update existing
+                if let HashSlot::Occupied(_, v) = &mut self.buckets[idx] {
+                    let old = v.clone()
+                    *v = value
+                    Some(old)
+                } else { unreachable!() }
+            }
+            _ => {
+                let target = deleted_idx.unwrap_or(idx)
+                self.buckets[target] = HashSlot::Occupied(key, value)
+                self.count += 1
+                None
+            }
+        }
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let (idx, _) = self.probe_index(key)
+        if let HashSlot::Occupied(_, v) = &self.buckets[idx] {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        let (idx, _) = self.probe_index(key)
+        if let HashSlot::Occupied(_, v) = &mut self.buckets[idx] {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let (idx, _) = self.probe_index(key)
+        match &self.buckets[idx] {
+            HashSlot::Occupied(_, _) => {
+                let old_slot = mem::replace(&mut self.buckets[idx], HashSlot::Deleted)
+                self.count -= 1
+                if let HashSlot::Occupied(_, v) = old_slot { Some(v) } else { None }
+            }
+            _ => None,
+        }
+    }
+
+    pub fn len(&self) -> usize { self.count }
+    pub fn is_empty(&self) -> bool { self.count == 0 }
+
+    pub fn iter(&self) -> Vec<(&K, &V)> {
+        self.buckets.iter().filter_map(|slot| {
+            if let HashSlot::Occupied(k, v) = slot { Some((k, v)) } else { None }
+        }).collect()
+    }
+
+    pub fn keys(&self) -> Vec<&K> {
+        self.iter().into_iter().map(|(k, _)| k).collect()
+    }
+
+    pub fn values(&self) -> Vec<&V> {
+        self.iter().into_iter().map(|(_, v)| v).collect()
+    }
+
+    pub fn clear(&mut self) {
+        for slot in &mut self.buckets {
+            *slot = HashSlot::Empty
+        }
+        self.count = 0
+    }
+
+    fn resize(&mut self) {
+        let new_cap = self.capacity * 2
+        let mut new_map = HashMap {
+            buckets:  Self::make_buckets(new_cap),
+            count:    0,
+            capacity: new_cap,
+        }
+        for slot in self.buckets.drain(..) {
+            if let HashSlot::Occupied(k, v) = slot {
+                new_map.insert(k, v)
+            }
+        }
+        *self = new_map
+    }
+
+    // Entry API — get or insert default
+    pub fn entry_or_insert(&mut self, key: K, default: V) -> &mut V {
+        if !self.contains_key(&key) {
+            self.insert(key.clone(), default)
+        }
+        self.get_mut(&key).unwrap()
+    }
+}
+
+// ============================================================
+// SECTION 5: RingBuffer<T>
+// Fixed-capacity circular buffer with optional overwrite mode.
+// ============================================================
+
+pub struct RingBuffer<T: Clone> {
+    buf:       Vec<Option<T>>,
+    head:      usize,
+    tail:      usize,
+    len:       usize,
+    capacity:  usize,
+    overwrite: bool,   // if true, overwrite oldest on overflow
+}
+
+impl<T: Clone> RingBuffer<T> {
+    pub fn new(capacity: usize) -> Self {
+        RingBuffer {
+            buf:       vec![None; capacity],
+            head:      0,
+            tail:      0,
+            len:       0,
+            capacity,
+            overwrite: false,
+        }
+    }
+
+    pub fn new_overwrite(capacity: usize) -> Self {
+        let mut rb = Self::new(capacity)
+        rb.overwrite = true
+        rb
+    }
+
+    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_full(&self) -> bool { self.len == self.capacity }
+
+    pub fn push(&mut self, value: T) -> bool {
+        if self.is_full() {
+            if self.overwrite {
+                // Overwrite oldest — advance head
+                self.buf[self.tail] = Some(value)
+                self.tail = (self.tail + 1) % self.capacity
+                self.head = (self.head + 1) % self.capacity
+                return true
+            } else {
+                return false  // Buffer full, push fails
+            }
+        }
+        self.buf[self.tail] = Some(value)
+        self.tail = (self.tail + 1) % self.capacity
+        self.len += 1
+        true
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() { return None }
+        let value = self.buf[self.head].take()
+        self.head = (self.head + 1) % self.capacity
+        self.len -= 1
+        value
+    }
+
+    pub fn peek(&self) -> Option<&T> {
+        if self.is_empty() { None } else { self.buf[self.head].as_ref() }
+    }
+
+    pub fn peek_back(&self) -> Option<&T> {
+        if self.is_empty() { return None }
+        let idx = (self.tail + self.capacity - 1) % self.capacity
+        self.buf[idx].as_ref()
+    }
+
+    // Collect all elements without removing (in push order)
+    pub fn iter(&self) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.len)
+        for i in 0..self.len {
+            let idx = (self.head + i) % self.capacity
+            if let Some(v) = &self.buf[idx] {
+                out.push(v.clone())
+            }
+        }
+        out
+    }
+
+    pub fn clear(&mut self) {
+        for slot in &mut self.buf { *slot = None }
+        self.head = 0
+        self.tail = 0
+        self.len  = 0
+    }
+}
+
+// ============================================================
+// SECTION 6: BitSet
+// Compact boolean array stored as u64 words.
+// ============================================================
+
+pub struct BitSet {
+    words: Vec<u64>,
+    len:   usize,    // number of logical bits
+}
+
+impl BitSet {
+    pub fn new(len: usize) -> Self {
+        let words = (len + 63) / 64
+        BitSet {
+            words: vec![0u64; words],
+            len,
+        }
+    }
+
+    pub fn len(&self) -> usize { self.len }
+
+    pub fn set(&mut self, idx: usize, value: bool) {
+        assert!(idx < self.len, "BitSet index out of range")
+        let word = idx / 64
+        let bit  = idx % 64
+        if value {
+            self.words[word] |= 1u64 << bit
+        } else {
+            self.words[word] &= !(1u64 << bit)
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> bool {
+        assert!(idx < self.len, "BitSet index out of range")
+        let word = idx / 64
+        let bit  = idx % 64
+        (self.words[word] >> bit) & 1 == 1
+    }
+
+    pub fn toggle(&mut self, idx: usize) {
+        assert!(idx < self.len)
+        self.words[idx / 64] ^= 1u64 << (idx % 64)
+    }
+
+    // Count of set bits (popcount)
+    pub fn count_ones(&self) -> usize {
+        self.words.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    pub fn count_zeros(&self) -> usize {
+        self.len - self.count_ones()
+    }
+
+    pub fn union(&self, other: &BitSet) -> BitSet {
+        assert_eq!(self.len, other.len, "BitSet lengths must match for union")
+        let words = self.words.iter().zip(&other.words).map(|(a, b)| a | b).collect()
+        BitSet { words, len: self.len }
+    }
+
+    pub fn intersect(&self, other: &BitSet) -> BitSet {
+        assert_eq!(self.len, other.len)
+        let words = self.words.iter().zip(&other.words).map(|(a, b)| a & b).collect()
+        BitSet { words, len: self.len }
+    }
+
+    pub fn difference(&self, other: &BitSet) -> BitSet {
+        assert_eq!(self.len, other.len)
+        let words = self.words.iter().zip(&other.words).map(|(a, b)| a & !b).collect()
+        BitSet { words, len: self.len }
+    }
+
+    pub fn complement(&self) -> BitSet {
+        let mut words: Vec<u64> = self.words.iter().map(|w| !w).collect()
+        // Clear high bits in last word beyond self.len
+        let tail_bits = self.len % 64
+        if tail_bits != 0 {
+            if let Some(last) = words.last_mut() {
+                *last &= (1u64 << tail_bits) - 1
+            }
+        }
+        BitSet { words, len: self.len }
+    }
+
+    pub fn any(&self) -> bool { self.words.iter().any(|&w| w != 0) }
+    pub fn all(&self) -> bool { self.count_ones() == self.len }
+    pub fn none(&self) -> bool { !self.any() }
+
+    pub fn clear(&mut self) {
+        for w in &mut self.words { *w = 0 }
+    }
+
+    // Iterate set bit indices
+    pub fn iter_ones(&self) -> Vec<usize> {
+        let mut out = Vec::new()
+        for (wi, &word) in self.words.iter().enumerate() {
+            let mut w = word
+            while w != 0 {
+                let bit = w.trailing_zeros() as usize
+                let idx = wi * 64 + bit
+                if idx < self.len { out.push(idx) }
+                w &= w - 1
+            }
+        }
+        out
+    }
+}
+
+// ============================================================
+// SECTION 7: SmallVec<T, N>
+// Stack-allocated up to N items; spills to heap beyond that.
+// ============================================================
+
+const SMALLVEC_INLINE_TAG: u8 = 0
+const SMALLVEC_HEAP_TAG:   u8 = 1
+
+pub struct SmallVec<T: Clone, const N: usize> {
+    inline: [mem::MaybeUninit<T>; N],
+    heap:   Option<Vec<T>>,
+    len:    usize,
+    on_heap: bool,
+}
+
+impl<T: Clone, const N: usize> SmallVec<T, N> {
+    pub fn new() -> Self {
+        SmallVec {
+            inline:  unsafe { mem::MaybeUninit::uninit().assume_init() },
+            heap:    None,
+            len:     0,
+            on_heap: false,
+        }
+    }
+
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_inline(&self) -> bool { !self.on_heap }
+    pub fn capacity(&self) -> usize {
+        if self.on_heap { self.heap.as_ref().map_or(N, |v| v.capacity()) } else { N }
+    }
+
+    fn spill_to_heap(&mut self) {
+        if self.on_heap { return }
+        let mut v = Vec::with_capacity(self.len * 2)
+        for i in 0..self.len {
+            v.push(unsafe { self.inline[i].assume_init_ref().clone() })
+        }
+        self.heap    = Some(v)
+        self.on_heap = true
+    }
+
+    pub fn push(&mut self, value: T) {
+        if !self.on_heap && self.len < N {
+            self.inline[self.len] = mem::MaybeUninit::new(value)
+            self.len += 1
+        } else {
+            if !self.on_heap { self.spill_to_heap() }
+            self.heap.as_mut().unwrap().push(value)
+            self.len += 1
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 { return None }
+        self.len -= 1
+        if self.on_heap {
+            self.heap.as_mut().unwrap().pop()
+        } else {
+            Some(unsafe { self.inline[self.len].assume_init_ref().clone() })
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&T> {
+        if idx >= self.len { return None }
+        if self.on_heap {
+            self.heap.as_ref().unwrap().get(idx)
+        } else {
+            Some(unsafe { self.inline[idx].assume_init_ref() })
+        }
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut T> {
+        if idx >= self.len { return None }
+        if self.on_heap {
+            self.heap.as_mut().unwrap().get_mut(idx)
+        } else {
+            Some(unsafe { self.inline[idx].assume_init_mut() })
+        }
+    }
+
+    pub fn iter(&self) -> Vec<T> {
+        (0..self.len).filter_map(|i| self.get(i).cloned()).collect()
+    }
+
+    pub fn clear(&mut self) {
+        if self.on_heap {
+            self.heap.as_mut().unwrap().clear()
+        }
+        self.len     = 0
+        self.on_heap = false
+        self.heap    = None
+    }
+
+    pub fn extend(&mut self, items: impl Iterator<Item = T>) {
+        for item in items { self.push(item) }
+    }
+}
+
+// ============================================================
+// UNIT TESTS
+// ============================================================
+
+#[test_suite]
+mod tests {
+
+    // --- BTreeMap tests ---
+
+    #[test]
+    fn btree_insert_get_basic() {
+        let mut m: BTreeMap<i32, &str> = BTreeMap::new()
+        assert_eq!(m.insert(10, "ten"),    None)
+        assert_eq!(m.insert(20, "twenty"), None)
+        assert_eq!(m.insert(5,  "five"),   None)
+        assert_eq!(m.get(&10), Some(&"ten"))
+        assert_eq!(m.get(&20), Some(&"twenty"))
+        assert_eq!(m.get(&5),  Some(&"five"))
+        assert_eq!(m.get(&99), None)
+        assert_eq!(m.len(), 3)
+    }
+
+    #[test]
+    fn btree_update_existing() {
+        let mut m: BTreeMap<i32, i32> = BTreeMap::new()
+        m.insert(1, 100)
+        let old = m.insert(1, 200)
+        assert_eq!(old, Some(100))
+        assert_eq!(m.get(&1), Some(&200))
+        assert_eq!(m.len(), 1)
+    }
+
+    #[test]
+    fn btree_iter_sorted_order() {
+        let mut m: BTreeMap<i32, i32> = BTreeMap::new()
+        for k in [7, 3, 11, 1, 5, 9, 13].iter() {
+            m.insert(*k, *k * 10)
+        }
+        let keys = m.keys()
+        assert_eq!(keys, vec![1, 3, 5, 7, 9, 11, 13])
+    }
+
+    #[test]
+    fn btree_remove() {
+        let mut m: BTreeMap<i32, i32> = BTreeMap::new()
+        for k in 1..=10 { m.insert(k, k * 2) }
+        assert_eq!(m.remove(&5), Some(10))
+        assert_eq!(m.remove(&5), None)
+        assert_eq!(m.len(), 9)
+        assert!(!m.contains_key(&5))
+    }
+
+    #[test]
+    fn btree_large_insert() {
+        let mut m: BTreeMap<i32, i32> = BTreeMap::new()
+        for i in 0..500 { m.insert(i, i * i) }
+        assert_eq!(m.len(), 500)
+        for i in 0..500 {
+            assert_eq!(m.get(&i), Some(&(i * i)))
+        }
+        let keys = m.keys()
+        // Must be in sorted order
+        for i in 1..keys.len() {
+            assert!(keys[i] > keys[i-1])
+        }
+    }
+
+    // --- LinkedList tests ---
+
+    #[test]
+    fn linked_list_push_pop() {
+        let mut ll: LinkedList<i32> = LinkedList::new()
+        ll.push_back(1)
+        ll.push_back(2)
+        ll.push_back(3)
+        assert_eq!(ll.pop_front(), Some(1))
+        assert_eq!(ll.pop_front(), Some(2))
+        assert_eq!(ll.pop_front(), Some(3))
+        assert_eq!(ll.pop_front(), None)
+    }
+
+    #[test]
+    fn linked_list_push_front() {
+        let mut ll: LinkedList<i32> = LinkedList::new()
+        ll.push_front(3)
+        ll.push_front(2)
+        ll.push_front(1)
+        assert_eq!(ll.iter(), vec![1, 2, 3])
+    }
+
+    #[test]
+    fn linked_list_mixed_ops() {
+        let mut ll: LinkedList<i32> = LinkedList::new()
+        ll.push_back(10)
+        ll.push_front(5)
+        ll.push_back(15)
+        assert_eq!(ll.front(), Some(&5))
+        assert_eq!(ll.back(),  Some(&15))
+        assert_eq!(ll.len(),   3)
+        ll.pop_back()
+        assert_eq!(ll.back(), Some(&10))
+    }
+
+    // --- PriorityQueue tests ---
+
+    #[test]
+    fn pq_min_heap_order() {
+        let mut pq: PriorityQueue<i32> = PriorityQueue::new()
+        pq.push(5)
+        pq.push(1)
+        pq.push(3)
+        pq.push(2)
+        pq.push(4)
+        assert_eq!(pq.pop(), Some(1))
+        assert_eq!(pq.pop(), Some(2))
+        assert_eq!(pq.pop(), Some(3))
+    }
+
+    #[test]
+    fn pq_peek_does_not_remove() {
+        let mut pq: PriorityQueue<i32> = PriorityQueue::new()
+        pq.push(42)
+        assert_eq!(pq.peek(), Some(&42))
+        assert_eq!(pq.peek(), Some(&42))
+        assert_eq!(pq.len(), 1)
+    }
+
+    #[test]
+    fn pq_from_vec_heapify() {
+        let mut pq = PriorityQueue::from_vec(vec![9, 7, 5, 3, 1, 8, 6, 4, 2])
+        let sorted = pq.drain_sorted()
+        assert_eq!(sorted, vec![1, 2, 3, 4, 5, 6, 7, 8, 9])
+    }
+
+    // --- HashMap tests ---
+
+    #[test]
+    fn hashmap_insert_get() {
+        let mut m: HashMap<String, i32> = HashMap::new()
+        m.insert("alpha".to_string(), 1)
+        m.insert("beta".to_string(),  2)
+        m.insert("gamma".to_string(), 3)
+        assert_eq!(m.get(&"alpha".to_string()), Some(&1))
+        assert_eq!(m.get(&"beta".to_string()),  Some(&2))
+        assert_eq!(m.get(&"delta".to_string()), None)
+    }
+
+    #[test]
+    fn hashmap_update_and_remove() {
+        let mut m: HashMap<i32, i32> = HashMap::new()
+        m.insert(1, 10)
+        m.insert(1, 20)
+        assert_eq!(m.get(&1), Some(&20))
+        assert_eq!(m.remove(&1), Some(20))
+        assert_eq!(m.get(&1), None)
+        assert_eq!(m.len(), 0)
+    }
+
+    #[test]
+    fn hashmap_resize() {
+        let mut m: HashMap<i32, i32> = HashMap::new()
+        for i in 0..100 { m.insert(i, i * 3) }
+        assert_eq!(m.len(), 100)
+        for i in 0..100 {
+            assert_eq!(m.get(&i), Some(&(i * 3)))
+        }
+    }
+
+    // --- RingBuffer tests ---
+
+    #[test]
+    fn ring_buffer_basic_push_pop() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new(4)
+        assert!(rb.push(1))
+        assert!(rb.push(2))
+        assert!(rb.push(3))
+        assert!(rb.push(4))
+        assert!(!rb.push(5))   // full, no overwrite
+        assert_eq!(rb.pop(), Some(1))
+        assert!(rb.push(5))
+    }
+
+    #[test]
+    fn ring_buffer_overwrite_mode() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new_overwrite(3)
+        rb.push(1); rb.push(2); rb.push(3)
+        rb.push(4)  // overwrites 1
+        assert_eq!(rb.iter(), vec![2, 3, 4])
+    }
+
+    #[test]
+    fn ring_buffer_iter_order() {
+        let mut rb: RingBuffer<i32> = RingBuffer::new(5)
+        for i in 1..=5 { rb.push(i) }
+        assert_eq!(rb.iter(), vec![1, 2, 3, 4, 5])
+    }
+
+    // --- BitSet tests ---
+
+    #[test]
+    fn bitset_set_get() {
+        let mut bs = BitSet::new(128)
+        bs.set(0,   true)
+        bs.set(63,  true)
+        bs.set(64,  true)
+        bs.set(127, true)
+        assert!(bs.get(0))
+        assert!(bs.get(63))
+        assert!(bs.get(64))
+        assert!(bs.get(127))
+        assert!(!bs.get(1))
+        assert_eq!(bs.count_ones(), 4)
+    }
+
+    #[test]
+    fn bitset_union_intersect() {
+        let mut a = BitSet::new(8)
+        let mut b = BitSet::new(8)
+        a.set(0, true); a.set(1, true); a.set(2, true)
+        b.set(1, true); b.set(2, true); b.set(3, true)
+        let u = a.union(&b)
+        let i = a.intersect(&b)
+        assert_eq!(u.count_ones(), 4)
+        assert_eq!(i.count_ones(), 2)
+        assert!(i.get(1) && i.get(2))
+    }
+
+    #[test]
+    fn bitset_iter_ones() {
+        let mut bs = BitSet::new(200)
+        let set_indices = vec![0, 5, 63, 64, 100, 199]
+        for &i in &set_indices { bs.set(i, true) }
+        assert_eq!(bs.iter_ones(), set_indices)
+    }
+
+    // --- SmallVec tests ---
+
+    #[test]
+    fn smallvec_stays_inline() {
+        let mut sv: SmallVec<i32, 8> = SmallVec::new()
+        for i in 0..8 { sv.push(i) }
+        assert!(sv.is_inline())
+        assert_eq!(sv.len(), 8)
+        for i in 0..8 { assert_eq!(sv.get(i), Some(&i)) }
+    }
+
+    #[test]
+    fn smallvec_spills_to_heap() {
+        let mut sv: SmallVec<i32, 4> = SmallVec::new()
+        for i in 0..10 { sv.push(i) }
+        assert!(!sv.is_inline())
+        assert_eq!(sv.len(), 10)
+        for i in 0..10 { assert_eq!(sv.get(i), Some(&i)) }
+    }
+
+    #[test]
+    fn smallvec_pop() {
+        let mut sv: SmallVec<i32, 4> = SmallVec::new()
+        sv.push(10); sv.push(20); sv.push(30)
+        assert_eq!(sv.pop(), Some(30))
+        assert_eq!(sv.pop(), Some(20))
+        assert_eq!(sv.len(), 1)
+    }
+}

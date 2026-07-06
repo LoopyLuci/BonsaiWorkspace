@@ -300,8 +300,17 @@ fn serialize_to_json(data: HashMap<String, Vec<u8>>) -> String {
         json.push_str(key)
         json.push_str("\":")
 
-        // Simple value serialization (would be more complex in real implementation)
-        json.push_str("\"value\"")
+        // Serialize value bytes: valid UTF-8 → string, otherwise hex-encoded bytes array
+        match std::str::from_utf8(&value) {
+            Ok(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r")
+                json.push_str(&format!("\"{}\"", escaped))
+            }
+            Err(_) => {
+                let hex_arr: String = value.iter().map(|b| format!("{}", b)).collect::<Vec<_>>().join(",")
+                json.push_str(&format!("[{}]", hex_arr))
+            }
+        }
     }
 
     json.push_str("}")
@@ -309,10 +318,34 @@ fn serialize_to_json(data: HashMap<String, Vec<u8>>) -> String {
 }
 
 fn deserialize_from_json(json: String) -> HashMap<String, Vec<u8>> {
-    // Simple JSON parsing (would use proper JSON parser in real implementation)
+    // Parse simple flat JSON object {"key":"str_value"} or {"key":[1,2,3]}
     let mut data = HashMap::new()
-    data.insert("parsed".to_string(), vec![1, 2, 3])
-    return data
+    let s = json.trim()
+    if !s.starts_with('{') || !s.ends_with('}') { return data }
+    let inner = &s[1..s.len()-1]
+    // Split on top-level commas
+    let mut depth = 0i32; let mut start = 0; let mut pairs: Vec<&str> = Vec::new()
+    for (i, c) in inner.char_indices() {
+        match c { '{' | '[' => depth += 1, '}' | ']' => depth -= 1, ',' if depth == 0 => { pairs.push(&inner[start..i]); start = i+1 }, _ => {} }
+    }
+    pairs.push(&inner[start..])
+    for pair in pairs {
+        let pair = pair.trim()
+        if let Some(colon) = pair.find(':') {
+            let key_part = pair[..colon].trim().trim_matches('"')
+            let val_part = pair[colon+1..].trim()
+            let bytes = if val_part.starts_with('"') {
+                val_part.trim_matches('"').replace("\\\"","\"").replace("\\n","\n").replace("\\\\","\\").into_bytes()
+            } else if val_part.starts_with('[') {
+                let arr = val_part.trim_matches(|c| c == '[' || c == ']')
+                arr.split(',').filter_map(|n| n.trim().parse::<u8>().ok()).collect()
+            } else {
+                val_part.as_bytes().to_vec()
+            }
+            data.insert(key_part.to_string(), bytes)
+        }
+    }
+    data
 }
 
 // Backup and restore

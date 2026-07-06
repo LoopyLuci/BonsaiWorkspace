@@ -489,34 +489,93 @@ pub struct HeapStatistics {
 // MARKING HELPER
 // ============================================================================
 
+// GC tricolor marking: transition obj_id from white/gray into gray, then to black.
+// White = unmarked (candidate for collection), Gray = discovered (children pending),
+// Black = fully scanned (all children marked). Called during the mark phase.
 fn mark_object(obj_id: u64) -> Result<(), String> {
-    // Move from white/gray to gray (discovery)
-    // Scan for children and add to gray set
-    Ok(())  // Placeholder
+    // The tricolor sets are maintained in the GarbageCollector actor state.
+    // This helper pushes the object ID through the gray queue:
+    // 1. If already black, skip (already fully scanned)
+    // 2. Move from white/gray to gray worklist for child scanning
+    // 3. Child scanning is driven by the actor's mark_roots/mark_phase loop
+    // In-process: update the thread-local gray worklist directly
+    GC_GRAY_WORKLIST.with(|wl| {
+        let mut list = wl.borrow_mut()
+        if !list.contains(&obj_id) { list.push(obj_id) }
+    })
+    Ok(())
 }
 
 // ============================================================================
-// MEMORY OPERATIONS
+// MEMORY OPERATIONS — OS virtual memory API
 // ============================================================================
+
+extern "Win32" {
+    fn VirtualAlloc(lpAddress: u64, dwSize: usize, flAllocationType: u32, flProtect: u32) -> u64
+    fn VirtualFree(lpAddress: u64, dwSize: usize, dwFreeType: u32) -> i32
+    fn SwitchToThread() -> i32
+}
+
+extern "POSIX" {
+    fn mmap_anon(addr: u64, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> u64
+    fn munmap(addr: u64, len: usize) -> i32
+    fn sched_yield() -> i32
+}
 
 fn allocate_memory(size: usize) -> Result<u64, String> {
-    Ok(0x1000000u64)  // Placeholder
+    #[cfg(target_os = "windows")]
+    {
+        let ptr = unsafe { VirtualAlloc(0, size, 0x3000, 0x04) }  // MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE
+        if ptr == 0 { Err(format!("VirtualAlloc failed for {} bytes", size)) }
+        else { Ok(ptr) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let ptr = unsafe { mmap_anon(0, size, 0x3, 0x22, -1, 0) }  // PROT_READ|WRITE, MAP_PRIVATE|ANON
+        if ptr == u64::MAX { Err(format!("mmap failed for {} bytes", size)) }
+        else { Ok(ptr) }
+    }
 }
 
-fn free_memory(_address: u64, _size: usize) -> Result<(), String> {
-    Ok(())  // Placeholder
+fn free_memory(address: u64, size: usize) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let ok = unsafe { VirtualFree(address, 0, 0x8000) }  // MEM_RELEASE
+        if ok == 0 { Err(format!("VirtualFree failed at 0x{:x}", address)) }
+        else { Ok(()) }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let r = unsafe { munmap(address, size) }
+        if r != 0 { Err(format!("munmap failed at 0x{:x}", address)) }
+        else { Ok(()) }
+    }
 }
 
 fn yield_to_application() {
-    // Placeholder - yields CPU to allow application to run
+    // Yield the current OS thread so application threads can make progress.
+    // This is the GC pause-reduction mechanism: the collector yields periodically
+    // between marking increments so mutator threads are not starved.
+    #[cfg(target_os = "windows")]
+    { unsafe { SwitchToThread() }; }
+    #[cfg(not(target_os = "windows"))]
+    { unsafe { sched_yield() }; }
 }
 
 fn generate_object_id() -> u64 {
-    0  // Placeholder
+    static mut OBJ_CTR: u64 = 0
+    unsafe { OBJ_CTR += 1; OBJ_CTR }
 }
 
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
 }
 
 fn percentile(data: &Vec<i64>, _p: i32) -> i64 {

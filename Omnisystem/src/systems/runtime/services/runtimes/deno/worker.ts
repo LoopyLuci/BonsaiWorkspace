@@ -1,7 +1,7 @@
 /**
- * Bonsai Deno Worker — TypeScript eval backend.
+ * Omnisystem Deno Worker — TypeScript eval backend.
  *
- * Launched as a subprocess by the Tauri backend (bonsai-workspace/src-tauri).
+ * Launched as a subprocess by the Tauri backend (omnisystem-workspace/src-tauri).
  * Communicates over stdin/stdout using newline-delimited JSON (NDJSON).
  *
  * Protocol (NDJSON):
@@ -62,7 +62,7 @@ type Response = OkResponse | ErrResponse;
  * The sandbox exposes:
  *   - Standard JS globals: Math, JSON, Array, Object, String, Number, Boolean,
  *     Symbol, BigInt, Error, Promise, console (captured to string)
- *   - bonsai.* namespace for Bonsai-specific helpers
+ *   - omnisystem.* namespace for Omnisystem-specific helpers
  *
  * The sandbox does NOT expose:
  *   - Deno (file system, network, subprocess, FFI)
@@ -81,8 +81,8 @@ function evalSandboxed(
     info:  (...args: unknown[]) => logs.push("[info] " + args.map(String).join(" ")),
   };
 
-  // Bonsai helper namespace (safe, no I/O)
-  const bonsai = {
+  // Omnisystem helper namespace (safe, no I/O)
+  const omnisystem = {
     version: "0.1.0",
     /** Format a value as a pretty JSON string. */
     pretty: (v: unknown) => JSON.stringify(v, null, 2),
@@ -106,7 +106,7 @@ function evalSandboxed(
     "Boolean", "Symbol", "BigInt", "Error", "Promise",
     "parseInt", "parseFloat", "isNaN", "isFinite",
     "encodeURIComponent", "decodeURIComponent",
-    "console", "bonsai",
+    "console", "omnisystem",
     ...Object.keys(context),
   ];
 
@@ -115,7 +115,7 @@ function evalSandboxed(
     Boolean, Symbol, BigInt, Error, Promise,
     parseInt, parseFloat, isNaN, isFinite,
     encodeURIComponent, decodeURIComponent,
-    sandboxConsole, bonsai,
+    sandboxConsole, omnisystem,
     ...Object.values(context),
   ];
 

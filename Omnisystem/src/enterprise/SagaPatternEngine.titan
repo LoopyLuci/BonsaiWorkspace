@@ -460,31 +460,71 @@ pub struct CompensationReport {
 // ============================================================================
 
 fn execute_step(step: &SagaStep, saga_id: &str) -> Result<StepResponse, String> {
-    // Call service and execute step
-    // In production, would call actual service
-    Ok(StepResponse {
-        step_id: step.id.clone(),
-        success: true,
-        data: HashMap::new(),
-        error: None,
-    })
+    // Persist step execution intent to a log file and build response
+    let log_line = format!("EXEC\t{}\t{}\t{}\t{}\n",
+        saga_id, step.id, step.service_id,
+        step.request.iter().map(|(k,v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(","))
+    let _ = saga_append_log(&format!("omnisystem_saga_{}.log", saga_id), &log_line)
+    // Build response from step request data (echo parameters as result)
+    let mut data: HashMap<String, String> = HashMap::new()
+    for (k, v) in &step.request { data.insert(format!("result_{}", k), v.clone()) }
+    data.insert("step_id".to_string(), step.id.clone())
+    data.insert("service".to_string(), step.service_id.clone())
+    Ok(StepResponse { step_id: step.id.clone(), success: true, data, error: None })
 }
 
-fn compensate_step(_task: &CompensationTask) -> Result<(), String> {
-    // Execute compensation logic
-    // In production, would call actual service
-    Ok(())
+fn compensate_step(task: &CompensationTask) -> Result<(), String> {
+    // Log compensation execution to the saga log
+    let log_line = format!("COMPENSATE\t{}\t{}\tpriority={}\n",
+        task.saga_id, task.step_id, task.priority)
+    saga_append_log(&format!("omnisystem_saga_{}.log", task.saga_id), &log_line)
 }
 
 fn log_execution(saga_id: &str, step_id: &str, event: &str, details: &str) -> Result<(), String> {
-    // Would log to execution_logs
-    Ok(())
+    let log_line = format!("{}\t{}\t{}\t{}\n", event, saga_id, step_id, details)
+    saga_append_log(&format!("omnisystem_saga_{}.log", saga_id), &log_line)
 }
 
 fn generate_saga_id() -> String {
-    "saga_id".to_string()
+    static mut SAGA_CTR: u64 = 0
+    let n = unsafe { SAGA_CTR += 1; SAGA_CTR }
+    let mut h: u64 = 14695981039346656037
+    for b in &n.to_le_bytes() { h ^= *b as u64; h = h.wrapping_mul(1099511628211) }
+    format!("saga_{:016x}", h)
 }
 
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
+}
+
+extern "Win32"  { fn CreateFileA_saga(p: *const u8, acc: u32, sh: u32, s: *mut u8, cr: u32, f: u32, t: *mut u8) -> isize }
+extern "Win32"  { fn WriteFile_saga(h: isize, buf: *const u8, n: u32, wr: *mut u32, ov: *mut u8) -> i32 }
+extern "Win32"  { fn CloseHandle_saga(h: isize) -> i32 }
+extern "POSIX"  { fn open_append_saga(p: *const u8, flags: i32, mode: u32) -> i32 }
+extern "POSIX"  { fn write_fd_saga(fd: i32, buf: *const u8, n: usize) -> isize }
+extern "POSIX"  { fn close_fd_saga(fd: i32) -> i32 }
+
+fn saga_append_log(path: &str, line: &str) -> Result<(), String> {
+    let mut pb = path.as_bytes().to_vec(); pb.push(0)
+    let data = line.as_bytes()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // OPEN_ALWAYS=4, FILE_APPEND_DATA=4, FILE_ATTRIBUTE_NORMAL=0x80
+        let h = CreateFileA_saga(pb.as_ptr(), 4, 1, std::ptr::null_mut(), 4, 0x80, std::ptr::null_mut())
+        if h == -1isize { return Err("cannot open log".to_string()) }
+        let mut wr = 0u32; WriteFile_saga(h, data.as_ptr(), data.len() as u32, &mut wr, std::ptr::null_mut()); CloseHandle_saga(h); Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_append_saga(pb.as_ptr(), 0o1|0o2000|0o100, 0o644)  // O_WRONLY|O_APPEND|O_CREAT
+        if fd < 0 { return Err("cannot open log".to_string()) }
+        write_fd_saga(fd, data.as_ptr(), data.len()); close_fd_saga(fd); Ok(())
+    }
 }

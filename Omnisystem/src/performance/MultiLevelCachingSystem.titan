@@ -455,50 +455,170 @@ pub struct MultiLevelCacheStats {
 // HELPER FUNCTIONS
 // ============================================================================
 
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder - would use system time
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
 }
 
 fn format_file_path(base: &str, key: &str) -> String {
     format!("{}/{}", base, key)
 }
 
+// ── File I/O externs (Win32 + POSIX) ─────────────────────────────────────────
+extern "Win32" {
+    fn CreateFileW(path: *const u8, access: u32, share: u32, sa: *const u8, create: u32, flags: u32, tmpl: *const u8) -> i64
+    fn ReadFile(h: i64, buf: *mut u8, n: u32, read: *mut u32, ov: *const u8) -> i32
+    fn WriteFile(h: i64, buf: *const u8, n: u32, written: *mut u32, ov: *const u8) -> i32
+    fn CloseHandle(h: i64) -> i32
+    fn DeleteFileA(path: *const u8) -> i32
+    fn RemoveDirectoryA(path: *const u8) -> i32
+    fn GetFileSize(h: i64, high: *mut u32) -> u32
+}
+
+extern "POSIX" {
+    fn open(path: *const u8, flags: i32, mode: u32) -> i32
+    fn read(fd: i32, buf: *mut u8, n: usize) -> isize
+    fn write(fd: i32, buf: *const u8, n: usize) -> isize
+    fn close(fd: i32) -> i32
+    fn unlink(path: *const u8) -> i32
+    fn rmdir(path: *const u8) -> i32
+    fn lseek(fd: i32, off: i64, whence: i32) -> i64
+}
+
 fn read_file(path: &str) -> Result<Vec<u8>, String> {
-    Ok(Vec::new())  // Placeholder
+    let path_bytes = path.as_bytes()
+    #[cfg(target_os = "windows")]
+    {
+        let h = unsafe { CreateFileW(path_bytes.as_ptr(), 0x80000000, 1, core::ptr::null(), 3, 0x80, core::ptr::null()) }
+        if h == -1i64 { return Err(format!("Cannot open: {}", path)) }
+        let size = unsafe { GetFileSize(h, core::ptr::null_mut()) } as usize
+        let mut buf = vec![0u8; size]
+        let mut n_read: u32 = 0
+        unsafe { ReadFile(h, buf.as_mut_ptr(), size as u32, &mut n_read, core::ptr::null()) }
+        unsafe { CloseHandle(h) }
+        Ok(buf[..n_read as usize].to_vec())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cpath = path.to_string(); cpath.push('\0')
+        let fd = unsafe { open(cpath.as_ptr(), 0, 0) }  // O_RDONLY = 0
+        if fd < 0 { return Err(format!("Cannot open: {}", path)) }
+        let end = unsafe { lseek(fd, 0, 2) } as usize
+        let _   = unsafe { lseek(fd, 0, 0) }
+        let mut buf = vec![0u8; end]
+        let n = unsafe { read(fd, buf.as_mut_ptr(), end) }
+        unsafe { close(fd) }
+        if n < 0 { Err(format!("Read error: {}", path)) } else { Ok(buf[..n as usize].to_vec()) }
+    }
 }
 
 fn write_file(path: &str, data: &Vec<u8>) -> Result<(), String> {
-    Ok(())  // Placeholder
+    #[cfg(target_os = "windows")]
+    {
+        let path_bytes = path.as_bytes()
+        let h = unsafe { CreateFileW(path_bytes.as_ptr(), 0x40000000, 0, core::ptr::null(), 2, 0x80, core::ptr::null()) }
+        if h == -1i64 { return Err(format!("Cannot create: {}", path)) }
+        let mut written: u32 = 0
+        unsafe { WriteFile(h, data.as_ptr(), data.len() as u32, &mut written, core::ptr::null()) }
+        unsafe { CloseHandle(h) }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cpath = path.to_string(); cpath.push('\0')
+        let fd = unsafe { open(cpath.as_ptr(), 0x241, 0o644) }  // O_WRONLY|O_CREAT|O_TRUNC
+        if fd < 0 { return Err(format!("Cannot create: {}", path)) }
+        unsafe { write(fd, data.as_ptr(), data.len()) }
+        unsafe { close(fd) }
+        Ok(())
+    }
 }
 
 fn delete_file(path: &str) -> Result<(), String> {
-    Ok(())  // Placeholder
+    let mut cpath = path.to_string(); cpath.push('\0')
+    #[cfg(target_os = "windows")]
+    { unsafe { DeleteFileA(cpath.as_ptr()) }; Ok(()) }
+    #[cfg(not(target_os = "windows"))]
+    { let r = unsafe { unlink(cpath.as_ptr()) }; if r == 0 { Ok(()) } else { Err(format!("unlink failed: {}", path)) } }
 }
 
 fn cleanup_directory(path: &str) -> Result<(), String> {
-    Ok(())  // Placeholder
+    let mut cpath = path.to_string(); cpath.push('\0')
+    #[cfg(target_os = "windows")]
+    { unsafe { RemoveDirectoryA(cpath.as_ptr()) }; Ok(()) }
+    #[cfg(not(target_os = "windows"))]
+    { let r = unsafe { rmdir(cpath.as_ptr()) }; if r == 0 { Ok(()) } else { Err(format!("rmdir failed: {}", path)) } }
 }
 
 fn get_from_replica(replica: &str, key: &str) -> Result<Option<Vec<u8>>, String> {
-    Ok(None)  // Placeholder
+    // Try reading from the replica's on-disk path: <replica>/<key>
+    let path = format!("{}/{}", replica, key)
+    match read_file(&path) {
+        Ok(data) if !data.is_empty() => Ok(Some(data)),
+        Ok(_) => Ok(None),
+        Err(_) => Ok(None),
+    }
 }
 
 fn replicate_to_node(node: &str, key: &str, value: &Vec<u8>) -> Result<(), String> {
-    Ok(())  // Placeholder
+    // Write the value to the replica's storage path
+    let path = format!("{}/{}", node, key)
+    write_file(&path, value)
 }
 
 fn invalidate_on_node(node: &str, key: &str) -> Result<(), String> {
-    Ok(())  // Placeholder
+    // Remove the key from the replica's storage path
+    let path = format!("{}/{}", node, key)
+    match delete_file(&path) {
+        Ok(()) | Err(_) => Ok(())  // Ignore "not found" errors during invalidation
+    }
 }
 
 fn fetch_from_source(source: String) -> Result<Vec<u8>, String> {
-    Ok(Vec::new())  // Placeholder
+    // Source is treated as a file path; for HTTP sources prefix with "http://"
+    if source.starts_with("http://") || source.starts_with("https://") {
+        Err(format!("HTTP fetch not yet wired: {}", source))
+    } else {
+        read_file(&source)
+    }
 }
 
 fn get_related_keys(key: &str) -> Vec<String> {
-    Vec::new()  // Placeholder
+    // Return sibling keys derived from the same namespace prefix.
+    // Namespace is the portion of the key before the last ':' or '/'.
+    let sep_pos = key.rfind(':').or_else(|| key.rfind('/'))
+    match sep_pos {
+        Some(pos) => {
+            let prefix = &key[..pos]
+            // The base entry plus the wildcard sibling for invalidation sweeps
+            vec![key.to_string(), format!("{}:*", prefix)]
+        }
+        None => vec![key.to_string()]
+    }
 }
 
 fn matches_pattern(key: &str, pattern: &str) -> bool {
-    false  // Placeholder
+    // Glob-style matching with '*' (multi-char wildcard) and '?' (single-char wildcard)
+    fn glob_match(k: &[u8], p: &[u8]) -> bool {
+        match (k.first(), p.first()) {
+            (_, Some(b'*')) => {
+                // '*' can match zero or more characters
+                glob_match(k, &p[1..]) || (!k.is_empty() && glob_match(&k[1..], p))
+            }
+            (Some(kc), Some(b'?')) => glob_match(&k[1..], &p[1..]),
+            (Some(kc), Some(pc)) => kc == pc && glob_match(&k[1..], &p[1..]),
+            (None, None) => true,
+            (None, _) | (_, None) => {
+                // Pattern might have trailing '*'s that match empty string
+                p.iter().all(|&c| c == b'*')
+            }
+        }
+    }
+    glob_match(key.as_bytes(), pattern.as_bytes())
 }

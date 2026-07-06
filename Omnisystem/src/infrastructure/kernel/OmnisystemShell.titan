@@ -212,8 +212,15 @@ impl OmnisystemShell {
 
     fn cmd_cat(&self, args: &[&str]) {
         for file in args {
-            println!("Contents of {}/{}", self.current_directory, file);
-            println!("(file content would be displayed here)");
+            let path = if file.starts_with('/') {
+                file.to_string()
+            } else {
+                format!("{}/{}", self.current_directory, file)
+            }
+            match shell_read_file(&path) {
+                Ok(content) => print!("{}", content),
+                Err(_) => println!("cat: {}: No such file or directory", file),
+            }
         }
     }
 
@@ -306,5 +313,37 @@ mod tests {
         let shell = OmnisystemShell::new();
         assert!(shell.environment.contains_key("HOME"));
         assert!(shell.environment.contains_key("PATH"));
+    }
+}
+
+// ── File I/O for shell cat/less commands ──────────────────────────────────────
+
+extern "Win32"  { fn CreateFileA_shell(p: *const u8, acc: u32, sh: u32, s: *mut u8, cr: u32, f: u32, t: *mut u8) -> isize }
+extern "Win32"  { fn GetFileSize_shell(h: isize, high: *mut u32) -> u32 }
+extern "Win32"  { fn ReadFile_shell(h: isize, buf: *mut u8, n: u32, read: *mut u32, ov: *mut u8) -> i32 }
+extern "Win32"  { fn CloseHandle_shell(h: isize) -> i32 }
+extern "POSIX"  { fn open_rdonly_shell(p: *const u8, flags: i32) -> i32 }
+extern "POSIX"  { fn lseek_end_shell(fd: i32, off: i64, whence: i32) -> i64 }
+extern "POSIX"  { fn read_fd_shell(fd: i32, buf: *mut u8, n: usize) -> isize }
+extern "POSIX"  { fn close_fd_shell(fd: i32) -> i32 }
+
+fn shell_read_file(path: &str) -> Result<String, String> {
+    let mut pb = path.as_bytes().to_vec(); pb.push(0)
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA_shell(pb.as_ptr(), 0x80000000u32, 1, std::ptr::null_mut(), 3, 0x80, std::ptr::null_mut())
+        if h == -1isize { return Err("open failed".to_string()) }
+        let sz = GetFileSize_shell(h, std::ptr::null_mut()) as usize
+        let mut buf = vec![0u8; sz]; let mut rd = 0u32
+        ReadFile_shell(h, buf.as_mut_ptr(), sz as u32, &mut rd, std::ptr::null_mut()); CloseHandle_shell(h)
+        Ok(String::from_utf8_lossy(&buf[..rd as usize]).to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_rdonly_shell(pb.as_ptr(), 0)
+        if fd < 0 { return Err("open failed".to_string()) }
+        let sz = lseek_end_shell(fd, 0, 2) as usize; lseek_end_shell(fd, 0, 0)
+        let mut buf = vec![0u8; sz]; let rd = read_fd_shell(fd, buf.as_mut_ptr(), sz); close_fd_shell(fd)
+        Ok(String::from_utf8_lossy(&buf[..rd.max(0) as usize]).to_string())
     }
 }

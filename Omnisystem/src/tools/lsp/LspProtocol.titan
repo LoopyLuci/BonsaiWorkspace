@@ -1,0 +1,1089 @@
+// ============================================================
+// LspProtocol.titan — JSON-RPC 2.0 + LSP type definitions
+// Omnisystem LSP Server · Language Server Protocol layer
+// All types, serialization, deserialization, I/O framing.
+// ============================================================
+
+module LspProtocol
+
+use std::collections::HashMap
+use std::io::{stdin, stdout, Read, Write, BufReader, BufRead}
+
+// ─────────────────────────────────────────────────────────────
+// § 1  JSON VALUE TREE
+// ─────────────────────────────────────────────────────────────
+
+pub enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Str(String),
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>),
+}
+
+impl JsonValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonValue::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            JsonValue::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        match self {
+            JsonValue::Number(n) => Some(*n as u32),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<JsonValue>> {
+        match self {
+            JsonValue::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, JsonValue>> {
+        match self {
+            JsonValue::Object(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&JsonValue> {
+        match self {
+            JsonValue::Object(m) => m.get(key),
+            _ => None,
+        }
+    }
+
+    pub fn index(&self, i: usize) -> Option<&JsonValue> {
+        match self {
+            JsonValue::Array(a) => a.get(i),
+            _ => None,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, JsonValue::Null)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 2  JSON PARSER — recursive descent
+// ─────────────────────────────────────────────────────────────
+
+struct Parser {
+    src: Vec<char>,
+    pos: usize,
+}
+
+impl Parser {
+    fn new(s: &str) -> Self {
+        Parser { src: s.chars().collect(), pos: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let c = self.src.get(self.pos).copied();
+        self.pos += 1;
+        c
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn expect(&mut self, ch: char) -> Result<(), String> {
+        self.skip_whitespace();
+        match self.advance() {
+            Some(c) if c == ch => Ok(()),
+            Some(c) => Err(format!("expected '{}' got '{}'", ch, c)),
+            None => Err(format!("expected '{}' got EOF", ch)),
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some('"') => self.parse_string().map(JsonValue::Str),
+            Some('{') => self.parse_object(),
+            Some('[') => self.parse_array(),
+            Some('t') => self.parse_literal("true").map(|_| JsonValue::Bool(true)),
+            Some('f') => self.parse_literal("false").map(|_| JsonValue::Bool(false)),
+            Some('n') => self.parse_literal("null").map(|_| JsonValue::Null),
+            Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
+            Some(c) => Err(format!("unexpected char '{}'", c)),
+            None => Err("unexpected EOF".to_string()),
+        }
+    }
+
+    fn parse_literal(&mut self, lit: &str) -> Result<(), String> {
+        for expected in lit.chars() {
+            match self.advance() {
+                Some(c) if c == expected => {}
+                Some(c) => return Err(format!("expected '{}' in literal, got '{}'", expected, c)),
+                None => return Err("EOF in literal".to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect('"')?;
+        let mut out = String::new();
+        loop {
+            match self.advance() {
+                Some('"') => break,
+                Some('\\') => {
+                    match self.advance() {
+                        Some('"')  => out.push('"'),
+                        Some('\\') => out.push('\\'),
+                        Some('/')  => out.push('/'),
+                        Some('b')  => out.push('\x08'),
+                        Some('f')  => out.push('\x0C'),
+                        Some('n')  => out.push('\n'),
+                        Some('r')  => out.push('\r'),
+                        Some('t')  => out.push('\t'),
+                        Some('u')  => {
+                            let mut hex = String::new();
+                            for _ in 0..4 {
+                                match self.advance() {
+                                    Some(h) => hex.push(h),
+                                    None => return Err("EOF in unicode escape".to_string()),
+                                }
+                            }
+                            let code = u32::from_str_radix(&hex, 16)
+                                .map_err(|e| format!("bad unicode escape: {}", e))?;
+                            let ch = char::from_u32(code)
+                                .ok_or_else(|| format!("invalid unicode code point: {}", code))?;
+                            out.push(ch);
+                        }
+                        Some(c) => return Err(format!("bad escape \\{}", c)),
+                        None => return Err("EOF after backslash".to_string()),
+                    }
+                }
+                Some(c) => out.push(c),
+                None => return Err("unterminated string".to_string()),
+            }
+        }
+        Ok(out)
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue, String> {
+        let mut s = String::new();
+        if self.peek() == Some('-') {
+            s.push('-');
+            self.advance();
+        }
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
+                s.push(c);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        s.parse::<f64>()
+            .map(JsonValue::Number)
+            .map_err(|e| format!("bad number '{}': {}", s, e))
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, String> {
+        self.expect('[')?;
+        let mut items = Vec::new();
+        self.skip_whitespace();
+        if self.peek() == Some(']') {
+            self.advance();
+            return Ok(JsonValue::Array(items));
+        }
+        loop {
+            items.push(self.parse_value()?);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(',') => { self.advance(); }
+                Some(']') => { self.advance(); break; }
+                Some(c) => return Err(format!("expected ',' or ']', got '{}'", c)),
+                None => return Err("EOF in array".to_string()),
+            }
+        }
+        Ok(JsonValue::Array(items))
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, String> {
+        self.expect('{')?;
+        let mut map = HashMap::new();
+        self.skip_whitespace();
+        if self.peek() == Some('}') {
+            self.advance();
+            return Ok(JsonValue::Object(map));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.expect(':')?;
+            let val = self.parse_value()?;
+            map.insert(key, val);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(',') => { self.advance(); }
+                Some('}') => { self.advance(); break; }
+                Some(c) => return Err(format!("expected ',' or '}}', got '{}'", c)),
+                None => return Err("EOF in object".to_string()),
+            }
+        }
+        Ok(JsonValue::Object(map))
+    }
+}
+
+pub fn json_parse(s: &str) -> Result<JsonValue, String> {
+    let mut p = Parser::new(s);
+    let v = p.parse_value()?;
+    p.skip_whitespace();
+    if p.pos != p.src.len() {
+        Err(format!("trailing garbage at pos {}", p.pos))
+    } else {
+        Ok(v)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 3  JSON SERIALIZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn json_serialize(v: &JsonValue) -> String {
+    match v {
+        JsonValue::Null => "null".to_string(),
+        JsonValue::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
+        JsonValue::Number(n) => {
+            if n.fract() == 0.0 && n.abs() < 1e15 {
+                format!("{}", *n as i64)
+            } else {
+                format!("{}", n)
+            }
+        }
+        JsonValue::Str(s) => {
+            let mut out = String::with_capacity(s.len() + 2);
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"'  => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c if (c as u32) < 0x20 => {
+                        out.push_str(&format!("\\u{:04x}", c as u32));
+                    }
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        JsonValue::Array(items) => {
+            let mut out = String::from("[");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                out.push_str(&json_serialize(item));
+            }
+            out.push(']');
+            out
+        }
+        JsonValue::Object(map) => {
+            let mut out = String::from("{");
+            let mut first = true;
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for k in keys {
+                if !first { out.push(','); }
+                first = false;
+                out.push_str(&json_serialize(&JsonValue::Str(k.clone())));
+                out.push(':');
+                out.push_str(&json_serialize(&map[k]));
+            }
+            out.push('}');
+            out
+        }
+    }
+}
+
+// Helper: build object literal
+pub fn json_obj(pairs: Vec<(&str, JsonValue)>) -> JsonValue {
+    let mut m = HashMap::new();
+    for (k, v) in pairs {
+        m.insert(k.to_string(), v);
+    }
+    JsonValue::Object(m)
+}
+
+pub fn json_arr(items: Vec<JsonValue>) -> JsonValue {
+    JsonValue::Array(items)
+}
+
+pub fn json_str(s: &str) -> JsonValue {
+    JsonValue::Str(s.to_string())
+}
+
+pub fn json_num(n: f64) -> JsonValue {
+    JsonValue::Number(n)
+}
+
+pub fn json_bool(b: bool) -> JsonValue {
+    JsonValue::Bool(b)
+}
+
+pub fn json_null() -> JsonValue {
+    JsonValue::Null
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 4  JSON-RPC 2.0 TYPES
+// ─────────────────────────────────────────────────────────────
+
+pub struct RpcError {
+    pub code: i32,
+    pub message: String,
+    pub data: Option<JsonValue>,
+}
+
+impl RpcError {
+    pub fn new(code: i32, message: &str) -> Self {
+        RpcError { code, message: message.to_string(), data: None }
+    }
+
+    pub fn parse_error() -> Self      { RpcError::new(-32700, "Parse error") }
+    pub fn invalid_request() -> Self  { RpcError::new(-32600, "Invalid Request") }
+    pub fn method_not_found() -> Self { RpcError::new(-32601, "Method not found") }
+    pub fn invalid_params() -> Self   { RpcError::new(-32602, "Invalid params") }
+    pub fn internal_error() -> Self   { RpcError::new(-32603, "Internal error") }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![
+            ("code",    json_num(self.code as f64)),
+            ("message", json_str(&self.message)),
+        ];
+        if let Some(d) = &self.data {
+            pairs.push(("data", d.clone()));
+        }
+        json_obj(pairs)
+    }
+}
+
+pub struct RpcRequest {
+    pub id:     JsonValue,
+    pub method: String,
+    pub params: JsonValue,
+}
+
+pub struct RpcResponse {
+    pub id:     JsonValue,
+    pub result: Option<JsonValue>,
+    pub error:  Option<RpcError>,
+}
+
+impl RpcResponse {
+    pub fn ok(id: JsonValue, result: JsonValue) -> Self {
+        RpcResponse { id, result: Some(result), error: None }
+    }
+
+    pub fn err(id: JsonValue, error: RpcError) -> Self {
+        RpcResponse { id, result: None, error: Some(error) }
+    }
+
+    pub fn notification(method: &str, params: JsonValue) -> JsonValue {
+        json_obj(vec![
+            ("jsonrpc", json_str("2.0")),
+            ("method",  json_str(method)),
+            ("params",  params),
+        ])
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![
+            ("jsonrpc", json_str("2.0")),
+            ("id", self.id.clone()),
+        ];
+        if let Some(r) = &self.result {
+            pairs.push(("result", r.clone()));
+        }
+        if let Some(e) = &self.error {
+            pairs.push(("error", e.to_json()));
+        }
+        json_obj(pairs)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 5  LSP POSITION / RANGE / LOCATION
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Position {
+    pub line: u32,
+    pub character: u32,
+}
+
+impl Position {
+    pub fn new(line: u32, character: u32) -> Self {
+        Position { line, character }
+    }
+
+    pub fn from_json(v: &JsonValue) -> Option<Self> {
+        Some(Position {
+            line:      v.get("line")?.as_u32()?,
+            character: v.get("character")?.as_u32()?,
+        })
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json_obj(vec![
+            ("line",      json_num(self.line as f64)),
+            ("character", json_num(self.character as f64)),
+        ])
+    }
+
+    pub fn is_before(&self, other: &Position) -> bool {
+        self.line < other.line || (self.line == other.line && self.character < other.character)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Range {
+    pub start: Position,
+    pub end:   Position,
+}
+
+impl Range {
+    pub fn new(start: Position, end: Position) -> Self {
+        Range { start, end }
+    }
+
+    pub fn point(line: u32, character: u32) -> Self {
+        let p = Position::new(line, character);
+        Range { start: p.clone(), end: p }
+    }
+
+    pub fn from_json(v: &JsonValue) -> Option<Self> {
+        Some(Range {
+            start: Position::from_json(v.get("start")?)?,
+            end:   Position::from_json(v.get("end")?)?,
+        })
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json_obj(vec![
+            ("start", self.start.to_json()),
+            ("end",   self.end.to_json()),
+        ])
+    }
+
+    pub fn contains(&self, pos: &Position) -> bool {
+        !pos.is_before(&self.start) && (pos.is_before(&self.end) || *pos == self.end)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Location {
+    pub uri:   String,
+    pub range: Range,
+}
+
+impl Location {
+    pub fn new(uri: &str, range: Range) -> Self {
+        Location { uri: uri.to_string(), range }
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json_obj(vec![
+            ("uri",   json_str(&self.uri)),
+            ("range", self.range.to_json()),
+        ])
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 6  TEXT EDIT / WORKSPACE EDIT
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct TextEdit {
+    pub range:    Range,
+    pub new_text: String,
+}
+
+impl TextEdit {
+    pub fn new(range: Range, new_text: &str) -> Self {
+        TextEdit { range, new_text: new_text.to_string() }
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json_obj(vec![
+            ("range",   self.range.to_json()),
+            ("newText", json_str(&self.new_text)),
+        ])
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkspaceEdit {
+    pub changes: HashMap<String, Vec<TextEdit>>,
+}
+
+impl WorkspaceEdit {
+    pub fn new() -> Self {
+        WorkspaceEdit { changes: HashMap::new() }
+    }
+
+    pub fn add_edit(&mut self, uri: &str, edit: TextEdit) {
+        self.changes.entry(uri.to_string()).or_default().push(edit);
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut changes_map = HashMap::new();
+        for (uri, edits) in &self.changes {
+            let arr = JsonValue::Array(edits.iter().map(|e| e.to_json()).collect());
+            changes_map.insert(uri.clone(), arr);
+        }
+        json_obj(vec![("changes", JsonValue::Object(changes_map))])
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 7  COMPLETION ITEMS
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum CompletionItemKind {
+    Text           = 1,
+    Method         = 2,
+    Function       = 3,
+    Constructor    = 4,
+    Field          = 5,
+    Variable       = 6,
+    Class          = 7,
+    Interface      = 8,
+    Module         = 9,
+    Property       = 10,
+    Unit           = 11,
+    Value          = 12,
+    Enum           = 13,
+    Keyword        = 14,
+    Snippet        = 15,
+    Color          = 16,
+    File           = 17,
+    Reference      = 18,
+    Folder         = 19,
+    EnumMember     = 20,
+    Constant       = 21,
+    Struct         = 22,
+    Event          = 23,
+    Operator       = 24,
+    TypeParameter  = 25,
+}
+
+impl CompletionItemKind {
+    pub fn as_num(&self) -> f64 {
+        match self {
+            CompletionItemKind::Text          => 1.0,
+            CompletionItemKind::Method        => 2.0,
+            CompletionItemKind::Function      => 3.0,
+            CompletionItemKind::Constructor   => 4.0,
+            CompletionItemKind::Field         => 5.0,
+            CompletionItemKind::Variable      => 6.0,
+            CompletionItemKind::Class         => 7.0,
+            CompletionItemKind::Interface     => 8.0,
+            CompletionItemKind::Module        => 9.0,
+            CompletionItemKind::Property      => 10.0,
+            CompletionItemKind::Unit          => 11.0,
+            CompletionItemKind::Value         => 12.0,
+            CompletionItemKind::Enum          => 13.0,
+            CompletionItemKind::Keyword       => 14.0,
+            CompletionItemKind::Snippet       => 15.0,
+            CompletionItemKind::Color         => 16.0,
+            CompletionItemKind::File          => 17.0,
+            CompletionItemKind::Reference     => 18.0,
+            CompletionItemKind::Folder        => 19.0,
+            CompletionItemKind::EnumMember    => 20.0,
+            CompletionItemKind::Constant      => 21.0,
+            CompletionItemKind::Struct        => 22.0,
+            CompletionItemKind::Event         => 23.0,
+            CompletionItemKind::Operator      => 24.0,
+            CompletionItemKind::TypeParameter => 25.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompletionItem {
+    pub label:         String,
+    pub kind:          CompletionItemKind,
+    pub detail:        Option<String>,
+    pub documentation: Option<String>,
+    pub insert_text:   Option<String>,
+    pub sort_text:     Option<String>,
+    pub filter_text:   Option<String>,
+}
+
+impl CompletionItem {
+    pub fn new(label: &str, kind: CompletionItemKind) -> Self {
+        CompletionItem {
+            label:         label.to_string(),
+            kind,
+            detail:        None,
+            documentation: None,
+            insert_text:   None,
+            sort_text:     None,
+            filter_text:   None,
+        }
+    }
+
+    pub fn with_detail(mut self, d: &str) -> Self {
+        self.detail = Some(d.to_string()); self
+    }
+
+    pub fn with_doc(mut self, d: &str) -> Self {
+        self.documentation = Some(d.to_string()); self
+    }
+
+    pub fn with_insert(mut self, s: &str) -> Self {
+        self.insert_text = Some(s.to_string()); self
+    }
+
+    pub fn with_sort(mut self, s: &str) -> Self {
+        self.sort_text = Some(s.to_string()); self
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![
+            ("label", json_str(&self.label)),
+            ("kind",  json_num(self.kind.as_num())),
+        ];
+        if let Some(d) = &self.detail {
+            pairs.push(("detail", json_str(d)));
+        }
+        if let Some(d) = &self.documentation {
+            pairs.push(("documentation", json_obj(vec![
+                ("kind",  json_str("markdown")),
+                ("value", json_str(d)),
+            ])));
+        }
+        if let Some(t) = &self.insert_text {
+            pairs.push(("insertText", json_str(t)));
+            pairs.push(("insertTextFormat", json_num(2.0))); // Snippet
+        }
+        if let Some(s) = &self.sort_text {
+            pairs.push(("sortText", json_str(s)));
+        }
+        if let Some(f) = &self.filter_text {
+            pairs.push(("filterText", json_str(f)));
+        }
+        json_obj(pairs)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 8  DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum DiagnosticSeverity {
+    Error       = 1,
+    Warning     = 2,
+    Information = 3,
+    Hint        = 4,
+}
+
+impl DiagnosticSeverity {
+    pub fn as_num(&self) -> f64 {
+        match self {
+            DiagnosticSeverity::Error       => 1.0,
+            DiagnosticSeverity::Warning     => 2.0,
+            DiagnosticSeverity::Information => 3.0,
+            DiagnosticSeverity::Hint        => 4.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Diagnostic {
+    pub range:    Range,
+    pub severity: DiagnosticSeverity,
+    pub message:  String,
+    pub source:   String,
+    pub code:     Option<String>,
+}
+
+impl Diagnostic {
+    pub fn error(range: Range, message: &str, source: &str) -> Self {
+        Diagnostic {
+            range,
+            severity: DiagnosticSeverity::Error,
+            message: message.to_string(),
+            source: source.to_string(),
+            code: None,
+        }
+    }
+
+    pub fn warning(range: Range, message: &str, source: &str) -> Self {
+        Diagnostic {
+            range,
+            severity: DiagnosticSeverity::Warning,
+            message: message.to_string(),
+            source: source.to_string(),
+            code: None,
+        }
+    }
+
+    pub fn hint(range: Range, message: &str, source: &str) -> Self {
+        Diagnostic {
+            range,
+            severity: DiagnosticSeverity::Hint,
+            message: message.to_string(),
+            source: source.to_string(),
+            code: None,
+        }
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![
+            ("range",    self.range.to_json()),
+            ("severity", json_num(self.severity.as_num())),
+            ("message",  json_str(&self.message)),
+            ("source",   json_str(&self.source)),
+        ];
+        if let Some(c) = &self.code {
+            pairs.push(("code", json_str(c)));
+        }
+        json_obj(pairs)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 9  HOVER
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct MarkupContent {
+    pub kind:  String,   // "plaintext" | "markdown"
+    pub value: String,
+}
+
+impl MarkupContent {
+    pub fn markdown(value: &str) -> Self {
+        MarkupContent { kind: "markdown".to_string(), value: value.to_string() }
+    }
+
+    pub fn plaintext(value: &str) -> Self {
+        MarkupContent { kind: "plaintext".to_string(), value: value.to_string() }
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        json_obj(vec![
+            ("kind",  json_str(&self.kind)),
+            ("value", json_str(&self.value)),
+        ])
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Hover {
+    pub contents: MarkupContent,
+    pub range:    Option<Range>,
+}
+
+impl Hover {
+    pub fn new(contents: MarkupContent) -> Self {
+        Hover { contents, range: None }
+    }
+
+    pub fn with_range(mut self, r: Range) -> Self {
+        self.range = Some(r); self
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![("contents", self.contents.to_json())];
+        if let Some(r) = &self.range {
+            pairs.push(("range", r.to_json()));
+        }
+        json_obj(pairs)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 10  SYMBOL INFORMATION
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum SymbolKind {
+    File          = 1,
+    Module        = 2,
+    Namespace     = 3,
+    Package       = 4,
+    Class         = 5,
+    Method        = 6,
+    Property      = 7,
+    Field         = 8,
+    Constructor   = 9,
+    Enum          = 10,
+    Interface     = 11,
+    Function      = 12,
+    Variable      = 13,
+    Constant      = 14,
+    String        = 15,
+    Number        = 16,
+    Boolean       = 17,
+    Array         = 18,
+    Object        = 19,
+    Key           = 20,
+    Null          = 21,
+    EnumMember    = 22,
+    Struct        = 23,
+    Event         = 24,
+    Operator      = 25,
+    TypeParameter = 26,
+}
+
+impl SymbolKind {
+    pub fn as_num(&self) -> f64 {
+        match self {
+            SymbolKind::File          => 1.0,
+            SymbolKind::Module        => 2.0,
+            SymbolKind::Namespace     => 3.0,
+            SymbolKind::Package       => 4.0,
+            SymbolKind::Class         => 5.0,
+            SymbolKind::Method        => 6.0,
+            SymbolKind::Property      => 7.0,
+            SymbolKind::Field         => 8.0,
+            SymbolKind::Constructor   => 9.0,
+            SymbolKind::Enum          => 10.0,
+            SymbolKind::Interface     => 11.0,
+            SymbolKind::Function      => 12.0,
+            SymbolKind::Variable      => 13.0,
+            SymbolKind::Constant      => 14.0,
+            SymbolKind::String        => 15.0,
+            SymbolKind::Number        => 16.0,
+            SymbolKind::Boolean       => 17.0,
+            SymbolKind::Array         => 18.0,
+            SymbolKind::Object        => 19.0,
+            SymbolKind::Key           => 20.0,
+            SymbolKind::Null          => 21.0,
+            SymbolKind::EnumMember    => 22.0,
+            SymbolKind::Struct        => 23.0,
+            SymbolKind::Event         => 24.0,
+            SymbolKind::Operator      => 25.0,
+            SymbolKind::TypeParameter => 26.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SymbolInformation {
+    pub name:           String,
+    pub kind:           SymbolKind,
+    pub location:       Location,
+    pub container_name: Option<String>,
+}
+
+impl SymbolInformation {
+    pub fn to_json(&self) -> JsonValue {
+        let mut pairs = vec![
+            ("name",     json_str(&self.name)),
+            ("kind",     json_num(self.kind.as_num())),
+            ("location", self.location.to_json()),
+        ];
+        if let Some(c) = &self.container_name {
+            pairs.push(("containerName", json_str(c)));
+        }
+        json_obj(pairs)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 11  I/O FRAMING — Content-Length transport
+// ─────────────────────────────────────────────────────────────
+
+pub fn read_message() -> Option<RpcRequest> {
+    let stdin = std::io::stdin();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut content_length: Option<usize> = None;
+
+    // Read headers
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        if line.is_empty() {
+            break; // blank line separates headers from body
+        }
+        if line.to_lowercase().starts_with("content-length:") {
+            let val = line["content-length:".len()..].trim();
+            content_length = val.parse().ok();
+        }
+        // ignore Content-Type and other headers
+    }
+
+    let length = content_length?;
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).ok()?;
+    let body_str = std::str::from_utf8(&body).ok()?;
+
+    let json = match json_parse(body_str) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[LSP] JSON parse error: {}", e);
+            return None;
+        }
+    };
+
+    let method = json.get("method")?.as_str()?.to_string();
+    let id     = json.get("id").cloned().unwrap_or(JsonValue::Null);
+    let params = json.get("params").cloned().unwrap_or(JsonValue::Null);
+
+    Some(RpcRequest { id, method, params })
+}
+
+pub fn write_message(response: &JsonValue) {
+    let body = json_serialize(response);
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(header.as_bytes()).unwrap();
+    out.write_all(body.as_bytes()).unwrap();
+    out.flush().unwrap();
+}
+
+pub fn write_response(resp: &RpcResponse) {
+    write_message(&resp.to_json());
+}
+
+pub fn write_notification(method: &str, params: JsonValue) {
+    write_message(&RpcResponse::notification(method, params));
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 12  UTILITY — TITAN/LSP HELPERS
+// ─────────────────────────────────────────────────────────────
+
+// Convert a byte offset in a string to (line, character)
+pub fn offset_to_position(src: &str, offset: usize) -> Position {
+    let mut line = 0u32;
+    let mut character = 0u32;
+    for (i, ch) in src.char_indices() {
+        if i >= offset { break; }
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += 1;
+        }
+    }
+    Position { line, character }
+}
+
+// Convert (line, character) to byte offset in string
+pub fn position_to_offset(src: &str, pos: &Position) -> Option<usize> {
+    let mut cur_line = 0u32;
+    let mut cur_char = 0u32;
+    for (i, ch) in src.char_indices() {
+        if cur_line == pos.line && cur_char == pos.character {
+            return Some(i);
+        }
+        if ch == '\n' {
+            cur_line += 1;
+            cur_char = 0;
+        } else {
+            cur_char += 1;
+        }
+    }
+    if cur_line == pos.line && cur_char == pos.character {
+        Some(src.len())
+    } else {
+        None
+    }
+}
+
+// Apply a single incremental TextEdit to a document string
+pub fn apply_text_edit(src: &str, edit: &TextEdit) -> String {
+    let start_off = position_to_offset(src, &edit.range.start).unwrap_or(0);
+    let end_off   = position_to_offset(src, &edit.range.end).unwrap_or(src.len());
+    let mut result = String::with_capacity(src.len() + edit.new_text.len());
+    result.push_str(&src[..start_off]);
+    result.push_str(&edit.new_text);
+    result.push_str(&src[end_off..]);
+    result
+}
+
+// Apply multiple edits (sorted in reverse so offsets don't shift)
+pub fn apply_text_edits(src: &str, edits: &[TextEdit]) -> String {
+    let mut sorted = edits.to_vec();
+    sorted.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line)
+        .then(b.range.start.character.cmp(&a.range.start.character)));
+    let mut result = src.to_string();
+    for edit in &sorted {
+        result = apply_text_edit(&result, edit);
+    }
+    result
+}
+
+// Get the word token at a given position
+pub fn word_at_position(src: &str, pos: &Position) -> Option<(String, Range)> {
+    let offset = position_to_offset(src, pos)?;
+    let bytes = src.as_bytes();
+    let is_word_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut start = offset;
+    while start > 0 && is_word_char(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < bytes.len() && is_word_char(bytes[end]) {
+        end += 1;
+    }
+    if start == end { return None; }
+    let word = src[start..end].to_string();
+    let range = Range::new(
+        offset_to_position(src, start),
+        offset_to_position(src, end),
+    );
+    Some((word, range))
+}
+
+// Extract the line prefix up to cursor (for completion context)
+pub fn line_prefix(src: &str, pos: &Position) -> String {
+    let lines: Vec<&str> = src.split('\n').collect();
+    let line = lines.get(pos.line as usize).copied().unwrap_or("");
+    let end = pos.character as usize;
+    if end <= line.len() {
+        line[..end].to_string()
+    } else {
+        line.to_string()
+    }
+}

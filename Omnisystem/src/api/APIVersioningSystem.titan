@@ -408,8 +408,58 @@ pub struct VersionUsage {
 // ============================================================================
 
 fn parse_version_from_request(request: &APIRequest) -> Result<String, String> {
-    // Would check headers/URL/params for version
-    Ok("v1".to_string())  // Placeholder
+    // Explicit field wins first
+    if !request.requested_version.is_empty() && request.requested_version != "default" {
+        return Ok(request.requested_version.clone())
+    }
+
+    // Accept: application/vnd.omnisystem.v{N}+json
+    if let Some(accept) = request.headers.get("Accept") {
+        if let Some(pos) = accept.find("vnd.omnisystem.v") {
+            let after = &accept[pos + 16..];
+            let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
+            if end > 0 {
+                return Ok(format!("v{}", &after[..end]))
+            }
+        }
+    }
+
+    // api-version: N or vN header
+    if let Some(hv) = request.headers.get("api-version") {
+        let v = hv.trim();
+        if v.starts_with('v') || v.starts_with('V') {
+            return Ok(v.to_lowercase())
+        }
+        if v.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            return Ok(format!("v{}", v))
+        }
+    }
+
+    // URL path: /v2/resource or /api/v3/...
+    let path = &request.endpoint;
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    for part in &parts {
+        let lower = part.to_lowercase();
+        if lower.starts_with('v') {
+            let rest = &lower[1..];
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                return Ok(lower.to_string())
+            }
+        }
+    }
+
+    // query param: ?api-version=2 or ?version=v2
+    if let Some(qv) = request.headers.get("X-Query-ApiVersion") {
+        let v = qv.trim();
+        if v.starts_with('v') || v.starts_with('V') {
+            return Ok(v.to_lowercase())
+        }
+        if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(format!("v{}", v))
+        }
+    }
+
+    Ok("v1".to_string())
 }
 
 fn apply_transformation(
@@ -429,10 +479,24 @@ fn apply_transformation(
             }
         },
         "flatten" => {
-            // Flatten nested structures
+            // Flatten keys of the form "a.b" into separate top-level "a_b" entries
+            let keys: Vec<String> = result.keys().cloned().collect()
+            for key in keys {
+                if key.contains('.') {
+                    if let Some(val) = result.remove(&key) {
+                        let flat_key = key.replace('.', "_")
+                        result.insert(flat_key, val)
+                    }
+                }
+            }
         },
         "map_values" => {
-            // Apply mapping rules to values
+            // Apply mapping_rules: old_value -> new_value for each field
+            for (field, value) in result.iter_mut() {
+                if let Some(mapped) = step.mapping_rules.get(value.as_str()) {
+                    *value = mapped.clone()
+                }
+            }
         },
         _ => {}
     }
@@ -440,11 +504,42 @@ fn apply_transformation(
     Ok(result)
 }
 
-fn route_request(request: &APIRequest, _endpoint: &APIEndpoint) -> Result<HashMap<String, String>, String> {
-    // Would route to actual handler
-    Ok(HashMap::new())  // Placeholder
+fn route_request(request: &APIRequest, endpoint: &APIEndpoint) -> Result<HashMap<String, String>, String> {
+    let mut response: HashMap<String, String> = HashMap::new()
+
+    // Echo back required response fields defined in the endpoint schema
+    for (field, field_type) in &endpoint.response_schema {
+        let value = if let Some(v) = request.body.get(field) {
+            v.clone()
+        } else {
+            // Synthesize a typed default for fields not in the request body
+            match field_type.as_str() {
+                "String" | "str"    => String::new(),
+                "i32" | "i64" | "u64" => "0".to_string(),
+                "f32" | "f64"       => "0.0".to_string(),
+                "bool"              => "false".to_string(),
+                "Vec"               => "[]".to_string(),
+                _                   => String::new(),
+            }
+        };
+        response.insert(field.clone(), value)
+    }
+
+    // Always include routing metadata
+    response.insert("_routed_to".to_string(), format!("{}::{}", endpoint.method, endpoint.path))
+    response.insert("_version".to_string(), endpoint.version.clone())
+    response.insert("_request_id".to_string(), request.id.clone())
+
+    Ok(response)
 }
 
+
+extern "Win32"  { fn GetTickCount64() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono(out_sec: *mut i64, out_nsec: *mut i64) -> i32 }
+
 fn current_time_ms() -> i64 {
-    0  // Placeholder
+    #[cfg(target_os = "windows")]
+    { return unsafe { GetTickCount64() } as i64 }
+    #[cfg(not(target_os = "windows"))]
+    { let mut s = 0i64; let mut n = 0i64; unsafe { clock_gettime_mono(&mut s, &mut n) }; s * 1000 + n / 1_000_000 }
 }

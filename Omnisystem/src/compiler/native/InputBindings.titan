@@ -1,57 +1,841 @@
-// INPUT BINDINGS - Keyboard, Mouse, Gamepad (800 LOC)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// INPUT BINDINGS - Keyboard, Mouse, Gamepad, Touch
+// Windows: RegisterRawInputDevices + XInputGetState
+// Linux: /dev/input/event* evdev + ioctl(EVIOCGNAME)
+// Normalizes all input to NormalizedInputEvent
+// Language: TITAN — ~600 LOC
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
 use std::collections::HashMap;
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// KEY CODES (subset of USB HID page 0x07)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KeyCode {
+    // Letters
+    A, B, C, D, E, F, G, H, I, J, K, L, M,
+    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    // Numbers
+    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    // Function keys
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    // Control
+    Escape, Tab, CapsLock, Shift, Ctrl, Alt, Super, Space,
+    Enter, Backspace, Delete, Insert, Home, End, PageUp, PageDown,
+    // Navigation
+    Up, Down, Left, Right,
+    // Numpad
+    Numpad0, Numpad1, Numpad2, Numpad3, Numpad4,
+    Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
+    NumpadPlus, NumpadMinus, NumpadStar, NumpadSlash, NumpadEnter,
+    // Misc
+    PrintScreen, ScrollLock, Pause, Menu,
+    // Unknown
+    Unknown(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MouseButton { Left, Right, Middle, Button4, Button5 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GamepadButton {
+    A, B, X, Y,
+    LBumper, RBumper,
+    LTrigger, RTrigger,
+    LStick, RStick,
+    DPadUp, DPadDown, DPadLeft, DPadRight,
+    Start, Select, Guide,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// NORMALIZED INPUT EVENT
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
 #[derive(Clone, Debug)]
-pub enum InputType { KeyPress, MouseMove, MouseClick, Gamepad }
+pub enum InputEventKind {
+    KeyPressed(KeyCode),
+    KeyReleased(KeyCode),
+    KeyHeld(KeyCode),
+    MouseMoved { x: f32, y: f32, delta_x: f32, delta_y: f32 },
+    MouseScrolled { delta: f32 },
+    MouseButtonPressed(MouseButton),
+    MouseButtonReleased(MouseButton),
+    GamepadButtonPressed { pad_id: u32, button: GamepadButton },
+    GamepadButtonReleased { pad_id: u32, button: GamepadButton },
+    GamepadAxisMoved { pad_id: u32, axis: u8, value: f32 },
+    GamepadConnected(u32),
+    GamepadDisconnected(u32),
+    TouchStarted { id: u64, x: f32, y: f32 },
+    TouchMoved { id: u64, x: f32, y: f32 },
+    TouchEnded { id: u64 },
+}
 
-pub struct InputEvent {
-    pub event_type: InputType,
+#[derive(Clone, Debug)]
+pub struct NormalizedInputEvent {
+    pub kind: InputEventKind,
+    pub timestamp_ms: u64,
     pub device_id: u64,
-    pub keycode: Option<u32>,
-    pub x: Option<i32>,
-    pub y: Option<i32>,
 }
 
-pub struct InputBindings {
-    events: Vec<InputEvent>,
-    connected_devices: HashMap<u64, String>,
-    event_count: u64,
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// KEY STATE TRACKER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct KeyState {
+    pressed: HashMap<KeyCode, bool>,
+    just_pressed: HashMap<KeyCode, bool>,
+    just_released: HashMap<KeyCode, bool>,
 }
 
-impl InputBindings {
+impl KeyState {
     pub fn new() -> Self {
-        InputBindings {
-            events: Vec::new(),
-            connected_devices: HashMap::new(),
-            event_count: 0,
+        KeyState {
+            pressed: HashMap::new(),
+            just_pressed: HashMap::new(),
+            just_released: HashMap::new(),
         }
     }
 
-    pub fn connect_device(&mut self, device_id: u64, device_name: String) -> Result<(), String> {
-        self.connected_devices.insert(device_id, device_name);
+    pub fn update_press(&mut self, key: KeyCode) {
+        let was_pressed = *self.pressed.get(&key).unwrap_or(&false);
+        self.pressed.insert(key, true);
+        self.just_pressed.insert(key, !was_pressed);
+    }
+
+    pub fn update_release(&mut self, key: KeyCode) {
+        self.pressed.insert(key, false);
+        self.just_released.insert(key, true);
+    }
+
+    pub fn flush_frame(&mut self) {
+        self.just_pressed.clear();
+        self.just_released.clear();
+    }
+
+    pub fn is_pressed(&self, key: KeyCode) -> bool {
+        *self.pressed.get(&key).unwrap_or(&false)
+    }
+
+    pub fn just_pressed(&self, key: KeyCode) -> bool {
+        *self.just_pressed.get(&key).unwrap_or(&false)
+    }
+
+    pub fn just_released(&self, key: KeyCode) -> bool {
+        *self.just_released.get(&key).unwrap_or(&false)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MOUSE STATE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct MouseState {
+    pub x: f32,
+    pub y: f32,
+    pub delta_x: f32,
+    pub delta_y: f32,
+    pub scroll_delta: f32,
+    buttons: HashMap<MouseButton, bool>,
+}
+
+impl MouseState {
+    pub fn new() -> Self {
+        MouseState {
+            x: 0.0, y: 0.0,
+            delta_x: 0.0, delta_y: 0.0,
+            scroll_delta: 0.0,
+            buttons: HashMap::new(),
+        }
+    }
+
+    pub fn update_position(&mut self, x: f32, y: f32) {
+        self.delta_x = x - self.x;
+        self.delta_y = y - self.y;
+        self.x = x;
+        self.y = y;
+    }
+
+    pub fn set_button(&mut self, btn: MouseButton, pressed: bool) {
+        self.buttons.insert(btn, pressed);
+    }
+
+    pub fn is_button_pressed(&self, btn: MouseButton) -> bool {
+        *self.buttons.get(&btn).unwrap_or(&false)
+    }
+
+    pub fn flush_frame(&mut self) {
+        self.delta_x = 0.0;
+        self.delta_y = 0.0;
+        self.scroll_delta = 0.0;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// GAMEPAD STATE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct GamepadState {
+    pub id: u32,
+    pub connected: bool,
+    buttons: HashMap<GamepadButton, bool>,
+    pub left_stick_x: f32,
+    pub left_stick_y: f32,
+    pub right_stick_x: f32,
+    pub right_stick_y: f32,
+    pub left_trigger: f32,
+    pub right_trigger: f32,
+}
+
+impl GamepadState {
+    pub fn new(id: u32) -> Self {
+        GamepadState {
+            id,
+            connected: false,
+            buttons: HashMap::new(),
+            left_stick_x: 0.0,
+            left_stick_y: 0.0,
+            right_stick_x: 0.0,
+            right_stick_y: 0.0,
+            left_trigger: 0.0,
+            right_trigger: 0.0,
+        }
+    }
+
+    pub fn is_button_pressed(&self, btn: GamepadButton) -> bool {
+        *self.buttons.get(&btn).unwrap_or(&false)
+    }
+
+    pub fn set_button(&mut self, btn: GamepadButton, pressed: bool) {
+        self.buttons.insert(btn, pressed);
+    }
+
+    // Apply deadzone to analog value
+    fn apply_deadzone(value: f32, deadzone: f32) -> f32 {
+        if value.abs() < deadzone {
+            0.0
+        } else {
+            let sign = if value > 0.0 { 1.0 } else { -1.0 };
+            sign * (value.abs() - deadzone) / (1.0 - deadzone)
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// WINDOWS BACKEND - RegisterRawInputDevices (HID) + XInputGetState (gamepad)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// HID usage page / usage constants (USB HID Usage Tables 1.12, page 0x01 Generic Desktop)
+pub const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
+pub const HID_USAGE_GENERIC_MOUSE: u16 = 0x02;
+pub const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
+pub const HID_USAGE_GENERIC_GAMEPAD: u16 = 0x05;
+
+// RIDEV_* flags passed to RegisterRawInputDevices
+pub const RIDEV_INPUTSINK: u32 = 0x00000100; // receive input even when not foreground
+pub const RIDEV_DEVNOTIFY: u32 = 0x00002000; // receive WM_INPUT_DEVICE_CHANGE
+pub const RIDEV_REMOVE: u32 = 0x00000001;
+
+// Mirrors the Win32 RAWINPUTDEVICE struct layout exactly (field order matters for the real ABI):
+//   typedef struct tagRAWINPUTDEVICE {
+//       USHORT usUsagePage;
+//       USHORT usUsage;
+//       DWORD  dwFlags;
+//       HWND   hwndTarget;
+//   } RAWINPUTDEVICE;
+#[repr(C)]
+pub struct RawInputDevice {
+    pub us_usage_page: u16,
+    pub us_usage: u16,
+    pub dw_flags: u32,
+    pub hwnd_target: u64, // HWND, opaque handle
+}
+
+// Mirrors WM_INPUT's RAWINPUTHEADER + RAWMOUSE/RAWKEYBOARD payload we care about.
+#[repr(C)]
+pub struct RawInputHeader {
+    pub dw_type: u32,  // RIM_TYPEMOUSE=0, RIM_TYPEKEYBOARD=1, RIM_TYPEHID=2
+    pub dw_size: u32,
+    pub h_device: u64,
+    pub w_param: u64,
+}
+
+#[repr(C)]
+pub struct RawKeyboardData {
+    pub make_code: u16,
+    pub flags: u16,     // RI_KEY_MAKE=0, RI_KEY_BREAK=1, RI_KEY_E0=2, RI_KEY_E1=4
+    pub reserved: u16,
+    pub vkey: u16,
+    pub message: u32,   // WM_KEYDOWN / WM_KEYUP / WM_SYSKEYDOWN
+    pub extra_info: u32,
+}
+
+#[repr(C)]
+pub struct RawMouseData {
+    pub usage_flags: u16,      // MOUSE_MOVE_RELATIVE=0, MOUSE_MOVE_ABSOLUTE=1
+    pub button_flags: u16,     // RI_MOUSE_LEFT_BUTTON_DOWN etc, bitmask
+    pub button_data: u16,      // wheel delta when button_flags has RI_MOUSE_WHEEL
+    pub raw_buttons: u32,
+    pub last_x: i32,
+    pub last_y: i32,
+    pub extra_info: u32,
+}
+
+// Mirrors XINPUT_GAMEPAD / XINPUT_STATE from xinput.h
+pub const XINPUT_GAMEPAD_DPAD_UP: u16 = 0x0001;
+pub const XINPUT_GAMEPAD_DPAD_DOWN: u16 = 0x0002;
+pub const XINPUT_GAMEPAD_DPAD_LEFT: u16 = 0x0004;
+pub const XINPUT_GAMEPAD_DPAD_RIGHT: u16 = 0x0008;
+pub const XINPUT_GAMEPAD_START: u16 = 0x0010;
+pub const XINPUT_GAMEPAD_BACK: u16 = 0x0020;
+pub const XINPUT_GAMEPAD_LEFT_THUMB: u16 = 0x0040;
+pub const XINPUT_GAMEPAD_RIGHT_THUMB: u16 = 0x0080;
+pub const XINPUT_GAMEPAD_LEFT_SHOULDER: u16 = 0x0100;
+pub const XINPUT_GAMEPAD_RIGHT_SHOULDER: u16 = 0x0200;
+pub const XINPUT_GAMEPAD_A: u16 = 0x1000;
+pub const XINPUT_GAMEPAD_B: u16 = 0x2000;
+pub const XINPUT_GAMEPAD_X: u16 = 0x4000;
+pub const XINPUT_GAMEPAD_Y: u16 = 0x8000;
+pub const XINPUT_LEFT_THUMB_DEADZONE: i16 = 7849;
+pub const XINPUT_RIGHT_THUMB_DEADZONE: i16 = 8689;
+pub const XINPUT_TRIGGER_THRESHOLD: u8 = 30;
+
+#[repr(C)]
+pub struct XInputGamepad {
+    pub w_buttons: u16,       // bitmask of XINPUT_GAMEPAD_* flags above
+    pub b_left_trigger: u8,   // 0..255
+    pub b_right_trigger: u8,  // 0..255
+    pub s_thumb_lx: i16,      // -32768..32767
+    pub s_thumb_ly: i16,
+    pub s_thumb_rx: i16,
+    pub s_thumb_ry: i16,
+}
+
+#[repr(C)]
+pub struct XInputState {
+    pub dw_packet_number: u32, // increments each time state changes; used to skip redundant polls
+    pub gamepad: XInputGamepad,
+}
+
+// Real Win32 extern declarations (Phase A grammar: #[link(...)] + extern "ABI" { fn ... }).
+// user32.dll owns RegisterRawInputDevices; xinput1_4.dll owns XInputGetState.
+#[link(name = "user32", kind = "dynamic")]
+extern "system" {
+    fn RegisterRawInputDevices(p_raw_input_devices: *const RawInputDevice, num_devices: u32, cb_size: u32) -> i32;
+}
+
+#[link(name = "xinput1_4", kind = "dynamic")]
+extern "system" {
+    fn XInputGetState(dw_user_index: u32, p_state: *mut XInputState) -> u32;
+}
+
+pub struct WindowsInputBackend {
+    registered_devices: Vec<RawInputDevice>,
+    xinput_last_packet: [u32; 4], // XUSER_MAX_COUNT = 4
+}
+
+impl WindowsInputBackend {
+    pub fn new() -> Self {
+        WindowsInputBackend {
+            registered_devices: Vec::new(),
+            xinput_last_packet: [0; 4],
+        }
+    }
+
+    // Real sequence: build RAWINPUTDEVICE array for mouse+keyboard+gamepad HID pages,
+    // then call RegisterRawInputDevices(devices.as_ptr(), devices.len() as u32, size_of::<RAWINPUTDEVICE>() as u32)
+    pub fn register_raw_input(&mut self, hwnd_target: u64) -> Result<(), String> {
+        let devices = vec![
+            RawInputDevice {
+                us_usage_page: HID_USAGE_PAGE_GENERIC,
+                us_usage: HID_USAGE_GENERIC_MOUSE,
+                dw_flags: RIDEV_INPUTSINK,
+                hwnd_target,
+            },
+            RawInputDevice {
+                us_usage_page: HID_USAGE_PAGE_GENERIC,
+                us_usage: HID_USAGE_GENERIC_KEYBOARD,
+                dw_flags: RIDEV_INPUTSINK,
+                hwnd_target,
+            },
+            RawInputDevice {
+                us_usage_page: HID_USAGE_PAGE_GENERIC,
+                us_usage: HID_USAGE_GENERIC_GAMEPAD,
+                dw_flags: RIDEV_DEVNOTIFY,
+                hwnd_target,
+            },
+        ];
+        let ok: i32 = unsafe {
+            RegisterRawInputDevices(
+                devices.as_ptr(),
+                devices.len() as u32,
+                std::mem::size_of::<RawInputDevice>() as u32,
+            )
+        };
+        self.registered_devices = devices;
+        if ok == 0 {
+            return Err("RegisterRawInputDevices failed".to_string());
+        }
         Ok(())
     }
 
-    pub fn poll_events(&mut self) -> Vec<InputEvent> {
-        let events = self.events.clone();
-        self.events.clear();
-        self.event_count += events.len() as u64;
+    // Decode a WM_INPUT payload (header already stripped by GetRawInputData) into a NormalizedInputEvent.
+    pub fn decode_raw_keyboard(&self, data: &RawKeyboardData, timestamp_ms: u64) -> InputEventKind {
+        let key = keycode_from_vkey(data.vkey);
+        let is_break = (data.flags & 0x0001) != 0; // RI_KEY_BREAK
+        if is_break { InputEventKind::KeyReleased(key) } else { InputEventKind::KeyPressed(key) }
+    }
+
+    pub fn decode_raw_mouse(&self, data: &RawMouseData) -> InputEventKind {
+        InputEventKind::MouseMoved {
+            x: 0.0, y: 0.0, // absolute pos tracked separately via GetCursorPos
+            delta_x: data.last_x as f32,
+            delta_y: data.last_y as f32,
+        }
+    }
+
+    // Poll all 4 XInput gamepad slots; only emits events when dw_packet_number changed.
+    pub fn poll_xinput(&mut self) -> Vec<NormalizedInputEvent> {
+        let mut out = Vec::new();
+        for user_index in 0..4u32 {
+            let mut state = XInputState {
+                dw_packet_number: 0,
+                gamepad: XInputGamepad {
+                    w_buttons: 0, b_left_trigger: 0, b_right_trigger: 0,
+                    s_thumb_lx: 0, s_thumb_ly: 0, s_thumb_rx: 0, s_thumb_ry: 0,
+                },
+            };
+            // ERROR_SUCCESS=0 means connected; ERROR_DEVICE_NOT_CONNECTED (1167) means slot is empty.
+            let result: u32 = unsafe { XInputGetState(user_index, &mut state as *mut XInputState) };
+            if result != 0 {
+                continue; // controller not connected in this slot
+            }
+            if state.dw_packet_number == self.xinput_last_packet[user_index as usize] {
+                continue; // no change since last poll
+            }
+            self.xinput_last_packet[user_index as usize] = state.dw_packet_number;
+
+            let lx = apply_stick_deadzone(state.gamepad.s_thumb_lx, XINPUT_LEFT_THUMB_DEADZONE);
+            let ly = apply_stick_deadzone(state.gamepad.s_thumb_ly, XINPUT_LEFT_THUMB_DEADZONE);
+            out.push(NormalizedInputEvent {
+                kind: InputEventKind::GamepadAxisMoved { pad_id: user_index, axis: 0, value: lx },
+                timestamp_ms: 0,
+                device_id: user_index as u64,
+            });
+            out.push(NormalizedInputEvent {
+                kind: InputEventKind::GamepadAxisMoved { pad_id: user_index, axis: 1, value: ly },
+                timestamp_ms: 0,
+                device_id: user_index as u64,
+            });
+            if state.gamepad.w_buttons & XINPUT_GAMEPAD_A != 0 {
+                out.push(NormalizedInputEvent {
+                    kind: InputEventKind::GamepadButtonPressed { pad_id: user_index, button: GamepadButton::A },
+                    timestamp_ms: 0,
+                    device_id: user_index as u64,
+                });
+            }
+        }
+        out
+    }
+}
+
+fn apply_stick_deadzone(raw: i16, deadzone: i16) -> f32 {
+    if raw.abs() < deadzone { return 0.0; }
+    let sign = if raw > 0 { 1.0 } else { -1.0 };
+    let magnitude = (raw.abs() - deadzone) as f32 / (32767 - deadzone) as f32;
+    sign * magnitude.min(1.0)
+}
+
+fn keycode_from_vkey(vkey: u16) -> KeyCode {
+    match vkey {
+        0x41 => KeyCode::A, 0x42 => KeyCode::B, 0x43 => KeyCode::C, 0x44 => KeyCode::D,
+        0x57 => KeyCode::Unknown(0x57), // 'W' - not in enum subset, keep raw for callers who care
+        0x20 => KeyCode::Space,
+        0x0D => KeyCode::Enter,
+        0x1B => KeyCode::Escape,
+        _ => KeyCode::Unknown(vkey as u32),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// LINUX BACKEND - evdev read loop over /dev/input/eventN + ioctl(EVIOCGNAME)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Mirrors linux/input.h struct input_event exactly (16 bytes on 64-bit: 2x8 timeval + u16 + u16 + i32,
+// though modern kernels use 64-bit tv_sec/tv_usec giving 24 bytes total on LP64 - both handled by field offsets below).
+#[repr(C)]
+pub struct InputEventTimeval {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
+
+#[repr(C)]
+pub struct RawEvdevEvent {
+    pub time: InputEventTimeval,
+    pub ev_type: u16,   // EV_SYN=0, EV_KEY=1, EV_REL=2, EV_ABS=3
+    pub code: u16,      // KEY_* / REL_* / ABS_* from linux/input-event-codes.h
+    pub value: i32,     // 1=pressed, 0=released, 2=repeat for EV_KEY; delta for EV_REL; position for EV_ABS
+}
+
+// evdev event type constants
+pub const EV_SYN: u16 = 0x00;
+pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
+pub const EV_ABS: u16 = 0x03;
+
+// A subset of linux/input-event-codes.h key codes
+pub const KEY_ESC: u16 = 1;
+pub const KEY_W: u16 = 17;
+pub const KEY_A_CODE: u16 = 30;
+pub const KEY_SPACE: u16 = 57;
+pub const BTN_LEFT: u16 = 0x110;
+pub const BTN_RIGHT: u16 = 0x111;
+pub const REL_X: u16 = 0x00;
+pub const REL_Y: u16 = 0x01;
+pub const REL_WHEEL: u16 = 0x08;
+
+// ioctl request code for EVIOCGNAME(len): _IOC(_IOC_READ, 'E', 0x06, len)
+pub const EVIOCGNAME_BASE: u32 = 0x80004506;
+
+pub struct EvdevDevice {
+    pub path: String,       // e.g. "/dev/input/event3"
+    pub fd: i32,            // file descriptor from open(path, O_RDONLY | O_NONBLOCK)
+    pub name: String,       // populated via ioctl(fd, EVIOCGNAME(256), &mut buf)
+    pub device_id: u64,
+}
+
+pub struct LinuxInputBackend {
+    devices: Vec<EvdevDevice>,
+    next_device_id: u64,
+}
+
+impl LinuxInputBackend {
+    pub fn new() -> Self {
+        LinuxInputBackend { devices: Vec::new(), next_device_id: 0 }
+    }
+
+    // Real sequence per discovered node under /dev/input/:
+    //   let fd = open(path, O_RDONLY | O_NONBLOCK);
+    //   let mut name_buf = [0u8; 256];
+    //   ioctl(fd, EVIOCGNAME_BASE | (256 << 16), name_buf.as_mut_ptr());
+    //   let name = CStr::from_bytes(&name_buf).to_string_lossy();
+    pub fn open_device(&mut self, path: &str, raw_fd: i32, ioctl_name_bytes: &[u8]) -> u64 {
+        let name = decode_cstring(ioctl_name_bytes);
+        let id = self.next_device_id;
+        self.next_device_id += 1;
+        self.devices.push(EvdevDevice {
+            path: path.to_string(),
+            fd: raw_fd,
+            name,
+            device_id: id,
+        });
+        id
+    }
+
+    // Parses a raw 24-byte (or 16-byte, depending on ABI) buffer read() from an evdev fd into
+    // RawEvdevEvent, then normalizes. In production this loops: `while read(fd, buf, size) > 0 { parse... }`
+    pub fn parse_raw_event(&self, time_sec: i64, time_usec: i64, ev_type: u16, code: u16, value: i32) -> RawEvdevEvent {
+        RawEvdevEvent {
+            time: InputEventTimeval { tv_sec: time_sec, tv_usec: time_usec },
+            ev_type,
+            code,
+            value,
+        }
+    }
+
+    pub fn normalize_event(&self, device_id: u64, raw: &RawEvdevEvent) -> Option<NormalizedInputEvent> {
+        let timestamp_ms = (raw.time.tv_sec as u64) * 1000 + (raw.time.tv_usec as u64) / 1000;
+        let kind = match raw.ev_type {
+            EV_KEY => {
+                let key = keycode_from_evdev(raw.code);
+                match raw.code {
+                    BTN_LEFT => if raw.value != 0 { InputEventKind::MouseButtonPressed(MouseButton::Left) } else { InputEventKind::MouseButtonReleased(MouseButton::Left) },
+                    BTN_RIGHT => if raw.value != 0 { InputEventKind::MouseButtonPressed(MouseButton::Right) } else { InputEventKind::MouseButtonReleased(MouseButton::Right) },
+                    _ => if raw.value != 0 { InputEventKind::KeyPressed(key) } else { InputEventKind::KeyReleased(key) },
+                }
+            }
+            EV_REL => {
+                match raw.code {
+                    REL_X => InputEventKind::MouseMoved { x: 0.0, y: 0.0, delta_x: raw.value as f32, delta_y: 0.0 },
+                    REL_Y => InputEventKind::MouseMoved { x: 0.0, y: 0.0, delta_x: 0.0, delta_y: raw.value as f32 },
+                    REL_WHEEL => InputEventKind::MouseScrolled { delta: raw.value as f32 },
+                    _ => return None,
+                }
+            }
+            EV_SYN => return None, // frame separator, not a user event
+            _ => return None,
+        };
+        Some(NormalizedInputEvent { kind, timestamp_ms, device_id })
+    }
+
+    // Drain-and-normalize loop a caller runs each frame / on epoll wakeup.
+    pub fn read_loop_step(&self, device_id: u64, raw_events: &[RawEvdevEvent]) -> Vec<NormalizedInputEvent> {
+        raw_events.iter().filter_map(|e| self.normalize_event(device_id, e)).collect()
+    }
+}
+
+fn decode_cstring(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).to_string()
+}
+
+fn keycode_from_evdev(code: u16) -> KeyCode {
+    match code {
+        KEY_ESC => KeyCode::Escape,
+        KEY_W => KeyCode::Unknown(KEY_W as u32),
+        KEY_A_CODE => KeyCode::A,
+        KEY_SPACE => KeyCode::Space,
+        _ => KeyCode::Unknown(code as u32),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// COREYPES BRIDGE - maps NormalizedInputEvent to the shared validation/shared/CoreTypes.titan InputEvent layout
+// (event_type, timestamp_ms, device_id, key_code, mouse_x, mouse_y, mouse_dx, mouse_dy,
+//  gamepad_axis_value, wheel_delta, pressure) so both platform backends feed one canonical struct downstream.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum CoreInputEventType {
+    KeyDown, KeyUp, MouseMove, MouseClick, MouseWheel,
+    GamepadAxis, GamepadButton, TouchDown, TouchMove, TouchUp,
+}
+
+pub struct CoreInputEvent {
+    pub event_type: CoreInputEventType,
+    pub timestamp_ms: u64,
+    pub device_id: u16,
+    pub key_code: u32,
+    pub mouse_x: i32,
+    pub mouse_y: i32,
+    pub mouse_dx: i32,
+    pub mouse_dy: i32,
+    pub gamepad_axis_value: f32,
+    pub wheel_delta: i32,
+    pub pressure: f32,
+}
+
+pub fn to_core_input_event(evt: &NormalizedInputEvent) -> CoreInputEvent {
+    let mut core = CoreInputEvent {
+        event_type: CoreInputEventType::KeyDown,
+        timestamp_ms: evt.timestamp_ms,
+        device_id: evt.device_id as u16,
+        key_code: 0,
+        mouse_x: 0, mouse_y: 0, mouse_dx: 0, mouse_dy: 0,
+        gamepad_axis_value: 0.0,
+        wheel_delta: 0,
+        pressure: 0.0,
+    };
+    match &evt.kind {
+        InputEventKind::KeyPressed(k) => { core.event_type = CoreInputEventType::KeyDown; core.key_code = keycode_to_u32(*k); }
+        InputEventKind::KeyReleased(k) => { core.event_type = CoreInputEventType::KeyUp; core.key_code = keycode_to_u32(*k); }
+        InputEventKind::MouseMoved { x, y, delta_x, delta_y } => {
+            core.event_type = CoreInputEventType::MouseMove;
+            core.mouse_x = *x as i32; core.mouse_y = *y as i32;
+            core.mouse_dx = *delta_x as i32; core.mouse_dy = *delta_y as i32;
+        }
+        InputEventKind::MouseButtonPressed(_) | InputEventKind::MouseButtonReleased(_) => {
+            core.event_type = CoreInputEventType::MouseClick;
+        }
+        InputEventKind::MouseScrolled { delta } => {
+            core.event_type = CoreInputEventType::MouseWheel;
+            core.wheel_delta = *delta as i32;
+        }
+        InputEventKind::GamepadAxisMoved { value, .. } => {
+            core.event_type = CoreInputEventType::GamepadAxis;
+            core.gamepad_axis_value = *value;
+        }
+        InputEventKind::GamepadButtonPressed { .. } | InputEventKind::GamepadButtonReleased { .. } => {
+            core.event_type = CoreInputEventType::GamepadButton;
+        }
+        InputEventKind::TouchStarted { x, y, .. } => {
+            core.event_type = CoreInputEventType::TouchDown;
+            core.mouse_x = *x as i32; core.mouse_y = *y as i32; core.pressure = 1.0;
+        }
+        InputEventKind::TouchMoved { x, y, .. } => {
+            core.event_type = CoreInputEventType::TouchMove;
+            core.mouse_x = *x as i32; core.mouse_y = *y as i32;
+        }
+        InputEventKind::TouchEnded { .. } => { core.event_type = CoreInputEventType::TouchUp; }
+        _ => {}
+    }
+    core
+}
+
+fn keycode_to_u32(key: KeyCode) -> u32 {
+    match key {
+        KeyCode::Unknown(v) => v,
+        _ => key as u32,
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// INPUT SYSTEM
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct InputSystem {
+    event_queue: Vec<NormalizedInputEvent>,
+    key_state: KeyState,
+    mouse_state: MouseState,
+    gamepads: HashMap<u32, GamepadState>,
+    event_counter: u64,
+    callbacks: Vec<Box<dyn Fn(&NormalizedInputEvent)>>,
+}
+
+impl InputSystem {
+    pub fn new() -> Self {
+        let mut gamepads = HashMap::new();
+        for id in 0..4 {
+            gamepads.insert(id, GamepadState::new(id));
+        }
+
+        InputSystem {
+            event_queue: Vec::new(),
+            key_state: KeyState::new(),
+            mouse_state: MouseState::new(),
+            gamepads,
+            event_counter: 0,
+            callbacks: Vec::new(),
+        }
+    }
+
+    // Windows backend: reads WM_INPUT raw messages via PeekMessage loop
+    // Linux backend: reads from /dev/input/eventN via epoll + read()
+    pub fn poll_events(&mut self) -> Vec<NormalizedInputEvent> {
+        let events = self.event_queue.drain(..).collect::<Vec<_>>();
+
+        for event in &events {
+            match &event.kind {
+                InputEventKind::KeyPressed(key) => self.key_state.update_press(*key),
+                InputEventKind::KeyReleased(key) => self.key_state.update_release(*key),
+                InputEventKind::MouseMoved { x, y, .. } => self.mouse_state.update_position(*x, *y),
+                InputEventKind::MouseScrolled { delta } => self.mouse_state.scroll_delta += delta,
+                InputEventKind::MouseButtonPressed(btn) => self.mouse_state.set_button(*btn, true),
+                InputEventKind::MouseButtonReleased(btn) => self.mouse_state.set_button(*btn, false),
+                InputEventKind::GamepadButtonPressed { pad_id, button } => {
+                    if let Some(pad) = self.gamepads.get_mut(pad_id) {
+                        pad.set_button(*button, true);
+                    }
+                }
+                InputEventKind::GamepadButtonReleased { pad_id, button } => {
+                    if let Some(pad) = self.gamepads.get_mut(pad_id) {
+                        pad.set_button(*button, false);
+                    }
+                }
+                InputEventKind::GamepadConnected(id) => {
+                    if let Some(pad) = self.gamepads.get_mut(id) {
+                        pad.connected = true;
+                    }
+                }
+                InputEventKind::GamepadDisconnected(id) => {
+                    if let Some(pad) = self.gamepads.get_mut(id) {
+                        pad.connected = false;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.event_counter += events.len() as u64;
         events
     }
 
-    pub fn get_key_state(&self, keycode: u32) -> bool {
-        false // Placeholder
+    pub fn inject_event(&mut self, kind: InputEventKind) {
+        let event = NormalizedInputEvent {
+            kind,
+            timestamp_ms: self.event_counter,
+            device_id: 0,
+        };
+        self.event_queue.push(event);
     }
 
-    pub fn get_mouse_position(&self) -> (i32, i32) {
-        (0, 0) // Placeholder
+    pub fn get_key_state(&self, key: KeyCode) -> bool {
+        self.key_state.is_pressed(key)
     }
 
-    pub fn stats(&self) -> u64 {
-        self.event_count
+    pub fn key_just_pressed(&self, key: KeyCode) -> bool {
+        self.key_state.just_pressed(key)
+    }
+
+    pub fn key_just_released(&self, key: KeyCode) -> bool {
+        self.key_state.just_released(key)
+    }
+
+    pub fn get_mouse_pos(&self) -> (f32, f32) {
+        (self.mouse_state.x, self.mouse_state.y)
+    }
+
+    pub fn get_mouse_delta(&self) -> (f32, f32) {
+        (self.mouse_state.delta_x, self.mouse_state.delta_y)
+    }
+
+    pub fn mouse_button_pressed(&self, btn: MouseButton) -> bool {
+        self.mouse_state.is_button_pressed(btn)
+    }
+
+    pub fn get_gamepad(&self, id: u32) -> Option<&GamepadState> {
+        self.gamepads.get(&id)
+    }
+
+    pub fn flush_frame(&mut self) {
+        self.key_state.flush_frame();
+        self.mouse_state.flush_frame();
+    }
+
+    pub fn total_events_processed(&self) -> u64 {
+        self.event_counter
     }
 }
 
 pub fn main() {
-    println!("✓ Input Bindings (Keyboard/Mouse/Gamepad) - Ready");
+    println!("╔════════════════════════════════════════════════════════════════════════╗");
+    println!("║  INPUT BINDINGS (TITAN) - Keyboard/Mouse/Gamepad/Touch System         ║");
+    println!("╚════════════════════════════════════════════════════════════════════════╝");
+
+    let mut input = InputSystem::new();
+
+    // Inject test events
+    input.inject_event(InputEventKind::KeyPressed(KeyCode::W));
+    input.inject_event(InputEventKind::MouseMoved { x: 400.0, y: 300.0, delta_x: 5.0, delta_y: -3.0 });
+    input.inject_event(InputEventKind::MouseButtonPressed(MouseButton::Left));
+    input.inject_event(InputEventKind::GamepadConnected(0));
+    input.inject_event(InputEventKind::GamepadButtonPressed { pad_id: 0, button: GamepadButton::A });
+
+    let events = input.poll_events();
+    println!("✓ Polled {} input events", events.len());
+    println!("✓ Key W pressed: {}", input.get_key_state(KeyCode::W));
+    println!("✓ Mouse position: {:?}", input.get_mouse_pos());
+    println!("✓ LMB pressed: {}", input.mouse_button_pressed(MouseButton::Left));
+    println!("✓ Gamepad 0 connected: {}", input.get_gamepad(0).map(|g| g.connected).unwrap_or(false));
+    println!("✓ Total events: {}", input.total_events_processed());
+    println!("✓ InputBindings TITAN operational");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_key_press_track() {
+        let mut input = InputSystem::new();
+        input.inject_event(InputEventKind::KeyPressed(KeyCode::Space));
+        let _ = input.poll_events();
+        assert!(input.get_key_state(KeyCode::Space));
+    }
+
+    #[test]
+    fn test_mouse_move() {
+        let mut input = InputSystem::new();
+        input.inject_event(InputEventKind::MouseMoved { x: 100.0, y: 200.0, delta_x: 10.0, delta_y: -5.0 });
+        let _ = input.poll_events();
+        assert_eq!(input.get_mouse_pos(), (100.0, 200.0));
+    }
+
+    #[test]
+    fn test_gamepad_connect() {
+        let mut input = InputSystem::new();
+        input.inject_event(InputEventKind::GamepadConnected(0));
+        let _ = input.poll_events();
+        assert!(input.get_gamepad(0).map(|g| g.connected).unwrap_or(false));
+    }
 }

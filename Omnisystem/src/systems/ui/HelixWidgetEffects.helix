@@ -1,0 +1,692 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// HelixWidgetEffects — Visual Shader Effects for UI Widgets
+// Helix language · GPU-accelerated widget rendering · Glow, glass, animation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import HelixGraphicsRuntime::{ Pipeline, Shader, Buffer, Texture, Sampler, Uniform }
+import HelixGraphicsRuntime::{ vec2, vec3, vec4, mat3, mat4, f32, u32, bool }
+import HelixGraphicsRuntime::{ sin, cos, abs, max, min, pow, sqrt, mix, clamp, fract, floor, ceil }
+
+// ── Shared Uniform Block ──────────────────────────────────────────────────────
+
+uniform GlobalUniforms {
+  resolution:   vec2,      // Viewport size in pixels
+  time:         f32,       // Elapsed time in seconds
+  dpr:          f32,       // Device pixel ratio
+  accent:       vec4,      // Current theme accent color (RGBA)
+  success:      vec4,      // Success color
+  warning:      vec4,      // Warning color
+  danger:       vec4,      // Danger color
+  bg:           vec4,      // Background color
+  bg_card:      vec4,      // Card surface color
+  border_color: vec4,      // Border color (with alpha)
+}
+
+// ── Utility Functions ─────────────────────────────────────────────────────────
+
+fn sdf_rect(p: vec2, half_size: vec2, radius: f32) -> f32 {
+  let q = abs(p) - half_size + vec2(radius, radius)
+  return length(max(q, vec2(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius
+}
+
+fn sdf_circle(p: vec2, r: f32) -> f32 {
+  return length(p) - r
+}
+
+fn sdf_ring(p: vec2, r: f32, w: f32) -> f32 {
+  return abs(length(p) - r) - w
+}
+
+fn antialiased(d: f32) -> f32 {
+  return clamp(-d / fwidth(d), 0.0, 1.0)
+}
+
+fn smooth_step(a: f32, b: f32, x: f32) -> f32 {
+  let t = clamp((x - a) / (b - a), 0.0, 1.0)
+  return t * t * (3.0 - 2.0 * t)
+}
+
+fn hash(p: vec2) -> f32 {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453)
+}
+
+fn noise(p: vec2) -> f32 {
+  let i = floor(p)
+  let f = fract(p)
+  let u = f * f * (vec2(3.0, 3.0) - 2.0 * f)
+  return mix(
+    mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  )
+}
+
+fn luminance(c: vec3) -> f32 {
+  return dot(c, vec3(0.299, 0.587, 0.114))
+}
+
+// ── Glow Effect Pipeline ──────────────────────────────────────────────────────
+
+pipeline GlowEffect {
+  inputs {
+    position: vec2  @vertex,
+    uv:       vec2  @vertex,
+    color:    vec4  @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals: GlobalUniforms,
+    glow_radius:    f32,
+    glow_intensity: f32,
+    glow_spread:    f32,
+    glow_color:     vec4,
+    widget_size:    vec2,
+    corner_radius:  f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+    out.color = color
+  }
+
+  shader fragment {
+    let p       = (uv - vec2(0.5, 0.5)) * widget_size
+    let half_sz = widget_size * 0.5 - vec2(corner_radius, corner_radius)
+    let d       = sdf_rect(p, half_sz, corner_radius)
+
+    // Glow falloff using exponential decay
+    let glow_d  = max(0.0, d + glow_spread)
+    let glow_a  = exp(-glow_d * glow_d / (glow_radius * glow_radius)) * glow_intensity
+
+    let inner_a = antialiased(-d)
+    let base_c  = mix(vec4(0.0), glow_color, inner_a)
+    let glow_c  = glow_color * glow_a
+
+    frag_color  = base_c + glow_c * (1.0 - inner_a)
+  }
+}
+
+// ── Glassmorphism Effect ──────────────────────────────────────────────────────
+
+pipeline GlassMorphism {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:        GlobalUniforms,
+    scene_texture:  Sampler2D,
+    widget_size:    vec2,
+    corner_radius:  f32,
+    blur_radius:    f32,
+    tint_color:     vec4,
+    tint_strength:  f32,
+    saturation:     f32,
+    noise_strength: f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let p       = (uv - vec2(0.5, 0.5)) * widget_size
+    let half_sz = widget_size * 0.5 - vec2(corner_radius, corner_radius)
+    let d       = sdf_rect(p, half_sz, corner_radius)
+    let alpha   = antialiased(-d)
+    if alpha < 0.001 { discard }
+
+    // Box blur approximation via 9-tap sample
+    let tex_size = vec2(1.0) / globals.resolution
+    let offset   = blur_radius * tex_size
+    var blurred  = vec4(0.0)
+    blurred += texture(scene_texture, uv + vec2(-offset.x, -offset.y)) * 0.0625
+    blurred += texture(scene_texture, uv + vec2(0.0, -offset.y))       * 0.125
+    blurred += texture(scene_texture, uv + vec2( offset.x, -offset.y)) * 0.0625
+    blurred += texture(scene_texture, uv + vec2(-offset.x,  0.0))      * 0.125
+    blurred += texture(scene_texture, uv)                               * 0.25
+    blurred += texture(scene_texture, uv + vec2( offset.x,  0.0))      * 0.125
+    blurred += texture(scene_texture, uv + vec2(-offset.x,  offset.y)) * 0.0625
+    blurred += texture(scene_texture, uv + vec2(0.0,  offset.y))       * 0.125
+    blurred += texture(scene_texture, uv + vec2( offset.x,  offset.y)) * 0.0625
+
+    // Saturation boost
+    let lum   = luminance(blurred.rgb)
+    let sat_c = mix(vec3(lum), blurred.rgb, saturation)
+
+    // Film grain noise
+    let grain = noise(uv * 400.0 + globals.time * 0.1) * noise_strength
+    let noisy = sat_c + vec3(grain)
+
+    // Tint overlay
+    let tinted = mix(noisy, tint_color.rgb, tint_strength * tint_color.a)
+
+    // Border glow
+    let border_d = abs(d) - 0.5
+    let border_a = antialiased(-border_d) * 0.5
+    let final_c  = mix(tinted, globals.border_color.rgb, border_a * globals.border_color.a)
+
+    frag_color = vec4(final_c, alpha * tint_color.a + 0.72)
+  }
+}
+
+// ── Gradient Background ───────────────────────────────────────────────────────
+
+pipeline GradientBackground {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:    GlobalUniforms,
+    color_a:    vec4,
+    color_b:    vec4,
+    color_c:    vec4,
+    angle:      f32,
+    style:      u32,    // 0=linear, 1=radial, 2=conic, 3=mesh
+    noise_amt:  f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    var col = vec4(0.0)
+    let t   = globals.time * 0.2
+
+    if style == 0u {
+      // Linear gradient
+      let dir = vec2(cos(angle), sin(angle))
+      let s   = clamp(dot(uv - vec2(0.5), dir) + 0.5, 0.0, 1.0)
+      col = mix(color_a, color_b, smooth_step(0.0, 1.0, s))
+    } else if style == 1u {
+      // Radial gradient
+      let d = length(uv - vec2(0.5, 0.5)) * 2.0
+      col   = mix(color_a, color_b, smooth_step(0.0, 1.0, d))
+    } else if style == 2u {
+      // Conic gradient (approximated)
+      let a  = atan(uv.y - 0.5, uv.x - 0.5) / (2.0 * 3.14159) + 0.5
+      let s3 = fract(a + t * 0.05)
+      col    = mix(color_a, mix(color_b, color_c, smooth_step(0.33, 0.66, s3)), smooth_step(0.0, 0.33, s3))
+    } else {
+      // Animated mesh gradient
+      let n1  = noise(uv * 3.0 + vec2(t, 0.0))
+      let n2  = noise(uv * 2.0 + vec2(0.0, t * 0.7))
+      let n3  = noise(uv * 4.0 - vec2(t * 0.3, t * 0.5))
+      let s1  = smooth_step(0.0, 1.0, n1)
+      let s2  = smooth_step(0.0, 1.0, n2)
+      let c1  = mix(color_a, color_b, s1)
+      let c2  = mix(color_b, color_c, s2)
+      col     = mix(c1, c2, n3)
+    }
+
+    // Noise overlay
+    let g = noise(uv * 512.0) * noise_amt
+    frag_color = vec4(col.rgb + vec3(g), col.a)
+  }
+}
+
+// ── Health Ring Shader ────────────────────────────────────────────────────────
+
+pipeline HealthRingShader {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:      GlobalUniforms,
+    value:        f32,     // 0.0 - 1.0
+    track_color:  vec4,
+    fill_color:   vec4,
+    stroke_width: f32,
+    radius:       f32,
+    animated:     bool,
+    pulse_speed:  f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let p      = uv - vec2(0.5, 0.5)
+    let angle  = atan(p.y, p.x)         // -PI to PI
+    let norm_a = fract(angle / (2.0 * 3.14159) + 0.25)  // normalize, start at top
+    let dist   = length(p)
+
+    // Ring shape
+    let ring_d = abs(dist - radius) - stroke_width * 0.5
+    let ring_a = antialiased(-ring_d)
+    if ring_a < 0.001 { discard }
+
+    // Arc mask: filled portion = value
+    let in_fill = norm_a < value ? 1.0 : 0.0
+    let color   = mix(track_color, fill_color, in_fill)
+
+    // Cap rounding at arc ends
+    let start_p = vec2(0.0, radius)
+    let end_a   = value * 2.0 * 3.14159
+    let end_p   = vec2(sin(end_a), cos(end_a)) * radius
+    let cap0_d  = length(p - start_p) - stroke_width * 0.5
+    let cap1_d  = length(p - end_p)   - stroke_width * 0.5
+    let cap_a   = max(antialiased(-cap0_d), antialiased(-cap1_d))
+
+    // Pulse animation on fill
+    var final_c = color
+    if animated {
+      let pulse = 0.85 + 0.15 * sin(globals.time * pulse_speed)
+      final_c   = mix(color, fill_color * vec4(vec3(1.0), 1.0) * pulse, in_fill)
+    }
+
+    frag_color = vec4(final_c.rgb, final_c.a * max(ring_a, cap_a))
+  }
+}
+
+// ── Progress Bar Shader ───────────────────────────────────────────────────────
+
+pipeline ProgressBarShader {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:       GlobalUniforms,
+    value:         f32,
+    fill_color:    vec4,
+    track_color:   vec4,
+    bar_size:      vec2,
+    corner_radius: f32,
+    striped:       bool,
+    stripe_speed:  f32,
+    animated:      bool,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let p       = (uv - vec2(0.5, 0.5)) * bar_size
+    let half_sz = bar_size * 0.5
+    let d       = sdf_rect(p, half_sz - vec2(corner_radius), corner_radius)
+    let alpha   = antialiased(-d)
+    if alpha < 0.001 { discard }
+
+    let in_fill = uv.x < value ? 1.0 : 0.0
+
+    // Stripe pattern
+    var fill_c = fill_color
+    if striped && in_fill > 0.5 {
+      let stripe = fract((uv.x - uv.y) * 4.0 + globals.time * stripe_speed)
+      let stripe_a = smooth_step(0.3, 0.5, stripe) * smooth_step(0.7, 0.5, stripe)
+      fill_c = mix(fill_color, fill_color * vec4(vec3(1.3), 1.0), stripe_a * 0.3)
+    }
+
+    // Sheen animation
+    if animated && in_fill > 0.5 {
+      let sheen_pos = fract(globals.time * 0.5) * 1.4 - 0.2
+      let sheen_d   = abs(uv.x - sheen_pos)
+      let sheen_a   = smooth_step(0.15, 0.0, sheen_d) * 0.4
+      fill_c        = fill_c + vec4(vec3(sheen_a), 0.0)
+    }
+
+    let color = mix(track_color, fill_c, in_fill)
+    frag_color = vec4(color.rgb, color.a * alpha)
+  }
+}
+
+// ── Skeleton Shimmer ──────────────────────────────────────────────────────────
+
+pipeline SkeletonShimmer {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:      GlobalUniforms,
+    base_color:   vec4,
+    shimmer_color:vec4,
+    shimmer_width:f32,
+    speed:        f32,
+    corner_radius:f32,
+    element_size: vec2,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let p       = (uv - vec2(0.5, 0.5)) * element_size
+    let half_sz = element_size * 0.5 - vec2(corner_radius)
+    let d       = sdf_rect(p, half_sz, corner_radius)
+    let alpha   = antialiased(-d)
+    if alpha < 0.001 { discard }
+
+    // Shimmer wave: diagonal sweep
+    let wave_pos = fract((uv.x + uv.y) * 0.5 + globals.time * speed)
+    let shimmer  = smooth_step(0.5 - shimmer_width, 0.5, wave_pos) *
+                   smooth_step(0.5 + shimmer_width, 0.5, wave_pos)
+    let color    = mix(base_color, shimmer_color, shimmer)
+
+    frag_color = vec4(color.rgb, color.a * alpha)
+  }
+}
+
+// ── Toast Notification Effect ─────────────────────────────────────────────────
+
+pipeline ToastEffect {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:       GlobalUniforms,
+    background:    vec4,
+    accent_color:  vec4,
+    toast_size:    vec2,
+    corner_radius: f32,
+    appear_t:      f32,   // 0.0 = just appeared, 1.0 = fully visible
+    dismiss_t:     f32,   // 0.0 = not dismissing, 1.0 = fully dismissed
+    side_bar_w:    f32,   // Width of left accent bar
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let p       = (uv - vec2(0.5, 0.5)) * toast_size
+    let half_sz = toast_size * 0.5 - vec2(corner_radius)
+    let d       = sdf_rect(p, half_sz, corner_radius)
+    let alpha_s = antialiased(-d)
+    if alpha_s < 0.001 { discard }
+
+    // Left accent sidebar
+    let in_bar = uv.x < (side_bar_w / toast_size.x)
+    let color  = in_bar ? accent_color : background
+
+    // Appear/dismiss animation modifies alpha
+    let appear_ease  = smooth_step(0.0, 1.0, appear_t)
+    let dismiss_ease = 1.0 - smooth_step(0.0, 1.0, dismiss_t)
+    let final_alpha  = alpha_s * appear_ease * dismiss_ease
+
+    // Subtle inner glow on left bar
+    var final_c = color
+    if in_bar {
+      let glow_x = uv.x / (side_bar_w / toast_size.x)
+      let glow   = smooth_step(1.0, 0.0, glow_x) * 0.3
+      final_c    = mix(color, vec4(1.0), glow)
+    }
+
+    frag_color = vec4(final_c.rgb, final_c.a * final_alpha)
+  }
+}
+
+// ── Particle Field (ambient background) ──────────────────────────────────────
+
+pipeline ParticleField {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:        GlobalUniforms,
+    particle_color: vec4,
+    particle_count: u32,
+    particle_size:  f32,
+    speed:          f32,
+    density:        f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    var glow = 0.0
+    let count_f = f32(particle_count)
+
+    // Procedural particle field: each particle is a hash-positioned point
+    for i in 0u..particle_count {
+      let fi   = f32(i)
+      let seed = vec2(fi * 0.731, fi * 1.337)
+      let base = vec2(hash(seed), hash(seed + vec2(7.3, 3.7)))
+
+      // Animate position over time
+      let drift = vec2(
+        sin(globals.time * speed * (0.3 + hash(seed + 1.0) * 0.7) + fi) * 0.04,
+        cos(globals.time * speed * (0.2 + hash(seed + 2.0) * 0.5) + fi * 1.3) * 0.04
+      )
+      let pos = fract(base + drift)
+
+      let d    = length(uv - pos)
+      let size = particle_size * (0.5 + 0.5 * hash(seed + 3.0))
+      glow    += smooth_step(size, 0.0, d) * (0.4 + 0.6 * hash(seed + 4.0))
+    }
+
+    glow = min(glow, 1.0)
+    frag_color = vec4(particle_color.rgb, particle_color.a * glow * density)
+  }
+}
+
+// ── Scanline Overlay (retro theme effect for OmniNeon) ───────────────────────
+
+pipeline ScanlineOverlay {
+  inputs {
+    position: vec2 @vertex,
+    uv:       vec2 @vertex,
+  }
+  outputs {
+    frag_color: vec4 @fragment,
+  }
+  uniforms {
+    globals:   GlobalUniforms,
+    scene_tex: Sampler2D,
+    intensity: f32,
+    line_freq: f32,
+    flicker:   f32,
+  }
+
+  shader vertex {
+    gl_Position = vec4(position, 0.0, 1.0)
+    out.uv = uv
+  }
+
+  shader fragment {
+    let scene = texture(scene_tex, uv)
+
+    // CRT scanlines
+    let scan = sin(uv.y * line_freq * 3.14159) * 0.5 + 0.5
+    let line = pow(scan, 1.4)
+
+    // Screen flicker
+    let flick = 1.0 - flicker * (noise(vec2(globals.time * 4.0, 0.0)) * 0.5)
+
+    // Vignette
+    let vig_uv = uv * (1.0 - uv)
+    let vig    = pow(vig_uv.x * vig_uv.y * 15.0, 0.3)
+
+    let final_rgb = scene.rgb * mix(1.0, line, intensity) * flick * mix(0.6, 1.0, vig)
+    frag_color = vec4(final_rgb, scene.a)
+  }
+}
+
+// ── Compute: Theme Color Blending ─────────────────────────────────────────────
+
+compute ThemeColorBlend {
+  workgroup_size: [64, 1, 1]
+
+  uniforms {
+    src_theme:  vec4[6],   // Source theme token colors
+    dst_theme:  vec4[6],   // Target theme token colors
+    blend_t:    f32,       // Blend factor 0.0 -> 1.0
+    token_count:u32,
+  }
+
+  buffers {
+    result: vec4[] @rw,
+  }
+
+  shader compute {
+    let idx = global_id.x
+    if idx >= token_count { return }
+    result[idx] = mix(src_theme[idx], dst_theme[idx], smooth_step(0.0, 1.0, blend_t))
+  }
+}
+
+// ── Compute: Blur Pass ────────────────────────────────────────────────────────
+
+compute GaussianBlur {
+  workgroup_size: [16, 16, 1]
+
+  uniforms {
+    image_size: vec2,
+    radius:     f32,
+    direction:  vec2,    // (1,0) for horizontal, (0,1) for vertical
+  }
+
+  buffers {
+    input_tex:  Texture2D @r,
+    output_tex: Texture2D @rw,
+  }
+
+  shader compute {
+    let pos = vec2(f32(global_id.x), f32(global_id.y))
+    if pos.x >= image_size.x || pos.y >= image_size.y { return }
+
+    let kernel_size = i32(ceil(radius * 3.0))
+    var acc   = vec4(0.0)
+    var total = 0.0
+
+    for i in -kernel_size..=kernel_size {
+      let fi     = f32(i)
+      let weight = exp(-(fi * fi) / (2.0 * radius * radius))
+      let sample_pos = pos + direction * fi
+      let clamped    = clamp(sample_pos, vec2(0.0), image_size - vec2(1.0))
+      acc   += read(input_tex, ivec2(clamped)) * weight
+      total += weight
+    }
+
+    write(output_tex, ivec2(pos), acc / total)
+  }
+}
+
+// ── Widget Effects Registry ───────────────────────────────────────────────────
+
+struct EffectDescriptor {
+  id:       String,
+  kind:     String,
+  desc:     String,
+  pipeline: String,
+  cost:     f32,     // Relative GPU cost 0.0-1.0
+}
+
+fn effect_registry() -> Vec<EffectDescriptor> {
+  vec![
+    EffectDescriptor { id: "glow",       kind: "fragment", pipeline: "GlowEffect",       desc: "Diffuse glow around widget borders",   cost: 0.2 },
+    EffectDescriptor { id: "glass",      kind: "fragment", pipeline: "GlassMorphism",    desc: "Frosted glass blur + tint",            cost: 0.7 },
+    EffectDescriptor { id: "gradient-bg",kind: "fragment", pipeline: "GradientBackground",desc: "Animated gradient backgrounds",       cost: 0.15 },
+    EffectDescriptor { id: "health-ring",kind: "fragment", pipeline: "HealthRingShader", desc: "GPU-rendered circular progress ring",  cost: 0.1 },
+    EffectDescriptor { id: "progress",   kind: "fragment", pipeline: "ProgressBarShader",desc: "Animated progress bar with sheen",     cost: 0.1 },
+    EffectDescriptor { id: "skeleton",   kind: "fragment", pipeline: "SkeletonShimmer",  desc: "Diagonal shimmer skeleton loader",     cost: 0.12 },
+    EffectDescriptor { id: "toast",      kind: "fragment", pipeline: "ToastEffect",      desc: "Toast appear/dismiss animation",       cost: 0.08 },
+    EffectDescriptor { id: "particles",  kind: "fragment", pipeline: "ParticleField",    desc: "Ambient floating particles",           cost: 0.35 },
+    EffectDescriptor { id: "scanline",   kind: "fragment", pipeline: "ScanlineOverlay",  desc: "CRT scanline retro effect (Neon theme)", cost: 0.2 },
+    EffectDescriptor { id: "blur",       kind: "compute",  pipeline: "GaussianBlur",     desc: "Two-pass Gaussian blur",               cost: 0.5 },
+    EffectDescriptor { id: "theme-blend",kind: "compute",  pipeline: "ThemeColorBlend",  desc: "Smooth theme color transition",        cost: 0.05 },
+  ]
+}
+
+// ── Theme-Specific Effect Profiles ────────────────────────────────────────────
+
+struct ThemeEffectProfile {
+  theme_id:   String,
+  glow_enable:bool,
+  glass_enable:bool,
+  particles:  bool,
+  scanline:   bool,
+  glow_intensity:   f32,
+  glass_blur_radius:f32,
+  particle_density: f32,
+}
+
+fn theme_effect_profiles() -> Vec<ThemeEffectProfile> {
+  vec![
+    ThemeEffectProfile {
+      theme_id: "omni-dark", glow_enable: true, glass_enable: true, particles: true,  scanline: false,
+      glow_intensity: 0.8, glass_blur_radius: 12.0, particle_density: 0.06,
+    },
+    ThemeEffectProfile {
+      theme_id: "omni-light", glow_enable: false, glass_enable: true, particles: false, scanline: false,
+      glow_intensity: 0.3, glass_blur_radius: 8.0, particle_density: 0.0,
+    },
+    ThemeEffectProfile {
+      theme_id: "omni-neon", glow_enable: true, glass_enable: false, particles: true, scanline: true,
+      glow_intensity: 1.2, glass_blur_radius: 0.0, particle_density: 0.12,
+    },
+    ThemeEffectProfile {
+      theme_id: "omni-forest", glow_enable: true, glass_enable: true, particles: true, scanline: false,
+      glow_intensity: 0.6, glass_blur_radius: 10.0, particle_density: 0.08,
+    },
+    ThemeEffectProfile {
+      theme_id: "omni-aurora", glow_enable: true, glass_enable: true, particles: true, scanline: false,
+      glow_intensity: 1.0, glass_blur_radius: 14.0, particle_density: 0.10,
+    },
+    ThemeEffectProfile {
+      theme_id: "omni-sunset", glow_enable: true, glass_enable: true, particles: false, scanline: false,
+      glow_intensity: 0.9, glass_blur_radius: 10.0, particle_density: 0.04,
+    },
+  ]
+}
+
+fn profile_for(theme_id: &str) -> Option<ThemeEffectProfile> {
+  theme_effect_profiles().into_iter().find(|p| p.theme_id == theme_id)
+}
+
+// ── Module Export ─────────────────────────────────────────────────────────────
+
+pub mod helix_widget_effects {
+  pub use super::{
+    GlobalUniforms,
+    GlowEffect, GlassMorphism, GradientBackground,
+    HealthRingShader, ProgressBarShader, SkeletonShimmer,
+    ToastEffect, ParticleField, ScanlineOverlay,
+    ThemeColorBlend, GaussianBlur,
+    EffectDescriptor, ThemeEffectProfile,
+    effect_registry, theme_effect_profiles, profile_for,
+    sdf_rect, sdf_circle, sdf_ring, antialiased, smooth_step, noise, luminance,
+  }
+}
