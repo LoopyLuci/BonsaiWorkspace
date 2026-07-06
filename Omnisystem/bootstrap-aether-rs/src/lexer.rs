@@ -33,6 +33,10 @@ const KEYWORDS: &[&str] = &[
     "for", "in", "while", "actor", "spawn", "receive", "after", "supervisor", "worker",
     "one_for_one", "one_for_all", "rest_for_one", "import", "return", "break", "continue",
     "and", "or", "not", "true", "false", "nil",
+    // Some omni-integration specs are written wholesale in Rust syntax
+    // (struct/impl/fn/pub/use/match) rather than Aether's native
+    // Elixir-flavored grammar — see `parse_rust_*`/`parse_use` in parser.rs.
+    "use", "struct", "pub", "impl", "mut", "match", "fn", "let",
 ];
 
 pub struct Lexer<'a> {
@@ -88,6 +92,17 @@ impl<'a> Lexer<'a> {
             }
             if c == '"' {
                 out.push(self.lex_string(start)?);
+                continue;
+            }
+            if c == '\'' {
+                out.push(self.lex_char(start)?);
+                continue;
+            }
+            // Rust-style raw string `r"..."` / `r#"..."#` — checked before
+            // the identifier path ('r' alone is a valid identifier) and
+            // before '#' would otherwise start a line comment.
+            if c == 'r' && (self.peek(1) == '"' || self.peek(1) == '#') {
+                out.push(self.lex_raw_string(start)?);
                 continue;
             }
             if c == ':' && (is_ident_start(self.peek(1))) {
@@ -147,6 +162,30 @@ impl<'a> Lexer<'a> {
     /// tokenized as `IStr` (interpolated) so the parser knows to split it;
     /// otherwise `Str` (plain), matching Elixir's `"...#{expr}..."` syntax —
     /// distinct from Sylva's `f"..."` prefix convention.
+    /// `'c'` / `'\n'` — modeled as a one-character `Str` (no distinct char
+    /// value type in this bootstrap).
+    fn lex_char(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // opening '\''
+        let c = if self.peek(0) == '\\' {
+            self.advance();
+            match self.advance() {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\'' => '\'',
+                '\\' => '\\',
+                other => other,
+            }
+        } else {
+            self.advance()
+        };
+        if self.peek(0) != '\'' {
+            return Err(Box::new(self.err("unterminated character literal", start)));
+        }
+        self.advance();
+        Ok(self.mk(TokKind::Str, c.to_string(), start))
+    }
+
     fn lex_string(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
         self.advance(); // opening quote
         let mut s = String::new();
@@ -184,6 +223,44 @@ impl<'a> Lexer<'a> {
             '#' => '#',
             other => return Err(Box::new(self.err(format!("unknown escape '\\{other}'"), start))),
         })
+    }
+
+    /// `r"..."` / `r#"..."#` / `r##"..."##` — no escape processing, and
+    /// embedded newlines/quotes/`#{...}`-looking text are allowed as-is
+    /// (used for hand-rolled JSON/template strings inside Rust-dialect
+    /// spec files). Always a plain `Str`, never `IStr`.
+    fn lex_raw_string(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // 'r'
+        let mut hashes = 0usize;
+        while self.peek(0) == '#' {
+            self.advance();
+            hashes += 1;
+        }
+        if self.peek(0) != '"' {
+            return Err(Box::new(self.err("expected '\"' to start a raw string", start)));
+        }
+        self.advance(); // opening '"'
+        let mut s = String::new();
+        loop {
+            if self.peek(0) == '\0' {
+                return Err(Box::new(self.err("unterminated raw string literal", start)));
+            }
+            if self.peek(0) == '"' {
+                let mut k = 1;
+                while k <= hashes && self.peek(k) == '#' {
+                    k += 1;
+                }
+                if k == hashes + 1 {
+                    self.advance();
+                    for _ in 0..hashes {
+                        self.advance();
+                    }
+                    break;
+                }
+            }
+            s.push(self.advance());
+        }
+        Ok(self.mk(TokKind::Str, s, start))
     }
 
     fn lex_atom(&mut self, start: Pos) -> Token {
@@ -229,7 +306,18 @@ impl<'a> Lexer<'a> {
             };
         }
         let s: String = match c {
-            '=' => two!('=', "==".to_string(), "=".to_string()),
+            '=' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "==".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    "=>".to_string()
+                } else {
+                    "=".to_string()
+                }
+            }
+            '?' => "?".to_string(),
             '!' => two!('=', "!=".to_string(), "!".to_string()),
             '<' => two!('=', "<=".to_string(), "<".to_string()),
             '>' => two!('=', ">=".to_string(), ">".to_string()),
@@ -255,7 +343,17 @@ impl<'a> Lexer<'a> {
                 }
             }
             ';' => ";".to_string(),
-            '|' => two!('>', "|>".to_string(), "|".to_string()),
+            '|' => {
+                if self.peek(0) == '>' {
+                    self.advance();
+                    "|>".to_string()
+                } else if self.peek(0) == '|' {
+                    self.advance();
+                    "||".to_string()
+                } else {
+                    "|".to_string()
+                }
+            }
             '&' => two!('&', "&&".to_string(), "&".to_string()),
             other => return Err(Box::new(self.err(format!("unexpected character '{other}'"), start))),
         };
