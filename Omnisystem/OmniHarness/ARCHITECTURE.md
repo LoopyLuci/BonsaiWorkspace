@@ -128,7 +128,13 @@ A third, independent frontend (shadow-cljs + Reagent + re-frame) hitting the Pyt
 
 ### 6. Omni-Languages Integration (`omni-integration/`)
 
-18 spec files across 7 Omni-Languages. **Only 5 have any real execution path**: `SubstrateCore.titan`, `HarnessCore.titan`, `ModelLoaderBridge.titan`, `ModuleSystemBridge.titan`, `SmartRouterBridge.titan` — these parse and type-check cleanly against `Omnisystem/bootstrap`'s real Titan interpreter (`npm run check:omni-integration` in that directory; raw-string literals, `extern "C"` blocks, and string line-continuation support were added to the bootstrap lexer/parser specifically so these would). The other 13 files (`GPUAcceleration.helix`, `HarnessLayout.nexus`, `HarnessUI.vera`, `ModelBridge.aether`, `PolicyVerifier.axiom`, `DistillationEngine.sylva`, `MemoryLayer.sylva`, `SubstrateCompute.helix`, `SubstrateGovernance.axiom`, `SubstrateLayout.nexus`, `SubstratePanel.vera`, `SwarmActors.aether`, `TrainingLoopBridge.sylva`) have **no interpreter anywhere in this repo** — they are design specs describing intended behavior, not code that runs. Treat them accordingly; building interpreters for Helix/Nexus/Vera/Aether/Axiom/Sylva is real, substantial, unstarted work, not a documentation gap.
+18 spec files across 7 Omni-Languages. **Only 5 have a full, verified execution path**: `SubstrateCore.titan`, `HarnessCore.titan`, `ModelLoaderBridge.titan`, `ModuleSystemBridge.titan`, `SmartRouterBridge.titan` — these parse and type-check cleanly against `Omnisystem/bootstrap`'s real Titan interpreter (`npm run check:omni-integration` in that directory).
+
+Real Rust bootstrap interpreters (lexer/parser/interpreter, each with its own test corpus) now exist for the other 6 languages too — `bootstrap-aether-rs`, `bootstrap-axiom-rs`, `bootstrap-helix-rs`, `bootstrap-nexus-rs`, `bootstrap-sylva-rs`, `bootstrap-vera-rs` — so "no interpreter anywhere in this repo" is no longer accurate. What's still missing is **omni-integration-dialect compatibility**: the 13 non-Titan spec files use language features their bootstrap interpreters don't parse yet, confirmed by running them directly, e.g.:
+- `SwarmActors.aether` fails on grouped `use omnisystem::{Vec, HashMap, ...}` imports (aether-seed's parser only handles single-path `use`).
+- `SubstrateCompute.helix` fails on `@binding(0)`-style shader-binding attributes (unexpected character `@` in the lexer).
+
+Each of the remaining 13 files likely has its own distinct gap in this vein (not yet audited file-by-file). Closing this is real, scoped, per-language grammar work — extending 6 lexers/parsers to cover their respective omni-integration dialect features — not a "write an interpreter from scratch" task anymore, but still substantial (expect multiple language-specific passes, not one shared fix).
 
 ---
 
