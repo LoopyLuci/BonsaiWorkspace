@@ -3,27 +3,21 @@
   import ChatPanel       from '$lib/components/ChatPanel.svelte';
   import StatusBar       from '$lib/components/StatusBar.svelte';
   import CommandPalette  from '$lib/components/CommandPalette.svelte';
-  import SettingsPanel   from '$lib/components/SettingsPanel.svelte';
   import SessionPanel    from '$lib/components/SessionPanel.svelte';
   import AgentConnectPanel from '$lib/components/AgentConnectPanel.svelte';
-  import AgentsPanel       from '$lib/components/AgentsPanel.svelte';
   import ResourcesPanel    from '$lib/components/ResourcesPanel.svelte';
   import TerminalPanel   from '$lib/components/TerminalPanel.svelte';
   import VscodeViewer    from '$lib/components/VscodeViewer.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import BootstrapScreen from '$lib/components/BootstrapScreen.svelte';
-  import CodeCanvas from '$lib/components/CodeCanvas.svelte';
-  import MobileViewPanel from '$lib/components/MobileViewPanel.svelte';
   import MobileLayout from '$lib/components/MobileLayout.svelte';
-  import AndroidUsbLab from '$lib/components/AndroidUsbLab.svelte';
   import PeersPanel         from '$lib/components/PeersPanel.svelte';
-  import DataWorkbench      from '$lib/components/DataWorkbench.svelte';
-  import VerificationPanel  from '$lib/components/VerificationPanel.svelte';
   import GlobalErrorBoundary from '$lib/components/GlobalErrorBoundary.svelte';
   import SystemHealthPanel  from '$lib/components/SystemHealthPanel.svelte';
-  import ModelBuilder        from '$lib/components/ModelBuilder.svelte';
-  import PackageImportDialog from '$lib/components/PackageImportDialog.svelte';
-  import ExtensionsPanel     from '$lib/panels/ExtensionsPanel.svelte';
+  // CodeCanvas, AndroidUsbLab, DataWorkbench, VerificationPanel, ModelBuilder,
+  // PackageImportDialog, ExtensionsPanel, SettingsPanel, AgentsPanel,
+  // MobileViewPanel are lazy-loaded below (bundle-size budget: these are
+  // large, rarely-opened overlay panels).
 
   import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
   import { isBootstrapping, initModelStores } from '$lib/stores/models';
@@ -65,6 +59,55 @@
   let monacoLoadError = '';
   let agentVisionPanelComponent: any = null;
   let agentVisionLoadError = '';
+
+  // Lazy-loaded overlay panels (kept out of the main bundle; loaded on first open).
+  let codeCanvasComponent: any = null;
+  let androidUsbLabComponent: any = null;
+  let dataWorkbenchComponent: any = null;
+  let verificationPanelComponent: any = null;
+  let modelBuilderComponent: any = null;
+  let packageImportDialogComponent: any = null;
+  let extensionsPanelComponent: any = null;
+
+  $: if (showCanvas && !codeCanvasComponent) {
+    import('$lib/components/CodeCanvas.svelte').then((m) => (codeCanvasComponent = m.default));
+  }
+  $: if (showAndroidUsbModal && !androidUsbLabComponent) {
+    import('$lib/components/AndroidUsbLab.svelte').then((m) => (androidUsbLabComponent = m.default));
+  }
+  $: if (showDataWorkbench && !dataWorkbenchComponent) {
+    import('$lib/components/DataWorkbench.svelte').then((m) => (dataWorkbenchComponent = m.default));
+  }
+  $: if (showVerification && !verificationPanelComponent) {
+    import('$lib/components/VerificationPanel.svelte').then((m) => (verificationPanelComponent = m.default));
+  }
+  $: if (showModelBuilder && !modelBuilderComponent) {
+    import('$lib/components/ModelBuilder.svelte').then((m) => (modelBuilderComponent = m.default));
+  }
+  $: if (showPackageImport && !packageImportDialogComponent) {
+    import('$lib/components/PackageImportDialog.svelte').then((m) => (packageImportDialogComponent = m.default));
+  }
+  function handlePackageImported() {
+    showPackageImport = false;
+    showModelBuilder = true;
+  }
+  $: if (showExtensions && !extensionsPanelComponent) {
+    import('$lib/panels/ExtensionsPanel.svelte').then((m) => (extensionsPanelComponent = m.default));
+  }
+
+  let settingsPanelComponent: any = null;
+  let agentsPanelComponent: any = null;
+  let mobileViewPanelComponent: any = null;
+
+  $: if (showSettings && !settingsPanelComponent) {
+    import('$lib/components/SettingsPanel.svelte').then((m) => (settingsPanelComponent = m.default));
+  }
+  $: if (showAgents && !agentsPanelComponent) {
+    import('$lib/components/AgentsPanel.svelte').then((m) => (agentsPanelComponent = m.default));
+  }
+  $: if (showMobileView && !mobileViewPanelComponent) {
+    import('$lib/components/MobileViewPanel.svelte').then((m) => (mobileViewPanelComponent = m.default));
+  }
 
   const MIN_PANE_WIDTH = 120;
   const MIN_EDITOR_WIDTH = 260;
@@ -490,13 +533,33 @@
 
   <!-- Overlays -->
   <CommandPalette />
-  {#if showSettings}<SettingsPanel on:close={() => (showSettings = false)} on:openAndroidUsbLab={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } }} />{/if}
+  {#if showSettings}
+    {#if settingsPanelComponent}
+      <svelte:component
+        this={settingsPanelComponent}
+        on:close={() => (showSettings = false)}
+        on:openAndroidUsbLab={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } }}
+      />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Settings...</div>
+    {/if}
+  {/if}
   {#if showSession}<SessionPanel on:close={() => (showSession = false)} />{/if}
   {#if showAgentConnect}<AgentConnectPanel on:close={() => (showAgentConnect = false)} />{/if}
-  {#if showAgents}<AgentsPanel on:close={() => (showAgents = false)} />{/if}
+  {#if showAgents}
+    {#if agentsPanelComponent}
+      <svelte:component this={agentsPanelComponent} on:close={() => (showAgents = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Agents...</div>
+    {/if}
+  {/if}
   {#if showExtensions}
     <div class="overlay-panel" role="dialog" aria-label="Extensions">
-      <ExtensionsPanel />
+      {#if extensionsPanelComponent}
+        <svelte:component this={extensionsPanelComponent} />
+      {:else}
+        <div class="overlay-loading" role="status">Loading Extensions...</div>
+      {/if}
       <button class="overlay-close" on:click={() => showExtensions = false} aria-label="Close">✕</button>
     </div>
   {/if}
@@ -521,29 +584,62 @@
     {/if}
   {/if}
   {#if showCanvas}
-    <CodeCanvas onClose={() => (showCanvas = false)} />
+    {#if codeCanvasComponent}
+      <svelte:component this={codeCanvasComponent} onClose={() => (showCanvas = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Canvas...</div>
+    {/if}
   {/if}
   {#if showMobileView}
-    <MobileViewPanel on:close={() => (showMobileView = false)} />
+    {#if mobileViewPanelComponent}
+      <svelte:component this={mobileViewPanelComponent} on:close={() => (showMobileView = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Mobile Viewer...</div>
+    {/if}
   {/if}
   {#if showAndroidUsbModal}
-    <AndroidUsbLab on:close={() => (showAndroidUsbModal = false)} />
+    {#if androidUsbLabComponent}
+      <svelte:component this={androidUsbLabComponent} on:close={() => (showAndroidUsbModal = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Android USB Lab...</div>
+    {/if}
   {/if}
   {#if showPeers}<PeersPanel on:close={() => (showPeers = false)} />{/if}
-  {#if showDataWorkbench}<DataWorkbench on:close={() => (showDataWorkbench = false)} />{/if}
-  {#if showVerification}<VerificationPanel on:close={() => (showVerification = false)} />{/if}
+  {#if showDataWorkbench}
+    {#if dataWorkbenchComponent}
+      <svelte:component this={dataWorkbenchComponent} on:close={() => (showDataWorkbench = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Data Workbench...</div>
+    {/if}
+  {/if}
+  {#if showVerification}
+    {#if verificationPanelComponent}
+      <svelte:component this={verificationPanelComponent} on:close={() => (showVerification = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Verification...</div>
+    {/if}
+  {/if}
   {#if showHealthPanel}<SystemHealthPanel onClose={() => (showHealthPanel = false)} />{/if}
   {#if showModelBuilder}
     <div class="floating-panel model-builder-panel">
-      <ModelBuilder />
+      {#if modelBuilderComponent}
+        <svelte:component this={modelBuilderComponent} />
+      {:else}
+        <div class="overlay-loading" role="status">Loading Model Builder...</div>
+      {/if}
     </div>
   {/if}
   {#if showPackageImport}
-    <PackageImportDialog
-      initialPath={packageImportPath}
-      on:imported={(e) => { showPackageImport = false; showModelBuilder = true; }}
-      on:close={() => { showPackageImport = false; packageImportPath = ''; }}
-    />
+    {#if packageImportDialogComponent}
+      <svelte:component
+        this={packageImportDialogComponent}
+        initialPath={packageImportPath}
+        on:imported={handlePackageImported}
+        on:close={() => { showPackageImport = false; packageImportPath = ''; }}
+      />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Package Import...</div>
+    {/if}
   {/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}

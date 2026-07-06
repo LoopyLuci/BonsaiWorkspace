@@ -15,10 +15,7 @@
   import MobileSettingsPanel from './MobileSettingsPanel.svelte';
   import AssistantMobile from './AssistantMobile.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
-  import AgentsPanel from './AgentsPanel.svelte';
   import SessionPanel from './SessionPanel.svelte';
-  import MobileViewPanel from './MobileViewPanel.svelte';
-  import CodeCanvas from './CodeCanvas.svelte';
   import MobileHome from './MobileHome.svelte';
   import { initMobileDisplaySettings, mobileDisplayStyle } from '$lib/stores/mobileDisplay';
   import { showTerminal } from '$lib/stores/terminal';
@@ -32,6 +29,19 @@
   let monacoLoadError = '';
   let agentVisionPanelComponent: any = null;
   let agentVisionLoadError = '';
+  let agentsPanelComponent: any = null;
+  let mobileViewPanelComponent: any = null;
+  let codeCanvasComponent: any = null;
+
+  $: if (showAgents && !agentsPanelComponent) {
+    import('./AgentsPanel.svelte').then((m) => (agentsPanelComponent = m.default));
+  }
+  $: if (showMobileView && !mobileViewPanelComponent) {
+    import('./MobileViewPanel.svelte').then((m) => (mobileViewPanelComponent = m.default));
+  }
+  $: if (showCanvas && !codeCanvasComponent) {
+    import('./CodeCanvas.svelte').then((m) => (codeCanvasComponent = m.default));
+  }
   let visitedTabs: Record<Tab, boolean> = {
     home: true,
     chat: false,
@@ -205,10 +215,18 @@
     <SessionPanel on:close={() => (showSession = false)} />
   {/if}
   {#if showAgents}
-    <AgentsPanel on:close={() => (showAgents = false)} />
+    {#if agentsPanelComponent}
+      <svelte:component this={agentsPanelComponent} on:close={() => (showAgents = false)} />
+    {:else}
+      <div class="panel-state">Loading Agents...</div>
+    {/if}
   {/if}
   {#if showMobileView}
-    <MobileViewPanel on:close={() => (showMobileView = false)} />
+    {#if mobileViewPanelComponent}
+      <svelte:component this={mobileViewPanelComponent} on:close={() => (showMobileView = false)} />
+    {:else}
+      <div class="panel-state">Loading Mobile Viewer...</div>
+    {/if}
   {/if}
   {#if showVision}
     {#if agentVisionPanelComponent}
@@ -220,7 +238,11 @@
     {/if}
   {/if}
   {#if showCanvas}
-    <CodeCanvas onClose={() => (showCanvas = false)} />
+    {#if codeCanvasComponent}
+      <svelte:component this={codeCanvasComponent} onClose={() => (showCanvas = false)} />
+    {:else}
+      <div class="panel-state">Loading Canvas...</div>
+    {/if}
   {/if}
 
   <!-- Bottom tab bar -->
