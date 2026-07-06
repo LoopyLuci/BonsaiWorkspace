@@ -87,11 +87,40 @@ pub async fn check_and_recover(
     // Also emit a SurvivalEvent on the system bus so BotRuleEngine can react.
     if let Some(state) = app.try_state::<crate::AppState>() {
         state.event_bus.publish(crate::system_event_bus::SystemEvent::CrashDetected {
-            component: "bonsai-workspace".into(),
+            component: "workspace".into(),
             backtrace: "unclean shutdown detected via crash.flag".into(),
             severity: crate::system_event_bus::CrashSeverity::Medium,
         });
     }
+
+    // Automatic self-repair: if the crash reporter persisted a panic message
+    // for this session, hand it to the Survival KB the same way `repair_error`
+    // would — closing the loop from "we crashed" to "we tried a known fix"
+    // without a human having to notice and click anything first.
+    let repair_attempt = if let Some(panic_report) = crate::crash_reporter::most_recent_backend_panic() {
+        let message = panic_report
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !message.is_empty() {
+            if let Some(survival) = app.try_state::<crate::survival::SurvivalState>() {
+                let fixed = crate::survival::repair_error(message.clone(), survival).await.unwrap_or(false);
+                if fixed {
+                    info!("[crash_recovery] Survival KB auto-repair matched and ran a fix for the last crash");
+                } else {
+                    info!("[crash_recovery] Survival KB had no matching fix for the last crash");
+                }
+                Some(serde_json::json!({ "message": message, "fixed": fixed }))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Emit event so the frontend can show a recovery notice + rollback proposal.
     let _ = app.emit(
@@ -99,8 +128,9 @@ pub async fn check_and_recover(
         serde_json::json!({
             "crashed": true,
             "wal_replayed": true,
-            "message": "Bonsai recovered from an unexpected shutdown. Your data is intact.",
+            "message": "Workspace recovered from an unexpected shutdown. Your data is intact.",
             "rollback_proposal": rollback_proposal,
+            "repair_attempt": repair_attempt,
         }),
     );
 

@@ -3,7 +3,7 @@
 //! Wraps a platform shell (PowerShell on Windows, bash/zsh elsewhere) with:
 //!  • Command history with full metadata (directory, exit code, timing)
 //!  • PredictiveEngine integration — shows predicted next commands
-//!  • Natural-language → command translation via BonsAI inference
+//!  • Natural-language → command translation via OmniAI inference
 //!  • Auto-fix suggestions on non-zero exit codes
 //!  • Auto-explain on command output (opt-in)
 //!  • Sylva REPL commands via the `/lua` prefix

@@ -5,8 +5,8 @@
 // sends the image to the running slot and requests Markdown output.
 //
 // ## Model placement
-//   - `~/.bonsai/models/numarkdown/NuMarkdown-8B-Q4_K_M.gguf`
-//   - `~/.bonsai/models/numarkdown/mmproj.gguf`   (vision encoder)
+//   - `~/.workspace/models/numarkdown/NuMarkdown-8B-Q4_K_M.gguf`
+//   - `~/.workspace/models/numarkdown/mmproj.gguf`   (vision encoder)
 //   - `$NUMARKDOWN_MODEL_PATH`
 //
 // The tool connects to whichever llama-server slot is currently running.
@@ -33,7 +33,7 @@ fn find_model() -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/numarkdown");
+        .join(".workspace/models/numarkdown");
     for name in &[
         "NuMarkdown-8B-Q4_K_M.gguf",
         "NuMarkdown-8B-Q5_K_M.gguf",
@@ -50,7 +50,7 @@ fn find_model() -> Option<PathBuf> {
 fn find_mmproj() -> Option<PathBuf> {
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/numarkdown");
+        .join(".workspace/models/numarkdown");
     for name in &["mmproj.gguf", "mmproj-f16.gguf", "mmproj-q4_0.gguf"] {
         let p = base.join(name);
         if p.exists() {

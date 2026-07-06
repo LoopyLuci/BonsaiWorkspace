@@ -7,7 +7,7 @@
 //! ## Model placement (offline, user-managed)
 //! Place the ONNX weights at any of:
 //!   - `$KOKORO_MODEL_PATH` (env var)
-//!   - `~/.bonsai/models/kokoro/kokoro-v1.9.onnx`
+//!   - `~/.workspace/models/kokoro/kokoro-v1.9.onnx`
 //!   - `<app_data>/sidecars/kokoro/kokoro-v1.9.onnx`
 //!
 //! ## Worker
@@ -125,10 +125,10 @@ fn find_kokoro_model() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/models/kokoro/kokoro-v1.9.onnx"),
+            .join(".workspace/models/kokoro/kokoro-v1.9.onnx"),
         dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace/sidecars/kokoro/kokoro-v1.9.onnx"),
+            .join("com.omnisystem.workspace/sidecars/kokoro/kokoro-v1.9.onnx"),
         PathBuf::from("sidecars/kokoro/kokoro-v1.9.onnx"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -145,7 +145,7 @@ fn find_kokoro_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/kokoro_worker.py"),
+            .join(".workspace/sidecars/kokoro_worker.py"),
         PathBuf::from("sidecars/kokoro_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -171,7 +171,7 @@ pub async fn synthesize(
     speed: Option<f32>,
 ) -> Result<crate::tts_engine::TtsResult, String> {
     let model = find_kokoro_model()
-        .ok_or("Kokoro model not found. Place kokoro-v1.9.onnx in ~/.bonsai/models/kokoro/")?;
+        .ok_or("Kokoro model not found. Place kokoro-v1.9.onnx in ~/.workspace/models/kokoro/")?;
     let worker = find_kokoro_worker().ok_or("kokoro_worker.py not found alongside the model")?;
 
     let voice_name = voice.unwrap_or("af_heart");
@@ -292,7 +292,7 @@ impl Tool for KokoroTtsTool {
         if !is_available() {
             return Err(
                 "Kokoro model not installed. Download kokoro-v1.9.onnx from \
-                 huggingface.co/hexgrad/Kokoro-82M and place it in ~/.bonsai/models/kokoro/"
+                 huggingface.co/hexgrad/Kokoro-82M and place it in ~/.workspace/models/kokoro/"
                     .into(),
             );
         }

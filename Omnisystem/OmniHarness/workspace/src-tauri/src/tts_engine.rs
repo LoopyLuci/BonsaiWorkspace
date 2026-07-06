@@ -125,7 +125,7 @@ fn find_piper() -> Result<PathBuf, String> {
     let candidates = [
         dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace")
+            .join("com.omnisystem.workspace")
             .join("sidecars")
             .join("piper.exe"),
         PathBuf::from("sidecars").join("piper.exe"),
@@ -143,7 +143,7 @@ fn find_piper() -> Result<PathBuf, String> {
 fn find_voice_model(voice: Option<&str>) -> Result<PathBuf, String> {
     let voices_dir = dirs::data_local_dir()
         .unwrap_or_default()
-        .join("com.bonsai.workspace")
+        .join("com.omnisystem.workspace")
         .join("voices");
 
     if let Some(name) = voice {
@@ -173,5 +173,5 @@ fn find_voice_model(voice: Option<&str>) -> Result<PathBuf, String> {
         }
     }
 
-    Err("No voice model found. Place a .onnx model in AppData/com.bonsai.workspace/voices/.".into())
+    Err("No voice model found. Place a .onnx model in AppData/com.omnisystem.workspace/voices/.".into())
 }

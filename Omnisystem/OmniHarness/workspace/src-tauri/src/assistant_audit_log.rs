@@ -6,6 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::kernel_bridge::KernelMirrorEvent;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,6 +33,12 @@ pub struct AuditLog {
     log_path: PathBuf,
     rotate_path: PathBuf,
     writer: Mutex<Option<File>>,
+    /// Cross-language mirror — set via `attach_kernel_bridge` once the
+    /// kernel_bridge is constructed. Every logged event is also forwarded
+    /// here so the OmniHarness Rust kernel's hash-chained event store gets
+    /// an independently verifiable copy (no-op when the kernel isn't running
+    /// or this was never attached, e.g. in tests).
+    kernel_tx: Mutex<Option<UnboundedSender<KernelMirrorEvent>>>,
 }
 
 impl AuditLog {
@@ -47,13 +56,30 @@ impl AuditLog {
             log_path,
             rotate_path,
             writer,
+            kernel_tx: Mutex::new(None),
         }
+    }
+
+    /// Wires this audit log up to the kernel bridge so every future event is
+    /// also mirrored into the kernel's cross-language audit chain.
+    pub fn attach_kernel_bridge(&self, tx: UnboundedSender<KernelMirrorEvent>) {
+        *self.kernel_tx.lock().unwrap() = Some(tx);
     }
 
     pub fn log(&self, event: AuditEvent) {
         let Ok(line) = serde_json::to_string(&event) else {
             return;
         };
+        if let Ok(guard) = self.kernel_tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(KernelMirrorEvent {
+                    module_source: "workspace-assistant".to_string(),
+                    event_type: format!("tool:{}:{}", event.tool, event.decision),
+                    payload_json: line.clone(),
+                    session_id: event.session_id.clone().unwrap_or_default(),
+                });
+            }
+        }
         let mut guard = self.writer.lock().unwrap();
         self.maybe_rotate(&mut guard);
         if let Some(f) = guard.as_mut() {

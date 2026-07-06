@@ -121,14 +121,14 @@ pub async fn toggle_assistant_window(app: AppHandle) -> Result<(), String> {
         let window = match app.get_webview_window("assistant") {
             Some(w) => w,
             None => {
-                // If the user fully closed Bonsai Workspace, recreate it so the toolbar button
+                // If the user fully closed Workspace, recreate it so the toolbar button
                 // can always reopen the assistant without requiring an app restart.
                 WebviewWindowBuilder::new(
                     &app,
                     "assistant",
                     WebviewUrl::App("assistant.html".into()),
                 )
-                .title("Bonsai Workspace")
+                .title("Workspace")
                 .inner_size(420.0, 680.0)
                 .min_inner_size(340.0, 480.0)
                 .resizable(true)
@@ -621,7 +621,7 @@ pub async fn auto_title_session(
         .find(|p| p.is_active)
         .unwrap_or_else(|| crate::assistant_store::AssistantProfile {
             id: "auto-title".to_string(),
-            name: "Bonsai Buddy".to_string(),
+            name: "Workspace Buddy".to_string(),
             persona_id: None,
             avatar_id: None,
             tts_voice: "en-us".to_string(),

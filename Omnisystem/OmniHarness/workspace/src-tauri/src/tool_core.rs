@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-/// Shared foundation for all Bonsai tool runtimes.
+/// Shared foundation for all Workspace tool runtimes.
 ///
 /// Both the assistant window (assistant_tools) and the workspace chat (tools)
 /// implement the `Tool` trait defined here. They each maintain a separate

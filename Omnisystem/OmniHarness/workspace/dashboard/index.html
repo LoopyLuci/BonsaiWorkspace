@@ -238,6 +238,41 @@
 
     /* ── Empty state ── */
     .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+
+    /* ── Model management ── */
+    .quick-select-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    #quick-select-models {
+      flex: 1;
+      min-width: 220px;
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .btn {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .btn:hover { border-color: var(--accent2); color: var(--accent2); }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn:disabled:hover { border-color: var(--border); color: var(--text); }
   </style>
 </head>
 <body>
@@ -307,6 +342,18 @@
   <div class="card full">
     <div class="card-title">Loaded Models</div>
     <div id="models-list"><p class="empty">No data yet…</p></div>
+  </div>
+
+  <!-- Model Management (Tauri-backed discovery) -->
+  <div class="card full">
+    <div class="card-title">Models</div>
+    <div class="quick-select-row">
+      <select id="quick-select-models"><option value="">Loading known models…</option></select>
+      <button id="btn-rescan-models" class="btn">Rescan</button>
+      <button id="btn-add-folder" class="btn">Add Folder…</button>
+    </div>
+    <div id="model-mgmt-status" class="empty" style="display:none;"></div>
+    <div id="model-mgmt-list"><p class="empty">No data yet…</p></div>
   </div>
 
   <!-- Active Swarm Tasks -->
@@ -419,6 +466,161 @@
           </div>
         </div>`;
     }).join("");
+  }
+
+  /* ── Model management (Tauri commands) ── */
+  const localScannedProfiles = [];
+
+  function tauriInvoke(cmd, args) {
+    if (!(window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function")) {
+      return Promise.reject(new Error("Tauri bridge unavailable (not running inside the desktop app)."));
+    }
+    return window.__TAURI__.core.invoke(cmd, args);
+  }
+
+  function formatBytes(n) {
+    if (n == null || isNaN(n)) return null;
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = Number(n);
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  function capabilitySummary(m) {
+    const parts = [];
+    if (m.format) parts.push(String(m.format));
+    if (m.quantization) parts.push(m.quantization);
+    if (m.context_length) parts.push(`${Math.round(m.context_length / 1000)}K ctx`);
+    if (m.size_bytes != null) {
+      const s = formatBytes(m.size_bytes);
+      if (s) parts.push(s);
+    }
+    if (m.parameter_count) {
+      const b = m.parameter_count / 1e9;
+      parts.push(b >= 1 ? `${b.toFixed(b >= 10 ? 0 : 1)}B params` : `${Math.round(m.parameter_count / 1e6)}M params`);
+    }
+    return parts.join(" · ") || "—";
+  }
+
+  function setModelMgmtStatus(msg, level = "info") {
+    const el = document.getElementById("model-mgmt-status");
+    if (!msg) {
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "block";
+    el.textContent = msg;
+    el.style.color = level === "error" ? "var(--error)" : (level === "warn" ? "var(--warn)" : "var(--muted)");
+  }
+
+  function renderModelMgmtList(profiles) {
+    const container = document.getElementById("model-mgmt-list");
+    if (!profiles || profiles.length === 0) {
+      container.innerHTML = '<p class="empty">No models found yet. Use "Add Folder…" to scan a directory, or start Ollama.</p>';
+      return;
+    }
+
+    container.innerHTML = profiles.map(m => {
+      const sizeStr = m.size_bytes != null ? formatBytes(m.size_bytes) : null;
+      return `
+        <div class="model-row">
+          <div class="model-header">
+            <span class="model-name">${esc(m.name || m.id)}</span>
+            <span class="badge online">${esc(m.format || "unknown")}</span>
+          </div>
+          <div class="model-meta">
+            ${sizeStr ? `<span>Size: ${esc(sizeStr)}</span>` : ""}
+            ${m.quantization ? `<span>Quant: ${esc(m.quantization)}</span>` : ""}
+            ${m.context_length ? `<span>CTX: ${Number(m.context_length).toLocaleString()}</span>` : ""}
+            ${m.parameter_count ? `<span>Params: ${(m.parameter_count / 1e9).toFixed(1)}B</span>` : ""}
+            ${m.file_path ? `<span title="${esc(m.file_path)}">${esc(m.file_path)}</span>` : ""}
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function populateQuickSelect(profiles) {
+    const select = document.getElementById("quick-select-models");
+    if (!profiles || profiles.length === 0) {
+      select.innerHTML = '<option value="">No models discovered yet</option>';
+      return;
+    }
+    select.innerHTML = profiles.map(m => {
+      const label = `${m.name || m.id} · ${capabilitySummary(m)}`;
+      return `<option value="${esc(m.id)}">${esc(label)}</option>`;
+    }).join("");
+  }
+
+  async function loadKnownProfiles() {
+    try {
+      const profiles = await tauriInvoke("list_model_profiles");
+      populateQuickSelect(profiles);
+      renderModelMgmtList(profiles);
+      setModelMgmtStatus(profiles.length === 0 ? "No models found yet — add a folder or start Ollama." : "");
+      return profiles;
+    } catch (e) {
+      setModelMgmtStatus(e.message || "Failed to load model profiles.", "error");
+      document.getElementById("quick-select-models").innerHTML = '<option value="">Unavailable</option>';
+      log("Failed to load model profiles: " + (e.message || e), "error");
+      return [];
+    }
+  }
+
+  async function addModelFolder() {
+    const btn = document.getElementById("btn-add-folder");
+    btn.disabled = true;
+    try {
+      const path = await tauriInvoke("pick_model_folder");
+      if (!path) {
+        setModelMgmtStatus("Folder selection cancelled.", "warn");
+        return;
+      }
+      setModelMgmtStatus(`Scanning ${path}…`);
+      const found = await tauriInvoke("scan_model_folder", { path });
+      if (!found || found.length === 0) {
+        setModelMgmtStatus(`No supported model files found in ${path}.`, "warn");
+        return;
+      }
+      const known = new Set(localScannedProfiles.map(m => m.id));
+      let added = 0;
+      for (const m of found) {
+        if (!known.has(m.id)) {
+          localScannedProfiles.push(m);
+          known.add(m.id);
+          added++;
+        }
+      }
+      setModelMgmtStatus(`Found ${found.length} model(s) in ${path} (${added} new).`);
+      log(`Scanned ${path}: ${found.length} model(s) found`, "info");
+      await loadKnownProfiles();
+    } catch (e) {
+      setModelMgmtStatus(e.message || "Folder scan failed.", "error");
+      log("Model folder scan failed: " + (e.message || e), "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function rescanAllModels() {
+    const btn = document.getElementById("btn-rescan-models");
+    btn.disabled = true;
+    setModelMgmtStatus("Rescanning all known paths and Ollama…");
+    try {
+      const profiles = await tauriInvoke("rescan_all_models");
+      populateQuickSelect(profiles);
+      renderModelMgmtList(profiles);
+      setModelMgmtStatus(profiles.length === 0 ? "Rescan complete — no models found." : `Rescan complete — ${profiles.length} model(s) known.`);
+      log(`Rescan complete: ${profiles.length} model(s)`, "info");
+    } catch (e) {
+      setModelMgmtStatus(e.message || "Rescan failed.", "error");
+      log("Model rescan failed: " + (e.message || e), "error");
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   /* ── Swarm ── */
@@ -552,7 +754,11 @@
     indicator.className = "";
   }
 
+  document.getElementById("btn-add-folder").addEventListener("click", addModelFolder);
+  document.getElementById("btn-rescan-models").addEventListener("click", rescanAllModels);
+
   refresh();
+  loadKnownProfiles();
   setInterval(refresh, INTERVAL);
 </script>
 </body>

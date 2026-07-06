@@ -1,5 +1,5 @@
 //! Launch supervisor: probes services in dependency order and emits progress
-//! events to the frontend. No processes are spawned here — Bonsai's servers
+//! events to the frontend. No processes are spawned here — Workspace's servers
 //! are started by lib.rs; the supervisor only verifies they are healthy.
 
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ impl LaunchSupervisor {
     }
 
     /// Run the full probe sequence. Returns Ok when all required components are ready.
-    /// Emits `bonsai:launch-progress` events via `app_handle` if provided.
+    /// Emits `workspace:launch-progress` events via `app_handle` if provided.
     pub async fn probe_all(
         self: Arc<Self>,
         app_handle: Option<tauri::AppHandle>,
@@ -176,13 +176,13 @@ impl LaunchSupervisor {
     async fn emit_progress(&self, app_handle: &Option<tauri::AppHandle>) {
         if let Some(h) = app_handle {
             let status = self.status().await;
-            let _ = h.emit("bonsai:launch-progress", &status);
+            let _ = h.emit("workspace:launch-progress", &status);
         }
     }
 
     /// Run a continuous background health-check loop after startup.
     /// When a previously-Ready component fails its health probe, emits
-    /// `bonsai:service-lost` and marks it Failed so the frontend can show
+    /// `workspace:service-lost` and marks it Failed so the frontend can show
     /// a reconnecting overlay.
     pub async fn monitor(self: Arc<Self>, app_handle: tauri::AppHandle, interval: Duration) {
         loop {
@@ -206,7 +206,7 @@ impl LaunchSupervisor {
                     self.set_state(&name, ComponentState::Failed("health check failed".into()))
                         .await;
                     let _ = app_handle.emit(
-                        "bonsai:service-lost",
+                        "workspace:service-lost",
                         serde_json::json!({ "component": name }),
                     );
                 }

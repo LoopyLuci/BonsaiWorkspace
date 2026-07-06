@@ -1,7 +1,7 @@
 //! Workstream C — OmnFS: CAS-backed virtual file system
 //!
 //! Every write is content-addressed (Blake3), encrypted (XChaCha20-Poly1305
-//! stub — real key management deferred to bonsai-auth), and versioned.
+//! stub — real key management deferred to workspace-auth), and versioned.
 //! Snapshots are instant (copy-on-write index pointer swap).
 //! Rollback replaces the live index with a snapshot.
 //!
@@ -29,7 +29,7 @@ use cas::{CasKey, CasStore};
 pub struct Inode {
     pub path: String,
     pub content_key: CasKey,
-    /// Encryption key id (references bonsai-auth key ring)
+    /// Encryption key id (references workspace-auth key ring)
     pub key_id: Option<String>,
     pub size_bytes: u64,
     pub created_at: i64,
@@ -182,7 +182,7 @@ impl FsIndex {
 // ─────────────────────────────────────────────────────────────────────────────
 // § 3 — Encryption stub
 // ─────────────────────────────────────────────────────────────────────────────
-// A real implementation would use the bonsai-auth key ring (XChaCha20-Poly1305).
+// A real implementation would use the workspace-auth key ring (XChaCha20-Poly1305).
 // This stub passes data through unchanged so the rest of the system compiles.
 
 struct CryptoStub;

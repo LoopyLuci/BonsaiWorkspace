@@ -53,7 +53,7 @@ impl Tool for KnowledgeQueryTool {
         "query_knowledge"
     }
     fn description(&self) -> &str {
-        "Search the Bonsai knowledge graph for entities, relationships, and beliefs."
+        "Search the Workspace knowledge graph for entities, relationships, and beliefs."
     }
 
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
@@ -99,7 +99,7 @@ impl Tool for FactCheckTool {
         "fact_check"
     }
     fn description(&self) -> &str {
-        "Check whether a statement is consistent with Bonsai's knowledge graph."
+        "Check whether a statement is consistent with Workspace's knowledge graph."
     }
 
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {

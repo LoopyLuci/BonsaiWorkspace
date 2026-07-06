@@ -7,8 +7,8 @@
 //! Both run via `image_edit_worker.py` using the `diffusers` pipeline.
 //!
 //! ## Model placement
-//!   - `~/.bonsai/models/image_edit/qwen-rapid/`
-//!   - `~/.bonsai/models/image_edit/qwen-multiangle/`
+//!   - `~/.workspace/models/image_edit/qwen-rapid/`
+//!   - `~/.workspace/models/image_edit/qwen-multiangle/`
 //!   - `$IMAGE_EDIT_MODEL_PATH` (rapid) / `$IMAGE_EDIT_MULTIANGLE_PATH` (multi-angle)
 //!
 //! ## Installation
@@ -34,7 +34,7 @@ fn find_rapid_model() -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/image_edit/qwen-rapid");
+        .join(".workspace/models/image_edit/qwen-rapid");
     if base.exists() {
         return Some(base);
     }
@@ -50,7 +50,7 @@ fn find_multiangle_model() -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/image_edit/qwen-multiangle");
+        .join(".workspace/models/image_edit/qwen-multiangle");
     if base.exists() {
         return Some(base);
     }
@@ -61,7 +61,7 @@ fn find_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/image_edit_worker.py"),
+            .join(".workspace/sidecars/image_edit_worker.py"),
         PathBuf::from("sidecars/image_edit_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -104,7 +104,7 @@ pub struct MultiviewResult {
 }
 
 async fn call_worker(payload: &Value) -> Result<Value, String> {
-    let worker = find_worker().ok_or("image_edit_worker.py not found in ~/.bonsai/sidecars/")?;
+    let worker = find_worker().ok_or("image_edit_worker.py not found in ~/.workspace/sidecars/")?;
     let python = which_python()?;
     let encoded = serde_json::to_string(payload).unwrap();
 
@@ -139,7 +139,7 @@ async fn run_edit(
     save_path: Option<&str>,
 ) -> Result<ImageEditResult, String> {
     let model = find_rapid_model().ok_or(
-        "Qwen-Image-Edit model not found. Place model in ~/.bonsai/models/image_edit/qwen-rapid/",
+        "Qwen-Image-Edit model not found. Place model in ~/.workspace/models/image_edit/qwen-rapid/",
     )?;
     info!(image = image_path, %prompt, "[image_edit] editing image");
     let t0 = std::time::Instant::now();
@@ -194,7 +194,7 @@ async fn run_generate_rapid(
 async fn run_multiview(image_path: &str, angles: &[String]) -> Result<MultiviewResult, String> {
     let model = find_multiangle_model()
         .or_else(find_rapid_model)
-        .ok_or("Qwen multi-angle model not found. Place model in ~/.bonsai/models/image_edit/qwen-multiangle/")?;
+        .ok_or("Qwen multi-angle model not found. Place model in ~/.workspace/models/image_edit/qwen-multiangle/")?;
     info!(image = image_path, "[image_edit] generating multiview");
     let t0 = std::time::Instant::now();
     let default_angles = [

@@ -1,11 +1,11 @@
-//! LoRA adapter hot-swapping for BonsAI.
+//! LoRA adapter hot-swapping for OmniAI.
 //!
 //! llama.cpp exposes a `/lora` endpoint (since mid-2024) that lets callers
 //! swap adapter weights on a running model without reloading the base model.
 //! This enables a single 7B model to behave as code, math, writing, or music
 //! specialist — adapter switch takes <100ms.
 //!
-//! Adapters are stored in `~/.bonsai/adapters/` by default (overridden by
+//! Adapters are stored in `~/.workspace/adapters/` by default (overridden by
 //! `AppConfig::adapters_dir`).  Each adapter is a `.gguf` or `.bin` file
 //! accompanied by a sidecar `<name>.json` manifest describing its domain.
 

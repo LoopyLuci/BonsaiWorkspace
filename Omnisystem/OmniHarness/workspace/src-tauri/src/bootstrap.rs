@@ -1,6 +1,6 @@
 //! First-run bootstrap.
 //!
-//! On first launch Bonsai automatically:
+//! On first launch Workspace automatically:
 //!   1. Downloads the llama-server binary from the latest llama.cpp GitHub release.
 //!   2. Downloads the whisper-server binary from the latest whisper.cpp GitHub release.
 //!   3. Downloads the Whisper base.en model (~148 MB).
@@ -10,7 +10,7 @@
 //! Everything is stored in `{app_data}/sidecars/` and `{app_data}/models/`.
 //! On subsequent launches the check is instant (just `Path::exists()`).
 //!
-//! Bonsai Workspace is built to give users a peaceful, easy experience with
+//! Workspace is built to give users a peaceful, easy experience with
 //! Bonsai Models and all other compatible AI models.
 //!
 //! # Cancellation
@@ -31,9 +31,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ── Model sources ─────────────────────────────────────────────────────────────
 
-const BONSAI_HF_REPO: &str = "prism-ml/Bonsai-1.7B-gguf";
+const WORKSPACE_HF_REPO: &str = "prism-ml/Bonsai-1.7B-gguf";
 /// Quantization preference order (first match wins).
-const BONSAI_QUANT_PREF: &[&str] = &["q4_k_m", "q5_k_m", "q4_k", "q4_0", "q8_0"];
+const WORKSPACE_QUANT_PREF: &[&str] = &["q4_k_m", "q5_k_m", "q4_k", "q4_0", "q8_0"];
 
 const WHISPER_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
@@ -141,7 +141,7 @@ pub fn find_gguf(app: &AppHandle) -> Option<PathBuf> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if stem.contains("bonsai") {
+            if stem.contains("workspace") {
                 return Some(p);
             }
             fallback.get_or_insert(p);
@@ -167,7 +167,7 @@ pub fn check_status(app: &AppHandle) -> BootstrapStatus {
 /// `bootstrap-progress` events so the frontend can show progress bars.
 pub async fn run(app: AppHandle, cancel: Arc<AtomicBool>) -> Result<()> {
     let client = reqwest::Client::builder()
-        .user_agent("bonsai-workspace/0.1.0")
+        .user_agent("workspace/0.1.0")
         .timeout(std::time::Duration::from_secs(3600))
         .build()?;
 
@@ -226,26 +226,26 @@ pub async fn run(app: AppHandle, cancel: Arc<AtomicBool>) -> Result<()> {
 
     // 4. Bonsai-1.7B
     if find_gguf(&app).is_none() {
-        check_cancel(&cancel, "Bootstrap cancelled before Bonsai model download")?;
+        check_cancel(&cancel, "Bootstrap cancelled before Workspace model download")?;
         step(
             &app,
-            "bonsai_model",
+            "workspace_model",
             0,
             "Locating Bonsai-1.7B on HuggingFace…",
         );
-        let (url, filename) = hf_gguf_url(&client, BONSAI_HF_REPO, BONSAI_QUANT_PREF)
+        let (url, filename) = hf_gguf_url(&client, WORKSPACE_HF_REPO, WORKSPACE_QUANT_PREF)
             .await
             .context("Could not locate Bonsai-1.7B GGUF on HuggingFace")?;
         let dest = models_dir(&app).join(&filename);
         step(
             &app,
-            "bonsai_model",
+            "workspace_model",
             1,
             &format!("Downloading {} …", filename),
         );
-        stream_file(&client, &url, &dest, &app, "bonsai_model", &cancel)
+        stream_file(&client, &url, &dest, &app, "workspace_model", &cancel)
             .await
-            .context("Bonsai model download failed")?;
+            .context("Workspace model download failed")?;
     }
 
     let _ = app.emit("bootstrap-complete", ());

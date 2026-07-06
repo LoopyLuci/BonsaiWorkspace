@@ -55,12 +55,12 @@ pub async fn generate_image(request: ImageGenRequest) -> Result<ImageGenResult, 
         .unwrap_or_else(|| find_default_sd_model().unwrap_or_default());
 
     if model.is_empty() {
-        return Err("No Stable Diffusion model found. Set model_path or place a model in ~/.bonsai/models/sd/".into());
+        return Err("No Stable Diffusion model found. Set model_path or place a model in ~/.workspace/models/sd/".into());
     }
 
     let output_path = request.output_path.clone().unwrap_or_else(|| {
         std::env::temp_dir()
-            .join(format!("bonsai_img_{}.png", epoch_ms()))
+            .join(format!("workspace_img_{}.png", epoch_ms()))
             .to_string_lossy()
             .into_owned()
     });
@@ -124,7 +124,7 @@ fn find_sd_script() -> Result<PathBuf, String> {
     let candidates = [
         dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace")
+            .join("com.omnisystem.workspace")
             .join("scripts")
             .join("sd_generate.py"),
         PathBuf::from("scripts").join("sd_generate.py"),
@@ -135,14 +135,14 @@ fn find_sd_script() -> Result<PathBuf, String> {
             return Ok(p.clone());
         }
     }
-    Err("sd_generate.py not found. Place it in AppData/com.bonsai.workspace/scripts/ or set BONSAI_SD_SCRIPT.".into())
+    Err("sd_generate.py not found. Place it in AppData/com.omnisystem.workspace/scripts/ or set WORKSPACE_SD_SCRIPT.".into())
 }
 
 fn find_sd_python() -> String {
     // Prefer the dedicated SD venv installed by install-sd.ps1
     let venv_py = dirs::data_local_dir()
         .unwrap_or_default()
-        .join("com.bonsai.workspace")
+        .join("com.omnisystem.workspace")
         .join("sd_venv")
         .join(if cfg!(windows) { "Scripts" } else { "bin" })
         .join(if cfg!(windows) {
@@ -171,7 +171,7 @@ fn find_sd_python() -> String {
 
 fn find_default_sd_model() -> Option<String> {
     let search_dirs: Vec<std::path::PathBuf> = vec![
-        dirs::home_dir()?.join(".bonsai").join("models").join("sd"),
+        dirs::home_dir()?.join(".workspace").join("models").join("sd"),
         std::path::PathBuf::from(r"D:\Models"),
         std::path::PathBuf::from(r"D:\models\sd"),
     ];
@@ -188,7 +188,7 @@ fn find_default_sd_model() -> Option<String> {
                             .to_string_lossy()
                             .to_lowercase();
                         // Basic heuristic: skip obvious LLM files
-                        if name.contains("bonsai")
+                        if name.contains("workspace")
                             || name.contains("qwen")
                             || name.contains("gemma")
                             || name.contains("svara")

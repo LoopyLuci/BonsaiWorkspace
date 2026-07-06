@@ -16,7 +16,16 @@ pub enum InferenceMode {
 
 impl Default for InferenceMode {
     fn default() -> Self {
-        Self::Hybrid { gpu_layers: 20 }
+        // `Hybrid { gpu_layers: N }` returns that fixed N unconditionally from
+        // `gpu_layers()` below, bypassing the orchestrator's quant-safety check
+        // (some quantizations, e.g. IQ1_S, crash the Vulkan backend outright —
+        // see `is_gpu_unsafe_quant` in model_orchestrator.rs) and its VRAM-aware
+        // layer estimate entirely. A flat default of 20 layers doesn't know
+        // whether that's safe for the model about to load, which is exactly
+        // what caused GPU loads to crash regardless of model size or quant.
+        // `Auto` defers to the orchestrator's real computation instead; `Hybrid`
+        // remains available as an explicit, user-chosen override.
+        Self::Auto
     }
 }
 

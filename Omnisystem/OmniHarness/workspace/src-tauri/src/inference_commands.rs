@@ -3,7 +3,7 @@ use tauri::command;
 #[command]
 pub async fn list_models() -> Result<Vec<String>, String> {
     // In production this would query `model_registry` or `model_orchestrator`.
-    Ok(vec!["bonsai-small-v1".to_string(), "bonsai-chat-v2".to_string()])
+    Ok(vec!["workspace-small-v1".to_string(), "workspace-chat-v2".to_string()])
 }
 
 #[command]

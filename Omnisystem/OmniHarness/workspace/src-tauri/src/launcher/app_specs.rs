@@ -1,4 +1,4 @@
-//! Default component specs for Bonsai Workspace.
+//! Default component specs for Workspace.
 //! The supervisor probes these in dependency order before signalling the frontend.
 
 use super::component::ComponentSpec;

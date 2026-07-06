@@ -1,5 +1,5 @@
 //! SmartRouter — intelligent, hardware-aware, self-adjusting model router.
-//! (Renamed from "Micro BonsAI"; logic preserved and extended, brand removed.)
+//! (Renamed from "Micro OmniAI"; logic preserved and extended, brand removed.)
 //!
 //! An always-warm lightweight system (heuristic today, pluggable tiny GGUF
 //! model tomorrow) that watches hardware resources and recent task context
@@ -21,7 +21,7 @@
 //!  - Scoring is table-driven (`AdaptiveWeights`), not a hardcoded formula —
 //!    new signals can be added as new weighted terms without touching the
 //!    selection algorithm itself.
-//!  - No brand-specific heuristics (the old "id contains 'bonsai'" affinity
+//!  - No brand-specific heuristics (the old "id contains 'workspace'" affinity
 //!    bonus is gone); model affinity is driven purely by observed
 //!    quality/speed history, so it works identically for any model family.
 //!  - Every decision records *why* (`reasoning`) and its outcome is fed back
@@ -39,6 +39,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 
 use crate::critic::TaskDomain;
+use crate::model_discovery::{ModelProfile, ModelRegistry};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -50,16 +51,31 @@ const WEIGHT_LEARNING_RATE: f32 = 0.05; // EMA rate for adaptive weight updates
 
 // ── Hardware snapshot ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareSnapshot {
     pub vram_used_mb: u64,
     pub vram_total_mb: u64,
     pub ram_free_mb: u64,
     pub ram_total_mb: u64,
     pub cpu_utilisation_pct: f32,
-    /// Rough GPU utilisation estimate (0–100). -1 means unavailable.
+    /// VRAM-usage-ratio estimate of GPU load (0–100). -1 means no VRAM figures
+    /// have been reported yet via `update_vram` (no GPU backend attached).
     pub gpu_utilisation_pct: f32,
     pub timestamp_secs: u64,
+}
+
+impl Default for HardwareSnapshot {
+    fn default() -> Self {
+        Self {
+            vram_used_mb: 0,
+            vram_total_mb: 0,
+            ram_free_mb: 0,
+            ram_total_mb: 0,
+            cpu_utilisation_pct: 0.0,
+            gpu_utilisation_pct: -1.0,
+            timestamp_secs: 0,
+        }
+    }
 }
 
 impl HardwareSnapshot {
@@ -127,17 +143,38 @@ impl AdaptiveWeights {
     /// Nudge weights toward better outcomes. Called after each `record_perf`.
     /// `recommended_was_best`: did the model SmartRouter chose end up scoring
     /// at/above the median quality of everything tried recently for this domain?
-    fn update_from_outcome(&mut self, recommended_was_best: bool) {
+    /// `resource_constrained`: were RAM/VRAM below the low-resource thresholds
+    /// at selection time? `power_saving`: was the caller in power-saving mode?
+    /// Every signal that could plausibly have contributed to this outcome gets
+    /// a small nudge — a router that only ever learns two of its seven knobs
+    /// isn't meaningfully self-adjusting, it just looks like it is.
+    fn update_from_outcome(&mut self, recommended_was_best: bool, resource_constrained: bool, power_saving: bool) {
         let lr = WEIGHT_LEARNING_RATE;
-        if recommended_was_best {
-            // Reinforce the signals that led to this pick.
-            self.history_quality_weight = (self.history_quality_weight * (1.0 + lr)).min(5.0);
-        } else {
-            // De-emphasise history slightly and lean more on domain/resource
+        let reinforce = |w: &mut f32, cap: f32, floor: f32, good: bool| {
+            *w = if good { (*w * (1.0 + lr)).min(cap) } else { (*w * (1.0 - lr)).max(floor) };
+        };
+
+        reinforce(&mut self.history_quality_weight, 5.0, 0.5, recommended_was_best);
+        reinforce(&mut self.already_loaded_bonus, 4.0, 0.5, recommended_was_best);
+
+        if !recommended_was_best {
+            // A miss with the current weighting: lean harder on domain/resource
             // signals, which are cheaper to get right than a thin history.
-            self.history_quality_weight = (self.history_quality_weight * (1.0 - lr)).max(0.5);
             self.domain_match_bonus = (self.domain_match_bonus * (1.0 + lr)).min(3.0);
         }
+
+        if resource_constrained {
+            reinforce(&mut self.low_resource_small_model_bonus, 3.0, 0.3, recommended_was_best);
+            reinforce(&mut self.low_resource_large_model_penalty, 6.0, 1.0, recommended_was_best);
+        }
+        if power_saving {
+            reinforce(&mut self.power_saving_large_model_penalty, 8.0, 1.0, recommended_was_best);
+        }
+
+        // history_speed_weight only matters when quality_bias < 1.0 skews toward
+        // speed; keep it loosely tethered to history_quality_weight so the two
+        // don't diverge into a state where one dominates the score unboundedly.
+        self.history_speed_weight = (self.history_quality_weight * 0.5).clamp(0.25, 2.5);
     }
 }
 
@@ -197,6 +234,9 @@ pub struct SmartRouter {
     weights: Arc<RwLock<AdaptiveWeights>>,
     persist_dir: Option<PathBuf>,
     _ticker: tokio::task::JoinHandle<()>,
+    /// Real model discovery/indexing: local GGUF/ONNX/SafeTensors files +
+    /// Ollama-served models, unified into `ModelProfile`s.
+    pub model_registry: Arc<ModelRegistry>,
 }
 
 impl SmartRouter {
@@ -236,12 +276,45 @@ impl SmartRouter {
             }
         });
 
+        // ── Model discovery/indexing (zero-effort first run) ────────────────
+        // Reuse the same persist_dir as perf history/weights (JSON file
+        // pattern consistent with `load_weights`/`persist` above) rather than
+        // inventing a parallel config mechanism.
+        let model_registry = Arc::new(ModelRegistry::new(config.persist_dir.clone()));
+
+        // First-run convenience: if no search paths are configured yet, seed
+        // with real, commonly-used default directories for this OS (only
+        // paths that actually exist get anything found — scan_directory is
+        // a no-op for missing paths).
+        if model_registry.search_paths().is_empty() {
+            for dir in crate::model_discovery::default_scan_dirs() {
+                if dir.exists() {
+                    model_registry.add_search_path(dir);
+                }
+            }
+        }
+
+        // Kick off a real background scan (filesystem + Ollama HTTP probe)
+        // immediately so `list_model_profiles` has data without the caller
+        // needing to explicitly trigger a rescan first.
+        {
+            let registry = Arc::clone(&model_registry);
+            tokio::spawn(async move {
+                let found = registry.rescan().await;
+                tracing::info!(
+                    "[smart_router] initial model discovery scan found {} profile(s)",
+                    found.len()
+                );
+            });
+        }
+
         Arc::new(Self {
             hw,
             history,
             weights,
             persist_dir: config.persist_dir,
             _ticker: ticker,
+            model_registry,
         })
     }
 
@@ -256,6 +329,11 @@ impl SmartRouter {
         let mut snap = self.hw.write().await;
         snap.vram_used_mb = used_mb;
         snap.vram_total_mb = total_mb;
+        snap.gpu_utilisation_pct = if total_mb == 0 {
+            -1.0
+        } else {
+            (used_mb as f32 / total_mb as f32 * 100.0).clamp(0.0, 100.0)
+        };
     }
 
     // ── Model selection ───────────────────────────────────────────────────────
@@ -424,7 +502,13 @@ impl SmartRouter {
             let median_q = median(domain_peers);
             record.was_recommended && record.quality_score >= median_q
         };
-        self.weights.write().await.update_from_outcome(was_best);
+        let hw = self.hw.read().await.clone();
+        let resource_constrained =
+            hw.ram_free_mb < LOW_RAM_THRESHOLD || hw.vram_free_mb() < LOW_VRAM_THRESHOLD;
+        self.weights
+            .write()
+            .await
+            .update_from_outcome(was_best, resource_constrained, is_large_model(&record.model_id) && resource_constrained);
 
         let mut hist = self.history.lock().await;
         if hist.len() >= HISTORY_CAP {
@@ -598,4 +682,68 @@ pub async fn smart_router_weights(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<AdaptiveWeights, String> {
     Ok(state.smart_router.current_weights().await)
+}
+
+// ── Model discovery Tauri commands ─────────────────────────────────────────────
+
+/// Open a native folder picker (via `rfd`) so the user can add a model search
+/// path from the UI. Runs the blocking native dialog on a blocking thread —
+/// `rfd`'s synchronous API must not run on the async executor thread.
+#[tauri::command]
+pub async fn pick_model_folder() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Select a folder containing model files")
+            .pick_folder()
+            .map(|p| p.display().to_string())
+    })
+    .await
+    .map_err(|e| format!("folder picker task failed: {e}"))
+}
+
+/// Scan a single folder (recursively) for GGUF/ONNX/SafeTensors/PyTorch model
+/// files, add it as a persisted search path, and return the profiles found.
+#[tauri::command]
+pub async fn scan_model_folder(
+    path: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<ModelProfile>, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+    state.smart_router.model_registry.add_search_path(dir.clone());
+    let profiles = tokio::task::spawn_blocking(move || {
+        crate::model_discovery::scan_directory(&dir, true)
+    })
+    .await
+    .map_err(|e| format!("scan task failed: {e}"))?;
+    for p in &profiles {
+        state.smart_router.model_registry.upsert_profile(p.clone());
+    }
+    Ok(profiles)
+}
+
+/// List every currently-indexed model profile (local files + Ollama).
+#[tauri::command]
+pub async fn list_model_profiles(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<ModelProfile>, String> {
+    Ok(state.smart_router.model_registry.list_profiles())
+}
+
+/// Query Ollama's `/api/tags` directly (independent of the cached registry)
+/// so the UI can show live Ollama state.
+#[tauri::command]
+pub async fn get_ollama_models() -> Result<Vec<ModelProfile>, String> {
+    Ok(crate::model_discovery::discover_ollama_models().await)
+}
+
+/// Re-scan every configured search path plus Ollama and return the unified
+/// set of discovered profiles.
+#[tauri::command]
+pub async fn rescan_all_models(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<ModelProfile>, String> {
+    Ok(state.smart_router.model_registry.rescan().await)
 }

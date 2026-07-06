@@ -350,10 +350,15 @@ impl SwarmOrchestrator {
             }
         });
 
-        // Actor system for supervisor/worker lifecycle management
+        // Actor system for supervisor/worker lifecycle management.
+        // `ActorSystem::spawn` calls raw `tokio::spawn` internally, which panics
+        // ("no reactor running") unless there's an active Tokio context — and
+        // `SwarmOrchestrator::new()` is called synchronously from Tauri's
+        // non-async `.setup()` closure. `block_on` enters Tauri's Tokio runtime
+        // for the duration of the call so the nested spawn has somewhere to land.
         let actor_system = ActorSystem::new();
         let supervisor = SwarmSupervisorActor::new(orchestrator);
-        let supervisor_ref = actor_system.spawn(supervisor);
+        let supervisor_ref = tauri::async_runtime::block_on(async { actor_system.spawn(supervisor) });
 
         Self {
             cmd_tx,
@@ -419,6 +424,23 @@ async fn run_swarm(
         .iter()
         .map(|a| (a.config.slot_index as usize, a))
         .collect();
+
+    // Always emitted (unlike "swarm-debug", which is gated behind
+    // `emit_debug_events`) so the frontend can reliably learn the real
+    // `run_id` as early as possible — `submit_swarm_chat`'s own promise
+    // doesn't resolve until the entire run finishes, so this is the only way
+    // for the UI to know the run_id in time to offer a working Cancel action
+    // during a long-running swarm.
+    let _ = app_handle.emit("swarm-started", json!({ "run_id": &run_id }));
+
+    crate::swarm_commander_bridge::on_swarm_started(
+        &app_handle,
+        &run_id,
+        &user_prompt,
+        workspace_path.as_deref(),
+        enabled_tools.as_deref().unwrap_or(&[]),
+        &agents,
+    ).await;
 
     if runtime_settings.emit_debug_events {
         let enabled_slots: Vec<i64> = agents
@@ -594,6 +616,7 @@ async fn run_swarm(
     {
         Ok(v) => v,
         Err(e) => {
+            crate::swarm_commander_bridge::on_swarm_finished(&app_handle, &run_id, false, &e).await;
             let _ = resp_tx.send(Err(e));
             return Ok(());
         }
@@ -691,6 +714,9 @@ async fn run_swarm(
                 "stats": &leader_stats,
             }),
         );
+        crate::swarm_commander_bridge::on_swarm_finished(
+            &app_handle, &run_id, true, "No workers were enabled — leader responded directly.",
+        ).await;
 
         if let Some(store) = &agent_store {
             let summary = summarize_swarm_run(
@@ -840,6 +866,14 @@ async fn continue_swarm_with_plan(
             "leader_plan": &plan_json,
         }),
     );
+
+    {
+        let bridge_subtasks: Vec<(i64, String)> = planned_subtasks
+            .iter()
+            .map(|s| (s.worker_slot as i64, s.task.clone()))
+            .collect();
+        crate::swarm_commander_bridge::on_plan_ready(&app_handle, &run_id, &bridge_subtasks).await;
+    }
 
     // Chain-of-command scheduling based on per-agent policy + global strategy.
     let mut ordered_subtasks = planned_subtasks.clone();
@@ -1352,6 +1386,10 @@ async fn continue_swarm_with_plan(
                     }),
                 );
             }
+            crate::swarm_commander_bridge::on_worker_complete(
+                &app_handle, &run_id, &worker.config.id, worker.config.slot_index,
+                false, "missing_worker_output",
+            ).await;
         }
     }
 
@@ -1509,6 +1547,7 @@ async fn continue_swarm_with_plan(
     {
         Ok(v) => v,
         Err(e) => {
+            crate::swarm_commander_bridge::on_swarm_finished(&app_handle, &run_id, false, &e).await;
             let _ = resp_tx.send(Err(e));
             return Ok(());
         }
@@ -1621,7 +1660,7 @@ async fn continue_swarm_with_plan(
                 session_id: session_id.clone(),
                 user_prompt: user_prompt.clone(),
                 leader_plan: serde_json::to_string(&plan_json).ok(),
-                summary: Some(memory_summary),
+                summary: Some(memory_summary.clone()),
                 status: "completed".to_string(),
                 started_at: unix_now(),
                 completed_at: Some(unix_now()),
@@ -1637,6 +1676,7 @@ async fn continue_swarm_with_plan(
             "stats": &synth_stats,
         }),
     );
+    crate::swarm_commander_bridge::on_swarm_finished(&app_handle, &run_id, true, &memory_summary).await;
 
     let _ = resp_tx.send(Ok(SwarmResult {
         final_response: final_text,
@@ -1864,6 +1904,9 @@ async fn run_worker_subtask(
                         "attempt": attempt + 1,
                     }),
                 );
+                crate::swarm_commander_bridge::on_worker_complete(
+                    app_handle, run_id, &agent_id, slot, true, &text,
+                ).await;
                 return AgentOutput {
                     agent_id,
                     slot_index: slot,
@@ -1939,6 +1982,9 @@ async fn run_worker_subtask(
             "error": &final_err,
         }),
     );
+    crate::swarm_commander_bridge::on_worker_complete(
+        app_handle, run_id, &agent_id, slot, false, &final_err,
+    ).await;
     AgentOutput {
         agent_id,
         slot_index: slot,

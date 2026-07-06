@@ -140,7 +140,7 @@ pub async fn verify_compiled_skill(id: String) -> Result<bool, String> {
     Ok(verify_skill_integrity(&compiled))
 }
 
-/// List all compiled skills in `~/.bonsai/skills/compiled/`.
+/// List all compiled skills in `~/.workspace/skills/compiled/`.
 #[tauri::command]
 pub async fn list_compiled_skills() -> Result<Vec<CompiledSkill>, String> {
     let dir = skill_compiler::compiled_skills_dir();
@@ -232,16 +232,16 @@ pub async fn distill_skill_to_lora(
         version: None,
         license: None,
         tags: compiled.tags.clone(),
-        bonsai: None,
+        workspace: None,
     };
 
-    let default_model = "bonsai-1.7b".to_string();
+    let default_model = "workspace-1.7b".to_string();
 
     let model_path = base_model_path.unwrap_or(default_model);
     let adapter_dir = output_adapter_dir.unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai")
+            .join(".workspace")
             .join("adapters")
             .join(&compiled.id.replace('/', "__"))
             .to_string_lossy()

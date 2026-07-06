@@ -88,7 +88,7 @@ impl McpConnection {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "bonsai", "version": "0.1.0" }
+                "clientInfo": { "name": "workspace", "version": "0.1.0" }
             }),
         )
         .await?;

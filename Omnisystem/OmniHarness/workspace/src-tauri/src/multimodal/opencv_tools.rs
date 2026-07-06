@@ -1,4 +1,4 @@
-//! OpenCV 4.12.0 integration for BonsAI.
+//! OpenCV 4.12.0 integration for OmniAI.
 //!
 //! Exposes OpenCV's core image-processing and computer-vision capabilities as
 //! registered `Tool` implementations that any agent can invoke through the
@@ -16,7 +16,7 @@
 //! tools below become available immediately** — no recompilation needed.
 //!
 //! ## Worker placement (offline, user-managed)
-//!   - `~/.bonsai/sidecars/opencv_worker.py`
+//!   - `~/.workspace/sidecars/opencv_worker.py`
 //!   - `sidecars/opencv_worker.py`
 //!   - `$OPENCV_WORKER_PATH`
 //!
@@ -60,7 +60,7 @@ fn find_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/opencv_worker.py"),
+            .join(".workspace/sidecars/opencv_worker.py"),
         PathBuf::from("sidecars/opencv_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -87,8 +87,8 @@ fn which_python() -> Result<PathBuf, String> {
 fn not_installed() -> String {
     "opencv_worker.py not found. \
      Run: pip install opencv-python && \
-     place opencv_worker.py in ~/.bonsai/sidecars/ \
-     (see Bonsai Docs → Vision Tools)"
+     place opencv_worker.py in ~/.workspace/sidecars/ \
+     (see Workspace Docs → Vision Tools)"
         .to_string()
 }
 

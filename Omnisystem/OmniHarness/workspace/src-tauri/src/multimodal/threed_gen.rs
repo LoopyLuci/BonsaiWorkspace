@@ -3,7 +3,7 @@
 //! Converts an image or text prompt to a 3D mesh (GLB/OBJ) via `threed_worker.py`.
 //!
 //! ## Model placement
-//!   - `~/.bonsai/models/trellis/`   (weights directory)
+//!   - `~/.workspace/models/trellis/`   (weights directory)
 //!   - `$TRELLIS_MODEL_PATH`
 //!
 //! ## Installation
@@ -29,7 +29,7 @@ fn find_model() -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/trellis");
+        .join(".workspace/models/trellis");
     if base.exists() {
         return Some(base);
     }
@@ -40,7 +40,7 @@ fn find_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/threed_worker.py"),
+            .join(".workspace/sidecars/threed_worker.py"),
         PathBuf::from("sidecars/threed_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -76,7 +76,7 @@ pub struct ThreeDResult {
 }
 
 async fn call_worker(payload: &Value) -> Result<Value, String> {
-    let worker = find_worker().ok_or("threed_worker.py not found in ~/.bonsai/sidecars/")?;
+    let worker = find_worker().ok_or("threed_worker.py not found in ~/.workspace/sidecars/")?;
     let python = which_python()?;
     let encoded = serde_json::to_string(payload).unwrap();
 
@@ -112,7 +112,7 @@ async fn run_from_image(
     format: &str,
 ) -> Result<ThreeDResult, String> {
     let model =
-        find_model().ok_or("TRELLIS model not found. Place model in ~/.bonsai/models/trellis/")?;
+        find_model().ok_or("TRELLIS model not found. Place model in ~/.workspace/models/trellis/")?;
     info!(image = image_path, "[threed_gen] generating 3D from image");
     let t0 = std::time::Instant::now();
     let payload = json!({
@@ -143,7 +143,7 @@ async fn run_from_text(
     format: &str,
 ) -> Result<ThreeDResult, String> {
     let model =
-        find_model().ok_or("TRELLIS model not found. Place model in ~/.bonsai/models/trellis/")?;
+        find_model().ok_or("TRELLIS model not found. Place model in ~/.workspace/models/trellis/")?;
     info!(%prompt, "[threed_gen] generating 3D from text");
     let t0 = std::time::Instant::now();
     let payload = json!({

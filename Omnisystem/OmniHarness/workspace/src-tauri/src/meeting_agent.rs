@@ -1,4 +1,4 @@
-//! BonsAI Meeting Agent — real-time audio capture, VAD, Whisper transcription,
+//! OmniAI Meeting Agent — real-time audio capture, VAD, Whisper transcription,
 //! speaker diarization, note generation, action-item tracking, and caption events.
 //!
 //! ## Pipeline
@@ -321,13 +321,13 @@ fn encode_wav(samples: &[i16]) -> Vec<u8> {
 
 async fn call_llm(system: &str, user: &str, max_tokens: u32) -> Result<String, String> {
     let api_url =
-        std::env::var("BONSAI_API_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
+        std::env::var("WORKSPACE_API_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
     let body = serde_json::json!({
-        "model": "bonsai",
+        "model": "workspace",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user",   "content": user},

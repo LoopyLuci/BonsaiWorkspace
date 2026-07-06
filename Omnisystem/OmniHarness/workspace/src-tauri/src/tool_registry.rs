@@ -315,8 +315,19 @@ impl ToolRegistryState {
     /// Return a simple list of tools for external listing consumers.
     pub fn list_tools(&self) -> Vec<ToolInfo> {
         // Note: This clones the current snapshot; callers should be quick.
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { self.registry.list().await })
+        // This is called both from inside already-running async tasks (where a
+        // plain `Handle::block_on` would panic: "Cannot start a runtime from
+        // within a runtime" — block_in_place is required) and synchronously from
+        // Tauri's non-async .setup() closure, where there's no ambient runtime
+        // at all ("there is no reactor running"). Handle both.
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => tokio::task::block_in_place(|| rt.block_on(async { self.registry.list().await })),
+            Err(_) => tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build temporary tokio runtime for list_tools")
+                .block_on(async { self.registry.list().await }),
+        }
     }
 
     /// Convert all registered tools to `ToolDef` for the ReAct prompt and tool resolution.

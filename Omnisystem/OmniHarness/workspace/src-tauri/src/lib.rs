@@ -85,6 +85,9 @@ mod capability_commands;
 mod chat_sessions;
 mod cluster_orchestrator;
 mod commands;
+mod kernel_bridge;
+mod kernel_commands;
+mod orchestrator_bridge;
 mod config;
 mod context_builder;
 pub mod data_curator;
@@ -108,6 +111,7 @@ mod model_data_store;
 mod model_orchestrator;
 mod model_registry;
 mod plugin_host;
+pub mod port_daemon;
 mod plugin_loader;
 mod plugin_manifest;
 pub mod rag_store;
@@ -156,6 +160,7 @@ mod gpu_controller;
 mod mcp_server;
 mod mcp_telemetry;
 mod smart_router;
+mod model_discovery;
 mod multimodal;
 mod music_engine;
 mod self_play;
@@ -164,6 +169,7 @@ mod skill_compiler_commands;
 mod skill_registry;
 mod swarm_config;
 mod swarm_orchestrator;
+mod swarm_commander_bridge;
 mod task_queue;
 mod tool_compose;
 mod tool_registry;
@@ -208,6 +214,7 @@ mod project_context;
 mod brain_metadata;
 mod continuous_training;
 mod crash_recovery;
+mod crash_reporter;
 mod device_manager;
 mod eternal_training_loop;
 mod evaluation_harness;
@@ -321,7 +328,7 @@ pub struct AppState {
     pub ui_orchestrator: Arc<ui_orchestrator::UiOrchestrator>,
     /// MCP server lifecycle manager.
     pub mcp_manager: Arc<mcp_bridge::McpManager>,
-    /// Buddy API server handle (port 11420). None if startup failed.
+    /// Buddy API server handle (port 47110). None if startup failed.
     pub buddy_api_server: Arc<Mutex<Option<buddy_api_server::BuddyApiHandle>>>,
     /// Resolved port for the Buddy API (0 if unavailable).
     pub buddy_api_port: u16,
@@ -331,8 +338,8 @@ pub struct AppState {
     pub task_queue: Arc<task_queue::TaskQueue>,
     /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
     pub agent_host: Arc<agent_host::AgentHost>,
-    /// BonsAI-Core orchestrator — plan, execute, curate.
-    pub bonsai_core: Arc<core::AgentCore>,
+    /// Agent-Core orchestrator — plan, execute, curate.
+    pub agent_core: Arc<agent_core::AgentCore>,
     /// Telemetry store — training runs + inference metrics.
     pub telemetry: Arc<telemetry::TelemetryStore>,
     /// Native llama.cpp Vulkan engine (AMD 7900 XTX GPU inference).
@@ -363,7 +370,7 @@ pub struct AppState {
     pub tool_watcher: Arc<Mutex<Option<tool_watcher::ToolWatcher>>>,
     /// Zero-copy mmap-backed cross-model memory arena.
     pub shared_arena: Arc<shared_arena::SharedMemoryArena>,
-    /// Micro BonsAI intelligent model monitor and selector.
+    /// Micro OmniAI intelligent model monitor and selector.
     pub smart_router: Arc<smart_router::SmartRouter>,
     /// Custom swarm configuration store (SQLite-backed).
     pub swarm_config_store: Arc<swarm_config::SwarmConfigStore>,
@@ -431,6 +438,10 @@ pub struct AppState {
     pub upgrade_dispatcher: Arc<upgrade_dispatcher::UpgradeDispatcher>,
     /// Universe — append-only time-travel event ledger + snapshot engine.
     pub universe: Arc<universe::Universe>,
+    /// Optional gRPC bridge to the OmniHarness Rust kernel (event store /
+    /// model registry) — shared cross-language trust anchor with the Python
+    /// and Clojure orchestrators. Degrades gracefully when kernel isn't running.
+    pub kernel_bridge: Arc<kernel_bridge::KernelBridge>,
 }
 
 impl AppState {
@@ -573,9 +584,10 @@ pub fn run() {
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("{info}");
         tracing::error!("PANIC: {msg}");
-        let dump_path = std::env::temp_dir().join("bonsai_crash.txt");
+        crash_reporter::record_panic(info);
+        let dump_path = std::env::temp_dir().join("workspace_crash.txt");
         let _ = std::fs::write(&dump_path, &msg);
-        eprintln!("Bonsai crashed. Dump written to: {}", dump_path.display());
+        eprintln!("Workspace crashed. Dump written to: {}", dump_path.display());
     }));
 
     let builder = tauri::Builder::default()
@@ -609,7 +621,7 @@ pub fn run() {
                     .unwrap_or_else(|_| std::path::PathBuf::from("."))
                     .join("logs");
                 let _ = std::fs::create_dir_all(&log_dir);
-                let file_appender = tracing_appender::rolling::daily(&log_dir, "bonsai.log");
+                let file_appender = tracing_appender::rolling::daily(&log_dir, "workspace.log");
                 let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
                 let _ = LOG_GUARD.set(guard);
                 let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -619,7 +631,7 @@ pub fn run() {
                     .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
                     .with(filter)
                     .try_init();
-                tracing::info!("Bonsai Workspace starting — logs: {}", log_dir.display());
+                tracing::info!("Workspace starting — logs: {}", log_dir.display());
             }
 
             // Kill any stale llama-server processes from previous sessions.
@@ -633,16 +645,9 @@ pub fn run() {
                     .expect("WAL init failed"),
             );
 
-            // Crash recovery — check for unclean-exit flag, replay WAL if needed.
-            {
-                let ah  = app_handle.clone();
-                let wal2 = wal.clone();
-                let universe2 = app.state::<AppState>().universe.clone();
-                tauri::async_runtime::spawn(async move {
-                    crash_recovery::check_and_recover(&ah, &wal2, Some(&universe2)).await;
-                });
-            }
-            // Arm flag for *this* session (removed on clean exit).
+            // Arm flag for *this* session (removed on clean exit). The actual
+            // recovery check runs later, once AppState (and its `universe` field)
+            // has been registered via app.manage() — see below.
             crash_recovery::arm_crash_flag(&app_handle);
 
             // Sync any fixes the watchdog learned while we were offline.
@@ -694,6 +699,12 @@ pub fn run() {
 
             // Whisper manager — best-effort spawn (no-op if binary absent)
             let whisper = Arc::new(sidecar_manager::WhisperManager::new(&app_handle));
+
+            // Port daemon — centralized port allocation + health-supervised
+            // auto-restart for every internal network service (API, buddy API,
+            // MCP, A2A). Built early so every service below can register with it.
+            let port_daemon = port_daemon::PortDaemon::new();
+            app.manage(port_daemon.clone());
 
             // Remote control subsystem — Phase 1 scaffold only.
             let remote_manager = Arc::new(remote::RemoteManager::new(&app_handle));
@@ -753,6 +764,11 @@ pub fn run() {
             let audit_log = Arc::new(assistant_audit_log::AuditLog::new(
                 app_handle.path().app_data_dir().expect("app data dir"),
             ));
+            // Optional bridge to the OmniHarness Rust kernel (../../kernel, port
+            // 50051) — mirrors this audit trail into its hash-chained event store
+            // when reachable; silently degrades otherwise (see kernel_bridge.rs).
+            let kernel_bridge = Arc::new(kernel_bridge::KernelBridge::spawn());
+            audit_log.attach_kernel_bridge(kernel_bridge.mirror_sender());
             let secrets_store = Arc::new(secrets_store::SecretsStore::new());
             let assistant_store_inst = Arc::new(
                 tauri::async_runtime::block_on(
@@ -784,7 +800,7 @@ pub fn run() {
 
             let mut api_config = config::load_config(&app_handle).unwrap_or_default();
             // Persist the pair token so omni-bot and local clients can read it
-            // from bonsai-config.json without needing the UI.
+            // from workspace-config.json without needing the UI.
             api_config.pair_token = pair_token.clone();
             let _ = config::save_config(&app_handle, &api_config);
 
@@ -795,10 +811,10 @@ pub fn run() {
                 enforce_main_window_size(&main_win);
             }
 
-            // Respect explicit `BONSAI_API_PORT` environment override when present.
+            // Respect explicit `WORKSPACE_API_PORT` environment override when present.
             // Otherwise, keep the persisted `api_port` (if non-zero). If the persisted
             // value is zero/unset, fall back to the default and persist it.
-            if let Ok(val) = std::env::var("BONSAI_API_PORT") {
+            if let Ok(val) = std::env::var("WORKSPACE_API_PORT") {
                 if let Ok(p) = val.parse::<u16>() {
                     api_config.api_port = p;
                 }
@@ -814,8 +830,16 @@ pub fn run() {
                 }
             }
 
-            // ── Buddy API server (port 11420) ─────────────────────────────────
+            // ── Buddy API server ────────────────────────────────────────────────
+            // Port-daemon-managed: resolve a genuinely free port (wide scan, not
+            // the ±4 fallback buddy_api_server::start() used to rely on alone),
+            // then keep it alive with a health-watch auto-restart loop.
             let buddy_preferred = api_config.buddy_api_port;
+            tauri::async_runtime::block_on(port_daemon.register("buddy-api", buddy_preferred));
+            let buddy_bind_port = tauri::async_runtime::block_on(
+                port_daemon::PortDaemon::find_free_port(buddy_preferred, 2000),
+            )
+            .unwrap_or(buddy_preferred);
             let (buddy_handle, buddy_port) = {
                 let orch  = orchestrator.clone();
                 let store = assistant_store_inst.clone();
@@ -825,27 +849,72 @@ pub fn run() {
                 let sec   = secrets_store.clone();
                 let bh    = app_handle.clone();
                 match tauri::async_runtime::block_on(buddy_api_server::start(
-                    orch, store, pe, gate, audit, sec, bh, buddy_preferred,
+                    orch, store, pe, gate, audit, sec, bh, buddy_bind_port,
                 )) {
                     Ok(h) => {
                         let p = h.port;
+                        tauri::async_runtime::block_on(port_daemon.mark_bound("buddy-api", p));
                         (Some(h), p)
                     }
                     Err(e) => {
                         tracing::error!("[buddy-api] failed to start: {e}");
-                        let _ = app_handle.emit("buddy-api-unavailable", e);
+                        let _ = app_handle.emit("buddy-api-unavailable", e.clone());
+                        tauri::async_runtime::block_on(port_daemon.mark_failed("buddy-api", e));
                         (None, 0u16)
                     }
                 }
             };
+            let buddy_handle_slot = Arc::new(Mutex::new(buddy_handle));
+            if buddy_port != 0 {
+                let slot = buddy_handle_slot.clone();
+                let daemon = port_daemon.clone();
+                let orch  = orchestrator.clone();
+                let store = assistant_store_inst.clone();
+                let pe    = policy_engine.clone();
+                let gate  = confirmation_gate.clone();
+                let audit = audit_log.clone();
+                let sec   = secrets_store.clone();
+                let bh    = app_handle.clone();
+                let preferred = buddy_preferred;
+                let daemon_for_closure = daemon.clone();
+                daemon.watch_health(
+                    "buddy-api",
+                    format!("http://127.0.0.1:{buddy_port}/health"),
+                    std::time::Duration::from_secs(15),
+                    move || {
+                        let slot = slot.clone();
+                        let daemon = daemon_for_closure.clone();
+                        let orch = orch.clone();
+                        let store = store.clone();
+                        let pe = pe.clone();
+                        let gate = gate.clone();
+                        let audit = audit.clone();
+                        let sec = sec.clone();
+                        let bh = bh.clone();
+                        async move {
+                            let new_port = port_daemon::PortDaemon::find_free_port(preferred, 2000)
+                                .await
+                                .unwrap_or(preferred);
+                            let handle = buddy_api_server::start(
+                                orch, store, pe, gate, audit, sec, bh, new_port,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                            daemon.mark_bound("buddy-api", handle.port).await;
+                            *slot.lock().await = Some(handle);
+                            Ok(())
+                        }
+                    },
+                );
+            }
 
-            // ── BonsAI-Core — orchestrator + data curator ─────────────────────
-            let bonsai_inference_url = format!(
+            // ── OmniAI-Core — orchestrator + data curator ─────────────────────
+            let workspace_inference_url = format!(
                 "http://127.0.0.1:{}/v1/chat/completions",
                 api_config.api_port
             );
             let prompt_template = concat!(
-                "You are BonsAI-Core. Tools: list_files, read_file, write_file, grep_files, run_command, search_files.\n",
+                "You are OmniAI-Core. Tools: list_files, read_file, write_file, grep_files, run_command, search_files.\n",
                 "Output JSON only: {{\"intent\":\"...\",\"reasoning\":\"...\",\"plan\":[{{\"tool\":\"...\",\"args\":{{}}}}],",
                 "\"final_response\":null,\"confidence\":0.9}}\n",
                 "Example: {{\"intent\":\"list workspace files\",\"reasoning\":\"user wants directory listing\",",
@@ -853,34 +922,38 @@ pub fn run() {
                 "\"final_response\":null,\"confidence\":0.95}}\n",
                 "User request: {request}\nMemory: {memory}\nJSON:"
             ).to_string();
-            let bonsai_home = dirs::home_dir()
+            let workspace_home = dirs::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".bonsai");
+                .join(".workspace");
+            // SQLite (telemetry.db) and the memory/curator JSONL files below all
+            // live under here — none of them create this directory themselves,
+            // so on first run every one of them fails to open (SQLITE_CANTOPEN).
+            let _ = std::fs::create_dir_all(&workspace_home);
 
             // ── Telemetry store ────────────────────────────────────────────────
             let telemetry_store = Arc::new(
                 tauri::async_runtime::block_on(
                     telemetry::TelemetryStore::new(
-                        bonsai_home.join("telemetry.db").to_str().unwrap_or("telemetry.db")
+                        workspace_home.join("telemetry.db").to_str().unwrap_or("telemetry.db")
                     )
                 ).unwrap_or_else(|e| {
                     tracing::error!("[telemetry] failed to open DB: {e}");
                     panic!("telemetry DB required");
                 })
             );
-            let memory_path = bonsai_home.join("core_memory.jsonl");
-            let curator_path = bonsai_home.join("curated_examples.jsonl");
+            let memory_path = workspace_home.join("core_memory.jsonl");
+            let curator_path = workspace_home.join("curated_examples.jsonl");
             let workspace_root = app_handle
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let bonsai_memory = core::CoreMemory::new(Some(memory_path));
-            let bonsai_curator = data_curator::DataCurator::new(curator_path, prompt_template.clone());
-            let shared_bonsai_core = Arc::new(core::AgentCore::new(
+            let workspace_memory = agent_core::CoreMemory::new(Some(memory_path));
+            let workspace_curator = data_curator::DataCurator::new(curator_path, prompt_template.clone());
+            let shared_agent_core = Arc::new(agent_core::AgentCore::new(
                 None,
-                bonsai_inference_url,
-                bonsai_memory,
-                bonsai_curator,
+                workspace_inference_url,
+                workspace_memory,
+                workspace_curator,
                 prompt_template,
                 workspace_root,
                 false,
@@ -919,6 +992,18 @@ pub fn run() {
             // Build game sessions early so MgmtState and AppState share the same Arc.
             let early_game_sessions = crate::games::GameSessionStore::new();
 
+            // SmartRouter — built early so MgmtState (REST API) and AppState (Tauri
+            // commands) share the same instance; the REST routes are what let the
+            // router's selection + feedback loop be driven by non-Tauri callers
+            // (headless orchestration, Omni-Language bridges) instead of being
+            // desktop-app-only.
+            // SmartRouter::new() calls raw tokio::spawn internally (it's designed to
+            // be usable outside Tauri too, e.g. headless/REST callers), which panics
+            // ("no reactor running") called synchronously from this non-async .setup()
+            // closure — block_on enters Tauri's Tokio runtime just long enough for the
+            // nested spawn to land.
+            let smart_router = tauri::async_runtime::block_on(async { smart_router::SmartRouter::new() });
+
             // Build knowledge graph + reasoning engine — shared across MgmtState and AppState.
             let early_knowledge = Arc::new(knowledge::KnowledgeGraph::new());
             let early_reasoning = Arc::new(crate::reasoning_engine::ReasoningEngine::new(early_knowledge.clone()));
@@ -927,13 +1012,24 @@ pub fn run() {
             let early_metacognitive: Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>> =
                 Arc::new(tokio::sync::RwLock::new(crate::metacognitive_monitor::MetacognitiveMonitor::new()));
 
+            // Port-daemon-managed: resolve a genuinely free port (wide scan) before
+            // the first bind attempt, instead of relying on start_with_fallback's
+            // own narrow ±4 window (nowhere near enough to escape a Windows
+            // excluded port range).
+            let api_preferred = api_config.api_port;
+            tauri::async_runtime::block_on(port_daemon.register("api-server", api_preferred));
+            let api_bind_port = tauri::async_runtime::block_on(
+                port_daemon::PortDaemon::find_free_port(api_preferred, 2000),
+            )
+            .unwrap_or(api_preferred);
+
             let api_runtime = {
                 let orch   = orchestrator.clone();
                 let remote = remote_manager.clone();
                 let ws     = ws_router.clone();
                 let token  = pair_token.clone();
                 let host   = api_config.api_host.clone();
-                let port   = api_config.api_port;
+                let port   = api_bind_port;
                 let mgmt = management_api::MgmtState {
                     orchestrator:  orchestrator.clone(),
                     agent_host:    agent_host.clone(),
@@ -942,7 +1038,7 @@ pub fn run() {
                     swarm_cancels: swarm_cancels.clone(),
                     app_handle:    app_handle.clone(),
                     pair_token:    token.clone(),
-                    bonsai_core:   shared_bonsai_core.clone(),
+                    agent_core:    shared_agent_core.clone(),
                     telemetry:     telemetry_store.clone(),
                     dual_session:  shared_dual_session.clone(),
                     training_loop: Arc::new(training_loop::TrainingLoopState::new(
@@ -957,6 +1053,7 @@ pub fn run() {
                     reasoning:     early_reasoning.clone(),
                     belief_reviser: early_belief_reviser.clone(),
                     metacognitive:  early_metacognitive.clone(),
+                    smart_router:   smart_router.clone(),
                 };
                 match tauri::async_runtime::block_on(api_server::start_with_fallback(
                     orch,
@@ -968,9 +1065,13 @@ pub fn run() {
                     4u16,
                     app_handle.clone(),
                 )) {
-                    Ok(handle) => Some(handle),
+                    Ok(handle) => {
+                        tauri::async_runtime::block_on(port_daemon.mark_bound("api-server", handle.port));
+                        Some(handle)
+                    }
                     Err(e) => {
                         tracing::error!("[api] failed to start API server: {e}");
+                        tauri::async_runtime::block_on(port_daemon.mark_failed("api-server", e));
                         None
                     }
                 }
@@ -982,6 +1083,52 @@ pub fn run() {
                     api_config.api_port = handle.port;
                     let _ = config::save_config(&app_handle, &api_config);
                 }
+            }
+            if buddy_port != 0 && buddy_port != api_config.buddy_api_port {
+                api_config.buddy_api_port = buddy_port;
+                let _ = config::save_config(&app_handle, &api_config);
+            }
+
+            let api_runtime_slot = Arc::new(Mutex::new(api_runtime));
+            if let Some(bound_port) = tauri::async_runtime::block_on(async {
+                api_runtime_slot.lock().await.as_ref().map(|h| h.port)
+            }) {
+                let slot = api_runtime_slot.clone();
+                let daemon = port_daemon.clone();
+                let orch = orchestrator.clone();
+                let remote = remote_manager.clone();
+                let ws = ws_router.clone();
+                let token = pair_token.clone();
+                let host = api_config.api_host.clone();
+                let ah = app_handle.clone();
+                let preferred = api_preferred;
+                let daemon_for_closure = daemon.clone();
+                daemon.watch_health(
+                    "api-server",
+                    format!("http://127.0.0.1:{bound_port}/health"),
+                    std::time::Duration::from_secs(15),
+                    move || {
+                        let slot = slot.clone();
+                        let daemon = daemon_for_closure.clone();
+                        let orch = orch.clone();
+                        let remote = remote.clone();
+                        let ws = ws.clone();
+                        let token = token.clone();
+                        let host = host.clone();
+                        let ah = ah.clone();
+                        async move {
+                            let new_port = port_daemon::PortDaemon::find_free_port(preferred, 2000)
+                                .await
+                                .unwrap_or(preferred);
+                            let handle = api_server::start(orch, remote, ws, token, host, new_port, ah)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            daemon.mark_bound("api-server", handle.port).await;
+                            *slot.lock().await = Some(handle);
+                            Ok(())
+                        }
+                    },
+                );
             }
 
             // Use the early-built instances (shared with MgmtState).
@@ -1007,20 +1154,23 @@ pub fn run() {
             let cross_training_sender = cross_training::CrossTrainingSender(cross_tx);
 
             // ── Launch supervisor ─────────────────────────────────────────────
-            // Runs in the background after servers bind; emits bonsai:launch-progress
+            // Runs in the background after servers bind; emits workspace:launch-progress
             // events so the frontend never calls endpoints before they're ready.
             {
-                let api_port   = api_config.api_port;
-                let buddy_port = api_config.buddy_api_port;
+                let api_port      = api_config.api_port;
+                // Use the actually-bound port from buddy_api_server::start() above, not
+                // api_config.buddy_api_port — that's the *preferred* port from a possibly
+                // stale saved config and was never updated after a real (re)bind elsewhere.
+                let buddy_port_actual = buddy_port;
                 let ah         = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     use std::sync::Arc;
-                    let specs = launcher::specs::app_components(api_port, buddy_port);
+                    let specs = launcher::app_specs::app_components(api_port, buddy_port_actual);
                     let sup   = Arc::new(launcher::LaunchSupervisor::new(specs));
                     match sup.clone().probe_all(Some(ah.clone())).await {
                         Ok(()) => {
                             tracing::info!("[launcher] all services ready");
-                            let _ = ah.emit("bonsai:services-ready", ());
+                            let _ = ah.emit("workspace:services-ready", ());
                             // Start background health monitor (30-second interval)
                             let mon_sup = sup.clone();
                             let mon_ah  = ah.clone();
@@ -1030,34 +1180,42 @@ pub fn run() {
                         }
                         Err(e) => {
                             tracing::error!(error=%e, "[launcher] startup probe failed");
-                            let _ = ah.emit("bonsai:services-failed", e);
+                            let _ = ah.emit("workspace:services-failed", e);
                         }
                     }
                 });
             }
 
-            // ── MCP server (port 11421) ────────────────────────────────────────
+            // ── MCP server ─────────────────────────────────────────────────────
             // Exposes all assistant tools to any MCP-compatible client (Claude Desktop,
-            // Cursor, VS Code Continue) — Bonsai becomes the universal local tool backend.
+            // Cursor, VS Code Continue) — Workspace becomes the universal local tool backend.
+            // Port-daemon-managed: resolve a genuinely free port up front (wide scan).
             let mcp_port = {
                 use tokio::sync::RwLock as TokioRwLock;
                 let registry = Arc::new(TokioRwLock::new(crate::tool_core::ToolRegistry::new()));
                 let memory_path = Some(
-                    dirs::home_dir().unwrap_or_default().join(".bonsai/core_memory.jsonl")
+                    dirs::home_dir().unwrap_or_default().join(".workspace/core_memory.jsonl")
                 );
+                tauri::async_runtime::block_on(port_daemon.register("mcp-server", config::MCP_PORT));
+                let mcp_bind_port = tauri::async_runtime::block_on(
+                    port_daemon::PortDaemon::find_free_port(config::MCP_PORT, 2000),
+                )
+                .unwrap_or(config::MCP_PORT);
                 match tauri::async_runtime::block_on(mcp_server::start(
                     registry,
                     None, // workspace root injected per-call from tool context
                     memory_path,
                     pair_token.clone(),
-                    11421,
+                    mcp_bind_port,
                 )) {
                     Ok(h) => {
                         tracing::info!(port=h.port, "[mcp] MCP server ready");
+                        tauri::async_runtime::block_on(port_daemon.mark_bound("mcp-server", h.port));
                         h.port
                     }
                     Err(e) => {
                         tracing::warn!("[mcp] Failed to start: {e}");
+                        tauri::async_runtime::block_on(port_daemon.mark_failed("mcp-server", e));
                         0u16
                     }
                 }
@@ -1072,17 +1230,14 @@ pub fn run() {
             // ── Zero-copy cross-model memory arena ────────────────────────────
             let arena_path = dirs::home_dir()
                 .unwrap_or_default()
-                .join(".bonsai/shared_arena.bin");
+                .join(".workspace/shared_arena.bin");
             let shared_arena = shared_arena::SharedMemoryArena::open(&arena_path, None)
                 .unwrap_or_else(|e| {
                     tracing::warn!("[arena] Failed to open shared arena: {e}");
                     shared_arena::SharedMemoryArena::open(
-                        std::env::temp_dir().join("bonsai_arena.bin"), None,
+                        std::env::temp_dir().join("workspace_arena.bin"), None,
                     ).expect("Fallback arena creation failed")
                 });
-
-            // ── Micro BonsAI model monitor/selector ───────────────────────────
-            let smart_router = smart_router::SmartRouter::new();
 
             // ── Custom swarm configuration store ──────────────────────────────
             let swarm_config_store = tauri::async_runtime::block_on(
@@ -1091,7 +1246,7 @@ pub fn run() {
                 panic!("[swarm_config] Failed to init store: {e}");
             });
 
-            // ── Skill registry (skills.sh + local + Bonsai-native) ────────────
+            // ── Skill registry (skills.sh + local + Workspace-native) ────────────
             let skill_registry = Arc::new(skill_registry::SkillRegistryState::new());
 
             // ── Unified GPU controller ─────────────────────────────────────────
@@ -1130,11 +1285,19 @@ pub fn run() {
                 gc.start_health_monitor(app_handle.clone(), 30);
             }
 
-            // Start A2A server for agent interoperability (best-effort)
+            // Start A2A server for agent interoperability (best-effort).
+            // Port-daemon-managed: resolve a genuinely free port up front (wide scan).
             {
                 let ah = agent_host.clone();
+                let daemon = port_daemon.clone();
+                tauri::async_runtime::block_on(daemon.register("a2a-server", config::A2A_PORT));
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = tokio::spawn(async move { crate::a2a_server::start_a2a_server(11370, ah).await }).await {
+                    let bind_port = port_daemon::PortDaemon::find_free_port(config::A2A_PORT, 2000)
+                        .await
+                        .unwrap_or(config::A2A_PORT);
+                    daemon.mark_bound("a2a-server", bind_port).await;
+                    if let Err(e) = tokio::spawn(async move { crate::a2a_server::start_a2a_server(bind_port, ah).await }).await {
+                        daemon.mark_failed("a2a-server", format!("{e:?}")).await;
                         tracing::error!("Failed to start A2A server: {:?}", e);
                     }
                 });
@@ -1143,7 +1306,7 @@ pub fn run() {
             // Start P2P announce (best-effort)
             {
                 let _ = tauri::async_runtime::spawn(async move {
-                    let _ = crate::p2p::sharing::announce_peer(11420, Vec::new()).await;
+                    let _ = crate::p2p::sharing::announce_peer(config::BUDDY_API_PORT, Vec::new()).await;
                 });
             }
 
@@ -1151,7 +1314,7 @@ pub fn run() {
             let training_collector = unified_training_collector::UnifiedTrainingCollector::new(20_000);
             let eval_harness = evaluation_harness::EvaluationHarness::new(orchestrator.clone());
             let forgetting = forgetting_prevention::ForgettingPrevention::new(eval_harness.clone(), orchestrator.clone());
-            let adapters_dir = bonsai_home.join("adapters");
+            let adapters_dir = workspace_home.join("adapters");
             let adapter_registry = promotion_gate::AdapterRegistry::new(adapters_dir.clone());
             let promotion_gate = promotion_gate::PromotionGate::new(eval_harness.clone(), adapter_registry.clone(), orchestrator.clone());
             let self_play_trainer = eternal_training_loop::SelfPlayTrainer::new(orchestrator.clone(), training_collector.clone());
@@ -1357,7 +1520,7 @@ pub fn run() {
                 agent_store,
                 swarm_orchestrator: swarm_orch,
                 swarm_cancels,
-                api_server:         Arc::new(Mutex::new(api_runtime)),
+                api_server:         api_runtime_slot,
                 cluster_orchestrator,
                 policy_engine,
                 confirmation_gate,
@@ -1369,12 +1532,12 @@ pub fn run() {
                 tts_manager,
                 user_skill_store,
                 mcp_manager: mcp_manager.clone(),
-                buddy_api_server: Arc::new(Mutex::new(buddy_handle)),
+                buddy_api_server: buddy_handle_slot,
                 buddy_api_port:   buddy_port,
                 model_data_store: model_data_store.clone(),
                 task_queue,
                 agent_host,
-                bonsai_core: shared_bonsai_core,
+                agent_core: shared_agent_core,
                 telemetry:   telemetry_store.clone(),
                 hybrid_engine: Arc::new(hybrid_engine::HybridEngineState::new()),
                 gpu: Arc::new(gpu_layer::GpuLayer::new(&gpu_layer::GpuLayer::detect())),
@@ -1405,7 +1568,7 @@ pub fn run() {
                 swarm_config_store,
                 gpu_controller: gpu_controller.clone(),
                 skill_registry,
-                cas_store,
+                cas_store: cas_store.clone(),
                 sylva,
                 federated_trainer,
                 actor_system,
@@ -1433,11 +1596,15 @@ pub fn run() {
                 resource_guard:      resource_guard::ResourceGuard::new(resource_guard::GuardConfig::default()),
                 event_bus:           event_bus.clone(),
                 ui_orchestrator:     ui_orchestrator.clone(),
-                upgrade_dispatcher:  {
-                    // Placeholder — real UpgradeDispatcher wired after event_bus is in state
-                    let bus = std::sync::Arc::new(system_event_bus::SystemEventBus::new(16));
-                    std::sync::Arc::new(upgrade_dispatcher::UpgradeDispatcher::new(bus))
-                },
+                // Wired to the app's real `event_bus` (declared above) so it actually
+                // receives `UpgradeReady` events from the running system, instead of a
+                // disposable bus nothing publishes to.
+                upgrade_dispatcher:  std::sync::Arc::new(upgrade_dispatcher::UpgradeDispatcher::new(
+                    event_bus.clone(),
+                    app_handle.clone(),
+                    orchestrator.clone(),
+                    cas_store.clone(),
+                )),
                 universe: {
                     let data_dir = app_handle
                         .path()
@@ -1447,22 +1614,25 @@ pub fn run() {
                     let device_id = gethostname::gethostname()
                         .to_string_lossy()
                         .to_string();
-                    // Block on async init — acceptable at startup
-                    tokio::runtime::Handle::current().block_on(async {
-                        universe::Universe::open(&db_path, device_id)
-                            .await
-                            .unwrap_or_else(|e| {
+                    // Block on async init — acceptable at startup. `Handle::current()`
+                    // panics ("no reactor running") called synchronously from Tauri's
+                    // non-async .setup() closure; `tauri::async_runtime::block_on`
+                    // enters Tauri's Tokio runtime instead. The in-memory fallback is
+                    // awaited in the same future rather than nesting another block_on
+                    // (which would panic: "Cannot start a runtime from within a runtime").
+                    tauri::async_runtime::block_on(async {
+                        match universe::Universe::open(&db_path, device_id).await {
+                            Ok(u) => u,
+                            Err(e) => {
                                 tracing::error!("Universe init failed: {}", e);
-                                // Fallback to in-memory DB
-                                tokio::runtime::Handle::current().block_on(
-                                    universe::Universe::open(
-                                        std::path::Path::new(":memory:"),
-                                        "fallback"
-                                    )
-                                ).expect("in-memory universe open failed")
-                            })
+                                universe::Universe::open(std::path::Path::new(":memory:"), "fallback")
+                                    .await
+                                    .expect("in-memory universe open failed")
+                            }
+                        }
                     })
                 },
+                kernel_bridge,
             });
 
             // Start in-process MCP server and forward SystemEventBus events
@@ -1471,6 +1641,15 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     mcp_telemetry::start_mcp_server(bus).await;
                 });
+            }
+
+            // Upgrade dispatcher — subscribe to the real event bus for
+            // `UpgradeReady` events. Previously never called, so the
+            // dispatcher (even once given the real bus) would never actually
+            // listen for anything.
+            {
+                let state = app.state::<AppState>();
+                state.upgrade_dispatcher.clone().start();
             }
 
             app.manage(remote_manager.clone());
@@ -1485,7 +1664,10 @@ pub fn run() {
                     state.event_bus.clone(),
                     state.universe.clone(),
                 );
-                state.universe.snapshots.clone().spawn();
+                // SnapshotEngine::spawn() calls raw tokio::spawn internally (the
+                // `universe` crate is tauri-agnostic on purpose) — block_on enters
+                // Tauri's Tokio runtime just long enough for the nested spawn to land.
+                tauri::async_runtime::block_on(async { state.universe.snapshots.clone().spawn() });
             }
             // Forced Failure Finder + Sandbox Nervous System
             {
@@ -1496,8 +1678,13 @@ pub fn run() {
                     .join("survival_kb.db")
                     .to_string_lossy()
                     .to_string();
-                app.manage(fff_commands::F3State::new(&kb_path));
-                app.manage(fff_commands::SnsState::new());
+                // Both constructors call raw tokio::spawn internally (failure-finder
+                // and sns are tauri-agnostic crates) — block_on enters Tauri's Tokio
+                // runtime just long enough for the nested spawns to land.
+                tauri::async_runtime::block_on(async {
+                    app.manage(fff_commands::F3State::new(&kb_path));
+                    app.manage(fff_commands::SnsState::new());
+                });
             }
 
             // Survival engine — self-repair with growing knowledge base
@@ -1510,39 +1697,103 @@ pub fn run() {
                 .to_string();
             app.manage(survival::SurvivalState::new(&survival_db));
 
+            // Close the loop: any sandboxed component that crashes and has no
+            // component-specific restart handler falls back to the Survival
+            // KB, the same way `repair_error` would. Previously SNS's
+            // CrashReport handling only logged and marked the sandbox
+            // Crashed — this makes it actually attempt a fix.
+            {
+                let sns_supervisor = app.state::<fff_commands::SnsState>().supervisor.clone();
+                let ah = app_handle.clone();
+                tauri::async_runtime::block_on(async move {
+                    sns_supervisor
+                        .set_default_crash_handler(std::sync::Arc::new(move |sandbox_id, component, error| {
+                            let ah = ah.clone();
+                            Box::pin(async move {
+                                if let Some(survival) = ah.try_state::<survival::SurvivalState>() {
+                                    match survival::repair_error(error, survival).await {
+                                        Ok(true) => tracing::info!(
+                                            "[sns] Survival KB auto-repair fixed crash in {} ({})",
+                                            sandbox_id, component
+                                        ),
+                                        Ok(false) => tracing::warn!(
+                                            "[sns] no Survival KB fix matched crash in {} ({})",
+                                            sandbox_id, component
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            "[sns] repair_error failed for {}: {}", sandbox_id, e
+                                        ),
+                                    }
+                                }
+                            })
+                        }))
+                        .await;
+                });
+            }
+
+            // Crash recovery — check for unclean-exit flag, replay WAL if needed.
+            // Moved here (after Survival is managed, not from the earlier
+            // Universe block) because `check_and_recover`'s auto-repair step
+            // looks up `survival::SurvivalState` via `app.try_state()` — on a
+            // multi-threaded Tokio runtime, a task spawned before that state
+            // is `.manage()`'d can start running on another worker thread
+            // concurrently with the rest of this synchronous setup() body,
+            // so it would race and find no Survival state yet.
+            {
+                let state = app.state::<AppState>();
+                let ah = app_handle.clone();
+                let wal2 = state.wal.clone();
+                let universe2 = state.universe.clone();
+                tauri::async_runtime::spawn(async move {
+                    crash_recovery::check_and_recover(&ah, &wal2, Some(&universe2)).await;
+                });
+            }
+
             // ── Knowledge Database ────────────────────────────────────────────
             let kdb_data_dir = app_handle
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from(".bonsai"));
+                .unwrap_or_else(|_| std::path::PathBuf::from(".workspace"));
             match kdb_state::KdbAppState::open(&kdb_data_dir) {
                 Ok(kdb) => { app.manage(kdb); }
                 Err(e) => { tracing::warn!("KDB state failed to open: {e}"); }
             }
 
-            // ── Collaboration State ───────────────────────────────────────────
-            app.manage(collaboration_commands::CollaborationState::new());
+            // Several of these constructors call raw tokio::spawn internally (their
+            // crates are tauri-agnostic on purpose) — block_on enters Tauri's Tokio
+            // runtime just long enough for the nested spawns to land, rather than
+            // fixing this one crash-at-a-time as each one is reached at startup.
+            tauri::async_runtime::block_on(async {
+                // ── Collaboration State ───────────────────────────────────────
+                app.manage(collaboration_commands::CollaborationState::new());
 
-            // ── Compute Fabric ────────────────────────────────────────────────
-            app.manage(fabric_commands::FabricState::new());
+                // ── Compute Fabric ────────────────────────────────────────────
+                app.manage(fabric_commands::FabricState::new());
 
-            // ── Cluster Credits & Device Rental Marketplace ───────────────────
-            app.manage(cluster_credits_commands::ClusterState::new());
+                // ── Cluster Credits & Device Rental Marketplace ───────────────
+                app.manage(cluster_credits_commands::ClusterState::new());
 
-            // ── Hierarchical Swarm Orchestrator ───────────────────────────────
-            app.manage(swarm_commands::SwarmState::new());
+                // ── Hierarchical Swarm Orchestrator ────────────────────────────
+                app.manage(swarm_commands::SwarmState::new());
 
-            // ── Extensions System ─────────────────────────────────────────────
-            app.manage(extensions_commands::ExtensionsState::new());
+                // ── Extensions System ──────────────────────────────────────────
+                app.manage(extensions_commands::ExtensionsState::new());
+            });
 
             // ── Start Copilot Orchestrator (local REST control) ─────────────
+            // Port-daemon-managed: resolve a genuinely free port up front (wide scan).
             {
                 let ah = app_handle.clone();
                 let gc = gpu_controller.clone();
                 let mo = orchestrator.clone();
+                let daemon = port_daemon.clone();
+                tauri::async_runtime::block_on(daemon.register("orchestrator-control", config::ORCHESTRATOR_CONTROL_PORT));
                 tauri::async_runtime::spawn(async move {
-                    // Best-effort: start the local orchestrator on 127.0.0.1:11380
-                    orchestrator::start_orchestrator(ah, gc, mo).await;
+                    let bind_port = port_daemon::PortDaemon::find_free_port(config::ORCHESTRATOR_CONTROL_PORT, 2000)
+                        .await
+                        .unwrap_or(config::ORCHESTRATOR_CONTROL_PORT);
+                    daemon.mark_bound("orchestrator-control", bind_port).await;
+                    orchestrator::start_orchestrator(ah, gc, mo, bind_port).await;
                 });
             }
 
@@ -1560,11 +1811,11 @@ pub fn run() {
             }
 
             // ── Hot model reload watcher ──────────────────────────────────────
-            // Watches ~/.bonsai/models/bonsai-latest.gguf for file changes and
+            // Watches ~/.workspace/models/workspace-latest.gguf for file changes and
             // performs a zero-downtime slot swap via the ModelOrchestrator.
             {
                 let watch_path = bootstrap::models_dir(&app_handle)
-                    .join("bonsai-latest.gguf");
+                    .join("workspace-latest.gguf");
                 hot_reload::spawn(
                     app_handle.clone(),
                     orchestrator.clone(),
@@ -1717,7 +1968,7 @@ pub fn run() {
                 });
             }
 
-            // ── BonsaiBot status polling loop ──────────────────────────────────
+            // ── WorkspaceBot status polling loop ──────────────────────────────────
             // Polls the bot admin API every 10 s and emits `bot-status-changed`
             // to the main window so ResourcesPanel can update without manual refresh.
             {
@@ -1786,8 +2037,8 @@ pub fn run() {
                                 .replace(' ', "-");
                             let fqdn = format!("{hostname}.local.");
                             match ServiceInfo::new(
-                                "_bonsai._tcp.local.",
-                                "Bonsai Workspace",
+                                "_workspace._tcp.local.",
+                                "Workspace",
                                 &fqdn,
                                 "",
                                 port,
@@ -1835,13 +2086,13 @@ pub fn run() {
             }
 
             // ── Launch-mode window visibility ─────────────────────────────────
-            // Reads BONSAI_LAUNCH_MODE set by main.rs before any threads spawn.
+            // Reads WORKSPACE_LAUNCH_MODE set by main.rs before any threads spawn.
             // "workspace"  → show main, hide assistant (default Tauri conf state)
             // "buddy"      → hide main, show assistant
             // "ecosystem"  → show both
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
-                let mode = std::env::var("BONSAI_LAUNCH_MODE").unwrap_or_default();
+                let mode = std::env::var("WORKSPACE_LAUNCH_MODE").unwrap_or_default();
                 match mode.as_str() {
                     "buddy" => {
                         if let Some(w) = app.get_webview_window("main") { let _ = w.hide(); }
@@ -1909,6 +2160,17 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            // ── OmniHarness kernel bridge ──────────────────────────────────────
+            kernel_commands::kernel_status,
+            kernel_commands::kernel_list_models,
+            // ── Python orchestrator bridge (cloud model visibility) ────────────
+            orchestrator_bridge::list_orchestrator_models,
+            // ── Port daemon ────────────────────────────────────────────────────
+            port_daemon::port_daemon_status,
+            // ── Crash reporting ───────────────────────────────────────────────
+            crash_reporter::report_frontend_error,
+            crash_reporter::list_crash_reports,
+            crash_reporter::clear_crash_reports,
             // ── File system ───────────────────────────────────────────────────
             commands::read_file,
             commands::write_file,
@@ -2185,7 +2447,7 @@ pub fn run() {
             commands::android_mobile_swipe,
             commands::android_mobile_get_display_info,
             commands::android_mobile_set_orientation,
-            commands::android_mobile_launch_bonsai,
+            commands::android_mobile_launch_workspace,
             commands::android_mobile_prepare_uniform_runtime,
             commands::android_usb_shell,
             commands::android_usb_install_apk,
@@ -2202,7 +2464,7 @@ pub fn run() {
             commands::android_usb_bootstrap_connection,
             commands::record_mobile_pairing_evidence,
             commands::get_mobile_pairing_evidence,
-            commands::browse_bonsai_services,
+            commands::browse_workspace_services,
             commands::ws_broadcast,
             commands::ws_client_count,
             // ── Multi-agent swarm ─────────────────────────────────────────────
@@ -2217,7 +2479,7 @@ pub fn run() {
             commands::cancel_swarm,
             commands::cancel_agent,
             commands::get_swarm_metrics,
-            // ── Bonsai Assistant ──────────────────────────────────────────────
+            // ── Workspace Assistant ──────────────────────────────────────────────
             assistant_commands::list_assistant_profiles,
             assistant_commands::get_active_assistant_profile,
             assistant_commands::upsert_assistant_profile,
@@ -2306,7 +2568,7 @@ pub fn run() {
             // ── Agent Host ────────────────────────────────────────────────────
             commands::list_agents,
             commands::send_agent_message,
-            // ── BonsAI-Core ───────────────────────────────────────────────────
+            // ── OmniAI-Core ───────────────────────────────────────────────────
             commands::start_training_cycle,
             commands::get_training_status,
             commands::get_training_history,
@@ -2344,10 +2606,17 @@ pub fn run() {
             commands::clear_gpu_crash_flag,
             // Tool composition DSL
             tool_compose::validate_composed_skill,
-            // Micro BonsAI model selector
+            // Micro OmniAI model selector
             smart_router::smart_router_select_model,
             smart_router::smart_router_hardware_snapshot,
             smart_router::smart_router_perf_history,
+            smart_router::smart_router_weights,
+            // Model discovery — GGUF/ONNX/SafeTensors indexing + Ollama
+            smart_router::pick_model_folder,
+            smart_router::scan_model_folder,
+            smart_router::list_model_profiles,
+            smart_router::get_ollama_models,
+            smart_router::rescan_all_models,
             // Custom swarm configurations
             swarm_config::create_swarm_config,
             swarm_config::list_swarm_configs,
@@ -2433,7 +2702,7 @@ pub fn run() {
             transfer_commands::transfer_list_transfers,
             transfer_commands::transfer_store_put,
             transfer_commands::transfer_store_get,
-            // ── BONSAI.md ─────────────────────────────────────────────────────
+            // ── WORKSPACE.md ─────────────────────────────────────────────────────
             commands::get_project_context_md,
             commands::set_project_context_md,
             // ── Memory nodes ──────────────────────────────────────────────────
@@ -2519,7 +2788,7 @@ pub fn run() {
             cluster_credits_commands::earnings_history,
             cluster_credits_commands::spending_history,
             cluster_credits_commands::list_task_profiles,
-            terminal_launcher::launch_bonsai_terminal,
+            terminal_launcher::launch_workspace_terminal,
             terminal_launcher::bti_available,
             // ── Swarm Commander ──────────────────────────────────────────────
             swarm_commands::create_swarm,

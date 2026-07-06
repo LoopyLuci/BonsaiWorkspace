@@ -152,7 +152,8 @@ impl ThoughtsStore {
         }
 
         for stmt in stmts {
-            sqlx::query(stmt)
+            // Hardcoded migration DDL/DML, not user input — safe to assert.
+            sqlx::query(sqlx::AssertSqlSafe(*stmt))
                 .execute(&self.pool)
                 .await
                 .map_err(|e| format!("migration {version} ({description}): {e}"))?;

@@ -5,7 +5,7 @@
 //! `onnxruntime` directly.
 //!
 //! ## Model placement
-//!   - `~/.bonsai/models/pixai/pixai-tagger-v0.9.onnx`
+//!   - `~/.workspace/models/pixai/pixai-tagger-v0.9.onnx`
 //!   - `$PIXAI_MODEL_PATH`
 //!
 //! ## Installation
@@ -32,7 +32,7 @@ fn find_model() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/models/pixai/pixai-tagger-v0.9.onnx"),
+            .join(".workspace/models/pixai/pixai-tagger-v0.9.onnx"),
         PathBuf::from("sidecars/pixai/pixai-tagger-v0.9.onnx"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -42,7 +42,7 @@ fn find_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/pixai_worker.py"),
+            .join(".workspace/sidecars/pixai_worker.py"),
         PathBuf::from("sidecars/pixai_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -89,8 +89,8 @@ async fn run_tagger(
     max_tags: usize,
 ) -> Result<TagResult, String> {
     let model = find_model()
-        .ok_or("PixAI model not found. Place pixai-tagger-v0.9.onnx in ~/.bonsai/models/pixai/")?;
-    let worker = find_worker().ok_or("pixai_worker.py not found in ~/.bonsai/sidecars/")?;
+        .ok_or("PixAI model not found. Place pixai-tagger-v0.9.onnx in ~/.workspace/models/pixai/")?;
+    let worker = find_worker().ok_or("pixai_worker.py not found in ~/.workspace/sidecars/")?;
     let python = which_python()?;
 
     let payload = json!({

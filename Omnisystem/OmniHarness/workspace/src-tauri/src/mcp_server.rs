@@ -1,9 +1,9 @@
 use crate::AppState;
-// MCP (Model Context Protocol) server — Bonsai Workspace as a universal tool backend.
+// MCP (Model Context Protocol) server — Workspace as a universal tool backend.
 //
 // Implements the MCP 2025-03-26 spec over Streamable HTTP transport (JSON-RPC 2.0).
 // Any MCP-compatible client (Claude Desktop, Cursor, VS Code Continue, custom agents)
-// can connect to this server and invoke any Bonsai tool, read workspace resources,
+// can connect to this server and invoke any Workspace tool, read workspace resources,
 // or fetch pre-built prompt templates.
 //
 // ## Endpoints
@@ -92,7 +92,7 @@ impl JsonRpcResponse {
 // ── MCP capability manifest ───────────────────────────────────────────────────
 
 const MCP_VERSION: &str = "2025-03-26";
-const SERVER_NAME: &str = "bonsai-workspace";
+const SERVER_NAME: &str = "workspace";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn server_capabilities() -> Value {
@@ -208,7 +208,7 @@ pub struct McpState {
     registry: Arc<RwLock<ToolRegistry>>,
     /// Workspace root for resource reads.
     workspace_root: Arc<Option<String>>,
-    /// Bonsai memory file path for bonsai://memory resource.
+    /// Workspace memory file path for workspace://memory resource.
     memory_path: Arc<Option<std::path::PathBuf>>,
     /// Pair token for Bearer auth (optional — empty string disables auth).
     auth_token: String,
@@ -308,15 +308,15 @@ async fn dispatch(state: &McpState, method: &str, params: &Value) -> Result<Valu
         "resources/list" => {
             let mut resources = vec![
                 json!({
-                    "uri":         "bonsai://workspace",
+                    "uri":         "workspace://workspace",
                     "name":        "Workspace",
                     "description": "Current open workspace file tree (top 2 levels).",
                     "mimeType":    "text/plain"
                 }),
                 json!({
-                    "uri":         "bonsai://memory",
+                    "uri":         "workspace://memory",
                     "name":        "Agent Memory",
-                    "description": "Persistent key-value facts stored by BonsAI agents.",
+                    "description": "Persistent key-value facts stored by OmniAI agents.",
                     "mimeType":    "application/jsonl"
                 }),
             ];
@@ -330,7 +330,7 @@ async fn dispatch(state: &McpState, method: &str, params: &Value) -> Result<Valu
                 .ok_or((-32602, "Missing 'uri' param".to_string()))?;
 
             match uri {
-                "bonsai://workspace" => {
+                "workspace://workspace" => {
                     let root = state.workspace_root.as_ref().as_deref().unwrap_or(".");
                     let tree = workspace_tree(root, 2, 80);
                     Ok(json!({
@@ -341,7 +341,7 @@ async fn dispatch(state: &McpState, method: &str, params: &Value) -> Result<Valu
                         }]
                     }))
                 }
-                "bonsai://memory" => {
+                "workspace://memory" => {
                     let content = state
                         .memory_path
                         .as_ref()

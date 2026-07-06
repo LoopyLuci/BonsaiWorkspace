@@ -10,7 +10,7 @@ pub async fn start_mcp_server(event_bus: Arc<SystemEventBus>) {
     // Start the MCP server in background
     let tx_clone = tx.clone();
     tokio::spawn(async move {
-        if let Err(e) = mcp_server::server::run_server_with_event_tx("127.0.0.1", 11425, tx_clone).await {
+        if let Err(e) = mcp_server::server::run_server_with_event_tx("127.0.0.1", crate::config::MCP_TELEMETRY_PORT, tx_clone).await {
             tracing::error!("MCP server failed: {}", e);
         }
     });

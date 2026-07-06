@@ -1,5 +1,5 @@
 //! Persistent brain metadata: tracks which training phases have completed.
-//! Stored at ~/.bonsai/brain_metadata.json.
+//! Stored at ~/.workspace/brain_metadata.json.
 
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ pub struct BrainMetadata {
 fn metadata_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".bonsai")
+        .join(".workspace")
         .join("brain_metadata.json")
 }
 

@@ -53,9 +53,9 @@ impl Default for CrossTrainingConfig {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_default();
         Self {
-            output_jsonl: home.join(".bonsai/data/cross_training.jsonl"),
+            output_jsonl: home.join(".workspace/data/cross_training.jsonl"),
             base_model_path: None,
-            adapter_output: home.join(".bonsai/adapters/bonsai-cross"),
+            adapter_output: home.join(".workspace/adapters/workspace-cross"),
             flush_interval_secs: 300,
             finetune_threshold: 50,
         }

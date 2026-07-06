@@ -1,6 +1,6 @@
 //! OpenAI-compatible HTTP API server.
 //!
-//! Listens on `127.0.0.1:11369` by default (configurable in Settings) and exposes:
+//! Listens on `127.0.0.1:47100` by default (configurable in Settings) and exposes:
 //!   GET  /v1/models              → list available models (OpenAI format)
 //!   POST /v1/chat/completions    → proxy to active llama-server slot
 //!   GET  /api/tags               → Ollama-compatible model list
@@ -9,8 +9,8 @@
 //!   GET  /health                 → liveness probe
 //!
 //! External tools (Claude Code `--api-base`, GitHub Copilot, Continue.dev, etc.)
-//! can point at `http://localhost:11369` and use the Bonsai models directly.
-//! Default port is 11369.
+//! can point at `http://localhost:47100` and use the Workspace models directly.
+//! Default port is 47100.
 
 use axum::{
     body::Body,
@@ -163,7 +163,7 @@ pub async fn start(
         Ok(l) => l,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::AddrInUse {
-                // If a healthy Bonsai API is already bound, attach instead of failing.
+                // If a healthy Workspace API is already bound, attach instead of failing.
                 if is_api_healthy(&host, port).await {
                     tracing::info!(addr=%addr, "[api] Port already in use by healthy API; attaching to existing runtime");
                     return Ok(ApiServerHandle {
@@ -174,9 +174,9 @@ pub async fn start(
                     });
                 }
 
-                // Direct EXE launches can inherit stale listeners from old Bonsai processes.
+                // Direct EXE launches can inherit stale listeners from old Workspace processes.
                 // On Windows, reclaim those stale listeners and retry bind once.
-                if try_reclaim_stale_bonsai_listener(port) {
+                if try_reclaim_stale_workspace_listener(port) {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     match tokio::net::TcpListener::bind(&addr).await {
                         Ok(l2) => l2,
@@ -191,7 +191,7 @@ pub async fn start(
         }
     };
 
-    tracing::info!(addr=%addr, "[api] Bonsai API server listening");
+    tracing::info!(addr=%addr, "[api] Workspace API server listening");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -201,7 +201,7 @@ pub async fn start(
         if let Err(e) = server.await {
             tracing::error!(error=%e, "[api] Server error");
         }
-        tracing::info!("[api] Bonsai API server stopped");
+        tracing::info!("[api] Workspace API server stopped");
     });
 
     Ok(ApiServerHandle {
@@ -275,7 +275,7 @@ async fn is_api_healthy(host: &str, port: u16) -> bool {
     }
 }
 
-fn try_reclaim_stale_bonsai_listener(port: u16) -> bool {
+fn try_reclaim_stale_workspace_listener(port: u16) -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = port;
@@ -293,7 +293,7 @@ fn try_reclaim_stale_bonsai_listener(port: u16) -> bool {
         for pid in pids {
             let image = process_image_name(pid);
             let img = image.to_ascii_lowercase();
-            if img != "bonsai-workspace.exe" && img != "bonsai-workspace" {
+            if img != "workspace.exe" && img != "workspace" {
                 continue;
             }
             if let Ok(out) = {
@@ -381,11 +381,11 @@ fn process_image_name(pid: u32) -> String {
 // ── Health ────────────────────────────────────────────────────────────────────
 
 async fn health() -> impl IntoResponse {
-    Json(json!({ "status": "ok", "service": "bonsai-workspace" }))
+    Json(json!({ "status": "ok", "service": "workspace" }))
 }
 
 async fn ollama_version() -> impl IntoResponse {
-    Json(json!({ "version": "0.1.0-bonsai" }))
+    Json(json!({ "version": "0.1.0-workspace" }))
 }
 
 async fn admin_recycle(State(s): State<ApiState>, body: Option<Json<Value>>) -> impl IntoResponse {
@@ -720,7 +720,7 @@ fn openai_model_object(m: &ModelInfo) -> Value {
     json!({
         "id":       m.id,
         "object":   "model",
-        "owned_by": "bonsai",
+        "owned_by": "workspace",
         "created":  0,
         "name":     m.name,
         "quant":    m.quant_label,

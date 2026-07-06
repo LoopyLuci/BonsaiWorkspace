@@ -64,7 +64,7 @@ async fn execute_in_venv(
     };
 
     // Write code to a temp file so we don't hit command-line length limits
-    let tmp = std::env::temp_dir().join(format!("bonsai_sandbox_{}.py", uuid_short()));
+    let tmp = std::env::temp_dir().join(format!("workspace_sandbox_{}.py", uuid_short()));
     tokio::fs::write(&tmp, code)
         .await
         .map_err(|e| format!("Cannot write sandbox script: {e}"))?;
@@ -100,7 +100,7 @@ async fn execute_in_venv(
 async fn get_or_create_venv() -> Result<PathBuf, String> {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("com.bonsai.workspace")
+        .join("com.omnisystem.workspace")
         .join("sandbox_venv");
 
     if !dir.join("pyvenv.cfg").exists() {

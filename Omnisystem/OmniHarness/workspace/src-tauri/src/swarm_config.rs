@@ -257,6 +257,74 @@ pub async fn delete_swarm_config(
         .map_err(|e| e.to_string())
 }
 
+/// Apply a template's workers to the live agent topology that
+/// `swarm_orchestrator`/`agent_store` actually run — this used to be the
+/// missing half of "activate": the command only fetched the config and
+/// touched a timestamp, with the doc comment's claim that "configurations
+/// are loaded by swarm_orchestrator at runtime" not backed by any real code
+/// path (nothing there ever read from `SwarmConfigStore`).
+///
+/// Each worker gets an auto-generated `Persona` (role hint + optional
+/// override system prompt) so the existing `resolve_agents()` persona
+/// resolution — already used by the live Custom Swarm feature — picks it up
+/// unchanged. Activation is a clean replace: existing agent configs are
+/// removed first, since an additive merge could leave stale/duplicate slots
+/// behind from whatever topology was live before.
+async fn apply_swarm_config_to_agents(
+    cfg: &SwarmConfig,
+    state: &crate::AppState,
+) -> anyhow::Result<()> {
+    let existing = state.agent_store.list_agents().await?;
+    for agent in &existing {
+        state.agent_store.delete_agent(&agent.id).await?;
+    }
+
+    for worker in &cfg.workers {
+        let now = Utc::now().timestamp();
+        let role_name = match &worker.role {
+            WorkerRole::Custom(name) => name.clone(),
+            other => format!("{other:?}"),
+        };
+        let system_prompt = match &worker.system_prompt {
+            Some(extra) => format!("{}\n\n{extra}", worker.role.system_hint()),
+            None => worker.role.system_hint().to_string(),
+        };
+
+        let persona_id = Uuid::new_v4().to_string();
+        state
+            .agent_store
+            .upsert_persona(crate::agent_store::Persona {
+                id: persona_id.clone(),
+                name: format!("{role_name} (from {})", cfg.name),
+                system_prompt,
+                model_id: worker.model.clone(),
+                color: "#4a9eff".to_string(),
+                icon_emoji: "🧩".to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .await?;
+
+        state
+            .agent_store
+            .upsert_agent(crate::agent_store::AgentConfig {
+                id: Uuid::new_v4().to_string(),
+                slot_index: worker.slot as i64,
+                label: role_name,
+                persona_id: Some(persona_id),
+                model_id: worker.model.clone(),
+                color: "#4a9eff".to_string(),
+                icon_emoji: "🧩".to_string(),
+                enabled: true,
+                max_tokens: 4096,
+                created_at: now,
+                updated_at: now,
+            })
+            .await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn activate_swarm(
     id: String,
@@ -269,6 +337,10 @@ pub async fn activate_swarm(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Swarm config '{id}' not found"))?;
 
+    apply_swarm_config_to_agents(&cfg, &state)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let _ = state.swarm_config_store.touch_last_used(&id).await;
     Ok(cfg)
 }
@@ -278,4 +350,19 @@ pub async fn arena_stats(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::shared_arena::ArenaStats, String> {
     Ok(state.shared_arena.stats())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_role_wire_format() {
+        assert_eq!(serde_json::to_string(&WorkerRole::Implementer).unwrap(), "\"implementer\"");
+        assert_eq!(serde_json::to_string(&WorkerRole::Custom("Foo Bar".into())).unwrap(), "\"Foo Bar\"");
+        let parsed: WorkerRole = serde_json::from_str("\"reviewer\"").unwrap();
+        assert_eq!(parsed, WorkerRole::Reviewer);
+        let parsed: WorkerRole = serde_json::from_str("\"my-custom-role\"").unwrap();
+        assert_eq!(parsed, WorkerRole::Custom("my-custom-role".into()));
+    }
 }

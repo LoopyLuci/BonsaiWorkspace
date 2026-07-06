@@ -1,7 +1,7 @@
-//! Launch the Bonsai Terminal Interface (bti) from the GUI.
+//! Launch the Workspace Terminal Interface (bti) from the GUI.
 //!
 //! Finds the `bti` binary next to the current executable (bundled release)
-//! or falls back to `cargo run -p bonsai-tui` in the workspace root (dev).
+//! or falls back to `cargo run -p workspace-tui` in the workspace root (dev).
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -10,14 +10,14 @@ use tracing::{info, warn};
 // ── Binary resolution ──────────────────────────────────────────────────────────
 
 /// Find the `bti` binary to launch, in order of preference:
-/// 1. `~/.bonsai/bin/bti[.exe]`
+/// 1. `~/.workspace/bin/bti[.exe]`
 /// 2. Sibling of the current executable (bundled)
-/// 3. `cargo run -p bonsai-tui` via workspace root (dev only)
+/// 3. `cargo run -p workspace-tui` via workspace root (dev only)
 fn find_bti_binary() -> Option<BtiLaunchMode> {
-    // 1. ~/.bonsai/bin/bti
+    // 1. ~/.workspace/bin/bti
     if let Some(home) = dirs::home_dir() {
         let name = if cfg!(windows) { "bti.exe" } else { "bti" };
-        let candidate = home.join(".bonsai/bin").join(name);
+        let candidate = home.join(".workspace/bin").join(name);
         if candidate.exists() {
             return Some(BtiLaunchMode::Binary(candidate));
         }
@@ -33,13 +33,13 @@ fn find_bti_binary() -> Option<BtiLaunchMode> {
     }
 
     // 3. Dev mode: workspace root cargo run
-    // Walk up from current dir looking for Cargo.toml with bonsai-tui member
+    // Walk up from current dir looking for Cargo.toml with workspace-tui member
     let mut dir = std::env::current_dir().ok()?;
     for _ in 0..6 {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
             if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-                if content.contains("bonsai-tui") {
+                if content.contains("workspace-tui") {
                     return Some(BtiLaunchMode::Cargo { workspace_root: dir });
                 }
             }
@@ -57,27 +57,27 @@ enum BtiLaunchMode {
 
 // ── Tauri commands ─────────────────────────────────────────────────────────────
 
-/// Read the IPC port from `~/.bonsai/vscode_port` (set by the running daemon).
+/// Read the IPC port from `~/.workspace/vscode_port` (set by the running daemon).
 fn read_daemon_port() -> u16 {
     dirs::home_dir()
-        .map(|h| h.join(".bonsai/vscode_port"))
+        .map(|h| h.join(".workspace/vscode_port"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(11370)
+        .unwrap_or(crate::config::A2A_PORT)
 }
 
-/// Launch the Bonsai Terminal Interface in a new terminal window.
+/// Launch the Workspace Terminal Interface in a new terminal window.
 ///
 /// On Windows: opens a new `conhost` / Windows Terminal window.
 /// On macOS: opens a new Terminal.app or iTerm window.
 /// On Linux: tries `gnome-terminal`, `konsole`, `xterm` in order.
 #[tauri::command]
-pub async fn launch_bonsai_terminal(
+pub async fn launch_workspace_terminal(
     panel: Option<String>,
     workspace: Option<String>,
 ) -> Result<(), String> {
     let mode = find_bti_binary().ok_or_else(|| {
-        "bti binary not found. Install with: cargo install --path crates/bonsai-tui".to_string()
+        "bti binary not found. Install with: cargo install --path crates/workspace-tui".to_string()
     })?;
 
     let port = read_daemon_port();
@@ -101,7 +101,7 @@ pub async fn launch_bonsai_terminal(
             } else {
                 format!("{connect_arg} {panel_arg}")
             };
-            format!("cd {root} && cargo run -p bonsai-tui --bin bti -- {args}")
+            format!("cd {root} && cargo run -p workspace-tui --bin bti -- {args}")
         }
     };
 

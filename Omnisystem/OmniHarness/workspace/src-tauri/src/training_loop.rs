@@ -20,10 +20,10 @@ use crate::telemetry::TelemetryStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopConfig {
-    /// Path to the base GGUF model that both BonsAI and reference use.
+    /// Path to the base GGUF model that both OmniAI and reference use.
     pub base_model_path: String,
-    /// Path to the BonsAI LoRA adapter.
-    pub bonsai_adapter_path: String,
+    /// Path to the OmniAI LoRA adapter.
+    pub workspace_adapter_path: String,
     /// Where to write synthesised JSONL training data.
     pub output_data_path: String,
     /// Where to write the next fine-tuned adapter.
@@ -42,13 +42,13 @@ impl Default for LoopConfig {
     fn default() -> Self {
         Self {
             base_model_path: String::new(),
-            bonsai_adapter_path: String::new(),
+            workspace_adapter_path: String::new(),
             output_data_path: format!(
-                "{}/.bonsai/data/loop_generated.jsonl",
+                "{}/.workspace/data/loop_generated.jsonl",
                 dirs::home_dir().unwrap_or_default().to_string_lossy()
             ),
             output_adapter_path: format!(
-                "{}/.bonsai/adapters/bonsai-loop-latest",
+                "{}/.workspace/adapters/workspace-loop-latest",
                 dirs::home_dir().unwrap_or_default().to_string_lossy()
             ),
             gpu_layers: 35,
@@ -81,8 +81,8 @@ struct TrainingExample {
     instruction: String,
     /// The reference model's output (ground truth).
     output: String,
-    /// BonsAI's output (used to understand current gaps).
-    bonsai_output: String,
+    /// OmniAI's output (used to understand current gaps).
+    workspace_output: String,
     /// Intent extracted from reference output.
     intent: Option<String>,
     /// Gap types identified (e.g. "missing_tool", "intent_mismatch").
@@ -162,8 +162,8 @@ impl TrainingLoop {
         if config.base_model_path.is_empty() {
             return Err("base_model_path is required".into());
         }
-        if config.bonsai_adapter_path.is_empty() {
-            return Err("bonsai_adapter_path is required".into());
+        if config.workspace_adapter_path.is_empty() {
+            return Err("workspace_adapter_path is required".into());
         }
 
         // Ensure output directories exist
@@ -260,7 +260,7 @@ impl TrainingLoop {
                 let example = TrainingExample {
                     instruction: prompt.clone(),
                     output: comparison.reference_tools.join(", ").to_string(),
-                    bonsai_output: comparison.bonsai_tools.join(", "),
+                    workspace_output: comparison.workspace_tools.join(", "),
                     intent: None, // reference intent not available in ComparisonResult directly
                     gaps: comparison.gaps.iter().map(|g| g.gap_type.clone()).collect(),
                 };

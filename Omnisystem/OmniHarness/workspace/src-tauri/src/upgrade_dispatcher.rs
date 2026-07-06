@@ -1,6 +1,7 @@
 use crate::system_event_bus::{SharedEventBus, SystemEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -27,21 +28,41 @@ pub struct UpgradeDispatcher {
     version_ledger: Arc<RwLock<HashMap<String, Vec<ComponentVersion>>>>,
     health_check_url: String,
     rollback_grace_secs: u64,
+    /// Needed to actually materialize a CAS blob and perform a model/adapter
+    /// hot-swap in `perform_upgrade` — without these, "upgrade" for a model
+    /// component was previously just a log line that unconditionally returned
+    /// `true` with no real effect (see `perform_upgrade` history).
+    app_handle: AppHandle,
+    orchestrator: Arc<crate::model_orchestrator::ModelOrchestrator>,
+    cas_store: Arc<cas::CasStore>,
 }
 
 impl UpgradeDispatcher {
-    pub fn new(event_bus: SharedEventBus) -> Self {
+    pub fn new(
+        event_bus: SharedEventBus,
+        app_handle: AppHandle,
+        orchestrator: Arc<crate::model_orchestrator::ModelOrchestrator>,
+        cas_store: Arc<cas::CasStore>,
+    ) -> Self {
         Self {
             event_bus,
             version_ledger: Arc::new(RwLock::new(HashMap::new())),
-            health_check_url: "http://127.0.0.1:11420/health".to_string(),
+            health_check_url: format!("http://127.0.0.1:{}/health", crate::config::BUDDY_API_PORT),
             rollback_grace_secs: 60,
+            app_handle,
+            orchestrator,
+            cas_store,
         }
     }
 
     pub fn start(self: Arc<Self>) {
         let dispatcher = self.clone();
-        tokio::spawn(async move {
+        // `start()` is called synchronously from Tauri's non-async `.setup()`
+        // closure (see `lib.rs`) — raw `tokio::spawn` panics there with "no
+        // reactor running" since there's no ambient Tokio runtime at that
+        // call site; `tauri::async_runtime::spawn` enters Tauri's runtime
+        // instead. Same class of bug fixed elsewhere in this file's siblings.
+        tauri::async_runtime::spawn(async move {
             let mut rx = dispatcher.event_bus.subscribe();
             while let Ok(event) = rx.recv().await {
                 if let SystemEvent::UpgradeReady { component, version, cas_hash, source: _ } = event {
@@ -95,18 +116,78 @@ impl UpgradeDispatcher {
         }
     }
 
-    async fn perform_upgrade(&self, component: &str, _version: &str, _cas_hash: &str) -> bool {
-        // Model reloads delegate to hot_reload.rs (already implemented).
+    async fn perform_upgrade(&self, component: &str, version: &str, cas_hash: &str) -> bool {
         // WASM tool swaps, binary blue-green, and UI panel reloads are wired here
         // as each mechanism is built (P0-A-1 through P0-A-3).
         match component {
-            "model" | "adapter" => {
-                info!("Upgrade: model/adapter swap delegated to hot_reload");
-                true
-            }
+            "model" | "adapter" => self.perform_model_upgrade(component, version, cas_hash).await,
             _ => {
                 info!("Upgrade: no-op handler for component '{}'", component);
                 true
+            }
+        }
+    }
+
+    /// Materialize the CAS blob for a model/adapter upgrade to disk, then run
+    /// it through the same zero-downtime swap `hot_reload`'s file-watcher uses.
+    async fn perform_model_upgrade(&self, component: &str, version: &str, cas_hash: &str) -> bool {
+        let key = match cas::CasKey::from_hex(cas_hash) {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("Upgrade: invalid cas_hash for {component} v{version}: {e}");
+                return false;
+            }
+        };
+        let bytes = match self.cas_store.get(&key).await {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                warn!("Upgrade: cas_hash {cas_hash} not found in CAS store for {component}");
+                return false;
+            }
+            Err(e) => {
+                warn!("Upgrade: CAS read failed for {component} v{version}: {e}");
+                return false;
+            }
+        };
+
+        let models_dir = self
+            .app_handle
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("models");
+        if let Err(e) = std::fs::create_dir_all(&models_dir) {
+            warn!("Upgrade: could not create models dir: {e}");
+            return false;
+        }
+        let model_id = format!("{component}-{version}");
+        let staged_path = models_dir.join(format!("{model_id}.gguf"));
+        if let Err(e) = std::fs::write(&staged_path, &bytes) {
+            warn!("Upgrade: could not write staged model file: {e}");
+            return false;
+        }
+
+        let previous_model_id = {
+            let ledger = self.version_ledger.read().await;
+            ledger
+                .get(component)
+                .and_then(|h| h.last())
+                .map(|v| format!("{component}-{}", v.version))
+        };
+
+        match crate::hot_reload::reload_model(
+            &self.app_handle,
+            &self.orchestrator,
+            model_id,
+            &staged_path,
+            previous_model_id,
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                warn!("Upgrade: model swap failed for {component} v{version}: {e}");
+                false
             }
         }
     }

@@ -1,5 +1,5 @@
 //! Federated training coordinator — manages contributions from multiple
-//! local Bonsai instances (e.g., two machines on a LAN) using CRDT-based state.
+//! local Workspace instances (e.g., two machines on a LAN) using CRDT-based state.
 //!
 //! All state is merge-convergent: no central coordinator, no conflict resolution.
 //! Offline-first: peers sync only when explicitly connected via the P2P module.

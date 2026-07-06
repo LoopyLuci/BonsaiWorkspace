@@ -1,4 +1,4 @@
-//! Plugin manifest types — parsed from bonsai-plugin.toml.
+//! Plugin manifest types — parsed from workspace-plugin.toml.
 //! Separate from plugin_loader.rs (which handles disk discovery);
 //! this module defines the canonical Capability enum and typed manifest.
 
@@ -31,7 +31,7 @@ pub struct PluginManifest {
 }
 
 impl PluginManifest {
-    /// Parse from a `bonsai-plugin.toml` string.
+    /// Parse from a `workspace-plugin.toml` string.
     pub fn from_toml(content: &str) -> Result<Self, String> {
         toml::from_str(content).map_err(|e| format!("Manifest parse error: {e}"))
     }

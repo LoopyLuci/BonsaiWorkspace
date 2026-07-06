@@ -9,7 +9,7 @@ impl Trainer {
         let out = PathBuf::from(output);
 
         let mut base_args: Vec<&str> = vec![
-            "runtimes/bonsai-trainer/finetune.py",
+            "runtimes/workspace-trainer/finetune.py",
             "--data",
             data,
             "--output",

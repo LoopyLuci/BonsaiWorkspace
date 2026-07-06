@@ -12,7 +12,7 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct DualSessionConfig {
     pub base_model_path: String,
-    pub bonsai_lora_path: Option<String>,
+    pub workspace_lora_path: Option<String>,
     pub reference_lora_path: Option<String>,
     pub gpu_layers: u32,
     pub context_size: u32,
@@ -23,7 +23,7 @@ pub struct DualSessionConfig {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DualResponse {
     pub prompt: String,
-    pub bonsai: ParsedModelOutput,
+    pub workspace: ParsedModelOutput,
     pub reference: ParsedModelOutput,
     pub timestamp: i64,
 }
@@ -43,9 +43,9 @@ pub struct ComparisonResult {
     pub prompt: String,
     pub intent_match: bool,
     pub tool_overlap_pct: f64,
-    pub bonsai_tools: Vec<String>,
+    pub workspace_tools: Vec<String>,
     pub reference_tools: Vec<String>,
-    pub bonsai_confidence: Option<f32>,
+    pub workspace_confidence: Option<f32>,
     pub gaps: Vec<GapDetail>,
 }
 
@@ -58,19 +58,19 @@ pub struct GapDetail {
 // ── Internal JSON parsing ─────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct BonsaiJsonOutput {
+struct WorkspaceJsonOutput {
     intent: Option<String>,
-    plan: Option<Vec<BonsaiPlanStep>>,
+    plan: Option<Vec<WorkspacePlanStep>>,
     confidence: Option<f32>,
     reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct BonsaiPlanStep {
+struct WorkspacePlanStep {
     tool: String,
 }
 
-fn parse_bonsai_output(raw: &str) -> ParsedModelOutput {
+fn parse_workspace_output(raw: &str) -> ParsedModelOutput {
     // Strip markdown code fences if present
     let json_str = raw
         .trim()
@@ -79,7 +79,7 @@ fn parse_bonsai_output(raw: &str) -> ParsedModelOutput {
         .trim_end_matches("```")
         .trim();
 
-    if let Ok(parsed) = serde_json::from_str::<BonsaiJsonOutput>(json_str) {
+    if let Ok(parsed) = serde_json::from_str::<WorkspaceJsonOutput>(json_str) {
         let tools = parsed
             .plan
             .unwrap_or_default()
@@ -248,15 +248,15 @@ impl Drop for SharedServer {
 
 pub struct DualModelSession {
     server: Arc<SharedServer>,
-    bonsai_lora: Option<String>,
+    workspace_lora: Option<String>,
     client: reqwest::Client,
 }
 
 impl DualModelSession {
-    pub fn new(server: Arc<SharedServer>, bonsai_lora: Option<String>) -> Self {
+    pub fn new(server: Arc<SharedServer>, workspace_lora: Option<String>) -> Self {
         Self {
             server,
-            bonsai_lora,
+            workspace_lora,
             client: reqwest::Client::new(),
         }
     }
@@ -264,24 +264,24 @@ impl DualModelSession {
     pub async fn compare(&self, prompt: &str) -> Result<ComparisonResult, String> {
         let t0 = Instant::now();
 
-        let (bonsai_res, ref_res) = tokio::join!(
-            self.infer(self.bonsai_lora.as_deref(), prompt),
+        let (workspace_res, ref_res) = tokio::join!(
+            self.infer(self.workspace_lora.as_deref(), prompt),
             self.infer(None, prompt),
         );
 
-        let mut bonsai = bonsai_res.map_err(|e| format!("BonsAI: {e}"))?;
+        let mut workspace = workspace_res.map_err(|e| format!("OmniAI: {e}"))?;
         let mut reference = ref_res.map_err(|e| format!("Reference: {e}"))?;
         let half_ms = t0.elapsed().as_millis() as u64 / 2;
-        bonsai.latency_ms = half_ms;
+        workspace.latency_ms = half_ms;
         reference.latency_ms = half_ms;
 
-        let intent_match = bonsai.intent == reference.intent;
-        let overlap = bonsai
+        let intent_match = workspace.intent == reference.intent;
+        let overlap = workspace
             .tools
             .iter()
             .filter(|t| reference.tools.contains(t))
             .count();
-        let tool_overlap_pct = if reference.tools.is_empty() && bonsai.tools.is_empty() {
+        let tool_overlap_pct = if reference.tools.is_empty() && workspace.tools.is_empty() {
             100.0
         } else if reference.tools.is_empty() {
             0.0
@@ -294,16 +294,16 @@ impl DualModelSession {
             gaps.push(GapDetail {
                 gap_type: "intent_mismatch".into(),
                 description: format!(
-                    "BonsAI: {:?}, Reference: {:?}",
-                    bonsai.intent, reference.intent
+                    "OmniAI: {:?}, Reference: {:?}",
+                    workspace.intent, reference.intent
                 ),
             });
         }
         for tool in &reference.tools {
-            if !bonsai.tools.contains(tool) {
+            if !workspace.tools.contains(tool) {
                 gaps.push(GapDetail {
                     gap_type: "missing_tool".into(),
-                    description: format!("BonsAI should have used '{tool}'"),
+                    description: format!("OmniAI should have used '{tool}'"),
                 });
             }
         }
@@ -312,9 +312,9 @@ impl DualModelSession {
             prompt: prompt.to_string(),
             intent_match,
             tool_overlap_pct,
-            bonsai_tools: bonsai.tools.clone(),
+            workspace_tools: workspace.tools.clone(),
             reference_tools: reference.tools.clone(),
-            bonsai_confidence: bonsai.confidence,
+            workspace_confidence: workspace.confidence,
             gaps,
         })
     }
@@ -353,7 +353,7 @@ impl DualModelSession {
             .unwrap_or("")
             .to_string();
 
-        Ok(parse_bonsai_output(&content))
+        Ok(parse_workspace_output(&content))
     }
 }
 
@@ -396,7 +396,7 @@ impl SessionManager {
         }
 
         let mut lora_paths = Vec::new();
-        if let Some(ref p) = config.bonsai_lora_path {
+        if let Some(ref p) = config.workspace_lora_path {
             lora_paths.push(p.clone());
         }
         if let Some(ref p) = config.reference_lora_path {
@@ -450,7 +450,7 @@ fn find_llama_server() -> Result<String, String> {
     let candidates: Vec<PathBuf> = vec![
         dirs::data_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace")
+            .join("com.omnisystem.workspace")
             .join("sidecars")
             .join("llama-server.exe"),
         PathBuf::from("sidecars").join("llama-server.exe"),

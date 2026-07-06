@@ -48,7 +48,7 @@ pub enum SystemEvent {
     CreditEarned { amount: f64, project_id: String, contributor_id: String },
     CreditSpent { amount: f64, project_id: String, recipient_id: String },
     DreamCycleStarted { memory_nodes_count: usize },
-    DreamCycleComplete { nodes_consolidated: usize, bonsai_md_updated: bool },
+    DreamCycleComplete { nodes_consolidated: usize, workspace_md_updated: bool },
     ModelHotReloaded { model_path: String, previous_model: String },
     SwarmSpawned { swarm_id: String, template: String, agent_count: usize },
     SwarmCompleted { swarm_id: String, tasks_completed: usize, duration_ms: u64 },

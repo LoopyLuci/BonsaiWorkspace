@@ -1,5 +1,5 @@
 //! OMNISYSTEM.md — the self-evolving system prompt.
-//! (Renamed from BONSAI.md; same convention, same auto-update behavior.)
+//! (Renamed from WORKSPACE.md; same convention, same auto-update behavior.)
 //!
 //! Loaded from the project root (`<workspace>/OMNISYSTEM.md`) and a global
 //! `~/.omnisystem/global-context.md` override.  Both are injected at the top of

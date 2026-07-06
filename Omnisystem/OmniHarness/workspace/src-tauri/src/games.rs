@@ -197,18 +197,18 @@ pub async fn create_chess_game(
             elo: None,
         };
         let ai = ChessPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: ChessPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: ChessPlayerKind::OmniAI,
             color: ChessColor::Black,
             elo: None,
         };
         (human, ai)
     } else {
         let ai = ChessPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: ChessPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: ChessPlayerKind::OmniAI,
             color: ChessColor::White,
             elo: None,
         };
@@ -302,7 +302,7 @@ fn make_chess_ai_move_inner(session: &mut ChessGameSession, strength: Option<&st
         let eval = MaterialEvaluator;
         let result = chess_search(&pos, &eval, &config);
         if !result.best_move.is_empty() {
-            let _ = session.apply_move("bonsai", &result.best_move);
+            let _ = session.apply_move("workspace", &result.best_move);
         }
     }
 }
@@ -325,7 +325,7 @@ pub async fn make_chess_ai_move_with_events(
         "agent-thinking-started",
         serde_json::json!({
             "session_id": session.id.to_string(),
-            "agent": "BonsAI",
+            "agent": "OmniAI",
             "game_type": "chess",
         }),
     );
@@ -345,14 +345,14 @@ pub async fn make_chess_ai_move_with_events(
                 "agent-thinking-complete",
                 serde_json::json!({
                     "session_id": session.id.to_string(),
-                    "agent": "BonsAI",
+                    "agent": "OmniAI",
                     "best_move": result.best_move,
                     "value_pct": pct,
                     "simulations": result.simulations,
                     "top_moves": top_moves,
                 }),
             );
-            let _ = session.apply_move("bonsai", &result.best_move);
+            let _ = session.apply_move("workspace", &result.best_move);
         }
     }
 }
@@ -371,7 +371,7 @@ pub async fn make_go_ai_move_with_events(
         "agent-thinking-started",
         serde_json::json!({
             "session_id": session.id.to_string(),
-            "agent": "BonsAI",
+            "agent": "OmniAI",
             "game_type": "go",
         }),
     );
@@ -387,14 +387,14 @@ pub async fn make_go_ai_move_with_events(
         "agent-thinking-complete",
         serde_json::json!({
             "session_id": session.id.to_string(),
-            "agent": "BonsAI",
+            "agent": "OmniAI",
             "best_move": gtp,
             "value": result.value,
             "simulations": result.simulations,
         }),
     );
 
-    let _ = session.play("bonsai", &gtp);
+    let _ = session.play("workspace", &gtp);
 }
 
 /// Tauri command: make an AI move for a chess game (with thinking events).
@@ -482,18 +482,18 @@ pub async fn create_go_game(
             rank: None,
         };
         let ai = GoPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: GoPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: GoPlayerKind::OmniAI,
             color: GoColor::White,
             rank: None,
         };
         (human, ai)
     } else {
         let ai = GoPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: GoPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: GoPlayerKind::OmniAI,
             color: GoColor::Black,
             rank: None,
         };
@@ -592,7 +592,7 @@ fn make_go_ai_move_inner(session: &mut GoGameSession) {
     } else {
         result.best_move
     };
-    let _ = session.play("bonsai", &gtp);
+    let _ = session.play("workspace", &gtp);
 }
 
 // ── Public wrappers for management_api REST handlers ─────────────────────────
@@ -850,7 +850,7 @@ pub fn parse_slash_command(text: &str) -> Option<GameSlashCmd> {
             match sub.as_str() {
                 "new" | "create" => {
                     let name = extract_flag(&parts, "--name")
-                        .unwrap_or_else(|| "BonsAI Tournament".into());
+                        .unwrap_or_else(|| "OmniAI Tournament".into());
                     let agents_str = extract_flag(&parts, "--agents").unwrap_or_default();
                     let agents: Vec<String> = agents_str
                         .split(',')
@@ -909,18 +909,18 @@ pub async fn execute_slash_command(
                     elo: None,
                 };
                 let a = ChessPlayer {
-                    id: "bonsai".into(),
-                    name: "BonsAI".into(),
-                    kind: ChessPlayerKind::BonsAI,
+                    id: "workspace".into(),
+                    name: "OmniAI".into(),
+                    kind: ChessPlayerKind::OmniAI,
                     color: ChessColor::Black,
                     elo: None,
                 };
                 (h, a)
             } else {
                 let a = ChessPlayer {
-                    id: "bonsai".into(),
-                    name: "BonsAI".into(),
-                    kind: ChessPlayerKind::BonsAI,
+                    id: "workspace".into(),
+                    name: "OmniAI".into(),
+                    kind: ChessPlayerKind::OmniAI,
                     color: ChessColor::White,
                     elo: None,
                 };
@@ -947,7 +947,7 @@ pub async fn execute_slash_command(
                     if human_color == "white" {
                         "Your move."
                     } else {
-                        "BonsAI played first."
+                        "OmniAI played first."
                     }
                 ),
                 Some(state),
@@ -976,7 +976,7 @@ pub async fn execute_slash_command(
                                 );
                                 (
                                     format!(
-                                        "Move {}: {}. BonsAI replied: {}",
+                                        "Move {}: {}. OmniAI replied: {}",
                                         rec.move_number, rec.san, last
                                     ),
                                     Some(state),
@@ -1075,18 +1075,18 @@ pub async fn execute_slash_command(
                     rank: None,
                 };
                 let a = GoPlayer {
-                    id: "bonsai".into(),
-                    name: "BonsAI".into(),
-                    kind: GoPlayerKind::BonsAI,
+                    id: "workspace".into(),
+                    name: "OmniAI".into(),
+                    kind: GoPlayerKind::OmniAI,
                     color: GoColor::White,
                     rank: None,
                 };
                 (h, a)
             } else {
                 let a = GoPlayer {
-                    id: "bonsai".into(),
-                    name: "BonsAI".into(),
-                    kind: GoPlayerKind::BonsAI,
+                    id: "workspace".into(),
+                    name: "OmniAI".into(),
+                    kind: GoPlayerKind::OmniAI,
                     color: GoColor::Black,
                     rank: None,
                 };
@@ -1116,7 +1116,7 @@ pub async fn execute_slash_command(
                     if hc == "black" {
                         "Your move."
                     } else {
-                        "BonsAI played first."
+                        "OmniAI played first."
                     }
                 ),
                 Some(state),
@@ -1145,7 +1145,7 @@ pub async fn execute_slash_command(
                                 );
                                 (
                                     format!(
-                                        "Move {}: {}. BonsAI played: {}",
+                                        "Move {}: {}. OmniAI played: {}",
                                         rec.move_number, rec.gtp, last
                                     ),
                                     Some(state),
@@ -1183,7 +1183,7 @@ pub async fn execute_slash_command(
                                     s.result == go::GoGameResult::Ongoing,
                                     "black",
                                 );
-                                (format!("You passed. BonsAI played: {}", last), Some(state))
+                                (format!("You passed. OmniAI played: {}", last), Some(state))
                             }
                             Err(e) => (format!("Error: {}", e), None),
                         },
@@ -1211,7 +1211,7 @@ pub async fn execute_slash_command(
             }
         }
         GameSlashCmd::ChessDraw { .. } => (
-            "Draw offer sent. BonsAI declines — it wants to keep playing!".into(),
+            "Draw offer sent. OmniAI declines — it wants to keep playing!".into(),
             None,
         ),
 

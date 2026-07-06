@@ -3,7 +3,7 @@
 //! Unlike `memory_store.rs` (which holds curated long-term/session/working memory),
 //! this module records raw activity events: chat turns, tool calls, code edits,
 //! terminal commands.  The EternalWorkshop daemon reads these nodes nightly,
-//! consolidates them via the DreamAgent model, and updates BONSAI.md.
+//! consolidates them via the DreamAgent model, and updates WORKSPACE.md.
 //!
 //! Schema is intentionally simple — no embeddings required at insert time.
 //! The daemon can backfill embeddings during the consolidation cycle.

@@ -429,7 +429,7 @@ pub async fn ingest_feedback_ui(
         session_id: request.session_id,
         sequence: 0,
         occurred_at: chrono::Utc::now().timestamp_micros(),
-        model_id: "bonsai-1.7b".into(),
+        model_id: "workspace-1.7b".into(),
         adapter_id: None,
         kind: EventKind::ExplicitFeedback {
             target_event_id: request.target_event_id,
@@ -478,7 +478,7 @@ pub async fn ingest_edit(state: State<'_, AppState>, request: EditRequest) -> Re
         session_id: request.session_id,
         sequence: 0,
         occurred_at: chrono::Utc::now().timestamp_micros(),
-        model_id: "bonsai-1.7b".into(),
+        model_id: "workspace-1.7b".into(),
         adapter_id: None,
         kind: EventKind::UserEdit {
             original: request.original,

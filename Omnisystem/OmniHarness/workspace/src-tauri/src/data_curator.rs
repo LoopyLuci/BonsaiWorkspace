@@ -1,4 +1,4 @@
-use crate::core::{AgentPlan, AgentResponse};
+use crate::agent_core::{AgentPlan, AgentResponse};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::sync::RwLock;

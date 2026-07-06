@@ -842,7 +842,7 @@ pub struct AssistantTurn {
     pub outcomes: Vec<ToolCallOutcome>,
     /// Set when a tool call required user confirmation. Contains the single-use token,
     /// tool name, args, human-readable prompt, and expiry — so callers can surface
-    /// a structured confirm request (e.g. omni-bot bonsai_ext envelope).
+    /// a structured confirm request (e.g. omni-bot workspace_ext envelope).
     pub confirm_token: Option<ConfirmRequest>,
 }
 

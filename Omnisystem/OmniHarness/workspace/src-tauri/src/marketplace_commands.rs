@@ -1,7 +1,7 @@
 //! Plugin/model/tool marketplace — local-first asset publishing, search, install.
 //!
-//! Self-contained: no external bonsai_marketplace crate required.
-//! Assets are stored in `~/.bonsai/marketplace/` as JSONL.
+//! Self-contained: no external workspace_marketplace crate required.
+//! Assets are stored in `~/.workspace/marketplace/` as JSONL.
 
 use std::path::PathBuf;
 
@@ -56,7 +56,7 @@ impl MarketState {
 fn catalog_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/marketplace/catalog.jsonl")
+        .join(".workspace/marketplace/catalog.jsonl")
 }
 
 fn load_catalog() -> Vec<Asset> {
@@ -110,7 +110,7 @@ pub async fn publish_asset(
         author,
         version,
         cid: format!("{:x}", rand::random::<u64>()),
-        install_hint: format!("Place in ~/.bonsai/models/{name}/"),
+        install_hint: format!("Place in ~/.workspace/models/{name}/"),
         tags,
     };
     let mut catalog = state.catalog.lock().await;
@@ -206,7 +206,7 @@ pub async fn discover_peer_skills(state: State<'_, MarketState>) -> Result<Vec<A
 }
 
 /// Install a skill from a marketplace asset (base64 WASM in `install_hint`).
-/// Writes the WASM + metadata to `~/.bonsai/skills/compiled/` and registers it.
+/// Writes the WASM + metadata to `~/.workspace/skills/compiled/` and registers it.
 #[tauri::command]
 pub async fn install_skill_from_marketplace(
     app_state: State<'_, crate::AppState>,

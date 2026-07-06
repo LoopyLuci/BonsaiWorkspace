@@ -1,24 +1,24 @@
-//! BonsAI Skills.sh Integration — install, manage, and auto-load agent skills.
+//! OmniAI Skills.sh Integration — install, manage, and auto-load agent skills.
 //!
 //! Skills are SKILL.md files (YAML frontmatter + procedural knowledge) that
 //! inject contextual best-practices into the AI's system prompt and optionally
-//! register as native Bonsai tools.
+//! register as native Workspace tools.
 //!
 //! ## Custom-rebuild philosophy
-//! When a skill is installed from skills.sh (or any external source), BonsAI
+//! When a skill is installed from skills.sh (or any external source), OmniAI
 //! does NOT just proxy the original SKILL.md — it:
 //!   1. Validates and sanitises the content (prompt-injection scanning)
-//!   2. Enriches it with Bonsai-specific metadata (tool registration, model hints)
+//!   2. Enriches it with Workspace-specific metadata (tool registration, model hints)
 //!   3. Embeds a content hash for tamper detection
-//!   4. Stores it locally in `~/.bonsai/skills/` for 100% offline use
-//!   5. Optionally generates a training example so BonsAI learns when to use it
+//!   4. Stores it locally in `~/.workspace/skills/` for 100% offline use
+//!   5. Optionally generates a training example so OmniAI learns when to use it
 //!
 //! ## Directory layout
-//!   ~/.bonsai/skills/
+//!   ~/.workspace/skills/
 //!     index.json              — master index of all installed skills
 //!     <skill-id>/
 //!       SKILL.md              — (potentially enriched) skill content
-//!       bonsai.json           — Bonsai metadata overlay
+//!       workspace.json           — Workspace metadata overlay
 //!       content.hash          — SHA-256 of SKILL.md at install time
 //!
 //! ## skills.sh API (optional — gracefully degraded when offline)
@@ -37,7 +37,7 @@ use tracing::{info, warn};
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SKILLS_API_BASE: &str = "https://skills.sh/api";
-const SKILLS_DIR: &str = ".bonsai/skills";
+const SKILLS_DIR: &str = ".workspace/skills";
 const INDEX_FILE: &str = "index.json";
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -62,8 +62,8 @@ pub struct SecurityAssessment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BonsaiSkillMeta {
-    /// Register as a Bonsai tool in the ToolRegistry
+pub struct WorkspaceSkillMeta {
+    /// Register as a Workspace tool in the ToolRegistry
     pub as_tool: bool,
     /// Tool category for routing (vision/code/data/music/…)
     pub category: Option<String>,
@@ -101,8 +101,8 @@ pub struct InstalledSkill {
     pub enabled: bool,
     /// Security assessment result
     pub security: SecurityAssessment,
-    /// Bonsai-specific metadata overlay
-    pub bonsai_meta: BonsaiSkillMeta,
+    /// Workspace-specific metadata overlay
+    pub workspace_meta: WorkspaceSkillMeta,
     /// The skill content (SKILL.md body, after frontmatter stripped)
     pub content: String,
     /// Frontmatter fields as JSON
@@ -114,7 +114,7 @@ pub enum SkillSource {
     SkillsSh { owner: String, repo: String },
     GitHub { url: String },
     Local { path: String },
-    Bonsai, // Built-in / exported from Bonsai tool
+    Workspace, // Built-in / exported from Workspace tool
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +204,7 @@ impl SkillRegistry {
             .as_str()
             .unwrap_or("")
             .to_string();
-        let bonsai_meta = extract_bonsai_meta(&frontmatter);
+        let workspace_meta = extract_workspace_meta(&frontmatter);
         let security = scan_skill_content(&body);
 
         if security.tier == SecurityTier::SecurityConcern {
@@ -221,9 +221,9 @@ impl SkillRegistry {
         // Write SKILL.md
         std::fs::write(skill_dir.join("SKILL.md"), raw_content)
             .map_err(|e| format!("Cannot write SKILL.md: {e}"))?;
-        // Write bonsai.json overlay
-        let meta_json = serde_json::to_string_pretty(&bonsai_meta).unwrap_or_default();
-        let _ = std::fs::write(skill_dir.join("bonsai.json"), meta_json);
+        // Write workspace.json overlay
+        let meta_json = serde_json::to_string_pretty(&workspace_meta).unwrap_or_default();
+        let _ = std::fs::write(skill_dir.join("workspace.json"), meta_json);
         // Write hash
         let _ = std::fs::write(skill_dir.join("content.hash"), &security.content_hash);
 
@@ -237,7 +237,7 @@ impl SkillRegistry {
             installed_at: unix_ms(),
             enabled: security.tier != SecurityTier::SecurityConcern,
             security,
-            bonsai_meta,
+            workspace_meta,
             content: body,
             frontmatter,
         };
@@ -341,14 +341,14 @@ impl SkillRegistry {
         let matching: Vec<&InstalledSkill> = self
             .index
             .iter()
-            .filter(|s| s.enabled && s.bonsai_meta.auto_load)
+            .filter(|s| s.enabled && s.workspace_meta.auto_load)
             .filter(|s| {
-                s.bonsai_meta
+                s.workspace_meta
                     .tags
                     .iter()
                     .any(|t| lower.contains(t.as_str()))
                     || lower.contains(&s.name.to_lowercase())
-                    || s.bonsai_meta
+                    || s.workspace_meta
                         .capabilities
                         .iter()
                         .any(|c| lower.contains(c.as_str()))
@@ -373,7 +373,7 @@ impl SkillRegistry {
         out
     }
 
-    // ── Export a Bonsai tool as SKILL.md ─────────────────────────────────────
+    // ── Export a Workspace tool as SKILL.md ─────────────────────────────────────
 
     pub fn export_tool_as_skill(
         name: &str,
@@ -400,7 +400,7 @@ impl SkillRegistry {
             r#"---
 name: {name}
 description: {description}
-bonsai:
+workspace:
   tool: true
   auto_load: true
   training_eligible: true
@@ -414,7 +414,7 @@ bonsai:
 {description}
 
 ## Usage
-This skill is a native BonsAI tool. When the assistant uses this tool, it applies
+This skill is a native OmniAI tool. When the assistant uses this tool, it applies
 the capabilities listed below.
 
 ## Capabilities
@@ -424,7 +424,7 @@ the capabilities listed below.
 {examples_md}
 
 ## Integration
-- Registered in BonsAI ToolRegistry
+- Registered in OmniAI ToolRegistry
 - Available via MCP server (tools/call)
 - Feeds into self-play training loop
 "#,
@@ -509,7 +509,7 @@ fn parse_skill_md(content: &str) -> Result<(Value, String), String> {
                     map.insert(k.trim().to_string(), Value::String(v.trim().to_string()));
                 }
             }
-            // Parse bonsai: block as nested object
+            // Parse workspace: block as nested object
             return Ok((Value::Object(map), body));
         }
     }
@@ -520,9 +520,9 @@ fn parse_skill_md(content: &str) -> Result<(Value, String), String> {
     ))
 }
 
-fn extract_bonsai_meta(frontmatter: &Value) -> BonsaiSkillMeta {
-    // Check for bonsai: nested section (simplified — YAML nested blocks)
-    BonsaiSkillMeta {
+fn extract_workspace_meta(frontmatter: &Value) -> WorkspaceSkillMeta {
+    // Check for workspace: nested section (simplified — YAML nested blocks)
+    WorkspaceSkillMeta {
         as_tool: frontmatter.get("tool").and_then(|v| v.as_str()) == Some("true"),
         category: frontmatter
             .get("category")
@@ -635,7 +635,7 @@ fn build_id(source: &SkillSource, name: &str) -> String {
         SkillSource::SkillsSh { owner, repo } => format!("{owner}__{repo}__{slug}"),
         SkillSource::GitHub { url } => format!("gh__{slug}__{}", &sha256_hex(url)[..8]),
         SkillSource::Local { .. } => format!("local__{slug}"),
-        SkillSource::Bonsai => format!("bonsai__{slug}"),
+        SkillSource::Workspace => format!("workspace__{slug}"),
     }
 }
 

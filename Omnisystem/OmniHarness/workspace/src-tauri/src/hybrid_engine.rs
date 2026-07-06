@@ -91,7 +91,7 @@ impl HybridEngineState {
         #[cfg(not(feature = "native-gpu"))]
         {
             warn!("[hybrid_engine] compiled without native-gpu feature — load_model is a no-op");
-            Err("bonsai compiled without native-gpu feature".into())
+            Err("workspace compiled without native-gpu feature".into())
         }
     }
 
@@ -111,7 +111,7 @@ impl HybridEngineState {
         }
         #[cfg(not(feature = "native-gpu"))]
         {
-            Err("bonsai compiled without native-gpu feature".into())
+            Err("workspace compiled without native-gpu feature".into())
         }
     }
 

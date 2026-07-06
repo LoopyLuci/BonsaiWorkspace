@@ -37,7 +37,7 @@ pub struct AgentResponse {
     pub tool_results: Vec<String>,
 }
 
-/// Lightweight in-memory store; replaces BonsaiMemory until a full RAG
+/// Lightweight in-memory store; replaces WorkspaceMemory until a full RAG
 /// implementation is wired in.
 pub struct CoreMemory {
     entries: RwLock<Vec<MemoryEntry>>,

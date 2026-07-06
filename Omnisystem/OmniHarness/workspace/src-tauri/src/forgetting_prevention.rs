@@ -75,7 +75,7 @@ impl CompetencyBaseline {
     fn path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/eval/competency_baseline.json")
+            .join(".workspace/eval/competency_baseline.json")
     }
 
     pub fn load() -> Option<Self> {

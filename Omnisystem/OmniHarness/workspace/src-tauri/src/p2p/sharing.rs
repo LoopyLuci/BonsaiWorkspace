@@ -10,8 +10,8 @@ pub async fn announce_peer(
     model_list: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mdns = ServiceDaemon::new()?;
-    let service_type = "_bonsai._tcp.local.";
-    let instance_name = format!("bonsai-{}", uuid::Uuid::new_v4());
+    let service_type = "_workspace._tcp.local.";
+    let instance_name = format!("workspace-{}", uuid::Uuid::new_v4());
     let hostname = "localhost".to_string();
     let mut properties = HashMap::new();
     properties.insert("models".to_string(), model_list.join(","));
@@ -39,7 +39,7 @@ pub async fn request_model(url: &str, local_path: &str) -> Result<(), Box<dyn st
 pub async fn discover_peers() -> Result<Vec<(String, u16, Vec<String>)>, Box<dyn std::error::Error>>
 {
     let mdns = ServiceDaemon::new()?;
-    let browser = mdns.browse("_bonsai._tcp.local.")?;
+    let browser = mdns.browse("_workspace._tcp.local.")?;
     let mut peers = Vec::new();
     // Poll for a short window to discover peers
     for _ in 0..5 {

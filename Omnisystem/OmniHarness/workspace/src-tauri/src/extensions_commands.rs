@@ -1,4 +1,4 @@
-//! Tauri command layer for the Bonsai Extensions System.
+//! Tauri command layer for the Workspace Extensions System.
 //!
 //! Exposes install, scan, configure, uninstall, and browse operations
 //! to the frontend as typed IPC commands.

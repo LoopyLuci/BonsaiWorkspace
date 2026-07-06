@@ -91,7 +91,7 @@ impl TtsManager {
 
         // Write text to a temp file as Piper reads stdin or file
         let tmp_dir = std::env::temp_dir();
-        let wav_out = tmp_dir.join("bonsai_tts_out.wav");
+        let wav_out = tmp_dir.join("workspace_tts_out.wav");
 
         // Run Piper:
         //   piper --model <model> --output_file <wav> --json_output <json> --length_scale <1/speed>

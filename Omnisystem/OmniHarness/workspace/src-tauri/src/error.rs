@@ -1,4 +1,4 @@
-//! Unified error type for Bonsai Workspace Tauri commands.
+//! Unified error type for Workspace Tauri commands.
 //!
 //! `AgentError` implements `serde::Serialize` so it can be returned directly
 //! from `#[tauri::command]` functions as a structured JSON error payload

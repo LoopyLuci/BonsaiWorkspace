@@ -1,4 +1,4 @@
-//! BonsAI Evaluation Harness — continuous, multi-dimensional quality measurement.
+//! OmniAI Evaluation Harness — continuous, multi-dimensional quality measurement.
 //!
 //! Responsibilities
 //! ────────────────
@@ -9,7 +9,7 @@
 //! • Fire real-time alerts when any dimension drops below its alert threshold.
 //! • Support dynamic benchmark evolution: new problems generated, old ones retired.
 //!
-//! All benchmark prompts are stored in `~/.bonsai/eval/` as JSONL files.
+//! All benchmark prompts are stored in `~/.workspace/eval/` as JSONL files.
 //! They are never written to the training buffer; the pipeline enforces this.
 
 use std::collections::HashMap;
@@ -590,7 +590,7 @@ impl EvaluationHarness {
             orchestrator,
             dimensions,
             dim_map,
-            eval_dir: dirs::home_dir().unwrap_or_default().join(".bonsai/eval"),
+            eval_dir: dirs::home_dir().unwrap_or_default().join(".workspace/eval"),
             core_problems: core_competency_set(),
             ciq_history: RwLock::new(std::collections::VecDeque::new()),
         })
@@ -620,7 +620,7 @@ impl EvaluationHarness {
         (safety_all_pass, results)
     }
 
-    /// Run a domain benchmark (loads from `~/.bonsai/eval/<dimension>.jsonl`).
+    /// Run a domain benchmark (loads from `~/.workspace/eval/<dimension>.jsonl`).
     pub async fn run_domain_benchmark(&self, dimension: &str) -> BenchmarkResult {
         let path = self.eval_dir.join(format!("{dimension}.jsonl"));
         let problems = self.load_problems(&path).await;

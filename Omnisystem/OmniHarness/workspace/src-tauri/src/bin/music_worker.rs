@@ -13,7 +13,7 @@ use std::f32::consts::PI;
 ///   Request line:  `<id>|<duration_f32>|<prompt>\n`
 ///   Response:      `OK <id>|<wav_byte_count>\n` followed by raw WAV bytes
 ///
-/// Runs as a TCP server: prints `BONSAI_MUSIC_PORT=<port>` on stdout line 1,
+/// Runs as a TCP server: prints `WORKSPACE_MUSIC_PORT=<port>` on stdout line 1,
 /// then accepts a single long-lived connection for the lifetime of the process.
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpListener;
@@ -22,8 +22,8 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     // Print port on stderr so it doesn't interfere with binary stdout protocol
-    eprintln!("BONSAI_MUSIC_PORT={port}");
-    println!("BONSAI_MUSIC_PORT={port}");
+    eprintln!("WORKSPACE_MUSIC_PORT={port}");
+    println!("WORKSPACE_MUSIC_PORT={port}");
     std::io::stdout().flush().ok();
 
     let (stream, _) = listener.accept().expect("accept");

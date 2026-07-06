@@ -1,6 +1,6 @@
 //! Zero-downtime hot model reload.
 //!
-//! Watches `~/.bonsai/models/bonsai-latest.gguf` (or any configured path) for
+//! Watches `~/.workspace/models/workspace-latest.gguf` (or any configured path) for
 //! changes.  When a new file appears or the mtime advances, it:
 //!   1. Triggers a registry refresh so the orchestrator sees the new GGUF.
 //!   2. Loads the new model ID into a FREE slot (old slot keeps serving).
@@ -64,7 +64,7 @@ async fn watch_loop(app: AppHandle, orchestrator: Arc<ModelOrchestrator>, path: 
             let model_id = path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("bonsai-latest")
+                .unwrap_or("workspace-latest")
                 .to_string();
 
             // Skip if it's the same model id that's already loaded.
@@ -74,58 +74,74 @@ async fn watch_loop(app: AppHandle, orchestrator: Arc<ModelOrchestrator>, path: 
 
             info!("[hot_reload] change detected: {}", path.display());
 
-            // Refresh registry so the orchestrator sees the new file.
-            orchestrator.refresh_registry();
-
-            // Load into a free slot (non-blocking kick-off).
-            let rx = orchestrator.load(model_id.clone());
-
-            // Await readiness (up to the orchestrator's own load timeout).
-            match rx.await {
-                Ok(Ok(())) => {
-                    info!("[hot_reload] new model ready: {model_id}");
-
-                    // Drain old slot.
-                    if let Some(old_id) = last_model_id.take() {
-                        tokio::time::sleep(DRAIN_GRACE).await;
-                        orchestrator.unload_model(&old_id).await;
-                        info!("[hot_reload] old model unloaded: {old_id}");
-                    }
-
-                    last_model_id = Some(model_id.clone());
-
-                    let _ = app.emit(
-                        "model-reloaded",
-                        ModelReloadedPayload {
-                            model_id: model_id.clone(),
-                            path: path.display().to_string(),
-                            status: "ready".into(),
-                        },
-                    );
-
-                    // System-tray notification
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("🧠 BonsAI Updated")
-                        .body("A new brain update is live. BonsAI just got smarter!")
-                        .show();
-                }
-                Ok(Err(e)) => {
-                    error!("[hot_reload] failed to load {model_id}: {e}");
-                    let _ = app.emit(
-                        "model-reloaded",
-                        ModelReloadedPayload {
-                            model_id,
-                            path: path.display().to_string(),
-                            status: format!("error: {e}"),
-                        },
-                    );
-                }
-                Err(_) => {
-                    error!("[hot_reload] orchestrator dropped load receiver");
-                }
+            let prev = last_model_id.clone();
+            match reload_model(&app, &orchestrator, model_id.clone(), &path, prev).await {
+                Ok(()) => last_model_id = Some(model_id),
+                Err(e) => error!("[hot_reload] {e}"),
             }
         }
+    }
+}
+
+/// Perform one zero-downtime model swap: refresh the registry, load `model_id`
+/// into a free slot, wait for readiness, then drain/unload `previous_model_id`
+/// if given. Shared by the file-watch loop above and
+/// `upgrade_dispatcher::perform_upgrade`, so a CAS-triggered model upgrade goes
+/// through the exact same tested swap sequence as a local file drop.
+pub async fn reload_model(
+    app: &AppHandle,
+    orchestrator: &Arc<ModelOrchestrator>,
+    model_id: String,
+    path: &std::path::Path,
+    previous_model_id: Option<String>,
+) -> Result<(), String> {
+    // Refresh registry so the orchestrator sees the new file.
+    orchestrator.refresh_registry();
+
+    // Load into a free slot (non-blocking kick-off).
+    let rx = orchestrator.load(model_id.clone());
+
+    // Await readiness (up to the orchestrator's own load timeout).
+    match rx.await {
+        Ok(Ok(())) => {
+            info!("[hot_reload] new model ready: {model_id}");
+
+            // Drain old slot.
+            if let Some(old_id) = previous_model_id {
+                tokio::time::sleep(DRAIN_GRACE).await;
+                orchestrator.unload_model(&old_id).await;
+                info!("[hot_reload] old model unloaded: {old_id}");
+            }
+
+            let _ = app.emit(
+                "model-reloaded",
+                ModelReloadedPayload {
+                    model_id: model_id.clone(),
+                    path: path.display().to_string(),
+                    status: "ready".into(),
+                },
+            );
+
+            // System-tray notification
+            let _ = app
+                .notification()
+                .builder()
+                .title("🧠 OmniAI Updated")
+                .body("A new brain update is live. OmniAI just got smarter!")
+                .show();
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            let _ = app.emit(
+                "model-reloaded",
+                ModelReloadedPayload {
+                    model_id: model_id.clone(),
+                    path: path.display().to_string(),
+                    status: format!("error: {e}"),
+                },
+            );
+            Err(format!("failed to load {model_id}: {e}"))
+        }
+        Err(_) => Err("orchestrator dropped load receiver".into()),
     }
 }

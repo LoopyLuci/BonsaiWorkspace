@@ -5,7 +5,7 @@
 //! concurrent VRAM exhaustion.
 //!
 //! ## Model placement
-//!   - `~/.bonsai/models/sulphur2/sulphur-2-base.gguf`
+//!   - `~/.workspace/models/sulphur2/sulphur-2-base.gguf`
 //!   - `$SULPHUR2_MODEL_PATH`
 //!
 //! ## Installation
@@ -39,7 +39,7 @@ fn find_model() -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/sulphur2");
+        .join(".workspace/models/sulphur2");
     for name in &[
         "sulphur-2-base.gguf",
         "sulphur-2-base-Q4_K_M.gguf",
@@ -57,7 +57,7 @@ fn find_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/video_worker.py"),
+            .join(".workspace/sidecars/video_worker.py"),
         PathBuf::from("sidecars/video_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -99,9 +99,9 @@ async fn run_generate(
     save_path: &str,
 ) -> Result<VideoGenResult, String> {
     let model = find_model().ok_or(
-        "Sulphur-2 model not found. Place sulphur-2-base.gguf in ~/.bonsai/models/sulphur2/",
+        "Sulphur-2 model not found. Place sulphur-2-base.gguf in ~/.workspace/models/sulphur2/",
     )?;
-    let worker = find_worker().ok_or("video_worker.py not found in ~/.bonsai/sidecars/")?;
+    let worker = find_worker().ok_or("video_worker.py not found in ~/.workspace/sidecars/")?;
     let python = which_python()?;
 
     info!(%prompt, %frames, "[video_gen] generating video");

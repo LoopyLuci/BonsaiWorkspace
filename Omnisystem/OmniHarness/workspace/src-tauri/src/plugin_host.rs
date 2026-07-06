@@ -1,7 +1,7 @@
 //! Secure plugin host with capability enforcement and blake3 integrity checks.
 //!
 //! Plugins are directories containing:
-//!   - `bonsai-plugin.toml`  — capability manifest
+//!   - `workspace-plugin.toml`  — capability manifest
 //!   - `plugin.wasm` (optional) — WASM entrypoint (future; stubbed here)
 //!   - `plugin.py`  (optional) — Python entrypoint executed via sandbox venv
 //!
@@ -60,7 +60,7 @@ impl PluginHost {
     pub fn new() -> Self {
         let dir = dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace")
+            .join("com.omnisystem.workspace")
             .join("plugins");
         Self {
             plugins: RwLock::new(HashMap::new()),
@@ -79,7 +79,7 @@ impl PluginHost {
 
     /// Load a plugin from a directory. Verifies integrity with blake3.
     pub async fn load(&self, id: &str, plugin_dir: &Path) -> Result<(), String> {
-        let manifest_path = plugin_dir.join("bonsai-plugin.toml");
+        let manifest_path = plugin_dir.join("workspace-plugin.toml");
         let manifest_str = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("Cannot read manifest: {e}"))?;
         let manifest = PluginManifest::from_toml(&manifest_str)?;
@@ -118,7 +118,7 @@ impl PluginHost {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() && path.join("bonsai-plugin.toml").exists() {
+                if path.is_dir() && path.join("workspace-plugin.toml").exists() {
                     let id = entry.file_name().to_string_lossy().into_owned();
                     if let Err(e) = self.load(&id, &path).await {
                         warn!(id, error=%e, "[plugin_host] failed to load plugin");
@@ -181,7 +181,7 @@ impl PluginHost {
                 );
                 // Inject payload as environment variable
                 let code_with_payload = format!(
-                    "import os; os.environ['BONSAI_PAYLOAD'] = {}\n{code}",
+                    "import os; os.environ['WORKSPACE_PAYLOAD'] = {}\n{code}",
                     serde_json::to_string(payload).unwrap_or_default()
                 );
                 crate::sandbox_executor::execute_plugin_code(&code_with_payload).await?
@@ -295,12 +295,18 @@ impl omnisystem_core::OmniModule for PluginHost {
     fn dependencies(&self) -> Vec<String> {
         vec!["sandbox_executor".to_string()]
     }
+
+    /// PluginHost has no user-configurable settings of its own (per-plugin
+    /// config lives in each plugin's manifest) — accept and discard.
+    fn set_config(&mut self, _config: serde_json::Value) -> omnisystem_core::Result<()> {
+        Ok(())
+    }
 }
 
 // ── WASM execution ────────────────────────────────────────────────────────────
 
 /// Host state threaded through WASM store: captures log lines emitted by
-/// the plugin via the `bonsai::log` import.
+/// the plugin via the `workspace::log` import.
 struct WasmHostState {
     log_buf: Vec<String>,
 }
@@ -310,7 +316,7 @@ struct WasmHostState {
 ///   - `handle_message(ptr: i32, len: i32) -> i32`  — entry point; returns
 ///     pointer to a null-terminated JSON string in linear memory.
 ///
-/// Imports provided by the host (namespace "bonsai"):
+/// Imports provided by the host (namespace "workspace"):
 ///   - `log(ptr: i32, len: i32)` — append UTF-8 string to host log buffer.
 fn run_wasm_plugin(wasm_bytes: &[u8], payload: &str) -> Result<String, String> {
     let engine = Engine::default();
@@ -319,10 +325,10 @@ fn run_wasm_plugin(wasm_bytes: &[u8], payload: &str) -> Result<String, String> {
 
     let mut linker: Linker<WasmHostState> = Linker::new(&engine);
 
-    // Provide `bonsai::log(ptr, len)` — plugins call this to emit log lines.
+    // Provide `workspace::log(ptr, len)` — plugins call this to emit log lines.
     linker
         .func_wrap(
-            "bonsai",
+            "workspace",
             "log",
             |mut caller: wasmtime::Caller<'_, WasmHostState>, ptr: i32, len: i32| {
                 let mem = match caller.get_export("memory") {
@@ -403,7 +409,7 @@ fn run_wasm_plugin(wasm_bytes: &[u8], payload: &str) -> Result<String, String> {
     }
 }
 
-// ── Skill WASM execution (compiled skills from bonsai-skill-compiler) ─────────
+// ── Skill WASM execution (compiled skills from workspace-skill-compiler) ─────────
 
 /// Host state for skill WASM execution — includes log buffer and tool results.
 struct SkillHostState {
@@ -415,9 +421,9 @@ struct SkillHostState {
 /// Execute a compiled skill WASM module against `args_json`.
 ///
 /// Host functions provided (namespace `"env"`):
-///   - `bonsai_log(ptr, len)`                               — emit log line
-///   - `bonsai_call_tool(name_ptr, name_len, args_ptr, args_len) -> i32`
-///   - `bonsai_read_file(path_ptr, path_len, out_ptr, out_len) -> i32`
+///   - `workspace_log(ptr, len)`                               — emit log line
+///   - `workspace_call_tool(name_ptr, name_len, args_ptr, args_len) -> i32`
+///   - `workspace_read_file(path_ptr, path_len, out_ptr, out_len) -> i32`
 ///
 /// The `invoke(ptr: i32, len: i32) -> i32` export is called with the
 /// serialised args at offset 0x1000; the i32 return is treated as a result
@@ -452,11 +458,11 @@ fn run_skill_wasm_sync(
 
     let mut linker: Linker<SkillHostState> = Linker::new(&engine);
 
-    // ── env::bonsai_log(ptr, len) ──────────────────────────────────────────────
+    // ── env::workspace_log(ptr, len) ──────────────────────────────────────────────
     linker
         .func_wrap(
             "env",
-            "bonsai_log",
+            "workspace_log",
             |mut caller: wasmtime::Caller<'_, SkillHostState>, ptr: i32, len: i32| {
                 let mem = match caller.get_export("memory") {
                     Some(wasmtime::Extern::Memory(m)) => m,
@@ -480,15 +486,15 @@ fn run_skill_wasm_sync(
                 }
             },
         )
-        .map_err(|e| format!("Linker bonsai_log: {e}"))?;
+        .map_err(|e| format!("Linker workspace_log: {e}"))?;
 
-    // ── env::bonsai_call_tool(name_ptr, name_len, args_ptr, args_len) -> i32 ──
+    // ── env::workspace_call_tool(name_ptr, name_len, args_ptr, args_len) -> i32 ──
     // Writes result JSON into guest memory at offset 0x8000; returns byte count.
     let registry_for_tool = tool_registry.clone();
     linker
         .func_wrap(
             "env",
-            "bonsai_call_tool",
+            "workspace_call_tool",
             move |mut caller: wasmtime::Caller<'_, SkillHostState>,
                   name_ptr: i32,
                   name_len: i32,
@@ -528,13 +534,13 @@ fn run_skill_wasm_sync(
                 }
             },
         )
-        .map_err(|e| format!("Linker bonsai_call_tool: {e}"))?;
+        .map_err(|e| format!("Linker workspace_call_tool: {e}"))?;
 
-    // ── env::bonsai_read_file(path_ptr, path_len, out_ptr, out_len) -> i32 ────
+    // ── env::workspace_read_file(path_ptr, path_len, out_ptr, out_len) -> i32 ────
     linker
         .func_wrap(
             "env",
-            "bonsai_read_file",
+            "workspace_read_file",
             |mut caller: wasmtime::Caller<'_, SkillHostState>,
              path_ptr: i32,
              path_len: i32,
@@ -565,12 +571,12 @@ fn run_skill_wasm_sync(
                 }
             },
         )
-        .map_err(|e| format!("Linker bonsai_read_file: {e}"))?;
+        .map_err(|e| format!("Linker workspace_read_file: {e}"))?;
 
-    // Also wire the legacy "bonsai::log" namespace so old plugins still work.
+    // Also wire the legacy "workspace::log" namespace so old plugins still work.
     linker
         .func_wrap(
-            "bonsai",
+            "workspace",
             "log",
             |mut caller: wasmtime::Caller<'_, SkillHostState>, ptr: i32, len: i32| {
                 let mem = match caller.get_export("memory") {
@@ -584,7 +590,7 @@ fn run_skill_wasm_sync(
                 caller.data_mut().log_buf.push(msg);
             },
         )
-        .map_err(|e| format!("Linker bonsai::log: {e}"))?;
+        .map_err(|e| format!("Linker workspace::log: {e}"))?;
 
     let mut store = Store::new(
         &engine,
@@ -609,7 +615,7 @@ fn run_skill_wasm_sync(
         .write(&mut store, ARGS_OFFSET, args_bytes)
         .map_err(|e| format!("[skill:{skill_name}] memory write: {e}"))?;
 
-    // Try `invoke` first (skills compiled by bonsai-skill-compiler), then fall
+    // Try `invoke` first (skills compiled by workspace-skill-compiler), then fall
     // back to `handle_message` (legacy plugin format).
     let result_str =
         if let Ok(invoke) = instance.get_typed_func::<(i32, i32), i32>(&mut store, "invoke") {

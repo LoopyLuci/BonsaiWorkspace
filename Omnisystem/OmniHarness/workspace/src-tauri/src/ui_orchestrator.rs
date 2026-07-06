@@ -47,7 +47,7 @@ impl UiOrchestrator {
         let payload = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         let key = self
             .cas
-            .put(&payload, "application/vnd.bonsai.ui-panel+json")
+            .put(&payload, "application/vnd.workspace.ui-panel+json")
             .await
             .map_err(|e| e.to_string())?;
         let cas_hash = key.hex();

@@ -9,7 +9,7 @@
 //!
 //! ## Model placement (offline)
 //!   - `$DEPTH_MODEL_PATH`
-//!   - `~/.bonsai/models/depth/Depth-Anything-V2-Small-F16.gguf`
+//!   - `~/.workspace/models/depth/Depth-Anything-V2-Small-F16.gguf`
 //!   - `<app_data>/sidecars/depth/Depth-Anything-V2-Small-F16.gguf`
 //!
 //! ## Outputs
@@ -41,13 +41,13 @@ fn find_depth_model() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/models/depth/Depth-Anything-V2-Small-F16.gguf"),
+            .join(".workspace/models/depth/Depth-Anything-V2-Small-F16.gguf"),
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/models/depth/Depth-Anything-V2-Base-F16.gguf"),
+            .join(".workspace/models/depth/Depth-Anything-V2-Base-F16.gguf"),
         dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace/sidecars/depth/Depth-Anything-V2-Small-F16.gguf"),
+            .join("com.omnisystem.workspace/sidecars/depth/Depth-Anything-V2-Small-F16.gguf"),
         PathBuf::from("sidecars/depth/Depth-Anything-V2-Small-F16.gguf"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -57,7 +57,7 @@ fn find_depth_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/depth_worker.py"),
+            .join(".workspace/sidecars/depth_worker.py"),
         PathBuf::from("sidecars/depth_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -94,7 +94,7 @@ struct DepthWorkerRequest<'a> {
 
 async fn run_depth_worker(image_path: &str, model_path: &PathBuf) -> Result<DepthResult, String> {
     let worker =
-        find_depth_worker().ok_or("depth_worker.py not found. Place it in ~/.bonsai/sidecars/")?;
+        find_depth_worker().ok_or("depth_worker.py not found. Place it in ~/.workspace/sidecars/")?;
 
     let python = which_python()?;
     let payload = serde_json::to_string(&DepthWorkerRequest {
@@ -269,7 +269,7 @@ impl Tool for DepthEstimationTool {
         let model = find_depth_model().ok_or_else(|| {
             "Depth-Anything-V2 model not found. \
              Download from huggingface.co/Acly/Depth-Anything-V2-GGUF \
-             and place in ~/.bonsai/models/depth/"
+             and place in ~/.workspace/models/depth/"
                 .to_string()
         })?;
 
@@ -302,7 +302,7 @@ impl Tool for DepthEstimationTool {
 #[tauri::command]
 pub async fn estimate_depth(image_path: String) -> Result<DepthResult, String> {
     let model = find_depth_model().ok_or(
-        "Depth-Anything-V2 model not found. Place Depth-Anything-V2-Small-F16.gguf in ~/.bonsai/models/depth/"
+        "Depth-Anything-V2 model not found. Place Depth-Anything-V2-Small-F16.gguf in ~/.workspace/models/depth/"
     )?;
     if find_depth_worker().is_some() {
         run_depth_worker(&image_path, &model).await

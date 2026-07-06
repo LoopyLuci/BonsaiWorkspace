@@ -7,18 +7,22 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
-use android_bridge::{AndroidBridge, connection::TelemetryCollector};
+use android_bridge::{AndroidBridge, telemetry::TelemetryCollector};
 use std::time::Duration;
 
 /// Shared state for Android Bridge management
 pub struct AndroidBridgeState {
     bridge: Arc<Mutex<Option<AndroidBridge>>>,
+    /// Kept alive so the bridge's telemetry channel doesn't close; events are
+    /// currently unconsumed (no frontend telemetry stream is wired up yet).
+    _telemetry_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<android_bridge::telemetry::TelemetryEvent>>>>,
 }
 
 impl AndroidBridgeState {
     pub fn new() -> Self {
         Self {
             bridge: Arc::new(Mutex::new(None)),
+            _telemetry_rx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -26,7 +30,9 @@ impl AndroidBridgeState {
     async fn ensure_initialized(&self) -> Result<(), String> {
         let mut bridge = self.bridge.lock().await;
         if bridge.is_none() {
-            let telemetry = TelemetryCollector::new();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            *self._telemetry_rx.lock().await = Some(rx);
+            let telemetry = TelemetryCollector::new(tx, 1000);
             let ab = AndroidBridge::new(telemetry, Duration::from_secs(5));
             ab.initialize().await.map_err(|e| format!("Failed to initialize: {}", e))?;
             *bridge = Some(ab);
@@ -200,9 +206,12 @@ pub async fn android_list_devices(
         let mut device_infos: Vec<DeviceInfo> = Vec::new();
 
         for device in discovered {
-            // Apply status filter if provided
+            // DiscoveredDevice only carries what mDNS announces (id/name/model/api_level/
+            // ip/port/pubkey) — richer runtime status (connected/battery/screen) isn't
+            // known until a session is established, so "discovered" is the only status
+            // filter this endpoint can honor today.
             if let Some(ref filter) = request.status_filter {
-                if device.device_status != *filter {
+                if filter != "discovered" {
                     continue;
                 }
             }
@@ -211,12 +220,12 @@ pub async fn android_list_devices(
                 device_id: device.device_id.clone(),
                 device_name: device.name.clone(),
                 model: device.model.clone(),
-                android_version: device.android_version.unwrap_or_default(),
+                android_version: String::new(),
                 api_level: device.api_level,
-                is_connected: device.device_status == "connected",
-                battery_percent: device.battery_level.unwrap_or(0) as u32,
-                screen_width: device.screen_width.unwrap_or(1080),
-                screen_height: device.screen_height.unwrap_or(2400),
+                is_connected: false,
+                battery_percent: 0,
+                screen_width: 1080,
+                screen_height: 2400,
             });
         }
 

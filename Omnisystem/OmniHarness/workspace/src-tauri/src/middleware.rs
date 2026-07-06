@@ -171,10 +171,10 @@ pub struct UndercoverMiddleware {
 }
 
 const INTERNAL_NAMES: &[(&str, &str)] = &[
-    ("BonsAI", "AI Assistant"),
-    ("Bonsai Workspace", "Development Environment"),
-    ("bonsai-latest", "model-latest"),
-    ("bonsai_core", "assistant_core"),
+    ("OmniAI", "AI Assistant"),
+    ("Workspace", "Development Environment"),
+    ("workspace-latest", "model-latest"),
+    ("workspace_core", "assistant_core"),
 ];
 
 impl ToolMiddleware for UndercoverMiddleware {

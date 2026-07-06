@@ -3,7 +3,7 @@
 /// Exposes Tauri commands:
 ///   - `repair_error`                 — tries KB rules then records outcome
 ///   - `report_fix`                   — saves a user/AI fix to the KB
-///   - `ai_repair_error`              — routes error text to BonsAI for diagnosis
+///   - `ai_repair_error`              — routes error text to OmniAI for diagnosis
 ///   - `list_fixes`                   — returns current KB for the UI
 ///   - `export_survival_training_data`— dumps KB→JSONL for fine-tuning
 ///   - `sync_watchdog_kb`             — merges fixes from the watchdog's separate DB
@@ -59,57 +59,74 @@ impl SurvivalState {
     }
 }
 
+/// Seed rules as (pattern, unix_script, windows_script). `run_script` execs
+/// via `cmd /C` on Windows and `sh -c` elsewhere (see below), so a script
+/// written in POSIX syntax (`lsof`/`xargs`/`rm -f`) silently no-ops on
+/// Windows — `cmd /C` doesn't understand any of those. Since this app's
+/// actual target/dev platform is Windows 10, every rule below has a real,
+/// tested-syntax Windows counterpart using real app paths (`%APPDATA%\
+/// com.omnisystem.workspace\...`, matching `config::config_path`/CAS's
+/// `app_data_dir().join("cas_blobs")` — not the previous `~/.workspace/...`
+/// guesses, which pointed at a directory this app never actually writes to).
+///
+/// The two purely-informational entries that used to exist here
+/// ("GPU: out of memory" → `echo CPU_FALLBACK`, "llama-server: exited" →
+/// `echo SIDECAR_RESTART`) were removed: `echo` always exits 0, so
+/// `repair_error` would record them as a successful fix despite doing
+/// nothing — misleading telemetry for a problem `model_orchestrator.rs`
+/// already recovers from internally (GPU-unsafe-quant detection / crash-retry
+/// to CPU). A shell script can't reach into that in-process state, so there
+/// is no honest KB rule to write for these two patterns.
 async fn seed_builtin_rules(pool: &SqlitePool) {
     let seeds: &[(&str, &str, &str)] = &[
         (
             "EADDRINUSE",
-            "rule",
-            "lsof -ti:11369 2>/dev/null | xargs -r kill -9 ; sleep 1",
+            "lsof -ti:47100 2>/dev/null | xargs -r kill -9 ; sleep 1",
+            r#"powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 47100 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }""#,
         ),
         (
             "address already in use",
-            "rule",
-            "lsof -ti:11369 2>/dev/null | xargs -r kill -9 ; sleep 1",
+            "lsof -ti:47100 2>/dev/null | xargs -r kill -9 ; sleep 1",
+            r#"powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 47100 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }""#,
         ),
         (
             "Failed to bind socket",
-            "rule",
-            "lsof -ti:11369 2>/dev/null | xargs -r kill -9",
+            "lsof -ti:47100 2>/dev/null | xargs -r kill -9",
+            r#"powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 47100 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }""#,
         ),
         (
             "Cannot find module",
-            "rule",
-            "npm install --prefix bonsai-workspace",
+            "npm install --prefix workspace",
+            "npm install --prefix workspace",
         ),
         (
             "toml parse error",
-            "rule",
-            "rm -f ~/.bonsai/bonsai-config.json",
+            "rm -f ~/.workspace/workspace-config.json",
+            r#"if exist "%APPDATA%\com.omnisystem.workspace\workspace-config.json" del /F /Q "%APPDATA%\com.omnisystem.workspace\workspace-config.json""#,
         ),
         (
             "TOML parse error",
-            "rule",
-            "rm -f ~/.bonsai/bonsai-config.json",
+            "rm -f ~/.workspace/workspace-config.json",
+            r#"if exist "%APPDATA%\com.omnisystem.workspace\workspace-config.json" del /F /Q "%APPDATA%\com.omnisystem.workspace\workspace-config.json""#,
         ),
         (
             "database disk image is malformed",
-            "rule",
-            "rm -f ~/.bonsai/bonsai.db",
+            "rm -f ~/.workspace/telemetry.db",
+            r#"if exist "%USERPROFILE%\.workspace\telemetry.db" del /F /Q "%USERPROFILE%\.workspace\telemetry.db""#,
         ),
-        ("GPU: out of memory", "rule", "echo CPU_FALLBACK"),
-        ("llama-server: exited", "rule", "echo SIDECAR_RESTART"),
         (
             "Failed to create CAS",
-            "rule",
-            "mkdir -p ~/.bonsai/cas_blobs",
+            "mkdir -p ~/.workspace/cas_blobs",
+            r#"if not exist "%APPDATA%\com.omnisystem.workspace\cas_blobs" mkdir "%APPDATA%\com.omnisystem.workspace\cas_blobs""#,
         ),
         (
             "no space left on device",
-            "rule",
-            "find /tmp -name 'bonsai_*' -mmin +60 -delete",
+            "find /tmp -name 'workspace_*' -mmin +60 -delete",
+            r#"powershell -NoProfile -Command "Get-ChildItem $env:TEMP -Filter 'workspace_*' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-60) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue""#,
         ),
     ];
-    for (pattern, stype, script) in seeds {
+    for (pattern, unix_script, windows_script) in seeds {
+        let script = if cfg!(target_os = "windows") { windows_script } else { unix_script };
         let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fixes WHERE error_pattern = ?")
             .bind(pattern)
             .fetch_one(pool)
@@ -118,9 +135,25 @@ async fn seed_builtin_rules(pool: &SqlitePool) {
         if exists == 0 {
             sqlx::query(
                 "INSERT INTO fixes (error_pattern, solution_type, solution_script, confidence, created_by)
-                 VALUES (?, ?, ?, 0.9, 'system')"
+                 VALUES (?, 'rule', ?, 0.9, 'system')"
             )
-            .bind(pattern).bind(stype).bind(script)
+            .bind(pattern).bind(script)
+            .execute(pool)
+            .await
+            .ok();
+        } else {
+            // A prior app version may have already persisted an old/wrong
+            // script for this pattern (e.g. POSIX syntax on Windows) into the
+            // on-disk KB — inserting only on absence would leave it stuck
+            // forever. Safe to overwrite only rows the system authored and
+            // that have never actually been run/verified yet (usage_count=0);
+            // anything a user has customized or that already has a track
+            // record is left alone.
+            sqlx::query(
+                "UPDATE fixes SET solution_script = ?
+                 WHERE error_pattern = ? AND created_by = 'system' AND usage_count = 0"
+            )
+            .bind(script).bind(pattern)
             .execute(pool)
             .await
             .ok();
@@ -194,10 +227,11 @@ pub async fn report_fix(
     .map_err(|e| e.to_string())?;
     let id = result.last_insert_rowid();
     info!("[survival] fix #{id} recorded by {who}");
+    prune_kb(&state.pool).await;
     Ok(id)
 }
 
-/// Ask BonsAI to diagnose `error` and suggest a repair script.
+/// Ask OmniAI to diagnose `error` and suggest a repair script.
 #[command]
 pub async fn ai_repair_error(
     error: String,
@@ -205,7 +239,7 @@ pub async fn ai_repair_error(
 ) -> Result<String, String> {
     let suggestion = ai_diagnose(&error).await?;
     if suggestion == "NOT_FIXABLE" || suggestion.is_empty() {
-        return Ok("BonsAI could not determine a fix for this error.".into());
+        return Ok("OmniAI could not determine a fix for this error.".into());
     }
     let forbidden = ["rm -rf /", "mkfs", ":(){ :|:& };:", "format c:"];
     if forbidden.iter().any(|f| suggestion.contains(f)) {
@@ -215,13 +249,14 @@ pub async fn ai_repair_error(
     let pattern = &error[..error.len().min(200)];
     sqlx::query(
         "INSERT INTO fixes (error_pattern, solution_type, solution_script, confidence, created_by)
-         VALUES (?, 'ai', ?, 0.7, 'bonsai')",
+         VALUES (?, 'ai', ?, 0.7, 'workspace')",
     )
     .bind(pattern)
     .bind(&suggestion)
     .execute(state.pool.as_ref())
     .await
     .ok();
+    prune_kb(&state.pool).await;
     Ok(suggestion)
 }
 
@@ -243,7 +278,7 @@ pub async fn export_survival_training_data(
         .filter(|e| e.success_count > 0)
         .map(|e| serde_json::json!({
             "messages": [
-                {"role": "system",    "content": "You are an expert at fixing the Bonsai AI application. Given an error log, output a single shell command to fix it. Output NOT_FIXABLE if you cannot."},
+                {"role": "system",    "content": "You are an expert at fixing the Workspace AI application. Given an error log, output a single shell command to fix it. Output NOT_FIXABLE if you cannot."},
                 {"role": "user",      "content": e.error_pattern},
                 {"role": "assistant", "content": e.solution_script},
             ]
@@ -266,7 +301,7 @@ pub async fn export_survival_training_data(
 pub async fn sync_watchdog_kb(state: tauri::State<'_, SurvivalState>) -> Result<usize, String> {
     let wdb_path = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/survival_kb.db");
+        .join(".workspace/survival_kb.db");
     if !wdb_path.exists() {
         return Ok(0);
     }
@@ -314,11 +349,34 @@ pub async fn sync_watchdog_kb(state: tauri::State<'_, SurvivalState>) -> Result<
 
     if merged > 0 {
         info!("[survival] merged {merged} fixes from watchdog KB");
+        prune_kb(&state.pool).await;
     }
     Ok(merged)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Cap on non-system KB rows. A long-running personal install would
+/// otherwise accumulate `fixes` rows forever — every `report_fix`,
+/// `ai_repair_error`, and `sync_watchdog_kb` merge adds one and nothing ever
+/// removed one. Built-in system rules (`seed_builtin_rules`, a small fixed
+/// set) are always kept regardless of this cap; only user/AI-contributed
+/// rows are pruned, ranked by actual track record so the ones that have
+/// never worked are the first to go.
+const MAX_KB_ENTRIES: i64 = 500;
+
+async fn prune_kb(pool: &SqlitePool) {
+    let _ = sqlx::query(
+        "DELETE FROM fixes WHERE created_by != 'system' AND id NOT IN (
+            SELECT id FROM fixes WHERE created_by != 'system'
+            ORDER BY success_count DESC, confidence DESC, usage_count DESC
+            LIMIT ?
+        )",
+    )
+    .bind(MAX_KB_ENTRIES)
+    .execute(pool)
+    .await;
+}
 
 async fn fetch_matching(pool: &SqlitePool, log: &str) -> Vec<FixEntry> {
     fetch_all(pool)
@@ -374,10 +432,10 @@ async fn ai_diagnose(log: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     let payload = serde_json::json!({
-        "model": "bonsai",
+        "model": "workspace",
         "messages": [
             {"role": "system", "content":
-                "You are an expert at fixing the Bonsai AI application. \
+                "You are an expert at fixing the Workspace AI application. \
                  Given an error log, output a single shell command that fixes the problem. \
                  Output NOT_FIXABLE if you cannot determine a safe fix."},
             {"role": "user", "content": &log[..log.len().min(4000)]},
@@ -386,7 +444,7 @@ async fn ai_diagnose(log: &str) -> Result<String, String> {
         "temperature": 0.05,
     });
 
-    for port in [11420u16, 8080] {
+    for port in [crate::config::BUDDY_API_PORT, 8080] {
         let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
         if let Ok(resp) = client.post(&url).json(&payload).send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
@@ -397,4 +455,132 @@ async fn ai_diagnose(log: &str) -> Result<String, String> {
         }
     }
     Err("AI model unreachable".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE fixes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                error_pattern   TEXT    NOT NULL,
+                solution_type   TEXT    NOT NULL DEFAULT 'rule',
+                solution_script TEXT    NOT NULL,
+                confidence      REAL    NOT NULL DEFAULT 0.5,
+                usage_count     INTEGER NOT NULL DEFAULT 0,
+                success_count   INTEGER NOT NULL DEFAULT 0,
+                created_by      TEXT    NOT NULL DEFAULT 'system',
+                verified        INTEGER NOT NULL DEFAULT 0,
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn seeded_rules_are_windows_correct_on_this_platform() {
+        let pool = memory_pool().await;
+        seed_builtin_rules(&pool).await;
+
+        let matches = fetch_matching(&pool, "EADDRINUSE: address already in use").await;
+        assert!(!matches.is_empty());
+        let script = &matches[0].solution_script;
+        if cfg!(target_os = "windows") {
+            // Must be real Windows-executable syntax, not POSIX lsof/xargs
+            // that silently no-ops under `cmd /C` (the bug this fixed).
+            assert!(script.contains("powershell") || script.contains("Get-NetTCPConnection"));
+            assert!(!script.contains("lsof"));
+        } else {
+            assert!(script.contains("lsof"));
+        }
+    }
+
+    #[tokio::test]
+    async fn seeding_is_idempotent() {
+        let pool = memory_pool().await;
+        seed_builtin_rules(&pool).await;
+        let first_count = fetch_all(&pool).await.unwrap().len();
+        seed_builtin_rules(&pool).await;
+        let second_count = fetch_all(&pool).await.unwrap().len();
+        assert_eq!(first_count, second_count, "re-seeding must not duplicate rows");
+    }
+
+    #[tokio::test]
+    async fn stale_unverified_system_script_self_heals_but_verified_one_does_not() {
+        let pool = memory_pool().await;
+        sqlx::query(
+            "INSERT INTO fixes (error_pattern, solution_type, solution_script, confidence, created_by, usage_count)
+             VALUES ('EADDRINUSE', 'rule', 'lsof -ti:47100 | xargs kill -9', 0.9, 'system', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        seed_builtin_rules(&pool).await;
+        let matches = fetch_matching(&pool, "EADDRINUSE").await;
+        // usage_count=0 (never actually run) — safe to overwrite with the
+        // current, OS-correct script.
+        assert!(!matches[0].solution_script.contains("lsof"));
+
+        // A rule with usage_count > 0 (has actually been tried) must NOT be
+        // silently rewritten out from under whatever track record it has.
+        sqlx::query("UPDATE fixes SET usage_count = 3 WHERE error_pattern = 'EADDRINUSE'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE fixes SET solution_script = 'a-previously-used-script' WHERE error_pattern = 'EADDRINUSE'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        seed_builtin_rules(&pool).await;
+        let matches = fetch_matching(&pool, "EADDRINUSE").await;
+        assert_eq!(matches[0].solution_script, "a-previously-used-script");
+    }
+
+    #[tokio::test]
+    async fn prune_kb_keeps_system_rows_and_top_performers_only() {
+        let pool = memory_pool().await;
+        sqlx::query(
+            "INSERT INTO fixes (error_pattern, solution_script, created_by, success_count) VALUES (?, 'x', 'system', 0)",
+        )
+        .bind("system-rule")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert far more user rows than the cap, with distinguishable
+        // success_count so we can assert the *best* ones survive.
+        for i in 0..(MAX_KB_ENTRIES + 50) {
+            sqlx::query(
+                "INSERT INTO fixes (error_pattern, solution_script, created_by, success_count) VALUES (?, 'x', 'user', ?)",
+            )
+            .bind(format!("pattern-{i}"))
+            .bind(i)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        prune_kb(&pool).await;
+
+        let all = fetch_all(&pool).await.unwrap();
+        let system_rows = all.iter().filter(|f| f.created_by == "system").count();
+        let user_rows = all.iter().filter(|f| f.created_by == "user").count();
+        assert_eq!(system_rows, 1, "system rows must never be pruned");
+        assert_eq!(user_rows as i64, MAX_KB_ENTRIES, "user rows must be capped exactly at the limit");
+
+        // The highest-success_count rows must be the ones that survived.
+        let best_survived = all.iter().any(|f| f.error_pattern == format!("pattern-{}", MAX_KB_ENTRIES + 49));
+        let worst_pruned = !all.iter().any(|f| f.error_pattern == "pattern-0");
+        assert!(best_survived, "highest-performing row should survive pruning");
+        assert!(worst_pruned, "lowest-performing row should be pruned");
+    }
 }

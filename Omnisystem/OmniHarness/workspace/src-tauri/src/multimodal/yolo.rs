@@ -8,14 +8,14 @@
 //! ## Model placement (offline)
 //! General detection:
 //!   - `$YOLO_MODEL_PATH`
-//!   - `~/.bonsai/models/yolo/yolov8n.pt`   (nano, 3.2 MB)
-//!   - `~/.bonsai/models/yolo/yolov8s.onnx` (ONNX export also supported)
+//!   - `~/.workspace/models/yolo/yolov8n.pt`   (nano, 3.2 MB)
+//!   - `~/.workspace/models/yolo/yolov8s.onnx` (ONNX export also supported)
 //!
 //! Stock-market patterns:
-//!   - `~/.bonsai/models/yolo/stockmarket-pattern-yolov8.pt`
+//!   - `~/.workspace/models/yolo/stockmarket-pattern-yolov8.pt`
 //!
 //! Worker:
-//!   - `~/.bonsai/sidecars/yolo_worker.py`
+//!   - `~/.workspace/sidecars/yolo_worker.py`
 //!   - `sidecars/yolo_worker.py`
 
 use std::path::PathBuf;
@@ -89,7 +89,7 @@ fn find_yolo_model(variant: &str) -> Option<PathBuf> {
     }
     let base = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/yolo");
+        .join(".workspace/models/yolo");
     let names: &[&str] = match variant {
         "stock" => &[
             "stockmarket-pattern-yolov8.pt",
@@ -116,7 +116,7 @@ fn find_yolo_worker() -> Option<PathBuf> {
     let candidates = [
         dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/sidecars/yolo_worker.py"),
+            .join(".workspace/sidecars/yolo_worker.py"),
         PathBuf::from("sidecars/yolo_worker.py"),
     ];
     candidates.into_iter().find(|p| p.exists())
@@ -140,7 +140,7 @@ struct YoloRequest<'a> {
 
 async fn call_worker(req: &YoloRequest<'_>) -> Result<Value, String> {
     let worker =
-        find_yolo_worker().ok_or("yolo_worker.py not found. Place it in ~/.bonsai/sidecars/")?;
+        find_yolo_worker().ok_or("yolo_worker.py not found. Place it in ~/.workspace/sidecars/")?;
     let python = which_python()?;
     let payload = serde_json::to_string(req).map_err(|e| e.to_string())?;
 
@@ -189,7 +189,7 @@ fn which_python() -> Result<PathBuf, String> {
 fn not_installed_error(model_name: &str, hf_path: &str) -> String {
     format!(
         "{model_name} not found. Download from huggingface.co/{hf_path} \
-         and place in ~/.bonsai/models/yolo/"
+         and place in ~/.workspace/models/yolo/"
     )
 }
 
@@ -418,7 +418,7 @@ pub async fn detect_objects_cmd(
     draw_overlay: Option<bool>,
 ) -> Result<DetectionResult, String> {
     let model = find_yolo_model("detect")
-        .ok_or("YOLOv8 model not found. Place yolov8n.pt in ~/.bonsai/models/yolo/")?;
+        .ok_or("YOLOv8 model not found. Place yolov8n.pt in ~/.workspace/models/yolo/")?;
 
     let t0 = std::time::Instant::now();
     let result = call_worker(&YoloRequest {
@@ -450,7 +450,7 @@ pub async fn detect_objects_cmd(
 #[tauri::command]
 pub async fn detect_chart_patterns(image_path: String) -> Result<DetectionResult, String> {
     let model = find_yolo_model("stock")
-        .ok_or("Stock-market pattern model not found. Place stockmarket-pattern-yolov8.pt in ~/.bonsai/models/yolo/")?;
+        .ok_or("Stock-market pattern model not found. Place stockmarket-pattern-yolov8.pt in ~/.workspace/models/yolo/")?;
 
     let t0 = std::time::Instant::now();
     let result = call_worker(&YoloRequest {

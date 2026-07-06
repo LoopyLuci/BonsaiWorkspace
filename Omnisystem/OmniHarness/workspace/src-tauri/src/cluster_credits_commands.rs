@@ -1,6 +1,6 @@
 //! Cluster Credits & Device Rental Marketplace — Tauri command layer.
 //!
-//! Exposes the `bonsai-credits` and `bonsai-marketplace` crates to the frontend
+//! Exposes the `workspace-credits` and `workspace-marketplace` crates to the frontend
 //! as typed IPC commands. All heavy state lives in `ClusterState`.
 
 use std::path::PathBuf;
@@ -48,21 +48,21 @@ impl ClusterState {
     pub fn new() -> Self {
         let data_dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/cluster");
+            .join(".workspace/cluster");
         std::fs::create_dir_all(&data_dir).ok();
 
         let credit_manager =
             Arc::new(CreditManager::new(data_dir.join("credits.db")).unwrap_or_else(|e| {
                 warn!("CreditManager init failed: {e}; using temp path");
-                CreditManager::new(PathBuf::from("/tmp/bonsai_credits.db")).unwrap()
+                CreditManager::new(PathBuf::from("/tmp/workspace_credits.db")).unwrap()
             }));
         let community_pool = Arc::new(
             PersistentCommunityPool::new(data_dir.join("community.db")).unwrap_or_else(|_| {
-                PersistentCommunityPool::new(PathBuf::from("/tmp/bonsai_community.db")).unwrap()
+                PersistentCommunityPool::new(PathBuf::from("/tmp/workspace_community.db")).unwrap()
             }),
         );
         let ledger = Arc::new(Ledger::new(data_dir.join("ledger.db")).unwrap_or_else(|_| {
-            Ledger::new(PathBuf::from("/tmp/bonsai_ledger.db")).unwrap()
+            Ledger::new(PathBuf::from("/tmp/workspace_ledger.db")).unwrap()
         }));
 
         let marketplace = Arc::new(MarketplaceState::new());

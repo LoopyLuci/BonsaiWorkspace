@@ -1,6 +1,6 @@
-//! Chat session persistence for Bonsai Workspace.
+//! Chat session persistence for Workspace.
 //!
-//! Stores chat sessions and their messages in the existing `bonsai.db` SQLite file.
+//! Stores chat sessions and their messages in the existing `workspace.db` SQLite file.
 //! Each session is linked to an optional workspace path and carries a title that
 //! defaults to the first user message (truncated).
 
@@ -77,7 +77,7 @@ pub struct ChatSessionStore {
 }
 
 impl ChatSessionStore {
-    /// Connect to (or create) the sessions tables in the existing bonsai.db.
+    /// Connect to (or create) the sessions tables in the existing workspace.db.
     pub async fn new(pool: SqlitePool) -> Result<Self> {
         sqlx::query(
             r#"

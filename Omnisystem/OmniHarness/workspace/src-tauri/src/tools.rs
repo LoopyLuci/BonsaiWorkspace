@@ -1,7 +1,7 @@
-//! Tool system for Bonsai Workspace.
+//! Tool system for Workspace.
 //!
 //! Built-in tools (read_file, list_files, search_files, grep_files, write_file, run_command, etc.)
-//! plus custom tools loaded from `{workspace}/bonsai-tools/` directories.
+//! plus custom tools loaded from `{workspace}/workspace-tools/` directories.
 //!
 //! Uses ReAct-style prompting so ANY model (including those without native function-
 //! calling support) can invoke tools by outputting `<tool_call>...</tool_call>` tags.
@@ -212,7 +212,7 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             capability_tags: vec!["tool".into(), "io".into(), "file".into()],
             examples: vec![],
             requires_model: None,
-            effect_row: EffectRow { effects: vec![capability_registry::BonsaiEffect::FileIO] },
+            effect_row: EffectRow { effects: vec![capability_registry::WorkspaceEffect::FileIO] },
         },
         ToolDef {
             name: "edit_file".into(),
@@ -231,7 +231,7 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             capability_tags: vec!["tool".into(), "io".into(), "file".into()],
             examples: vec![],
             requires_model: None,
-            effect_row: EffectRow { effects: vec![capability_registry::BonsaiEffect::FileIO] },
+            effect_row: EffectRow { effects: vec![capability_registry::WorkspaceEffect::FileIO] },
         },
         ToolDef {
             name: "create_dir".into(),
@@ -285,7 +285,7 @@ pub fn built_in_tools() -> Vec<ToolDef> {
             capability_tags: vec!["tool".into(), "shell".into(), "danger".into()],
             examples: vec![],
             requires_model: None,
-            effect_row: EffectRow { effects: vec![capability_registry::BonsaiEffect::ShellExec] },
+            effect_row: EffectRow { effects: vec![capability_registry::WorkspaceEffect::ShellExec] },
         },
         ToolDef {
             name: "get_system_stats".into(),
@@ -357,10 +357,10 @@ struct CustomToolManifest {
     proof_verified: Option<bool>,
 }
 
-/// Load custom tool manifests from `{workspace}/bonsai-tools/*.json`.
+/// Load custom tool manifests from `{workspace}/workspace-tools/*.json`.
 /// Each JSON file should contain a `CustomToolManifest`.
 pub fn load_custom_tools(workspace_path: &Path) -> Vec<ToolDef> {
-    let tools_dir = workspace_path.join("bonsai-tools");
+    let tools_dir = workspace_path.join("workspace-tools");
     if !tools_dir.exists() {
         return vec![];
     }
@@ -456,7 +456,7 @@ pub fn all_tools_full(
 ) -> Vec<ToolDef> {
     let mut tools = built_in_tools();
 
-    // Workspace custom tools (JSON manifests in bonsai-tools/)
+    // Workspace custom tools (JSON manifests in workspace-tools/)
     if let Some(ws) = workspace_path {
         tools.extend(load_custom_tools(Path::new(ws)));
     }
@@ -575,7 +575,7 @@ pub fn system_prompt_for(
         });
 
     let mut s = String::from(
-        "You are BonsAI, a highly capable AI assistant running locally on the user's device.\n\
+        "You are OmniAI, a highly capable AI assistant running locally on the user's device.\n\
          You excel at coding, music production, creative tasks, research, and general assistance.\n\
          You can read and modify files, search code, run commands, and generate original music — all offline.\n\
          Be precise and evidence-driven. Use tools only when needed — not for questions answerable from general knowledge.\n\
@@ -1664,13 +1664,13 @@ The tool call is:
 
     #[test]
     fn parse_tool_calls_salvages_unescaped_windows_path() {
-        let response = r#"{"tool":"read_file","args":{"path":"Z:\Projects\BonsaiTest\Hello.txt"}}"#;
+        let response = r#"{"tool":"read_file","args":{"path":"Z:\Projects\WorkspaceTest\Hello.txt"}}"#;
         let parsed = parse_tool_calls(response);
         assert_eq!(parsed.calls.len(), 1);
         assert_eq!(parsed.calls[0].tool, "read_file");
         assert_eq!(
             parsed.calls[0].args["path"],
-            "Z:\\Projects\\BonsaiTest\\Hello.txt"
+            "Z:\\Projects\\WorkspaceTest\\Hello.txt"
         );
     }
 

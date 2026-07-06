@@ -48,7 +48,7 @@ pub async fn start_a2a_server(port: u16, agent_host: Arc<AgentHost>) {
 
 async fn get_agent_card() -> Json<AgentCard> {
     Json(AgentCard {
-        name: "BonsAI".into(),
+        name: "OmniAI".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         capabilities: vec![
             "text".into(),

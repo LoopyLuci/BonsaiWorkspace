@@ -40,7 +40,7 @@ pub struct SkillConfig {
     pub required_bb_version: Option<String>,
 }
 
-/// Compose a BONSAI_ALLOWED_PATHS value from workspace root and explicit skill paths.
+/// Compose a WORKSPACE_ALLOWED_PATHS value from workspace root and explicit skill paths.
 pub fn build_allowed_paths_env(workspace_root: &Path, skill_paths: &[String]) -> String {
     let mut roots = std::collections::BTreeSet::new();
     roots.insert(workspace_root.to_string_lossy().to_string());

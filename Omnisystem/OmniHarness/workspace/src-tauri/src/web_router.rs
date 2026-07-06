@@ -85,7 +85,7 @@ impl WebRouter {
     pub fn new(config: WebRouterConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
-            .user_agent("BonsaiWorkspace/1.0 (documentation fetch)")
+            .user_agent("WorkspaceWorkspace/1.0 (documentation fetch)")
             .build()
             .unwrap_or_default();
         Self { config, client }

@@ -1,6 +1,6 @@
-//! Tauri command layer for the next-generation Bonsai Swarm system.
+//! Tauri command layer for the next-generation Workspace Swarm system.
 //!
-//! Exposes the full `bonsai-swarm` API to the frontend as typed IPC commands.
+//! Exposes the full `workspace-swarm` API to the frontend as typed IPC commands.
 //! All heavy state lives in `SwarmState`.
 
 use swarm::{
@@ -180,9 +180,28 @@ pub async fn resume_swarm(state: State<'_, SwarmState>, swarm_id: String) -> Res
 }
 
 /// Cancel a swarm immediately.
+///
+/// For a bridged swarm (a real Custom Swarm run mirrored into this system by
+/// `swarm_commander_bridge.rs` — see that module's doc comment), sending
+/// `SwarmCommand::Cancel` alone would silently do nothing: bridged swarms are
+/// constructed via `new_bridged`, which never starts the internal run_loop
+/// that normally consumes commands from `cmd_tx`. The `run_id`/`swarm_id` is
+/// the same UUID string in both systems (see `commands.rs::submit_swarm_chat`),
+/// so this also reaches into the real engine's own cancellation flags.
 #[tauri::command]
-pub async fn swarm_cancel(state: State<'_, SwarmState>, swarm_id: String) -> Result<(), String> {
+pub async fn swarm_cancel(
+    state: State<'_, SwarmState>,
+    app_state: State<'_, crate::AppState>,
+    swarm_id: String,
+) -> Result<(), String> {
     let id: Uuid = swarm_id.parse().map_err(|_| "invalid swarm_id")?;
+    if let Ok(cancels) = app_state.swarm_cancels.lock() {
+        if let Some(flags) = cancels.get(&swarm_id) {
+            for f in flags {
+                f.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
     state.registry.send_command(id, SwarmCommand::Cancel).await;
     Ok(())
 }

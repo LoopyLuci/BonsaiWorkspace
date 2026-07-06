@@ -1,5 +1,5 @@
 //! AI-assisted code intelligence tools.
-//! Each tool builds a structured prompt and calls the local BonsAI inference
+//! Each tool builds a structured prompt and calls the local OmniAI inference
 //! endpoint (port read from env or default 11434). Fully offline when a model is loaded.
 
 use crate::tool_registry::{Tool, ToolResult};
@@ -9,10 +9,10 @@ use serde_json::{json, Value};
 const DEFAULT_API: &str = "http://127.0.0.1:11434";
 
 async fn call_local_llm(system: &str, user: &str, max_tokens: u32) -> Result<String, String> {
-    let api_base = std::env::var("BONSAI_API_URL").unwrap_or_else(|_| DEFAULT_API.to_string());
+    let api_base = std::env::var("WORKSPACE_API_URL").unwrap_or_else(|_| DEFAULT_API.to_string());
     let url = format!("{api_base}/v1/chat/completions");
     let body = json!({
-        "model": "bonsai",
+        "model": "workspace",
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user }
@@ -634,7 +634,7 @@ impl Tool for PersonaSwitchTool {
         "persona_switch"
     }
     fn description(&self) -> &str {
-        "Switch BonsAI's response style: teacher, critic, rubber_duck, mentor, peer, socratic, devil_advocate, executive."
+        "Switch OmniAI's response style: teacher, critic, rubber_duck, mentor, peer, socratic, devil_advocate, executive."
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
         let persona = args["persona"].as_str().ok_or("Missing 'persona'")?;
@@ -668,14 +668,14 @@ impl Tool for ContextSnapshotTool {
         "context_snapshot"
     }
     fn description(&self) -> &str {
-        "Save or load a named conversation context snapshot to ~/.bonsai/snapshots/ for later continuation."
+        "Save or load a named conversation context snapshot to ~/.workspace/snapshots/ for later continuation."
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
         let name = args["name"].as_str().ok_or("Missing 'name'")?;
         let operation = args["operation"].as_str().unwrap_or("save"); // save|load|list|delete
         let dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/snapshots");
+            .join(".workspace/snapshots");
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| e.to_string())?;

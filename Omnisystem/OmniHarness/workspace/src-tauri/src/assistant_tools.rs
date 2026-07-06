@@ -597,7 +597,7 @@ impl Tool for FetchUrl {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("BonsaiAssistant/1.0")
+            .user_agent("WorkspaceAssistant/1.0")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .map_err(|e| ToolError::Internal {
@@ -1206,7 +1206,7 @@ impl Tool for SendEmail {
 
         let mk_cfg_err = |field: &str| ToolError::Configuration {
             message: format!("SMTP {field} not configured"),
-            fix_hint: "Go to Bonsai Buddy → Settings → Email to configure SMTP".into(),
+            fix_hint: "Go to Workspace Buddy → Settings → Email to configure SMTP".into(),
         };
 
         let host = ctx

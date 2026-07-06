@@ -1,4 +1,4 @@
-//! BonsAI music generation engine.
+//! OmniAI music generation engine.
 //!
 //! `generate_wav(prompt, duration_secs)` returns raw WAV bytes (IEEE float 32-bit, 44100 Hz, mono).
 //! It tries the `music-worker` sidecar first; if the binary is absent it falls back to the
@@ -6,7 +6,7 @@
 //! dependency on the sidecar being present).
 //!
 //! The sidecar protocol uses TCP, not stdin/stdout, to allow the worker to be kept warm for
-//! fast follow-up requests.  The worker prints `BONSAI_MUSIC_PORT=<port>` on stdout line 1 then
+//! fast follow-up requests.  The worker prints `WORKSPACE_MUSIC_PORT=<port>` on stdout line 1 then
 //! accepts one long-lived TCP connection.
 
 use std::sync::Arc;
@@ -84,7 +84,7 @@ async fn ensure_worker() -> Option<()> {
     // Read first line to get the port
     let port: u16 = tokio::time::timeout(Duration::from_secs(5), async {
         while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(rest) = line.strip_prefix("BONSAI_MUSIC_PORT=") {
+            if let Some(rest) = line.strip_prefix("WORKSPACE_MUSIC_PORT=") {
                 if let Ok(p) = rest.trim().parse::<u16>() {
                     return Some(p);
                 }

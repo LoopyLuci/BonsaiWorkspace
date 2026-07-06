@@ -50,10 +50,10 @@ pub async fn package_inspect(path: String) -> Result<PackageSummary, String> {
     Ok(PackageSummary::from(&reader.manifest))
 }
 
-/// Extract a .bkp package into `~/.bonsai/`.
-/// - Base model → `~/.bonsai/models/<base_model_name>/`
-/// - Knowledge modules → `~/.bonsai/kdb/modules/<module_name>/`
-/// - Adapters → `~/.bonsai/adapters/<adapter_name>/`
+/// Extract a .bkp package into `~/.workspace/`.
+/// - Base model → `~/.workspace/models/<base_model_name>/`
+/// - Knowledge modules → `~/.workspace/kdb/modules/<module_name>/`
+/// - Adapters → `~/.workspace/adapters/<adapter_name>/`
 ///
 /// After extraction the modules are registered in the KDB store.
 #[tauri::command]
@@ -61,9 +61,9 @@ pub async fn package_import(
     state: State<'_, KdbAppState>,
     path: String,
 ) -> Result<PackageSummary, String> {
-    let bonsai_dir = dirs::home_dir()
+    let workspace_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".bonsai");
+        .join(".workspace");
 
     let mut reader = PackageReader::open(Path::new(&path)).map_err(|e| e.to_string())?;
     let summary = PackageSummary::from(&reader.manifest);
@@ -72,7 +72,7 @@ pub async fn package_import(
     let base_name = reader.manifest.base_model.name.clone();
     let base_pkg_path = reader.manifest.base_model.path_in_package.clone();
 
-    let model_dest = bonsai_dir.join("models").join(&base_name);
+    let model_dest = workspace_dir.join("models").join(&base_name);
     reader
         .extract_prefix(&base_pkg_path, &model_dest)
         .map_err(|e| e.to_string())?;
@@ -80,7 +80,7 @@ pub async fn package_import(
     // Extract adapters
     let adapters = reader.manifest.adapters.clone();
     for adapter in &adapters {
-        let dest = bonsai_dir.join("adapters").join(&adapter.name);
+        let dest = workspace_dir.join("adapters").join(&adapter.name);
         reader
             .extract_prefix(&adapter.path_in_package, &dest)
             .map_err(|e| e.to_string())?;
@@ -89,7 +89,7 @@ pub async fn package_import(
     // Extract knowledge modules and register in KDB store
     let modules = reader.manifest.knowledge_modules.clone();
     for kmod in &modules {
-        let dest = bonsai_dir.join("kdb").join("modules").join(&kmod.name);
+        let dest = workspace_dir.join("kdb").join("modules").join(&kmod.name);
         reader
             .extract_prefix(&kmod.path_in_package, &dest)
             .map_err(|e| e.to_string())?;

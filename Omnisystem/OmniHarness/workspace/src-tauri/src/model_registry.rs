@@ -337,6 +337,14 @@ struct Header {
     quant: Quant,
 }
 
+/// Detect a GGUF file's quantization from its header alone, without a full
+/// registry scan. Used by callers (e.g. `gpu_model_loader`) that only have a
+/// path, not an already-scanned `ModelInfo`, but still need the same
+/// GPU-unsafe-quant check the orchestrator applies.
+pub fn quant_for_path(path: &Path) -> Quant {
+    parse_header(path).map(|h| h.quant).unwrap_or(Quant::Unknown(u32::MAX))
+}
+
 fn parse_header(path: &Path) -> anyhow::Result<Header> {
     let mut f = std::fs::File::open(path)?;
 
@@ -364,7 +372,14 @@ fn parse_header(path: &Path) -> anyhow::Result<Header> {
     let mut name = None::<String>;
     let mut ctx_len = 4096u32;
     let mut params = 0u64;
-    let mut file_type = 0u32;
+    // No default here: some GGUF writers (notably for experimental BitNet/1-bit
+    // formats like IQ1_S/TQ1_0/TQ2_0) never emit `general.file_type` at all. A
+    // `0u32` default would be indistinguishable from a genuine, present
+    // `file_type = 0` (F32) — silently misclassifying an exotic low-bit model
+    // as full-precision, which is the opposite of conservative. Track presence
+    // explicitly and fall back to `Unknown` (treated as GPU-unsafe by the
+    // orchestrator) when the key is truly absent.
+    let mut file_type: Option<u32> = None;
 
     // Parse up to 512 KV pairs; stop early on any read error.
     for _ in 0..n_kv.min(512) {
@@ -385,7 +400,7 @@ fn parse_header(path: &Path) -> anyhow::Result<Header> {
             "general.architecture" => arch = val.as_str().unwrap_or("unknown").to_string(),
             "general.name" => name = val.as_str().map(|s| s.to_string()),
             "general.parameter_count" => params = val.as_u64().unwrap_or(0),
-            "general.file_type" => file_type = val.as_u64().unwrap_or(0) as u32,
+            "general.file_type" => file_type = val.as_u64().map(|v| v as u32),
             k if k.ends_with(".context_length") => ctx_len = val.as_u64().unwrap_or(4096) as u32,
             _ => {}
         }
@@ -396,7 +411,7 @@ fn parse_header(path: &Path) -> anyhow::Result<Header> {
         name,
         params,
         ctx_len,
-        quant: Quant::from_file_type(file_type),
+        quant: file_type.map(Quant::from_file_type).unwrap_or(Quant::Unknown(u32::MAX)),
     })
 }
 

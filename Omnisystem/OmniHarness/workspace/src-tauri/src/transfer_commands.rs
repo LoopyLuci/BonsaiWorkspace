@@ -1,10 +1,10 @@
-//! Tauri commands — Bonsai transfer, identity, and mailbox integration.
+//! Tauri commands — Workspace transfer, identity, and mailbox integration.
 //!
 //! These commands bridge the frontend to the five transfer crates:
 //!   p2p-crypto  (identity, key derivation, encryption)
-//!   bonsai-transfer-store   (encrypted at-rest persistence)
+//!   workspace-transfer-store   (encrypted at-rest persistence)
 //!   p2p-core    (ECF-RG chunked send, transfer status)
-//!   bonsai-mailbox          (agent-to-agent signed message delivery)
+//!   workspace-mailbox          (agent-to-agent signed message delivery)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 use mailbox::{AgentMailbox, MailEnvelope};
-use transfer_core::{
+use p2p_core::{
     lane::InProcessLane,
     scheduler::EcfRgScheduler,
     transfer::{
@@ -22,8 +22,8 @@ use transfer_core::{
         MAX_CHUNK_SIZE,
     },
 };
-use transfer_crypto::{
-    identity::BonsaiIdentity,
+use p2p_crypto::{
+    identity::WorkspaceIdentity,
     kdf::{generate_phrase, kdf_phrase_to_seed, ARGON2_PARAMS_TEST},
 };
 use transfer_store::EncryptedStore;
@@ -32,8 +32,8 @@ use transfer_store::EncryptedStore;
 
 /// Shared identity + store state managed by Tauri.
 pub struct TransferState {
-    /// The user's local BonsaiIdentity (set after create/restore).
-    pub identity: Mutex<Option<Arc<BonsaiIdentity>>>,
+    /// The user's local WorkspaceIdentity (set after create/restore).
+    pub identity: Mutex<Option<Arc<WorkspaceIdentity>>>,
     /// Encrypted key-value store backed by a single file on disk.
     pub store: EncryptedStore,
     /// Agent mailbox — local delivery hub.
@@ -47,7 +47,7 @@ impl TransferState {
         let store_path = EncryptedStore::default_path();
         Self {
             identity: Mutex::new(None),
-            store: EncryptedStore::open(store_path, b"bonsai-default-store-key"),
+            store: EncryptedStore::open(store_path, b"workspace-default-store-key"),
             mailbox: AgentMailbox::new(),
             transfers: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -151,7 +151,7 @@ pub async fn transfer_create_identity(
     let seed = kdf_phrase_to_seed(&phrase, passphrase_opt, Some(ARGON2_PARAMS_TEST))
         .map_err(|e| e.to_string())?;
 
-    let identity = BonsaiIdentity::from_seed(&seed).map_err(|e| e.to_string())?;
+    let identity = WorkspaceIdentity::from_seed(&seed).map_err(|e| e.to_string())?;
     let dto = IdentityDto {
         fingerprint: identity.fingerprint().to_string(),
         public_key_hex: hex::encode(identity.public_key.to_hex()),
@@ -185,7 +185,7 @@ pub async fn transfer_unlock_identity(
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&seed_bytes);
 
-    let identity = BonsaiIdentity::from_seed(&seed).map_err(|e| e.to_string())?;
+    let identity = WorkspaceIdentity::from_seed(&seed).map_err(|e| e.to_string())?;
     let dto = IdentityDto {
         fingerprint: identity.fingerprint().to_string(),
         public_key_hex: hex::encode(identity.public_key.to_hex()),
@@ -288,13 +288,13 @@ pub async fn transfer_send_file_loopback(
     // Build a throwaway session key from the identity's seed
     let seed = identity.export_seed();
     let session_key = {
-        let key_bytes = blake3::derive_key("bonsai-loopback-session", &seed);
-        Arc::new(transfer_crypto::session::SessionKey(key_bytes))
+        let key_bytes = blake3::derive_key("workspace-loopback-session", &seed);
+        Arc::new(p2p_crypto::session::SessionKey(key_bytes))
     };
 
     let (lane, _rx) = InProcessLane::new_pair("loopback");
     let mut lanes_map = std::collections::HashMap::new();
-    let lane_arc: Arc<dyn transfer_core::lane::TransportLane> = Arc::new(lane);
+    let lane_arc: Arc<dyn p2p_core::lane::TransportLane> = Arc::new(lane);
     lanes_map.insert("loopback".to_string(), lane_arc);
     let lanes = Arc::new(lanes_map);
 
@@ -333,7 +333,7 @@ pub async fn transfer_send_file_loopback(
 
     let status = TransferStatus {
         id: handle.id,
-        direction: transfer_core::transfer::TransferDirection::Send,
+        direction: p2p_core::transfer::TransferDirection::Send,
         total_bytes: data.len() as u64,
         transferred_bytes: handle.bytes_sent(),
         chunk_count: (data.len().saturating_add(cs - 1) / cs) as u64,
@@ -374,7 +374,7 @@ pub async fn transfer_store_put(
     value: serde_json::Value,
     passphrase: String,
 ) -> Result<(), String> {
-    let raw_key = blake3::derive_key("bonsai-store-v1", format!("{passphrase}:{key}").as_bytes());
+    let raw_key = blake3::derive_key("workspace-store-v1", format!("{passphrase}:{key}").as_bytes());
     let name = hex::encode(&raw_key[..8]);
     let path = EncryptedStore::default_path().with_file_name(format!("{name}.bin"));
     let store = EncryptedStore::open(path, &raw_key);
@@ -387,7 +387,7 @@ pub async fn transfer_store_get(
     key: String,
     passphrase: String,
 ) -> Result<Option<serde_json::Value>, String> {
-    let raw_key = blake3::derive_key("bonsai-store-v1", format!("{passphrase}:{key}").as_bytes());
+    let raw_key = blake3::derive_key("workspace-store-v1", format!("{passphrase}:{key}").as_bytes());
     let name = hex::encode(&raw_key[..8]);
     let path = EncryptedStore::default_path().with_file_name(format!("{name}.bin"));
     let store = EncryptedStore::open(&path, &raw_key);

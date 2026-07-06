@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Deserialize, Serialize)]
-pub struct BonsaiPlugin {
+pub struct WorkspacePlugin {
     pub plugin: PluginMeta,
     pub agent: Option<AgentDef>,
     pub security: SecurityPolicy,
@@ -29,10 +29,10 @@ pub struct SecurityPolicy {
     pub permissions: Vec<String>,
 }
 
-pub fn load_plugin(path: &Path) -> Result<BonsaiPlugin, String> {
-    let manifest = path.join("bonsai-plugin.toml");
+pub fn load_plugin(path: &Path) -> Result<WorkspacePlugin, String> {
+    let manifest = path.join("workspace-plugin.toml");
     if !manifest.exists() {
-        return Err("bonsai-plugin.toml not found".into());
+        return Err("workspace-plugin.toml not found".into());
     }
     let content = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
     toml::from_str(&content).map_err(|e| format!("TOML parse: {e}"))
@@ -43,7 +43,7 @@ pub fn list_plugins(dir: &Path) -> Vec<String> {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().join("bonsai-plugin.toml").exists())
+                .filter(|e| e.path().join("workspace-plugin.toml").exists())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .collect()
         })
@@ -55,7 +55,7 @@ pub fn list_plugins_cmd() -> Vec<String> {
     list_plugins(
         &dirs::data_local_dir()
             .unwrap_or_default()
-            .join("com.bonsai.workspace")
+            .join("com.omnisystem.workspace")
             .join("plugins"),
     )
 }

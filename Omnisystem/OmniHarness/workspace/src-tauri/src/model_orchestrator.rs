@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::bootstrap;
 use crate::inference_mode::InferenceMode;
-use crate::model_registry::{ModelInfo, ModelRegistry};
+use crate::model_registry::{ModelInfo, ModelRegistry, Quant};
 use crate::sidecar_supervisor::{SidecarConfig, SidecarStatus, SidecarSupervisor};
 
 const MODEL_LOAD_POLL_INTERVAL_MS: u64 = 500;
@@ -709,15 +709,135 @@ fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &Infere
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let gpu_preferred_layers = if gpu_crash_recorded {
-        0
+    let (gpu_preferred_layers, skip_reason) = if gpu_crash_recorded {
+        (0, Some("GPU disabled: a previous session hit a GPU driver crash — re-enable from Settings".to_string()))
+    } else if is_gpu_unsafe_quant(&info.quant) {
+        (0, Some(format!(
+            "GPU disabled: {:?} quantization is known to crash this GPU's Vulkan backend — running on CPU",
+            info.quant
+        )))
     } else if exe_name.contains("vulkan") || has_discrete_gpu() {
-        20
+        (estimate_safe_gpu_layers(&info.path), None)
     } else {
-        0
+        (0, Some("GPU disabled: no compatible discrete GPU detected".to_string()))
     };
     let initial_gpu_layers = mode.gpu_layers(gpu_preferred_layers);
-    spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, mode.clone(), None);
+    // `mode` (e.g. an explicit CpuOnly override) can still force 0 layers even
+    // when the quant/GPU checks above found no problem; don't attach a
+    // "GPU disabled" reason in that case since none of those checks fired.
+    let fallback_note = if initial_gpu_layers == 0 { skip_reason } else { None };
+    tracing::debug!(
+        model_id=%info.id,
+        quant=?info.quant,
+        gpu_crash_recorded,
+        gpu_preferred_layers,
+        mode=?mode,
+        initial_gpu_layers,
+        "[model-load] layer decision"
+    );
+    spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, mode.clone(), fallback_note);
+}
+
+/// Returns true for quantization formats verified to crash the Vulkan backend
+/// natively (STATUS_STACK_BUFFER_OVERRUN, exit 0xC0000409) as soon as any
+/// layers are offloaded to GPU — reproduced directly by running llama-server
+/// standalone: `Bonsai-1.7B-IQ1_S.gguf` crashes immediately with
+/// `--n-gpu-layers` > 0, while the identical model in `Q2_K` loads and runs on
+/// GPU without issue. This is a llama.cpp/driver Vulkan-kernel bug specific to
+/// these exotic low-bit formats, not a VRAM-capacity problem — no amount of
+/// layer-count or headroom tuning avoids it, so these quants always run
+/// CPU-only regardless of available VRAM. `Unknown` quants (including the
+/// BitNet ternary TQ1_0/TQ2_0 formats, which this registry doesn't yet
+/// classify) are treated the same way out of caution, since they're the same
+/// quantization family as the confirmed-crashing IQ1_S/IQ1_M.
+pub(crate) fn is_gpu_unsafe_quant(quant: &Quant) -> bool {
+    matches!(quant, Quant::IQ1_S | Quant::IQ1_M | Quant::Unknown(_))
+}
+
+/// Estimate a safe `--n-gpu-layers` value from free memory headroom and model
+/// file size, instead of a flat guess.
+///
+/// This used to unconditionally request 20 layers for *any* model whenever a
+/// discrete GPU was present, with no regard for the model's actual size or
+/// available VRAM — which is exactly what caused GPU memory-fault crashes
+/// (STATUS_STACK_BUFFER_OVERRUN / ErrorOutOfDeviceMemory, see
+/// `is_gpu_memory_crash`/`is_gpu_memory_log`) on anything larger than the
+/// smallest models, permanently latching `gpu_crash_fallback` and forcing
+/// CPU-only for every model thereafter. Mirrors the size-aware calculation
+/// already proven safe in `GpuModelLoader::calculate_gpu_layers`, generalized
+/// since models of different parameter counts (1.7B/4B/8B/...) have different
+/// transformer depths rather than a fixed 40 layers.
+pub(crate) fn estimate_safe_gpu_layers(model_path: &std::path::Path) -> u32 {
+    let file_size_mb = std::fs::metadata(model_path)
+        .map(|m| m.len() / (1024 * 1024))
+        .unwrap_or(0);
+    if file_size_mb == 0 {
+        return 0;
+    }
+
+    // Real dedicated-VRAM query (falls back to a conservative fixed estimate if
+    // unavailable). Using total *system* RAM as a stand-in for VRAM — the
+    // previous approach — wildly overestimates on any machine where RAM
+    // capacity exceeds VRAM capacity (e.g. 64 GB system RAM vs. an 8-24 GB
+    // GPU), which is the common case, not the exception.
+    let free_mb = query_dedicated_vram_mb().unwrap_or(4096);
+    let headroom_mb: u64 = 2048; // KV cache + compute buffers + fragmentation margin
+    let usable_mb = free_mb.saturating_sub(headroom_mb);
+    if usable_mb == 0 {
+        return 0;
+    }
+
+    // Approximate transformer depth by file size bucket — close enough across
+    // the common 1.7B/4B/8B/13B llama-family range to stay conservative.
+    let estimated_total_layers: u64 = if file_size_mb < 3_000 {
+        24
+    } else if file_size_mb < 6_000 {
+        32
+    } else if file_size_mb < 10_000 {
+        40
+    } else {
+        60
+    };
+    let per_layer_mb = (file_size_mb / estimated_total_layers).max(1);
+    // Cap well under the full depth: the fused/recurrent compute buffers on
+    // some architectures (e.g. Gated Delta Net MoE) need extra headroom the
+    // weight-only estimate misses (verified empirically elsewhere in this
+    // codebase — see GpuModelLoader::calculate_gpu_layers).
+    let safe_max = estimated_total_layers.saturating_sub(5);
+    ((usable_mb / per_layer_mb).min(safe_max)) as u32
+}
+
+/// Query dedicated video memory (MB) via WMI/CIM `AdapterRAM`. Known to
+/// under-report on some Windows versions for GPUs above ~4 GB due to a
+/// long-standing 32-bit-field overflow in `Win32_VideoController.AdapterRAM`
+/// — that's an acceptable failure mode here (leads to a smaller, still-safe
+/// `--n-gpu-layers` estimate rather than an over-estimate that risks another
+/// out-of-memory crash). Returns the largest value across all adapters
+/// (prefers the discrete GPU over an integrated one reporting less/no VRAM).
+#[cfg(target_os = "windows")]
+fn query_dedicated_vram_mb() -> Option<u64> {
+    let mut c = std::process::Command::new("powershell");
+    c.args([
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterRAM",
+    ]);
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = c.output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u64>().ok())
+        .max()
+        .map(|bytes| bytes / (1024 * 1024))
+        .filter(|&mb| mb > 0)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn query_dedicated_vram_mb() -> Option<u64> {
+    None
 }
 
 fn spawn_model_with_layers(
@@ -1040,6 +1160,7 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                         "model_id": model_id,
                         "port":     slot.port,
                         "cpu_mode": slot.cpu_mode,
+                        "fallback_note": slot.fallback_note,
                     }),
                 );
             }
@@ -1403,7 +1524,7 @@ fn thread_count() -> usize {
 
 /// Returns true if a discrete GPU (NVIDIA / AMD / Intel Arc) is present.
 /// Used to decide whether to pass `--n-gpu-layers -1` to llama-server.
-fn has_discrete_gpu() -> bool {
+pub(crate) fn has_discrete_gpu() -> bool {
     #[cfg(target_os = "windows")]
     {
         let looks_discrete = |s: &str| {

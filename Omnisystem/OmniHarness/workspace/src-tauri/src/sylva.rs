@@ -1,6 +1,6 @@
 //! Sylva scripting layer — hot-reloadable Lua scripts that become first-class tools.
 //!
-//! Users drop `.lua` files into `<data_dir>/bonsai/scripts/`. Within 2 seconds
+//! Users drop `.lua` files into `<data_dir>/workspace/scripts/`. Within 2 seconds
 //! the file watcher detects the change, compiles the script, registers it in the
 //! UCR, and emits a `"sylva-reload"` Tauri event so the frontend can update.
 
@@ -60,7 +60,7 @@ impl SylvaRuntime {
         scripts_dir: PathBuf,
     ) -> Result<Arc<Self>, String> {
         let lua = Lua::new();
-        Self::inject_bonsai_globals(&lua, &tool_registry)
+        Self::inject_workspace_globals(&lua, &tool_registry)
             .map_err(|e| format!("Sylva init failed: {e}"))?;
 
         Ok(Arc::new(Self {
@@ -73,8 +73,8 @@ impl SylvaRuntime {
         }))
     }
 
-    /// Inject the `bonsai` global table and remove dangerous Lua standard libraries.
-    fn inject_bonsai_globals(lua: &Lua, registry: &Arc<ToolRegistryState>) -> LuaResult<()> {
+    /// Inject the `workspace` global table and remove dangerous Lua standard libraries.
+    fn inject_workspace_globals(lua: &Lua, registry: &Arc<ToolRegistryState>) -> LuaResult<()> {
         // Remove modules that could escape the sandbox
         let globals = lua.globals();
         for module in &[
@@ -83,11 +83,11 @@ impl SylvaRuntime {
             globals.raw_remove(*module)?;
         }
 
-        let bonsai = lua.create_table()?;
+        let workspace = lua.create_table()?;
 
-        // bonsai.tool(name, args_table) → JSON string result or error
+        // workspace.tool(name, args_table) → JSON string result or error
         let reg = registry.clone();
-        bonsai.set(
+        workspace.set(
             "tool",
             lua.create_function(move |lua_ctx, (name, args): (String, LuaValue)| {
                 let json_args = lua_value_to_json(args)?;
@@ -102,8 +102,8 @@ impl SylvaRuntime {
             })?,
         )?;
 
-        // bonsai.log(msg) — log from Lua to the Rust tracing subscriber
-        bonsai.set(
+        // workspace.log(msg) — log from Lua to the Rust tracing subscriber
+        workspace.set(
             "log",
             lua.create_function(|_, msg: String| {
                 info!("[sylva] {msg}");
@@ -111,8 +111,8 @@ impl SylvaRuntime {
             })?,
         )?;
 
-        // bonsai.json_encode(table) → string
-        bonsai.set(
+        // workspace.json_encode(table) → string
+        workspace.set(
             "json_encode",
             lua.create_function(|lua_ctx, val: LuaValue| {
                 let json = lua_value_to_json(val)?;
@@ -120,8 +120,8 @@ impl SylvaRuntime {
             })?,
         )?;
 
-        // bonsai.json_decode(str) → table
-        bonsai.set(
+        // workspace.json_decode(str) → table
+        workspace.set(
             "json_decode",
             lua.create_function(|lua_ctx, s: String| {
                 let json: serde_json::Value =
@@ -130,7 +130,7 @@ impl SylvaRuntime {
             })?,
         )?;
 
-        lua.globals().set("bonsai", bonsai)?;
+        lua.globals().set("workspace", workspace)?;
         Ok(())
     }
 
@@ -180,7 +180,7 @@ impl SylvaRuntime {
                 // Each tool gets its own Lua state so calls are independent
                 {
                     let lua = Lua::new();
-                    Self::inject_bonsai_globals(&lua, &self.tool_registry)
+                    Self::inject_workspace_globals(&lua, &self.tool_registry)
                         .map_err(|e| e.to_string())?;
                     lua
                 },

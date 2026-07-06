@@ -165,7 +165,7 @@ impl crate::tool_core::Tool for UserSkillTool {
                 let mut cmd = tokio::process::Command::new(shell_cmd());
                 cmd.arg(shell_flag())
                     .arg(&body)
-                    .env("BONSAI_SKILL_ARGS", &sanitized_args)
+                    .env("WORKSPACE_SKILL_ARGS", &sanitized_args)
                     .kill_on_drop(true);
 
                 #[cfg(windows)]

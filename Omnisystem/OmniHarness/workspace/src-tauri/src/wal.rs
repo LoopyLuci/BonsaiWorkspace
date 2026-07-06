@@ -18,7 +18,7 @@ impl WAL {
         use tauri::Manager;
         let app_data_dir = app_handle.path().app_data_dir()?;
         std::fs::create_dir_all(&app_data_dir)?;
-        let db_path = app_data_dir.join("bonsai.db");
+        let db_path = app_data_dir.join("workspace.db");
 
         let url = format!("sqlite://{}?mode=rwc", db_path.display());
         let pool = SqlitePool::connect(&url).await?;

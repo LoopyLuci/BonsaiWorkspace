@@ -1,4 +1,4 @@
-/// Backup / restore for Bonsai Assistant data.
+/// Backup / restore for Workspace Assistant data.
 ///
 /// ZIP format:
 ///   manifest.json      — version, created_at, app_version, sha256 of every entry
@@ -167,7 +167,7 @@ pub async fn export_backup(
     std::fs::create_dir_all(&backups_dir).map_err(|e| format!("create backups dir: {e}"))?;
 
     let ts = now_ms();
-    let filename = format!("bonsai-buddy-backup-{ts}.zip");
+    let filename = format!("workspace-buddy-backup-{ts}.zip");
     let zip_path = backups_dir.join(&filename);
 
     // Collect all data first

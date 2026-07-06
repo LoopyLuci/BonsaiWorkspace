@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::gpu_layer::GpuLayer;
-use capability_registry::BonsaiEffect;
+use capability_registry::WorkspaceEffect;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 1 — Trust level and sandboxing
@@ -52,20 +52,20 @@ impl TrustLevel {
     }
 
     /// Effects that are allowed at this trust level
-    pub fn allowed_effects(&self) -> Vec<BonsaiEffect> {
+    pub fn allowed_effects(&self) -> Vec<WorkspaceEffect> {
         match self {
             Self::Untrusted => vec![],
-            Self::Sandboxed => vec![BonsaiEffect::FileIO],
+            Self::Sandboxed => vec![WorkspaceEffect::FileIO],
             Self::Managed => vec![
-                BonsaiEffect::FileIO,
-                BonsaiEffect::NetworkIO,
-                BonsaiEffect::ShellExec,
+                WorkspaceEffect::FileIO,
+                WorkspaceEffect::NetworkIO,
+                WorkspaceEffect::ShellExec,
             ],
             Self::System => vec![
-                BonsaiEffect::FileIO,
-                BonsaiEffect::NetworkIO,
-                BonsaiEffect::ShellExec,
-                BonsaiEffect::Spawn,
+                WorkspaceEffect::FileIO,
+                WorkspaceEffect::NetworkIO,
+                WorkspaceEffect::ShellExec,
+                WorkspaceEffect::Spawn,
             ],
         }
     }
@@ -154,7 +154,7 @@ pub struct ManagedProcess {
     pub binary: String,
     pub args: Vec<String>,
     pub trust_level: TrustLevel,
-    pub allowed_effects: Vec<BonsaiEffect>,
+    pub allowed_effects: Vec<WorkspaceEffect>,
     pub budget: ResourceBudget,
     pub state: ProcessState,
     pub parent_pid: Option<u32>,
@@ -256,7 +256,7 @@ impl ProcessManager {
 
     fn validate_effects(
         &self,
-        requested: &[BonsaiEffect],
+        requested: &[WorkspaceEffect],
         level: TrustLevel,
     ) -> Result<(), String> {
         let allowed = level.allowed_effects();
@@ -278,7 +278,7 @@ impl ProcessManager {
     /// Returns a virtual PID tracked in the process table.
     pub async fn spawn(&self, req: SpawnRequest) -> Result<SpawnResult, String> {
         // 1. Validate ShellExec effect at minimum for anything that runs code
-        let required = vec![BonsaiEffect::ShellExec];
+        let required = vec![WorkspaceEffect::ShellExec];
         self.validate_effects(&required, req.trust_level)
             .map_err(|e| format!("Effect check failed: {e}"))?;
 
@@ -600,10 +600,10 @@ mod tests {
     fn validate_effects_ok() {
         let pm = make_pm();
         assert!(pm
-            .validate_effects(&[BonsaiEffect::FileIO], TrustLevel::Sandboxed)
+            .validate_effects(&[WorkspaceEffect::FileIO], TrustLevel::Sandboxed)
             .is_ok());
         assert!(pm
-            .validate_effects(&[BonsaiEffect::ShellExec], TrustLevel::Managed)
+            .validate_effects(&[WorkspaceEffect::ShellExec], TrustLevel::Managed)
             .is_ok());
     }
 
@@ -611,10 +611,10 @@ mod tests {
     fn validate_effects_deny() {
         let pm = make_pm();
         assert!(pm
-            .validate_effects(&[BonsaiEffect::ShellExec], TrustLevel::Untrusted)
+            .validate_effects(&[WorkspaceEffect::ShellExec], TrustLevel::Untrusted)
             .is_err());
         assert!(pm
-            .validate_effects(&[BonsaiEffect::NetworkIO], TrustLevel::Sandboxed)
+            .validate_effects(&[WorkspaceEffect::NetworkIO], TrustLevel::Sandboxed)
             .is_err());
     }
 

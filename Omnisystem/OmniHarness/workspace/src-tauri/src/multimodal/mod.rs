@@ -1,4 +1,4 @@
-//! Multi-modal tool integrations for BonsAI.
+//! Multi-modal tool integrations for OmniAI.
 //!
 //! Each sub-module wraps an external model (GGUF sidecar, Python worker, ONNX)
 //! as a `Tool` that registers in the `ToolRegistry`.  All model loading is

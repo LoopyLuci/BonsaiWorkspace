@@ -223,7 +223,7 @@ impl TrainingJobManager {
                                     job.progress = 100;
                                     let adapter = dirs::home_dir()
                                         .unwrap_or_default()
-                                        .join(".bonsai/models/bonsai-latest.gguf")
+                                        .join(".workspace/models/workspace-latest.gguf")
                                         .to_string_lossy()
                                         .to_string();
                                     job.adapter_path = Some(adapter.clone());
@@ -246,7 +246,7 @@ impl TrainingJobManager {
                                     let _ = app4
                                         .notification()
                                         .builder()
-                                        .title("🎉 BonsAI Training Complete!")
+                                        .title("🎉 OmniAI Training Complete!")
                                         .body(format!(
                                             "{} lesson{} finished. Ready to deploy!",
                                             n,
@@ -385,10 +385,10 @@ impl TrainingJobManager {
 pub fn list_adapters() -> Vec<AdapterInfo> {
     let adapters_dir = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/adapters");
+        .join(".workspace/adapters");
     let deployed = dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/models/bonsai-latest.gguf");
+        .join(".workspace/models/workspace-latest.gguf");
 
     let mut result = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&adapters_dir) {
@@ -431,7 +431,7 @@ pub fn list_adapters() -> Vec<AdapterInfo> {
     }
 
     // Also list any pre-built GGUFs
-    let models_dir = dirs::home_dir().unwrap_or_default().join(".bonsai/models");
+    let models_dir = dirs::home_dir().unwrap_or_default().join(".workspace/models");
     if let Ok(entries) = std::fs::read_dir(&models_dir) {
         for entry in entries.flatten() {
             let path = entry.path();

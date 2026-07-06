@@ -1,4 +1,4 @@
-//! Unified Training Collector — the central nervous system of BonsAI's perpetual
+//! Unified Training Collector — the central nervous system of OmniAI's perpetual
 //! self-improvement engine.
 //!
 //! Every user interaction, tool call, feedback signal, skill execution, meeting
@@ -109,7 +109,7 @@ pub mod event_kinds {
         },
         ModelComparison {
             prompt_hash: String,
-            bonsai_output: String,
+            workspace_output: String,
             reference_count: u32,
             user_preferred: Option<String>,
         },
@@ -123,7 +123,7 @@ pub mod event_kinds {
         VisionAnalysis {
             image_hash: String,
             oracle_label_count: u32,
-            bonsai_label_count: u32,
+            workspace_label_count: u32,
             agreement_rate: f32,
         },
         MusicGeneration {
@@ -1157,7 +1157,7 @@ impl UnifiedTrainingCollector {
             weighter: FeedbackWeighter::new(48.0),
             db_path: dirs::home_dir()
                 .unwrap_or_default()
-                .join(".bonsai/events/events.db"),
+                .join(".workspace/events/events.db"),
             stats: RwLock::new(CollectorStats::default()),
         })
     }

@@ -1,6 +1,6 @@
 //! Multi-user auth — encrypted workspace state with per-profile passphrase keys.
 //!
-//! Self-contained: no external bonsai_auth crate required.  In production this
+//! Self-contained: no external workspace_auth crate required.  In production this
 //! should be backed by a proper KDF (Argon2) + AES-GCM.  For now it uses a
 //! deterministic placeholder so the API surface compiles and the UI works.
 

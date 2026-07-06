@@ -1,6 +1,6 @@
 //! REST management API — `/api/v1/` route group.
 //!
-//! Exposes every major Bonsai capability over HTTP so that agents, CLI tools,
+//! Exposes every major Workspace capability over HTTP so that agents, CLI tools,
 //! and automated scripts can drive the full ecosystem without needing a Tauri
 //! webview or IPC channel.
 //!
@@ -59,7 +59,7 @@ pub struct MgmtState {
     >,
     pub app_handle: tauri::AppHandle,
     pub pair_token: String,
-    pub bonsai_core: Arc<crate::core::AgentCore>,
+    pub agent_core: Arc<crate::agent_core::AgentCore>,
     pub telemetry: Arc<crate::telemetry::TelemetryStore>,
     pub dual_session: Arc<crate::dual_inference::SessionManager>,
     pub training_loop: Arc<crate::training_loop::TrainingLoopState>,
@@ -71,6 +71,7 @@ pub struct MgmtState {
     pub reasoning: Arc<crate::reasoning_engine::ReasoningEngine>,
     pub belief_reviser: Arc<tokio::sync::RwLock<crate::belief_reviser::BeliefReviser>>,
     pub metacognitive: Arc<tokio::sync::RwLock<crate::metacognitive_monitor::MetacognitiveMonitor>>,
+    pub smart_router: Arc<crate::smart_router::SmartRouter>,
 }
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ pub fn router(state: MgmtState) -> Router {
         )
         .route("/api/v1/tools/run", post(mgmt_run_tool))
         .route("/api/v1/core/stats", get(mgmt_core_stats))
-        .route("/api/v1/bonsai/process", post(mgmt_bonsai_process))
+        .route("/api/v1/workspace/process", post(mgmt_workspace_process))
         .route("/api/v1/core/shadow", post(mgmt_set_shadow))
         .route("/api/v1/curator/flush", post(mgmt_curator_flush))
         .route("/api/v1/telemetry/training", get(mgmt_telemetry_training))
@@ -172,6 +173,13 @@ pub fn router(state: MgmtState) -> Router {
         .route("/api/v1/plugins/execute", post(mgmt_plugin_execute))
         // tool registry (augments existing /api/v1/tools/run)
         .route("/api/v1/tools/list", get(mgmt_tools_list))
+        // SmartRouter — hardware-aware model selection, exposed over REST so
+        // non-Tauri callers (CLI, Omni-Language bridges, headless orchestration)
+        // can drive the same selection + feedback loop as the desktop app.
+        .route("/api/v1/smart-router/select", post(mgmt_smart_router_select))
+        .route("/api/v1/smart-router/hardware", get(mgmt_smart_router_hardware))
+        .route("/api/v1/smart-router/history", get(mgmt_smart_router_history))
+        .route("/api/v1/smart-router/weights", get(mgmt_smart_router_weights))
         // ── Chess ──────────────────────────────────────────────────────────────
         .route("/api/v1/chess/new", post(mgmt_chess_new))
         .route("/api/v1/chess/move", post(mgmt_chess_move))
@@ -535,6 +543,7 @@ async fn mgmt_chat(
     });
 
     let url = format!("{}/v1/chat/completions", model_url.trim_end_matches('/'));
+    let started = std::time::Instant::now();
     match client.post(&url).json(&req_body).send().await {
         Err(e) => err500(format!("model unreachable: {e}")).into_response(),
         Ok(r) if !r.status().is_success() => {
@@ -552,6 +561,41 @@ async fn mgmt_chat(
                 .as_str()
                 .unwrap_or("")
                 .to_owned();
+
+            // Feed SmartRouter's self-adjusting weights: without this, the
+            // "self-adjusting" feedback loop never actually receives an
+            // outcome and its adaptive weights just sit at their defaults
+            // forever. Quality scoring isn't available inline here (no critic
+            // pass on this path), so quality_score uses the documented "-1 =
+            // unavailable" sentinel; latency/tokens-per-sec are real.
+            let elapsed_ms = started.elapsed().as_millis() as u32;
+            let completion_tokens = v["usage"]["completion_tokens"].as_u64().unwrap_or(0) as f32;
+            let tokens_per_sec = if elapsed_ms > 0 {
+                completion_tokens / (elapsed_ms as f32 / 1000.0)
+            } else {
+                0.0
+            };
+            let model_id = s
+                .orchestrator
+                .status()
+                .await
+                .slots
+                .iter()
+                .find_map(|slot| slot.state.model_id().map(|m| m.to_string()))
+                .unwrap_or_default();
+            let domain = format!("{:?}", crate::critic::TaskDomain::classify(&last_user_prompt(&body.messages)));
+            s.smart_router
+                .record_perf(crate::smart_router::PerfRecord {
+                    model_id,
+                    task_domain: domain,
+                    tokens_per_sec,
+                    quality_score: -1.0,
+                    latency_ms: elapsed_ms,
+                    succeeded: true,
+                    was_recommended: false,
+                })
+                .await;
+
             let _ = s.app_handle.emit(
                 "agent-output",
                 json!({
@@ -562,6 +606,15 @@ async fn mgmt_chat(
             Json(json!({ "content": content, "raw": v })).into_response()
         }
     }
+}
+
+fn last_user_prompt(messages: &[MgmtChatMessage]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default()
 }
 
 // ── Agents ────────────────────────────────────────────────────────────────────
@@ -662,10 +715,10 @@ async fn mgmt_run_tool(
 async fn mgmt_core_stats(State(s): State<MgmtState>, headers: HeaderMap) -> impl IntoResponse {
     auth!(s, headers);
     let queue = s.task_queue.status().await;
-    let memory_entries = s.bonsai_core.memory.count().await;
-    let curator_buffered = s.bonsai_core.curator.buffered().await;
-    let curator_total = s.bonsai_core.curator.total_seen().await;
-    let adapter_loaded = s.bonsai_core.adapter_loaded().await;
+    let memory_entries = s.agent_core.memory.count().await;
+    let curator_buffered = s.agent_core.curator.buffered().await;
+    let curator_total = s.agent_core.curator.total_seen().await;
+    let adapter_loaded = s.agent_core.adapter_loaded().await;
     Json(json!({
         "adapter_loaded": adapter_loaded,
         "avg_latency_ms": 0.0,
@@ -681,27 +734,27 @@ async fn mgmt_core_stats(State(s): State<MgmtState>, headers: HeaderMap) -> impl
 
 async fn mgmt_curator_flush(State(s): State<MgmtState>, headers: HeaderMap) -> impl IntoResponse {
     auth!(s, headers);
-    s.bonsai_core.curator.flush().await;
-    let total = s.bonsai_core.curator.total_seen().await;
+    s.agent_core.curator.flush().await;
+    let total = s.agent_core.curator.total_seen().await;
     Json(json!({ "ok": true, "total_seen": total })).into_response()
 }
 
 // ── AgentCore process ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct BonsaiProcessBody {
+struct WorkspaceProcessBody {
     request: String,
     #[serde(default)]
-    history: Vec<crate::core::ChatMessage>,
+    history: Vec<crate::agent_core::ChatMessage>,
 }
 
-async fn mgmt_bonsai_process(
+async fn mgmt_workspace_process(
     State(s): State<MgmtState>,
     headers: HeaderMap,
-    Json(body): Json<BonsaiProcessBody>,
+    Json(body): Json<WorkspaceProcessBody>,
 ) -> impl IntoResponse {
     auth!(s, headers);
-    match s.bonsai_core.process(&body.request, &body.history).await {
+    match s.agent_core.process(&body.request, &body.history).await {
         Ok(resp) => Json(json!({ "ok": true, "result": resp })).into_response(),
         Err(e) => err500(e).into_response(),
     }
@@ -720,7 +773,7 @@ async fn mgmt_set_shadow(
     Json(body): Json<ShadowBody>,
 ) -> impl IntoResponse {
     auth!(s, headers);
-    s.bonsai_core.set_shadow_mode(body.enabled).await;
+    s.agent_core.set_shadow_mode(body.enabled).await;
     Json(json!({ "shadow_mode": body.enabled })).into_response()
 }
 
@@ -768,7 +821,7 @@ async fn mgmt_telemetry_curated(
     auth!(s, headers);
     let path = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".bonsai/curated_examples.jsonl");
+        .join(".workspace/curated_examples.jsonl");
     match std::fs::read_to_string(&path) {
         Ok(content) => (
             [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
@@ -812,7 +865,7 @@ async fn mgmt_training_history(
 #[derive(serde::Deserialize)]
 struct CompareRequest {
     base_model: String,
-    bonsai_adapter: String,
+    workspace_adapter: String,
     prompt: String,
     gpu_layers: Option<u32>,
 }
@@ -831,7 +884,7 @@ async fn mgmt_compare_models(
         .dual_session
         .ensure_session(DualSessionConfig {
             base_model_path: body.base_model,
-            bonsai_lora_path: Some(body.bonsai_adapter),
+            workspace_lora_path: Some(body.workspace_adapter),
             reference_lora_path: None,
             gpu_layers: layers,
             context_size: 2048,
@@ -1055,6 +1108,70 @@ async fn mgmt_tools_list(State(s): State<MgmtState>, headers: HeaderMap) -> impl
     Json(s.tool_registry.registry.list().await).into_response()
 }
 
+// ── SmartRouter REST handlers ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SmartRouterSelectReq {
+    prompt: String,
+    #[serde(default)]
+    quality_bias: Option<f32>,
+    #[serde(default)]
+    power_saving: Option<bool>,
+}
+
+async fn mgmt_smart_router_select(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+    Json(body): Json<SmartRouterSelectReq>,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    let status = s.orchestrator.status().await;
+    let all_models = s.orchestrator.list_models().await;
+    let loaded: Vec<String> = status
+        .slots
+        .iter()
+        .filter_map(|slot| slot.state.model_id().map(|m| m.to_string()))
+        .collect();
+    let available: Vec<String> = all_models.iter().map(|m| m.id.clone()).collect();
+
+    let sel = s
+        .smart_router
+        .select_model(&crate::smart_router::SelectionRequest {
+            prompt: body.prompt,
+            prompt_tokens: 0,
+            quality_bias: body.quality_bias.unwrap_or(0.7),
+            power_saving: body.power_saving.unwrap_or(false),
+            loaded_models: loaded,
+            available_models: available,
+        })
+        .await;
+    Json(sel).into_response()
+}
+
+async fn mgmt_smart_router_hardware(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    Json(s.smart_router.snapshot().await).into_response()
+}
+
+async fn mgmt_smart_router_history(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    Json(s.smart_router.perf_history().await).into_response()
+}
+
+async fn mgmt_smart_router_weights(
+    State(s): State<MgmtState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    auth!(s, headers);
+    Json(s.smart_router.current_weights().await).into_response()
+}
+
 // ── Chess REST handlers ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1094,18 +1211,18 @@ async fn mgmt_chess_new(
             elo: None,
         };
         let a = ChessPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: ChessPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: ChessPlayerKind::OmniAI,
             color: ChessColor::Black,
             elo: None,
         };
         (h, a)
     } else {
         let a = ChessPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: ChessPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: ChessPlayerKind::OmniAI,
             color: ChessColor::White,
             elo: None,
         };
@@ -1271,18 +1388,18 @@ async fn mgmt_go_new(
             rank: None,
         };
         let a = GoPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: GoPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: GoPlayerKind::OmniAI,
             color: GoColor::White,
             rank: None,
         };
         (h, a)
     } else {
         let a = GoPlayer {
-            id: "bonsai".into(),
-            name: "BonsAI".into(),
-            kind: GoPlayerKind::BonsAI,
+            id: "workspace".into(),
+            name: "OmniAI".into(),
+            kind: GoPlayerKind::OmniAI,
             color: GoColor::Black,
             rank: None,
         };
@@ -1339,7 +1456,7 @@ async fn mgmt_go_move(
             .into_response();
     }
     let ai_move = if matches!(session.result, go::GoGameResult::Ongoing) {
-        let ai_color: Stone = if session.white.id == "bonsai" {
+        let ai_color: Stone = if session.white.id == "workspace" {
             Stone::White
         } else {
             Stone::Black
@@ -1349,7 +1466,7 @@ async fn mgmt_go_move(
         let cfg = go::GoMctsConfig::interactive();
         let r = go_search(&board, ai_color, &eval, &cfg);
         let mv = r.best_move.clone();
-        let _ = session.play("bonsai", &mv);
+        let _ = session.play("workspace", &mv);
         mv
     } else {
         String::new()

@@ -120,7 +120,10 @@ impl GpuController {
     /// Spawn a background task that emits a Tauri event if the GPU becomes
     /// unavailable.  Runs a lightweight VRAM check every `interval_secs`.
     pub fn start_health_monitor(self: Arc<Self>, app_handle: tauri::AppHandle, interval_secs: u64) {
-        tokio::spawn(async move {
+        // Raw tokio::spawn panics ("no reactor running") when this is called
+        // synchronously from Tauri's non-async .setup() closure — async_runtime::spawn
+        // schedules onto Tauri's own Tokio runtime instead, which works from anywhere.
+        tauri::async_runtime::spawn(async move {
             let interval = Duration::from_secs(interval_secs);
             let mut consecutive_failures: u32 = 0;
             loop {

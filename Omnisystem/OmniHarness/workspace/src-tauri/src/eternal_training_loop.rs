@@ -902,7 +902,10 @@ impl EternalTrainingLoop {
     /// Start the eternal loop as a background task.
     pub fn spawn(self: Arc<Self>) {
         let this = self.clone();
-        tokio::spawn(async move { this.run().await });
+        // Raw tokio::spawn panics ("no reactor running") when `.spawn()` is called
+        // synchronously from Tauri's non-async .setup() closure (as it is, in
+        // lib.rs) — async_runtime::spawn schedules onto Tauri's own Tokio runtime.
+        tauri::async_runtime::spawn(async move { this.run().await });
     }
 
     pub async fn run(&self) {

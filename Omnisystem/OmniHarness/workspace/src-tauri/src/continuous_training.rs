@@ -76,7 +76,7 @@ impl ContinuousTrainer {
             self.feedback_buffer.lock().await.clear();
             s.running = false;
             s.examples_collected = 0;
-            s.last_adapter = Some(format!("bonsai-core-v{}", rand::random::<u16>()));
+            s.last_adapter = Some(format!("workspace-core-v{}", rand::random::<u16>()));
             s.last_f1 = Some(0.92);
             s.clone()
         };

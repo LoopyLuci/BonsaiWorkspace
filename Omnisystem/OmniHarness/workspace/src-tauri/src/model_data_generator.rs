@@ -187,20 +187,20 @@ fn knowledge_base() -> HashMap<&'static str, KbEntry> {
                 ("write_file", Good),
             ],
         }),
-        kb!("bonsai" => KbEntry {
-            family:           "Bonsai",
+        kb!("workspace" => KbEntry {
+            family:           "Workspace",
             organization:     "Prism ML",
-            description:      "Bonsai Models are created by Prism ML and are the heart of the Bonsai Ecosystem. \
-                               Bonsai-1.7B is an ultra-efficient model purpose-built for Bonsai Workspace — using \
+            description:      "Bonsai Models are created by Prism ML and are the heart of the Workspace Ecosystem. \
+                               Bonsai-1.7B is an ultra-efficient model purpose-built for Workspace — using \
                                BitNet-inspired quantization for minimal RAM and near-instant responses. \
-                               Bonsai Workspace and the wider Bonsai Ecosystem are built to give every user a \
+                               Workspace and the wider Workspace Ecosystem are built to give every user a \
                                peaceful, simple, and powerful AI experience, whether running Bonsai Models or any \
                                other compatible model. Source: huggingface.co/prism-ml",
-            license:          "Bonsai Community License",
+            license:          "Workspace Community License",
             homepage_url:     "https://huggingface.co/prism-ml",
             training_cutoff:  Some("2024-06"),
             strengths:        &[Instruction, Speed, Coding],
-            tier:             ModelTier::Embedded,
+            tier:             ModelTier::Lightweight,
             tool_calling:     ToolCallingSupport::Basic,
             prompt_format:    PromptFormat::Llama3,
             json_mode:        false,
@@ -261,7 +261,7 @@ fn knowledge_base() -> HashMap<&'static str, KbEntry> {
             homepage_url:     "https://huggingface.co/",
             training_cutoff:  None,
             strengths:        &[Speed, Vision],
-            tier:             ModelTier::Embedded,
+            tier:             ModelTier::Lightweight,
             tool_calling:     ToolCallingSupport::None,
             prompt_format:    PromptFormat::Qwen2,
             json_mode:        false,
@@ -682,7 +682,7 @@ fn parse_tier(s: &str) -> Option<ModelTier> {
         "capable" => Some(ModelTier::Capable),
         "fast" => Some(ModelTier::Fast),
         "specialized" => Some(ModelTier::Specialized),
-        "embedded" => Some(ModelTier::Embedded),
+        "lightweight" => Some(ModelTier::Lightweight),
         _ => None,
     }
 }

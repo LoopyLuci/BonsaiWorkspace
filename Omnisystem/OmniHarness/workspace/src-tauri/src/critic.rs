@@ -1,4 +1,4 @@
-//! BonsAI Critic — lightweight response quality gating.
+//! OmniAI Critic — lightweight response quality gating.
 //!
 //! After every inference, the Critic re-asks the model to rate its own response
 //! on a 0.0–1.0 scale.  If the score is below the configured threshold the

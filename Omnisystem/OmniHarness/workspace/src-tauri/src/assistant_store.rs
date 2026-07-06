@@ -107,7 +107,7 @@ impl AssistantStore {
         self.apply_migration(1, "assistant_profiles", &[
             "CREATE TABLE IF NOT EXISTS assistant_profiles (
                 id              TEXT PRIMARY KEY,
-                name            TEXT NOT NULL DEFAULT 'Bonsai Buddy',
+                name            TEXT NOT NULL DEFAULT 'Workspace Buddy',
                 persona_id      TEXT,
                 avatar_id       TEXT,
                 tts_voice       TEXT NOT NULL DEFAULT 'en_US-amy-medium',
@@ -116,7 +116,7 @@ impl AssistantStore {
                 tts_enabled     INTEGER NOT NULL DEFAULT 1,
                 wake_word       TEXT,
                 tool_permissions TEXT NOT NULL DEFAULT '{}',
-                system_prompt   TEXT NOT NULL DEFAULT 'You are Bonsai Buddy, a helpful personal AI assistant.',
+                system_prompt   TEXT NOT NULL DEFAULT 'You are Workspace Buddy, a helpful personal AI assistant.',
                 model_id        TEXT,
                 is_active       INTEGER NOT NULL DEFAULT 0,
                 created_at      INTEGER NOT NULL,
@@ -232,9 +232,9 @@ impl AssistantStore {
                  (id,name,tts_voice,tts_speed,tts_pitch,tts_enabled,tool_permissions,system_prompt,is_active,created_at,updated_at)
                  VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             )
-            .bind(&id).bind("Bonsai Buddy").bind("en_US-amy-medium")
+            .bind(&id).bind("Workspace Buddy").bind("en_US-amy-medium")
             .bind(1.0_f64).bind(1.0_f64).bind(1_i64)
-            .bind("{}").bind("You are Bonsai Buddy, a helpful personal AI assistant.")
+            .bind("{}").bind("You are Workspace Buddy, a helpful personal AI assistant.")
             .bind(1_i64).bind(ts).bind(ts)
             .execute(&self.pool)
             .await
@@ -262,7 +262,8 @@ impl AssistantStore {
         }
 
         for stmt in stmts {
-            sqlx::query(stmt)
+            // Hardcoded migration DDL/DML, not user input — safe to assert.
+            sqlx::query(sqlx::AssertSqlSafe(*stmt))
                 .execute(&self.pool)
                 .await
                 .map_err(|e| format!("migration {version} ({description}): {e}"))?;

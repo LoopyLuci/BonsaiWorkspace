@@ -77,7 +77,7 @@ fn now_ms() -> u64 {
 
 fn generate_invitation_code() -> String {
     const WORDS: &[&str] = &[
-        "bonsai", "tree", "leaf", "root", "branch", "seed", "grow", "green", "fox", "owl", "bear",
+        "workspace", "tree", "leaf", "root", "branch", "seed", "grow", "green", "fox", "owl", "bear",
         "wolf", "hawk", "deer", "fish", "bird", "star", "moon", "sun", "wind", "rain", "snow",
         "fire", "stone",
     ];

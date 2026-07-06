@@ -18,7 +18,10 @@ use crate::system_event_bus::{SharedEventBus, SystemEvent};
 /// publish to the bus (training, swarm, extensions, credits, etc.) without
 /// touching each subsystem individually.
 pub fn start_event_bridge(bus: SharedEventBus, universe: Arc<Universe>) {
-    tokio::spawn(async move {
+    // Raw tokio::spawn panics ("no reactor running") when called synchronously
+    // from Tauri's non-async .setup() closure (as it is, in lib.rs) —
+    // async_runtime::spawn schedules onto Tauri's own Tokio runtime instead.
+    tauri::async_runtime::spawn(async move {
         let mut rx = bus.subscribe();
         loop {
             match rx.recv().await {
@@ -206,7 +209,13 @@ fn convert_system_event(sys: &SystemEvent, universe: &Universe) -> Option<Univer
         | SystemEvent::TestStarted { .. }
         | SystemEvent::DreamCycleStarted { .. }
         | SystemEvent::UiPanelGenerated { .. }
-        | SystemEvent::UiPanelReloadRequested { .. } => return None,
+        | SystemEvent::UiPanelReloadRequested { .. }
+        | SystemEvent::RuleConfidenceUpdated { .. }
+        | SystemEvent::RuleMutationProposed { .. }
+        | SystemEvent::EtlCycleStarted { .. }
+        | SystemEvent::EtlCycleCompleted { .. }
+        | SystemEvent::EtlCycleFailed { .. }
+        | SystemEvent::DiagnosticFeedbackReceived { .. } => return None,
     };
 
     let mut ev = UniverseEvent::new(source, category, summary, target, device);

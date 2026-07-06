@@ -1,4 +1,4 @@
-//! BonsAI Expanded Tool Library — 60+ tools across every category.
+//! OmniAI Expanded Tool Library — 60+ tools across every category.
 //!
 //! All tools implement the `tool_registry::Tool` trait and are registered in
 //! `ToolRegistryState::new_with_defaults()`. Each tool is self-contained with
@@ -1476,7 +1476,7 @@ impl Tool for QrCodeTool {
             _ => {
                 let img = code.render::<image::Luma<u8>>().build();
                 let tmp =
-                    std::env::temp_dir().join(format!("bonsai_qr_{}.png", uuid::Uuid::new_v4()));
+                    std::env::temp_dir().join(format!("workspace_qr_{}.png", uuid::Uuid::new_v4()));
                 img.save(&tmp).map_err(|e| e.to_string())?;
                 let buf = std::fs::read(&tmp).map_err(|e| e.to_string())?;
                 let _ = std::fs::remove_file(&tmp);
@@ -1583,12 +1583,12 @@ impl Tool for NoteTool {
         "note"
     }
     fn description(&self) -> &str {
-        "Save or retrieve a persistent text note by key in ~/.bonsai/notes/."
+        "Save or retrieve a persistent text note by key in ~/.workspace/notes/."
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
         let key = args["key"].as_str().ok_or("Missing 'key'")?;
         let content = args.get("content");
-        let notes_dir = dirs::home_dir().unwrap_or_default().join(".bonsai/notes");
+        let notes_dir = dirs::home_dir().unwrap_or_default().join(".workspace/notes");
         let _ = tokio::fs::create_dir_all(&notes_dir).await;
         let path = notes_dir.join(format!("{}.txt", key.replace(['/', '\\', ':'], "_")));
         if let Some(Value::String(text)) = content {
@@ -1614,13 +1614,13 @@ impl Tool for TodoTool {
         "todo"
     }
     fn description(&self) -> &str {
-        "Manage a persistent TODO list: add/complete/list tasks in ~/.bonsai/todo.json."
+        "Manage a persistent TODO list: add/complete/list tasks in ~/.workspace/todo.json."
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
         let op = args["operation"].as_str().unwrap_or("list");
         let path = dirs::home_dir()
             .unwrap_or_default()
-            .join(".bonsai/todo.json");
+            .join(".workspace/todo.json");
         let mut todos: Vec<Value> = tokio::fs::read_to_string(&path)
             .await
             .ok()

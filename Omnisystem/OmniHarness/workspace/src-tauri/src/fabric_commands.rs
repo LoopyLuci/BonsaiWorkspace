@@ -127,7 +127,7 @@ pub async fn fabric_catalog_by_category(category: String) -> Result<Vec<catalog:
         "cryptography" => Cryptography,
         "security" => Security,
         "edge_iot" => EdgeIot,
-        "bonsai_native" => BonsaiNative,
+        "workspace_native" => WorkspaceNative,
         "interop" => Interop,
         other => return Err(format!("unknown category: {other}")),
     };

@@ -1,4 +1,4 @@
-//! Model Data — rich, persistent metadata for every model in the Bonsai ecosystem.
+//! Model Data — rich, persistent metadata for every model in the Workspace ecosystem.
 //!
 //! `ModelInfo` (from `model_registry`) is auto-scanned and ephemeral.
 //! `ModelData` is persistent, user-editable, and provider-agnostic — it covers
@@ -96,7 +96,7 @@ pub enum ModelTier {
     /// Domain-specific capability (code, embeddings, vision).
     Specialized,
     /// Ultra-small — fits on edge hardware (<1 GB RAM).
-    Embedded,
+    Lightweight,
 }
 
 /// What chat-template / instruction-wrapping format the model expects.

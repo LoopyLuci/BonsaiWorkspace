@@ -1,7 +1,7 @@
 //! Vision oracle self-play training loop.
 //!
 //! Picks workspace images → runs YOLO + PixAI as ground-truth oracles →
-//! asks BonsAI to describe the image → compares with oracle output via
+//! asks OmniAI to describe the image → compares with oracle output via
 //! Critic → generates DPO triples → feeds to adapter_manager.
 //!
 //! The loop runs in the background and surfaces progress through the
@@ -119,7 +119,7 @@ async fn build_oracle_description(image_path: &str) -> Option<String> {
 }
 
 /// Ask the running VLM slot to describe an image.
-async fn ask_bonsai_description(image_path: &str, slot_url: &str) -> Option<String> {
+async fn ask_workspace_description(image_path: &str, slot_url: &str) -> Option<String> {
     use base64::Engine as _;
     let image_bytes = tokio::fs::read(image_path).await.ok()?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
@@ -163,7 +163,7 @@ async fn ask_bonsai_description(image_path: &str, slot_url: &str) -> Option<Stri
 fn dpo_output_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
-        .join(".bonsai/training/vision_dpo.jsonl")
+        .join(".workspace/training/vision_dpo.jsonl")
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -211,8 +211,8 @@ pub async fn run_vision_training_loop<R: tauri::Runtime>(
             continue;
         };
 
-        // 2. BonsAI response via running VLM
-        let Some(bonsai_response) = ask_bonsai_description(&path_str, &slot_url).await else {
+        // 2. OmniAI response via running VLM
+        let Some(workspace_response) = ask_workspace_description(&path_str, &slot_url).await else {
             warn!("[vision_training] VLM slot unavailable for {}", path_str);
             skipped += 1;
             processed += 1;
@@ -221,13 +221,13 @@ pub async fn run_vision_training_loop<R: tauri::Runtime>(
 
         // 3. Score
         let prompt = format!("Describe this image: {path_str}");
-        let score = critic.score(&prompt, &bonsai_response).await;
+        let score = critic.score(&prompt, &workspace_response).await;
 
         if score < config.score_threshold {
             let triple = DpoTriple {
                 prompt: prompt.clone(),
                 chosen: oracle.clone(),
-                rejected: bonsai_response.clone(),
+                rejected: workspace_response.clone(),
                 source: DPO_SOURCE,
             };
             if let Err(e) = adapter_manager::write_dpo_triples(&dpo_path, &[triple]) {

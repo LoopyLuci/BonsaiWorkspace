@@ -67,9 +67,9 @@ impl Default for SelfPlayConfig {
             temperature_low: 0.2,
             overlap_threshold: 0.85,
             seed_prompts: Vec::new(),
-            output_jsonl: home.join(".bonsai/data/self_play.jsonl"),
+            output_jsonl: home.join(".workspace/data/self_play.jsonl"),
             base_model_path: None,
-            adapter_output: home.join(".bonsai/adapters/bonsai-self-play"),
+            adapter_output: home.join(".workspace/adapters/workspace-self-play"),
             finetune_threshold: 50,
         }
     }

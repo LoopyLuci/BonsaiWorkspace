@@ -109,7 +109,7 @@ impl OrchestratorState {
             "start_training" => self.start_training(params).await,
             "stop_training" => self.stop_training().await,
             "run_evaluation" => self.run_evaluation(params).await,
-            "restart_bonsai" => self.restart_bonsai().await,
+            "restart_workspace" => self.restart_workspace().await,
             "train_all_models_hours" => self.train_all_models_hours(params).await,
             _ => Err("unknown action".into()),
         };
@@ -120,7 +120,7 @@ impl OrchestratorState {
     async fn compile_launcher(&self) -> Result<serde_json::Value, String> {
         // Attempt to run the provided PS1 script in workspace root (best-effort)
         let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../BonsaiExeLauncherBuilder.ps1");
+            .join("../../WorkspaceExeLauncherBuilder.ps1");
         let script_str = script.to_string_lossy().to_string();
         let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -181,7 +181,7 @@ impl OrchestratorState {
         }
     }
 
-    async fn restart_bonsai(&self) -> Result<serde_json::Value, String> {
+    async fn restart_workspace(&self) -> Result<serde_json::Value, String> {
         // Attempt graceful restart: spawn a new process and exit
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let _ = tokio::task::spawn_blocking(move || {
@@ -243,6 +243,7 @@ pub async fn start_orchestrator(
     app_handle: tauri::AppHandle,
     gpu_controller: Arc<GpuController>,
     model_orchestrator: Arc<ModelOrchestrator>,
+    port: u16,
 ) {
     let state = OrchestratorState::new(app_handle.clone(), gpu_controller, model_orchestrator);
     let router = Router::new()
@@ -250,11 +251,10 @@ pub async fn start_orchestrator(
         .route("/jobs/:id", get(get_job_status))
         .with_state(state.clone());
 
-    // Bind to localhost:11380 using a TcpListener and axum::serve
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 11380)).await {
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) => {
-            error!(error=%e, "orchestrator failed to bind");
+            error!(error=%e, port, "orchestrator failed to bind");
             return;
         }
     };

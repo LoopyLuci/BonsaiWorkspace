@@ -455,9 +455,9 @@ impl Tool for SshKeygenTool {
         "Generate an Ed25519 SSH key pair and optionally save to ~/.ssh/."
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
-        let comment = args["comment"].as_str().unwrap_or("bonsai-generated");
+        let comment = args["comment"].as_str().unwrap_or("workspace-generated");
         let save = args["save"].as_bool().unwrap_or(false);
-        let key_name = args["key_name"].as_str().unwrap_or("id_ed25519_bonsai");
+        let key_name = args["key_name"].as_str().unwrap_or("id_ed25519_workspace");
 
         use ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
         let key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).map_err(|e| e.to_string())?;

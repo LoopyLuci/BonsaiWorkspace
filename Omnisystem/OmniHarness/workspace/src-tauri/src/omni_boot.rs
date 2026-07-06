@@ -233,12 +233,12 @@ impl OmniBoot {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
 
-                let trust_level = if name.contains("bonsai") {
+                let trust_level = if name.contains("workspace") {
                     TrustLevel::System
                 } else {
                     TrustLevel::Managed
                 };
-                let required = name.contains("bonsai-workspace");
+                let required = name.contains("workspace");
 
                 components.push(BootComponent {
                     name: name.clone(),

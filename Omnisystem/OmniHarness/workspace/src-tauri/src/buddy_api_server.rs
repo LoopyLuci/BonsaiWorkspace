@@ -1,4 +1,4 @@
-//! OpenAI-compatible HTTP API server for Bonsai Buddy (port 11420).
+//! OpenAI-compatible HTTP API server for Workspace Buddy (port 47110).
 //!
 //! Endpoints:
 //!   GET  /health                → liveness + port info
@@ -38,7 +38,7 @@ use crate::{
 };
 
 const BUDDY_DEFAULT_SYSTEM: &str = "\
-You are Bonsai Buddy, a helpful, friendly AI assistant running locally on the user's device. \
+You are Workspace Buddy, a helpful, friendly AI assistant running locally on the user's device. \
 You have access to these tools — always use them when they apply:\n\
 - get_system_stats: full system specs (OS name/version, CPU model/cores/usage, RAM, swap, disk per drive, hostname)\n\
 - get_datetime: current local date and time\n\
@@ -155,7 +155,7 @@ pub async fn start(
         .layer(cors)
         .with_state(state);
 
-    tracing::info!(port=%port, "[buddy-api] Bonsai Buddy API listening");
+    tracing::info!(port=%port, "[buddy-api] Workspace Buddy API listening");
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let join = tokio::spawn(async move {
@@ -182,12 +182,12 @@ async fn health(State(s): State<BuddyApiState>) -> impl IntoResponse {
 }
 
 async fn list_models(State(s): State<BuddyApiState>) -> impl IntoResponse {
-    let mut data = vec![json!({ "id": "bonsai-buddy", "object": "model", "owned_by": "bonsai" })];
+    let mut data = vec![json!({ "id": "workspace-buddy", "object": "model", "owned_by": "workspace" })];
     let models = s.orchestrator.list_models().await;
     data.extend(
         models
             .into_iter()
-            .map(|m| json!({ "id": m.id, "object": "model", "owned_by": "bonsai" })),
+            .map(|m| json!({ "id": m.id, "object": "model", "owned_by": "workspace" })),
     );
     Json(json!({ "object": "list", "data": data }))
 }
@@ -222,16 +222,16 @@ async fn chat_completions(
     }
 
     // ── Structured confirmation response (omni-bot protocol) ───────────────
-    // If the last message carries bonsai_ext.type == "confirm_response", resolve
+    // If the last message carries workspace_ext.type == "confirm_response", resolve
     // the confirmation gate and return the result without a full inference turn.
     if let Some(last) = req.messages.last() {
         if last
-            .get("bonsai_ext")
+            .get("workspace_ext")
             .and_then(|e| e.get("type"))
             .and_then(|t| t.as_str())
             == Some("confirm_response")
         {
-            let ext = &last["bonsai_ext"];
+            let ext = &last["workspace_ext"];
             let schema = ext["schema"].as_u64().unwrap_or(0);
             let token = ext["token"].as_str().unwrap_or_default();
             let approved = ext["approved"].as_bool().unwrap_or(false);
@@ -267,7 +267,7 @@ async fn chat_completions(
                 }
                 Ok((_tool, _args)) => {
                     // Tool is now approved — the caller should resubmit the full conversation
-                    // without the bonsai_ext field; run_assistant_turn will re-invoke the tool
+                    // without the workspace_ext field; run_assistant_turn will re-invoke the tool
                     // via the Allow path. Return a receipt so the bot knows to resubmit.
                     return Json(json!({
                         "id": format!("buddy-{req_id}"),
@@ -277,7 +277,7 @@ async fn chat_completions(
                             "message": { "role": "assistant", "content": "✅ Confirmed. Processing..." },
                             "finish_reason": "stop"
                         }],
-                        "bonsai_ext": { "schema": 1, "type": "confirm_ack", "token": token }
+                        "workspace_ext": { "schema": 1, "type": "confirm_ack", "token": token }
                     })).into_response();
                 }
             }
@@ -293,7 +293,7 @@ async fn chat_completions(
             Json(json!({
                 "error": {
                     "type": "buddy_error",
-                    "message": "No model slot ready. Load a model in Bonsai Workspace and retry.",
+                    "message": "No model slot ready. Load a model in Workspace and retry.",
                     "code": 503
                 }
             })),
@@ -368,7 +368,7 @@ async fn chat_completions(
         .await
         {
             Ok(turn) => {
-                let (finish_reason, bonsai_ext) = if let Some(cr) = &turn.confirm_token {
+                let (finish_reason, workspace_ext) = if let Some(cr) = &turn.confirm_token {
                     (
                         "tool_calls_pending_approval",
                         Some(json!({
@@ -394,8 +394,8 @@ async fn chat_completions(
                     }],
                     "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
                 });
-                if let Some(ext) = bonsai_ext {
-                    resp["bonsai_ext"] = ext;
+                if let Some(ext) = workspace_ext {
+                    resp["workspace_ext"] = ext;
                 }
                 Json(resp).into_response()
             }
@@ -451,7 +451,7 @@ fn normalize_requested_model(raw: Option<&str>) -> Option<String> {
     let model = raw?.trim();
     if model.is_empty()
         || model.eq_ignore_ascii_case("local")
-        || model.eq_ignore_ascii_case("bonsai-buddy")
+        || model.eq_ignore_ascii_case("workspace-buddy")
     {
         None
     } else {
@@ -515,7 +515,7 @@ async fn first_ready_slot_url(
 fn default_profile() -> AssistantProfile {
     AssistantProfile {
         id: "buddy-default".to_string(),
-        name: "Bonsai Buddy".to_string(),
+        name: "Workspace Buddy".to_string(),
         persona_id: None,
         avatar_id: None,
         tts_voice: "en-us".to_string(),

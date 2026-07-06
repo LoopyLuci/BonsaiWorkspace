@@ -111,8 +111,8 @@ pub async fn load_canvas_layout(workspace_path: String) -> Result<Value, String>
         return Err("Path not allowed: traversal sequences are forbidden".to_string());
     }
 
-    let bonsai_dir = std::path::Path::new(&workspace_path).join(".bonsai");
-    let canvas_path = bonsai_dir.join("canvas.json");
+    let workspace_dir = std::path::Path::new(&workspace_path).join(".workspace");
+    let canvas_path = workspace_dir.join("canvas.json");
     if !canvas_path.exists() {
         return Ok(json!({
             "layout": default_canvas_layout(),
@@ -127,7 +127,7 @@ pub async fn load_canvas_layout(workspace_path: String) -> Result<Value, String>
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
                 .as_secs();
-            let backup_path = bonsai_dir.join(format!("canvas.corrupt.{}.json", ts));
+            let backup_path = workspace_dir.join(format!("canvas.corrupt.{}.json", ts));
             fs::rename(&canvas_path, &backup_path).map_err(|e| e.to_string())?;
             Ok(json!({
                 "layout": default_canvas_layout(),
@@ -144,11 +144,11 @@ pub async fn save_canvas_layout(workspace_path: String, layout: Value) -> Result
         return Err("Path not allowed: traversal sequences are forbidden".to_string());
     }
 
-    let bonsai_dir = std::path::Path::new(&workspace_path).join(".bonsai");
-    fs::create_dir_all(&bonsai_dir).map_err(|e| e.to_string())?;
+    let workspace_dir = std::path::Path::new(&workspace_path).join(".workspace");
+    fs::create_dir_all(&workspace_dir).map_err(|e| e.to_string())?;
 
-    let canvas_path = bonsai_dir.join("canvas.json");
-    let tmp_path = bonsai_dir.join("canvas.json.tmp");
+    let canvas_path = workspace_dir.join("canvas.json");
+    let tmp_path = workspace_dir.join("canvas.json.tmp");
     let mut doc = layout;
     if doc.get("schema_version").is_none() {
         doc["schema_version"] = json!(1);
@@ -670,10 +670,10 @@ pub async fn submit_chat(
         tools::system_prompt_for(&tools, workspace_path.as_deref(), Some(&last_user_text));
     // Inject OMNISYSTEM.md when the feature is enabled
     if crate::features::FeatureFlags::global().project_context_md_enabled {
-        sys_prompt = crate::md::inject(&sys_prompt, workspace_path.as_deref());
+        sys_prompt = crate::project_context::inject(&sys_prompt, workspace_path.as_deref());
         // Ensure a OMNISYSTEM.md exists for the project (creates default if absent)
         if let Some(ws) = workspace_path.as_deref() {
-            crate::md::ensure_exists(ws);
+            crate::project_context::ensure_exists(ws);
         }
     }
     if is_file_inventory_request(&last_user_text) {
@@ -1797,7 +1797,7 @@ pub async fn ai_scaffold_project(
             source: TaskSource::Workspace,
             model_id: None,
             messages: vec![
-                json!({"role": "system", "content": "Scaffold a Bonsai project."}),
+                json!({"role": "system", "content": "Scaffold a Workspace project."}),
                 json!({"role": "user", "content": full_prompt}),
             ],
             max_tokens: 4096,
@@ -2505,7 +2505,8 @@ pub async fn set_api_config(
         swarm_cancels: state.swarm_cancels.clone(),
         app_handle: app_handle.clone(),
         pair_token: state.pair_token.clone(),
-        bonsai_core: state.bonsai_core.clone(),
+        smart_router: state.smart_router.clone(),
+        agent_core: state.agent_core.clone(),
         telemetry: state.telemetry.clone(),
         dual_session: state.dual_session.clone(),
         training_loop: state.training_loop.clone(),
@@ -2801,7 +2802,7 @@ pub async fn get_local_ip() -> Result<String, String> {
 }
 
 /// Generates an SVG QR code encoding
-/// `bonsai://connect?ip=<local_ip>&port=<api_port>&token=<pair_token>`.
+/// `workspace://connect?ip=<local_ip>&port=<api_port>&token=<pair_token>`.
 #[tauri::command]
 pub async fn generate_pair_qr(state: State<'_, AppState>) -> Result<String, String> {
     use qrcode::render::svg;
@@ -2811,7 +2812,7 @@ pub async fn generate_pair_qr(state: State<'_, AppState>) -> Result<String, Stri
         .map(|i| i.to_string())
         .unwrap_or_else(|_| "127.0.0.1".into());
     let data = format!(
-        "bonsai://connect?ip={}&port={}&token={}",
+        "workspace://connect?ip={}&port={}&token={}",
         ip,
         crate::config::DEFAULT_API_PORT,
         state.pair_token
@@ -3207,7 +3208,7 @@ pub async fn android_mobile_view_start(
 
         let mut cmd = Command::new(&scrcpy_executable);
         cmd.args(["-s", &serial]);
-        cmd.arg("--window-title").arg(format!("Bonsai Mobile View - {serial}"));
+        cmd.arg("--window-title").arg(format!("Workspace Mobile View - {serial}"));
 
         if let Some(size) = max_size {
             if size >= 240 {
@@ -3390,7 +3391,7 @@ pub async fn android_mobile_start_recording(
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_millis();
-        let remote_path = format!("/sdcard/Movies/bonsai-recording-{timestamp}.mp4");
+        let remote_path = format!("/sdcard/Movies/workspace-recording-{timestamp}.mp4");
 
         let (adb_executable, candidates) = resolve_adb_executable();
         let mut cmd = Command::new(&adb_executable);
@@ -3860,9 +3861,9 @@ pub async fn android_mobile_set_orientation(
     .map_err(|e| e.to_string())?
 }
 
-/// Launch Bonsai Workspace on the selected Android device.
+/// Launch Workspace on the selected Android device.
 #[tauri::command]
-pub async fn android_mobile_launch_bonsai(serial: String) -> Result<serde_json::Value, String> {
+pub async fn android_mobile_launch_workspace(serial: String) -> Result<serde_json::Value, String> {
     tokio::task::spawn_blocking(move || {
         let serial = serial.trim().to_string();
         if serial.is_empty() {
@@ -3879,7 +3880,7 @@ pub async fn android_mobile_launch_bonsai(serial: String) -> Result<serde_json::
             "-n".to_string(),
             "com.bonsai.workspace/.MainActivity".to_string(),
         ])?;
-        adb_assert_ok(&start, "adb am start Bonsai")?;
+        adb_assert_ok(&start, "adb am start Workspace")?;
 
         Ok(json!({
             "ok": true,
@@ -3928,8 +3929,8 @@ pub async fn android_mobile_prepare_uniform_runtime(
             return Err("serial cannot be empty".to_string());
         }
 
-        let api = api_port.unwrap_or(11369);
-        let ws = ws_port.unwrap_or(11371);
+        let api = api_port.unwrap_or(crate::config::DEFAULT_API_PORT);
+        let ws = ws_port.unwrap_or(47101);
 
         let wake = adb_run(&vec![
             "-s".to_string(),
@@ -3979,7 +3980,7 @@ pub async fn android_mobile_prepare_uniform_runtime(
             "-n".to_string(),
             "com.bonsai.workspace/.MainActivity".to_string(),
         ])?;
-        adb_assert_ok(&launch, "adb launch bonsai")?;
+        adb_assert_ok(&launch, "adb launch workspace")?;
 
         let remote_launch = if remote_surface {
             let launch_remote = adb_run(&vec![
@@ -4114,7 +4115,7 @@ pub async fn android_usb_list_devices() -> Result<serde_json::Value, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Report which adb executable Bonsai is currently resolving.
+/// Report which adb executable Workspace is currently resolving.
 #[tauri::command]
 pub async fn android_usb_get_adb_info() -> Result<serde_json::Value, String> {
     let (adb_executable, candidates) = resolve_adb_executable();
@@ -4774,7 +4775,7 @@ pub async fn android_usb_resolve_apk(
             .app_data_dir()
             .map_err(|e| e.to_string())?;
 
-        // Walk up to workspace root (app_data_dir is typically inside AppData; walk up to find bonsai src-tauri).
+        // Walk up to workspace root (app_data_dir is typically inside AppData; walk up to find workspace src-tauri).
         let workspace_root: std::path::PathBuf = app_data_dir
             .ancestors()
             .find(|p: &&std::path::Path| p.join("src-tauri").exists())
@@ -5334,15 +5335,15 @@ pub async fn get_mobile_pairing_evidence(
     }))
 }
 
-/// Browse LAN for `_bonsai._tcp.local.` services.
+/// Browse LAN for `_workspace._tcp.local.` services.
 #[tauri::command]
-pub async fn browse_bonsai_services() -> Result<Vec<serde_json::Value>, String> {
+pub async fn browse_workspace_services() -> Result<Vec<serde_json::Value>, String> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
     use std::time::{Duration, Instant};
 
     let mdns = ServiceDaemon::new().map_err(|e| e.to_string())?;
     let receiver = mdns
-        .browse("_bonsai._tcp.local.")
+        .browse("_workspace._tcp.local.")
         .map_err(|e| e.to_string())?;
 
     tokio::task::spawn_blocking(move || {
@@ -5586,15 +5587,12 @@ pub async fn submit_swarm_chat(
         .map(|m| m.content.clone())
         .unwrap_or_default();
 
-    let run_id: String = {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(12)
-            .map(char::from)
-            .collect()
-    };
+    // A real UUID (not the previous random-alphanumeric string) so this run_id
+    // can double as the Swarm Commander's `swarm_id` — the bridge in
+    // `swarm_commander_bridge.rs` mirrors this exact run into that system's
+    // hierarchy/ledger/DAG views under the same identifier, rather than
+    // needing a separate id-mapping table.
+    let run_id: String = uuid::Uuid::new_v4().to_string();
 
     // Build cancel flags (one per slot, indexed by slot_index)
     let max_slot = enabled
@@ -5708,9 +5706,9 @@ async fn fetch_from_bot_path(path: &str, token: &str) -> Result<(Value, u16), St
     let client = reqwest::Client::new();
     // Prefer a persisted port file written by the bot when available.
     fn read_persisted_bot_port() -> Option<u16> {
-        // First try the OS config dir: {config_dir}/bonsai/omni-bot-port.json
+        // First try the OS config dir: {config_dir}/workspace/omni-bot-port.json
         if let Some(cfg) = dirs::config_dir() {
-            let path = cfg.join("bonsai").join("omni-bot-port.json");
+            let path = cfg.join("workspace").join("omni-bot-port.json");
             if path.exists() {
                 if let Ok(s) = std::fs::read_to_string(&path) {
                     if let Ok(v) = serde_json::from_str::<Value>(&s) {
@@ -5787,9 +5785,9 @@ async fn fetch_from_bot_path(path: &str, token: &str) -> Result<(Value, u16), St
 /// the local workspace, returning the port number when available.
 #[tauri::command]
 pub fn read_persisted_bot_port() -> Result<Option<u16>, String> {
-    // First try the OS config dir: {config_dir}/bonsai/omni-bot-port.json
+    // First try the OS config dir: {config_dir}/workspace/omni-bot-port.json
     if let Some(cfg) = dirs::config_dir() {
-        let path = cfg.join("bonsai").join("omni-bot-port.json");
+        let path = cfg.join("workspace").join("omni-bot-port.json");
         if path.exists() {
             if let Ok(s) = std::fs::read_to_string(&path) {
                 if let Ok(v) = serde_json::from_str::<Value>(&s) {
@@ -6542,7 +6540,7 @@ mod tests {
         use qrcode::QrCode;
 
         let data = format!(
-            "bonsai://connect?ip=192.168.1.100&port={}&token=ABCD1234",
+            "workspace://connect?ip=192.168.1.100&port={}&token=ABCD1234",
             crate::config::DEFAULT_API_PORT
         );
         let code = QrCode::new(data.as_bytes()).expect("QR code creation failed");
@@ -6639,7 +6637,7 @@ pub async fn send_agent_message(
     Ok(output)
 }
 
-// ── BonsAI-Core training lifecycle ───────────────────────────────────────────
+// ── OmniAI-Core training lifecycle ───────────────────────────────────────────
 
 #[tauri::command]
 pub async fn start_training_cycle(
@@ -6658,11 +6656,11 @@ pub async fn start_training_cycle(
         }
     }
 
-    let data = data_path.unwrap_or_else(|| "data/bonsai_core/bonsai_core_train_v2.jsonl".into());
+    let data = data_path.unwrap_or_else(|| "data/workspace_core/workspace_core_train_v2.jsonl".into());
     let output = output_path.unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".bonsai/adapters/bonsai-core-v3")
+            .join(".workspace/adapters/workspace-core-v3")
             .to_string_lossy()
             .to_string()
     });
@@ -6707,7 +6705,7 @@ pub async fn start_training_cycle(
     }
 
     let adapter = result?;
-    state.bonsai_core.load_adapter(&adapter);
+    state.agent_core.load_adapter(&adapter);
     Ok(adapter.to_string_lossy().to_string())
 }
 
@@ -6779,7 +6777,7 @@ pub async fn get_memory_pressure() -> f32 {
 pub async fn compare_models(
     state: State<'_, AppState>,
     base_model_path: String,
-    bonsai_adapter: String,
+    workspace_adapter: String,
     prompt: String,
     gpu_layers: Option<u32>,
 ) -> Result<crate::dual_inference::ComparisonResult, String> {
@@ -6791,7 +6789,7 @@ pub async fn compare_models(
         .dual_session
         .ensure_session(DualSessionConfig {
             base_model_path,
-            bonsai_lora_path: Some(bonsai_adapter),
+            workspace_lora_path: Some(workspace_adapter),
             reference_lora_path: None,
             gpu_layers: layers,
             context_size: 2048,
@@ -6996,7 +6994,7 @@ pub async fn hot_reload_model(
     let model_id = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("bonsai-latest")
+        .unwrap_or("workspace-latest")
         .to_string();
 
     let orchestrator = state.orchestrator.clone();
@@ -7078,7 +7076,7 @@ pub async fn deploy_adapter(
     let src = PathBuf::from(&adapter_path);
     let target = dirs::home_dir()
         .ok_or("No home dir")?
-        .join(".bonsai/models/bonsai-latest.gguf");
+        .join(".workspace/models/workspace-latest.gguf");
 
     if src.extension().and_then(|e| e.to_str()) == Some("gguf") {
         // Already a GGUF — just copy it
@@ -7107,8 +7105,8 @@ pub async fn deploy_adapter(
         let _ = app
             .notification()
             .builder()
-            .title("🧠 BonsAI Brain Update Deployed")
-            .body(format!("{name} is now active. BonsAI just got smarter!"))
+            .title("🧠 OmniAI Brain Update Deployed")
+            .body(format!("{name} is now active. OmniAI just got smarter!"))
             .show();
     }
 

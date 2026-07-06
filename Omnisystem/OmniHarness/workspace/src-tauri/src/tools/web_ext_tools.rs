@@ -19,7 +19,7 @@ impl Tool for WebScrapeStructuredTool {
         let url = args["url"].as_str().ok_or("Missing 'url'")?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
-            .user_agent("Mozilla/5.0 BonsAI-Scraper/1.0")
+            .user_agent("Mozilla/5.0 OmniAI-Scraper/1.0")
             .build()
             .map_err(|e| e.to_string())?;
         let html = client
@@ -120,7 +120,7 @@ impl Tool for RssFeedsTool {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .user_agent("BonsAI-RSS/1.0")
+            .user_agent("OmniAI-RSS/1.0")
             .build()
             .map_err(|e| e.to_string())?;
 
@@ -451,7 +451,7 @@ impl Tool for BackupStrategyTool {
         let compress_flag = if compress { "z" } else { "" };
         let script = format!(
             r#"#!/bin/bash
-# BonsAI Backup Script — generated {schedule} backup
+# OmniAI Backup Script — generated {schedule} backup
 # Source: {source} | Destination: {destination}
 set -euo pipefail
 

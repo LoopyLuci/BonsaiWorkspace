@@ -116,7 +116,7 @@ impl ToolWatcher {
         &self.watch_root
     }
 
-    /// Watch an additional path (e.g. ~/.bonsai/data/).
+    /// Watch an additional path (e.g. ~/.workspace/data/).
     pub fn add_path(&mut self, path: &Path) {
         if let Err(e) = self._watcher.watch(path, RecursiveMode::Recursive) {
             warn!(path=%path.display(), error=%e, "[tool_watcher] Failed to add path");

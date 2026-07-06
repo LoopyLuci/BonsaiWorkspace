@@ -17,7 +17,9 @@ impl GpuModelConfig {
     pub fn new(model_path: &str) -> Self {
         Self {
             model_path: model_path.into(),
-            port: 11420,
+            // Sidecar llama-server port — distinct from BUDDY_API_PORT even though
+            // they historically shared the same excluded-range number (11420).
+            port: 47150,
             context_size: 4096,
             force_cpu_fallback: false,
         }
@@ -35,33 +37,15 @@ impl GpuModelLoader {
 
     /// Calculate optimal GPU layers for a model based on available VRAM.
     ///
-    /// Uses a 4 GB headroom to cover KV cache, recurrent state buffers, and
-    /// MoE compute/activation allocations (empirically needed for Qwen3.5-MoE).
+    /// Delegates to `model_orchestrator::estimate_safe_gpu_layers`, which is
+    /// size-bucketed by transformer depth (24/32/40 layers depending on file
+    /// size) and queries real dedicated VRAM via WMI, rather than this
+    /// function's former flat `total_layers = 40` assumption combined with
+    /// `GpuLayer::free_vram_mb()`'s use of total *system* RAM as a VRAM proxy
+    /// — a combination that silently over-offloaded on any model that wasn't
+    /// close to the 40-layer/RAM-rich case it was tuned against.
     pub fn calculate_gpu_layers(&self, model_path: &Path) -> u32 {
-        let file_size_mb = std::fs::metadata(model_path)
-            .map(|m| m.len() / (1024 * 1024))
-            .unwrap_or(0);
-
-        let total_layers: u64 = 40;
-        let per_layer_mb = (file_size_mb / total_layers).max(1);
-        let free_mb = self.gpu.free_vram_mb();
-        // 4 GB headroom: 2 GB KV + recurrent state + MoE compute buffers (~553 MB)
-        // + fragmentation margin. Verified empirically on 7900 XTX / Qwen3.5-35B-MoE.
-        let headroom_mb: u64 = 4096;
-
-        let usable = free_mb.saturating_sub(headroom_mb);
-        // Cap at total_layers - 5 for MoE architectures: the fused Gated Delta Net
-        // recurrent state + compute buffers need ~600 MB that the weight-only estimate
-        // misses. Verified on 7900 XTX with Qwen3.5-35B-MoE (Q6_K, 21 GB): 40 layers
-        // fails, 35 layers loads and runs correctly.
-        let safe_max = total_layers.saturating_sub(5);
-        let layers = (usable / per_layer_mb).min(safe_max) as u32;
-
-        info!(
-            free_mb,
-            per_layer_mb, layers, total_layers, safe_max, "[gpu_loader] GPU layer calculation"
-        );
-        layers
+        crate::model_orchestrator::estimate_safe_gpu_layers(model_path)
     }
 
     /// Launch llama-server with optimal GPU layers. Returns (PID, gpu_layers_used).
@@ -71,7 +55,11 @@ impl GpuModelLoader {
             return Err(format!("Model not found: {}", config.model_path));
         }
 
+        let quant = crate::model_registry::quant_for_path(model_path);
         let gpu_layers = if config.force_cpu_fallback {
+            0
+        } else if crate::model_orchestrator::is_gpu_unsafe_quant(&quant) {
+            info!(?quant, "[gpu_loader] quant known to crash GPU backend — forcing CPU");
             0
         } else {
             self.calculate_gpu_layers(model_path)
@@ -111,13 +99,18 @@ impl GpuModelLoader {
     }
 
     fn find_llama_server() -> Result<String, String> {
-        let paths = [
-            r"C:\Users\limpi\AppData\Roaming\com.bonsai.workspace\sidecars\llama-server.exe",
-            r"C:\Users\limpi\AppData\Local\com.bonsai.workspace\sidecars\llama-server.exe",
+        // Was previously hardcoded to a specific developer machine's user
+        // profile under the pre-rename bundle id (`com.workspace.workspace`),
+        // so it would never resolve on any other machine or account. Derive
+        // the real per-user data dirs instead, under the current identifier
+        // (`com.omnisystem.workspace`, see `tauri.conf.json`).
+        let candidates = [
+            dirs::data_dir().map(|d| d.join("com.omnisystem.workspace/sidecars/llama-server.exe")),
+            dirs::data_local_dir().map(|d| d.join("com.omnisystem.workspace/sidecars/llama-server.exe")),
         ];
-        for path in &paths {
-            if Path::new(path).exists() {
-                return Ok(path.to_string());
+        for path in candidates.into_iter().flatten() {
+            if path.exists() {
+                return Ok(path.to_string_lossy().into_owned());
             }
         }
         Err("llama-server not found in sidecars directory".into())

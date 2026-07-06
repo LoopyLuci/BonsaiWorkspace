@@ -673,7 +673,10 @@ pub async fn omn_new_session(state: tauri::State<'_, crate::AppState>) -> Result
 
 /// Spawn a 1 Hz background task that feeds hardware snapshots to OmnipresentCapture.
 pub fn spawn_hardware_sampler(capture: Arc<OmnipresentCapture>) {
-    tokio::spawn(async move {
+    // Raw tokio::spawn panics ("no reactor running") when called synchronously
+    // from Tauri's non-async .setup() closure (as it is, in lib.rs) —
+    // async_runtime::spawn schedules onto Tauri's own Tokio runtime instead.
+    tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             // In a full implementation this would read from sysinfo / GPU telemetry.
