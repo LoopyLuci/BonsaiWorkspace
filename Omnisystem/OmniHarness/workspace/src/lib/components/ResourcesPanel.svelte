@@ -1,0 +1,563 @@
+<script lang="ts">
+  import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
+  import { agentConfigs } from '$lib/stores/agents';
+  import { availableModels, orchestratorStatus, refreshStatus } from '$lib/stores/models';
+
+  const dispatch = createEventDispatcher<{ close: void }>();
+
+  type HardwareInfo = {
+    ram_total_gb: number;
+    ram_available_gb: number;
+    cpu_count: number;
+    backend: string;
+    gpu_names: string[];
+  };
+
+  type BotStatus = {
+    platform_states?: Record<string, string>;
+    active_sessions?: number;
+  };
+  type BotMetrics = {
+    messages_inbound?:      number;
+    messages_processed?:    number;
+    buddy_requests?:        number;
+    buddy_errors?:          number;
+    rate_limit_hits?:       number;
+    dedup_hits?:            number;
+    allowlist_denials?:     number;
+    confirms_resolved?:     number;
+    messages_queued_full?:  number;
+  };
+
+  type GpuHealthReport = {
+    backend: string;
+    healthy: boolean;
+    vram_total_mb: number;
+    vram_free_mb: number;
+    loaded_models: string[];
+    total_vram_reserved_mb: number;
+    allocation_ok: boolean;
+    fallback_active: boolean;
+    recovery_pending: boolean;
+    uptime_secs: number;
+  };
+
+  let hardware: HardwareInfo | null = null;
+  let loading = true;
+  let error = '';
+  let botStatus: BotStatus | null = null;
+  let botMetrics: BotMetrics | null = null;
+  let botOnline = false;
+  let gpuHealth: GpuHealthReport | null = null;
+  let gpuResetting = false;
+  let gpuPct = 0;
+  $: gpuPct = gpuHealth && gpuHealth.vram_total_mb > 0
+    ? Math.min(100, Math.round((gpuHealth.total_vram_reserved_mb / gpuHealth.vram_total_mb) * 100))
+    : 0;
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let botStatusUnlisten: (() => void) | null = null;
+
+  async function loadSnapshot() {
+    try {
+      const [hw] = await Promise.all([
+        invoke<HardwareInfo>('get_hardware_info'),
+        refreshStatus(),
+      ]);
+      hardware = hw;
+      error = '';
+    } catch (e) {
+      error = String(e);
+    } finally {
+      loading = false;
+    }
+
+    // GPU health — non-fatal
+    try {
+      gpuHealth = await invoke<GpuHealthReport>('get_gpu_controller_health');
+    } catch {
+      gpuHealth = null;
+    }
+
+    // Bot status — non-fatal if bot is not running
+    try {
+      const [st, mt] = await Promise.all([
+        invoke<BotStatus>('get_bot_server_status'),
+        invoke<BotMetrics>('get_bot_metrics'),
+      ]);
+      botStatus  = st;
+      botMetrics = mt;
+      botOnline  = true;
+    } catch {
+      botOnline  = false;
+      botStatus  = null;
+      botMetrics = null;
+    }
+  }
+
+  function cpuUsagePct(): number {
+    if (!hardware || !$orchestratorStatus) return 0;
+    const busy = $orchestratorStatus.slots.filter((s) => s.state.state === 'busy').length;
+    const capacity = Math.max(1, hardware.cpu_count);
+    return Math.round((busy / capacity) * 100);
+  }
+
+  function memoryUsagePct(): number {
+    if (!hardware || !$orchestratorStatus || $orchestratorStatus.total_ram_mb <= 0) return 0;
+    const used = $orchestratorStatus.total_ram_mb - $orchestratorStatus.free_ram_mb;
+    return Math.min(100, Math.max(0, Math.round((used / $orchestratorStatus.total_ram_mb) * 100)));
+  }
+
+  function slotStateClass(state: string): string {
+    if (state === 'busy') return 'busy';
+    if (state === 'ready') return 'ready';
+    if (state === 'loading') return 'loading';
+    if (state === 'crashed') return 'crashed';
+    return 'empty';
+  }
+
+  function modelLabel(modelId: string | null | undefined): string {
+    if (!modelId) return 'Default';
+    const found = $availableModels.find((m) => m.id === modelId);
+    return found ? `${found.name} (${found.ram_label})` : modelId;
+  }
+
+  function estimatedAgentRamMb(modelId: string | null | undefined): number {
+    if (!modelId) return 0;
+    const found = $availableModels.find((m) => m.id === modelId);
+    return found?.ram_required_mb ?? 0;
+  }
+
+  function slotStatus(slotIndex: number): { state: string; requests: number; idleSecs: number } {
+    const slot = $orchestratorStatus?.slots.find((s) => s.index === slotIndex);
+    if (!slot) {
+      return { state: 'unassigned', requests: 0, idleSecs: 0 };
+    }
+    return {
+      state: slot.state.state,
+      requests: slot.requests,
+      idleSecs: slot.idle_secs,
+    };
+  }
+
+  onMount(async () => {
+    await loadSnapshot();
+    refreshTimer = setInterval(() => {
+      void loadSnapshot();
+    }, 2000);
+
+    // Live bot status updates via Tauri event — faster than polling
+    botStatusUnlisten = await listen<{ online: boolean; status?: BotStatus }>(
+      'bot-status-changed',
+      ({ payload }) => {
+        botOnline  = payload.online;
+        botStatus  = payload.status ?? null;
+        if (!payload.online) {
+          botMetrics = null;
+        }
+      },
+    );
+  });
+
+  onDestroy(() => {
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (botStatusUnlisten) botStatusUnlisten();
+  });
+</script>
+
+<div class="resources-overlay" on:click|self={() => dispatch('close')} role="presentation">
+  <div class="resources-panel" role="dialog" aria-modal="true" aria-label="Resources dashboard">
+    <header class="resources-header">
+      <span class="resources-title">Resources</span>
+      <button class="close-btn" on:click={() => dispatch('close')} aria-label="Close">✕</button>
+    </header>
+
+    <div class="resources-body">
+      {#if loading}
+        <div class="state">Loading resources...</div>
+      {:else if error}
+        <div class="state error">Unable to load resources: {error}</div>
+      {:else}
+        <section class="summary-grid">
+          <article class="card">
+            <div class="card-label">System RAM</div>
+            <div class="card-value">{hardware?.ram_total_gb ?? 0} GB</div>
+            <div class="meter">
+              <div class="fill" style:width={`${memoryUsagePct()}%`}></div>
+            </div>
+            <div class="card-sub">Used {memoryUsagePct()}% · Free {$orchestratorStatus?.free_ram_mb ?? 0} MB</div>
+          </article>
+
+          <article class="card">
+            <div class="card-label">CPU Workload</div>
+            <div class="card-value">{cpuUsagePct()}%</div>
+            <div class="meter">
+              <div class="fill amber" style:width={`${cpuUsagePct()}%`}></div>
+            </div>
+            <div class="card-sub">Busy slots / cores heuristic</div>
+          </article>
+
+          <article class="card">
+            <div class="card-label">Inference Backend</div>
+            <div class="card-value">{hardware?.backend ?? 'Unknown'}</div>
+            <div class="card-sub">GPU(s): {(hardware?.gpu_names ?? []).join(', ')}</div>
+          </article>
+
+          <article class="card">
+            <div class="card-label">Queue Depth</div>
+            <div class="card-value">{$orchestratorStatus?.queue_depth ?? 0}</div>
+            <div class="card-sub">Live orchestrator queue</div>
+          </article>
+        </section>
+
+        <section class="agents-section">
+          <div class="section-title">Per-Agent Resource View</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Agent</th>
+                  <th>Slot</th>
+                  <th>Model</th>
+                  <th>Est. RAM</th>
+                  <th>Slot State</th>
+                  <th>Requests</th>
+                  <th>Idle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each $agentConfigs as resolved (resolved.config.id)}
+                  {@const slot = slotStatus(resolved.config.slot_index)}
+                  <tr>
+                    <td>{resolved.config.icon_emoji} {resolved.config.label}</td>
+                    <td>{resolved.config.slot_index}</td>
+                    <td>{modelLabel(resolved.config.model_id)}</td>
+                    <td>{estimatedAgentRamMb(resolved.config.model_id)} MB</td>
+                    <td>
+                      <span class={`state-pill ${slotStateClass(slot.state)}`}>{slot.state}</span>
+                    </td>
+                    <td>{slot.requests}</td>
+                    <td>{slot.idleSecs}s</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <p class="note">Estimated RAM is model-based. Slot state/requests are live runtime telemetry.</p>
+        </section>
+
+        <!-- WorkspaceBot live status -->
+        <section class="agents-section">
+          <div class="section-title">
+            WorkspaceBot
+            <span class={`state-pill ${botOnline ? 'ready' : 'crashed'}`} style="margin-left:8px;font-size:11px">
+              {botOnline ? 'online' : 'offline'}
+            </span>
+          </div>
+          {#if botOnline && botStatus}
+            <div class="summary-grid" style="margin-top:8px">
+              {#each Object.entries(botStatus.platform_states ?? {}) as [platform, state]}
+                <article class="card" style="padding:10px 14px">
+                  <div class="card-label">{platform}</div>
+                  <div class="card-value" style="font-size:14px">{state}</div>
+                </article>
+              {/each}
+              <article class="card" style="padding:10px 14px">
+                <div class="card-label">Active Sessions</div>
+                <div class="card-value" style="font-size:14px">{botStatus.active_sessions ?? '—'}</div>
+              </article>
+            </div>
+            {#if botMetrics}
+              <div class="table-wrap" style="margin-top:10px">
+                <table>
+                  <thead>
+                    <tr><th>Metric</th><th>Value</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Messages inbound</td><td>{botMetrics.messages_inbound ?? 0}</td></tr>
+                    <tr><td>Messages processed</td><td>{botMetrics.messages_processed ?? 0}</td></tr>
+                    <tr><td>Buddy requests</td><td>{botMetrics.buddy_requests ?? 0}</td></tr>
+                    <tr><td>Buddy errors</td><td>{botMetrics.buddy_errors ?? 0}</td></tr>
+                    <tr><td>Rate-limited</td><td>{botMetrics.rate_limit_hits ?? 0}</td></tr>
+                    <tr><td>Dedup hits</td><td>{botMetrics.dedup_hits ?? 0}</td></tr>
+                    <tr><td>Allowlist denials</td><td>{botMetrics.allowlist_denials ?? 0}</td></tr>
+                    <tr><td>Confirms resolved</td><td>{botMetrics.confirms_resolved ?? 0}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          {:else}
+            <p class="note" style="margin-top:8px">Bot is not running or not reachable.</p>
+          {/if}
+        </section>
+
+        <!-- GPU Health Panel -->
+        {#if gpuHealth}
+          <section class="agents-section">
+            <div class="section-title">
+              GPU Controller
+              <span class={`state-pill ${gpuHealth.healthy ? 'ready' : 'crashed'}`} style="margin-left:8px;font-size:11px">
+                {gpuHealth.healthy ? 'healthy' : gpuHealth.fallback_active ? 'CPU fallback' : 'degraded'}
+              </span>
+              {#if gpuHealth.recovery_pending}
+                <span class="state-pill loading" style="margin-left:6px;font-size:11px">recovery…</span>
+              {/if}
+            </div>
+            <div class="summary-grid" style="margin-top:8px">
+              <article class="card" style="padding:10px 14px">
+                <div class="card-label">Backend</div>
+                <div class="card-value" style="font-size:14px">{gpuHealth.backend}</div>
+                <div class="card-sub">Uptime {Math.floor(gpuHealth.uptime_secs / 60)}m {gpuHealth.uptime_secs % 60}s</div>
+              </article>
+              <article class="card" style="padding:10px 14px">
+                <div class="card-label">VRAM Free</div>
+                <div class="card-value" style="font-size:14px">{gpuHealth.vram_free_mb} MB</div>
+                <div class="meter">
+                  <div class="fill {gpuPct > 80 ? 'red' : gpuPct > 60 ? 'amber' : ''}" style:width={`${gpuPct}%`}></div>
+                </div>
+                <div class="card-sub">Reserved {gpuHealth.total_vram_reserved_mb} MB</div>
+              </article>
+              <article class="card" style="padding:10px 14px">
+                <div class="card-label">Loaded Models</div>
+                <div class="card-value" style="font-size:14px">{gpuHealth.loaded_models.length}</div>
+                <div class="card-sub">{gpuHealth.loaded_models.slice(0,2).map(m => m.split('/').pop()?.split('\\').pop()).join(', ') || 'none'}</div>
+              </article>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+              <button
+                class="gpu-reset-btn"
+                disabled={gpuResetting}
+                on:click={async () => {
+                  gpuResetting = true;
+                  try { await invoke('reset_gpu_controller'); await loadSnapshot(); } catch {}
+                  gpuResetting = false;
+                }}
+              >
+                {gpuResetting ? 'Resetting…' : 'Reset GPU Controller'}
+              </button>
+              {#if !gpuHealth.healthy}
+                <span class="note" style="color:#f5a623;margin:0">GPU unhealthy — all inference routed to CPU</span>
+              {/if}
+            </div>
+          </section>
+        {/if}
+      {/if}
+    </div>
+  </div>
+</div>
+
+<style>
+  .resources-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 210;
+    background: rgba(0, 0, 0, 0.56);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .resources-panel {
+    width: min(1180px, 96vw);
+    max-height: 90vh;
+    border-radius: 10px;
+    border: 1px solid var(--border, #333);
+    background: var(--bg2, #1e1e2e);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .resources-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border, #333);
+  }
+
+  .resources-title {
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .close-btn {
+    border: none;
+    background: none;
+    color: var(--text-dim, #888);
+    cursor: pointer;
+    font-size: 16px;
+  }
+
+  .resources-body {
+    overflow: auto;
+    padding: 14px;
+    display: grid;
+    gap: 14px;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
+    gap: 10px;
+  }
+
+  .card {
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    background: var(--bg, #141420);
+    padding: 10px;
+    display: grid;
+    gap: 7px;
+  }
+
+  .card-label {
+    font-size: 11px;
+    color: var(--text-dim, #888);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .card-value {
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  .card-sub {
+    font-size: 12px;
+    color: var(--text-dim, #999);
+  }
+
+  .meter {
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+
+  .fill {
+    height: 100%;
+    background: linear-gradient(90deg, #16a34a, #4ade80);
+  }
+
+  .fill.amber {
+    background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  }
+
+  .agents-section {
+    border: 1px solid var(--border, #333);
+    border-radius: 8px;
+    background: var(--bg, #141420);
+    padding: 10px;
+    display: grid;
+    gap: 8px;
+  }
+
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .table-wrap {
+    overflow: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 760px;
+  }
+
+  th,
+  td {
+    text-align: left;
+    border-bottom: 1px solid var(--border, #333);
+    padding: 8px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  th {
+    color: var(--text-dim, #999);
+    font-weight: 600;
+  }
+
+  .state-pill {
+    display: inline-flex;
+    border-radius: 999px;
+    padding: 2px 8px;
+    border: 1px solid var(--border, #333);
+    font-size: 11px;
+  }
+
+  .state-pill.ready {
+    color: #4ade80;
+    border-color: #4ade80;
+  }
+
+  .state-pill.busy {
+    color: #fbbf24;
+    border-color: #fbbf24;
+  }
+
+  .state-pill.loading {
+    color: #93c5fd;
+    border-color: #93c5fd;
+  }
+
+  .state-pill.crashed {
+    color: #f87171;
+    border-color: #f87171;
+  }
+
+  .note {
+    font-size: 11px;
+    color: var(--text-dim, #888);
+  }
+
+  .gpu-reset-btn {
+    padding: 5px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border, #444);
+    background: var(--bg, #141420);
+    color: var(--text, #ccc);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .gpu-reset-btn:hover:not(:disabled) { background: var(--bg2, #1e1e2e); }
+  .gpu-reset-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .fill.red   { background: #f87171; }
+  .fill.amber { background: #f5a623; }
+
+  .state {
+    font-size: 13px;
+    color: var(--text-dim, #888);
+  }
+
+  .state.error {
+    color: #f87171;
+  }
+
+  @media (max-width: 1020px) {
+    .summary-grid {
+      grid-template-columns: repeat(2, minmax(160px, 1fr));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .resources-panel {
+      width: 100vw;
+      max-height: 100vh;
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+    }
+
+    .summary-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
