@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use wasmtime::*;
 use wasmtime_wasi::WasiCtxBuilder;
-use wasmtime_wasi::preview1::{self, WasiP1Ctx};
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
 
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;  // 64 MB
-const MAX_TABLE_ELEMS:  u32   = 10_000;
+const MAX_TABLE_ELEMS:  usize = 10_000;
 const DEFAULT_FUEL:     u64   = 100_000_000;
 
 /// Per-invocation host state living inside the `Store`. Holds the WASI preview1
@@ -31,10 +31,10 @@ impl Sandbox {
     /// Execute WASM bytes with args. Returns stdout output as String.
     pub fn run(&self, wasm_bytes: &[u8], args: Vec<String>, fuel: Option<u64>) -> Result<String> {
         let mut linker = Linker::<HostState>::new(&self.engine);
-        preview1::add_to_linker_sync(&mut linker, |cx: &mut HostState| &mut cx.wasi)?;
+        p1::add_to_linker_sync(&mut linker, |cx: &mut HostState| &mut cx.wasi)?;
 
         // Capture stdout into a pipe
-        let stdout = wasmtime_wasi::pipe::MemoryOutputPipe::new(8192);
+        let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(8192);
         let wasi: WasiP1Ctx = WasiCtxBuilder::new()
             .args(&args)
             .stdout(stdout.clone())
