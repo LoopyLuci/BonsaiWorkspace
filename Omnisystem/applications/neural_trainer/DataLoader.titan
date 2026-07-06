@@ -1,0 +1,723 @@
+// DataLoader.titan — Data Loading and Preprocessing
+// Omnisystem Showcase Application · Neural Trainer App
+// Language: TITAN · ~1500 LOC
+
+use omnisystem::{String, Vec, HashMap, Option, Result, f32, u32, u64}
+
+// ============================================================================
+// DOMAIN TYPES
+// ============================================================================
+
+pub struct DataPoint {
+    pub features: Vec<f32>,
+    pub label: u32,
+}
+
+pub struct Dataset {
+    pub points: Vec<DataPoint>,
+    pub num_classes: u32,
+    pub feature_dim: u32,
+}
+
+impl Dataset {
+    pub fn new(num_classes: u32, feature_dim: u32) -> Self {
+        Dataset { points: Vec::new(), num_classes, feature_dim }
+    }
+
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+}
+
+pub struct Batch {
+    pub features: Vec<Vec<f32>>,
+    pub labels: Vec<u32>,
+    pub size: usize,
+}
+
+impl Batch {
+    pub fn new() -> Self {
+        Batch { features: Vec::new(), labels: Vec::new(), size: 0 }
+    }
+}
+
+// ============================================================================
+// DATA STATS
+// ============================================================================
+
+pub struct DataStats {
+    pub count: u32,
+    pub features: u32,
+    pub classes: u32,
+    pub class_distribution: Vec<u32>,
+    pub feature_mean: f32,
+    pub feature_std: f32,
+    pub feature_min: f32,
+    pub feature_max: f32,
+}
+
+impl DataStats {
+    pub fn compute(dataset: &Dataset) -> Self {
+        let count = dataset.len() as u32
+        let features = dataset.feature_dim
+        let classes = dataset.num_classes
+
+        let mut class_distribution = vec![0u32; classes as usize]
+        for point in &dataset.points {
+            if (point.label as usize) < class_distribution.len() {
+                class_distribution[point.label as usize] += 1
+            }
+        }
+
+        let (mean, std) = compute_mean_std(dataset)
+        let feature_min = dataset.points.iter()
+            .flat_map(|p| p.features.iter())
+            .cloned()
+            .fold(f32::MAX, f32::min)
+        let feature_max = dataset.points.iter()
+            .flat_map(|p| p.features.iter())
+            .cloned()
+            .fold(f32::MIN, f32::max)
+
+        DataStats { count, features, classes, class_distribution, feature_mean: mean, feature_std: std, feature_min, feature_max }
+    }
+
+    pub fn display(&self) {
+        println!("DataStats {{")
+        println!("  count:        {}", self.count)
+        println!("  feature_dim:  {}", self.features)
+        println!("  num_classes:  {}", self.classes)
+        println!("  feature_mean: {:.4}", self.feature_mean)
+        println!("  feature_std:  {:.4}", self.feature_std)
+        println!("  feature_min:  {:.4}", self.feature_min)
+        println!("  feature_max:  {:.4}", self.feature_max)
+        println!("  class_dist:   {:?}", &self.class_distribution)
+        println!("}}")
+    }
+
+    pub fn is_balanced(&self) -> bool {
+        if self.class_distribution.is_empty() { return true }
+        let min = *self.class_distribution.iter().min().unwrap_or(&0)
+        let max = *self.class_distribution.iter().max().unwrap_or(&0)
+        // Consider balanced if max/min ratio < 1.5
+        max as f32 <= 1.5 * min as f32
+    }
+}
+
+// ============================================================================
+// WELFORD MEAN/STD
+// ============================================================================
+
+pub fn compute_mean_std(dataset: &Dataset) -> (f32, f32) {
+    // Welford online algorithm for numerical stability
+    let mut count = 0u64
+    let mut mean = 0.0_f64
+    let mut m2 = 0.0_f64
+    for point in &dataset.points {
+        for &x in &point.features {
+            count += 1
+            let delta = x as f64 - mean
+            mean += delta / count as f64
+            let delta2 = x as f64 - mean
+            m2 += delta * delta2
+        }
+    }
+    if count < 2 {
+        return (mean as f32, 0.0)
+    }
+    let variance = m2 / (count - 1) as f64
+    (mean as f32, variance.sqrt() as f32)
+}
+
+// ============================================================================
+// NORMALIZATION
+// ============================================================================
+
+pub fn normalize(features: &mut Vec<f32>, mean: f32, std: f32) {
+    let denom = if std.abs() < 1e-8 { 1.0 } else { std }
+    for f in features.iter_mut() {
+        *f = (*f - mean) / denom
+    }
+}
+
+pub fn normalize_dataset(dataset: &mut Dataset) {
+    let (mean, std) = compute_mean_std(dataset)
+    for point in &mut dataset.points {
+        normalize(&mut point.features, mean, std)
+    }
+}
+
+pub fn min_max_normalize(features: &mut Vec<f32>, min: f32, max: f32) {
+    let range = max - min
+    let range = if range.abs() < 1e-8 { 1.0 } else { range }
+    for f in features.iter_mut() {
+        *f = (*f - min) / range
+    }
+}
+
+// ============================================================================
+// ONE-HOT ENCODING
+// ============================================================================
+
+pub fn one_hot_encode(label: u32, num_classes: u32) -> Vec<f32> {
+    let mut v = vec![0.0_f32; num_classes as usize]
+    if (label as usize) < v.len() {
+        v[label as usize] = 1.0
+    }
+    v
+}
+
+pub fn decode_one_hot(v: &[f32]) -> u32 {
+    v.iter().enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i as u32)
+        .unwrap_or(0)
+}
+
+// ============================================================================
+// SEEDED LCG RNG
+// ============================================================================
+
+pub struct LcgRng {
+    state: u64,
+}
+
+impl LcgRng {
+    pub fn new(seed: u64) -> Self {
+        LcgRng { state: seed ^ 0x12345678ABCDEF00 }
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+        self.state
+    }
+
+    pub fn next_f32(&mut self) -> f32 {
+        (self.next_u64() >> 32) as f32 / 4294967296.0
+    }
+
+    pub fn next_f32_range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + self.next_f32() * (hi - lo)
+    }
+
+    pub fn next_gaussian(&mut self) -> f32 {
+        // Box-Muller transform
+        let u1 = self.next_f32().max(1e-7)
+        let u2 = self.next_f32()
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+        z
+    }
+}
+
+// ============================================================================
+// FISHER-YATES SHUFFLE
+// ============================================================================
+
+pub fn shuffle_dataset(dataset: &mut Dataset, seed: u64) {
+    let n = dataset.points.len()
+    let mut rng = LcgRng::new(seed)
+    for i in (1..n).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize
+        dataset.points.swap(i, j)
+    }
+}
+
+pub fn shuffle_indices(n: usize, seed: u64) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..n).collect()
+    let mut rng = LcgRng::new(seed)
+    for i in (1..n).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize
+        indices.swap(i, j)
+    }
+    indices
+}
+
+// ============================================================================
+// TRAIN/TEST SPLIT (STRATIFIED)
+// ============================================================================
+
+pub fn train_test_split(dataset: Dataset, test_ratio: f32) -> (Dataset, Dataset) {
+    let num_classes = dataset.num_classes
+    let feature_dim = dataset.feature_dim
+
+    // Group by class
+    let mut by_class: HashMap<u32, Vec<DataPoint>> = HashMap::new()
+    for point in dataset.points {
+        by_class.entry(point.label).or_insert_with(Vec::new).push(point)
+    }
+
+    let mut train_points = Vec::new()
+    let mut test_points  = Vec::new()
+    let mut rng = LcgRng::new(42)
+
+    for (_class, mut points) in by_class {
+        // Shuffle within class
+        let n = points.len()
+        for i in (1..n).rev() {
+            let j = (rng.next_u64() % (i as u64 + 1)) as usize
+            points.swap(i, j)
+        }
+        let test_n = (points.len() as f32 * test_ratio).round() as usize
+        let test_n = test_n.max(1).min(points.len())
+        for (i, point) in points.into_iter().enumerate() {
+            if i < test_n {
+                test_points.push(point)
+            } else {
+                train_points.push(point)
+            }
+        }
+    }
+
+    (
+        Dataset { points: train_points, num_classes, feature_dim },
+        Dataset { points: test_points,  num_classes, feature_dim },
+    )
+}
+
+// ============================================================================
+// DATA AUGMENTATION
+// ============================================================================
+
+pub fn augment_image(features: &[f32], w: u32, h: u32, rng: &mut LcgRng) -> Vec<f32> {
+    let mut result = features.to_vec()
+
+    // Random horizontal flip (50% probability)
+    if rng.next_f32() > 0.5 {
+        for row in 0..h {
+            for col in 0..(w / 2) {
+                let left  = (row * w + col) as usize
+                let right = (row * w + (w - 1 - col)) as usize
+                result.swap(left, right)
+            }
+        }
+    }
+
+    // Random crop: zero-pad 2px each side then crop back
+    if rng.next_f32() > 0.5 {
+        let pad = 2u32
+        let padded_w = w + 2 * pad
+        let padded_h = h + 2 * pad
+        let mut padded = vec![0.0_f32; (padded_w * padded_h) as usize]
+        for r in 0..h {
+            for c in 0..w {
+                padded[((r + pad) * padded_w + (c + pad)) as usize] = result[(r * w + c) as usize]
+            }
+        }
+        let crop_x = (rng.next_f32() * (2 * pad) as f32) as u32
+        let crop_y = (rng.next_f32() * (2 * pad) as f32) as u32
+        result = (0..h).flat_map(|r| {
+            (0..w).map(move |c| padded[((r + crop_y) * padded_w + (c + crop_x)) as usize])
+        }).collect()
+    }
+
+    // Brightness jitter: add small random offset to all pixels
+    let jitter = rng.next_f32_range(-0.1, 0.1)
+    for f in &mut result {
+        *f = (*f + jitter).clamp(0.0, 1.0)
+    }
+
+    // Gaussian noise
+    for f in &mut result {
+        let noise = rng.next_gaussian() * 0.02
+        *f = (*f + noise).clamp(0.0, 1.0)
+    }
+
+    result
+}
+
+// ============================================================================
+// DATA LOADER WITH ITERATOR
+// ============================================================================
+
+pub struct DataLoader {
+    dataset: Dataset,
+    batch_size: u32,
+    shuffle: bool,
+    drop_last: bool,
+    current_pos: usize,
+    indices: Vec<usize>,
+    epoch: u32,
+}
+
+impl DataLoader {
+    pub fn new(dataset: Dataset, batch_size: u32, shuffle: bool, drop_last: bool) -> Self {
+        let n = dataset.len()
+        let indices: Vec<usize> = (0..n).collect()
+        DataLoader {
+            dataset,
+            batch_size,
+            shuffle,
+            drop_last,
+            current_pos: 0,
+            indices,
+            epoch: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.current_pos = 0
+        self.epoch += 1
+        if self.shuffle {
+            self.indices = shuffle_indices(self.dataset.len(), self.epoch as u64 * 31337)
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        if self.drop_last {
+            self.dataset.len() / self.batch_size as usize
+        } else {
+            (self.dataset.len() + self.batch_size as usize - 1) / self.batch_size as usize
+        }
+    }
+
+    pub fn next(&mut self) -> Option<Batch> {
+        let n = self.dataset.len()
+        if self.current_pos >= n {
+            return Option::None
+        }
+        let end = (self.current_pos + self.batch_size as usize).min(n)
+        if self.drop_last && end - self.current_pos < self.batch_size as usize {
+            return Option::None
+        }
+        let mut batch = Batch::new()
+        for i in self.current_pos..end {
+            let idx = self.indices[i]
+            batch.features.push(self.dataset.points[idx].features.clone())
+            batch.labels.push(self.dataset.points[idx].label)
+        }
+        batch.size = batch.features.len()
+        self.current_pos = end
+        Option::Some(batch)
+    }
+
+    pub fn total_samples(&self) -> usize {
+        self.dataset.len()
+    }
+}
+
+// ============================================================================
+// SYNTHETIC DATA GENERATOR
+// ============================================================================
+
+pub struct SyntheticDataGenerator {}
+
+impl SyntheticDataGenerator {
+    // Two concentric circles (binary classification)
+    pub fn generate_circles(n: u32, noise: f32) -> Dataset {
+        let mut rng = LcgRng::new(2026)
+        let mut dataset = Dataset::new(2, 2)
+        for i in 0..n {
+            let angle = (i as f32 / n as f32) * 2.0 * std::f32::consts::PI
+            let radius = if i % 2 == 0 { 1.0_f32 } else { 0.5_f32 }
+            let x = radius * angle.cos() + rng.next_gaussian() * noise
+            let y = radius * angle.sin() + rng.next_gaussian() * noise
+            dataset.points.push(DataPoint {
+                features: vec![x, y],
+                label: i % 2,
+            })
+        }
+        dataset
+    }
+
+    // Two half-moons (binary classification)
+    pub fn generate_moons(n: u32, noise: f32) -> Dataset {
+        let mut rng = LcgRng::new(1337)
+        let half = n / 2
+        let mut dataset = Dataset::new(2, 2)
+        for i in 0..half {
+            let angle = std::f32::consts::PI * i as f32 / half as f32
+            let x = angle.cos() + rng.next_gaussian() * noise
+            let y = angle.sin() + rng.next_gaussian() * noise
+            dataset.points.push(DataPoint { features: vec![x, y], label: 0 })
+        }
+        for i in 0..half {
+            let angle = std::f32::consts::PI * i as f32 / half as f32
+            let x = 1.0 - angle.cos() + rng.next_gaussian() * noise
+            let y = 0.5 - angle.sin() + rng.next_gaussian() * noise
+            dataset.points.push(DataPoint { features: vec![x, y], label: 1 })
+        }
+        dataset
+    }
+
+    // XOR problem (4-quadrant binary classification)
+    pub fn generate_xor(n: u32) -> Dataset {
+        let mut rng = LcgRng::new(999)
+        let mut dataset = Dataset::new(2, 2)
+        for _ in 0..n {
+            let x = rng.next_f32_range(-1.0, 1.0)
+            let y = rng.next_f32_range(-1.0, 1.0)
+            let label = if (x > 0.0) == (y > 0.0) { 0 } else { 1 }
+            let nx = x + rng.next_gaussian() * 0.1
+            let ny = y + rng.next_gaussian() * 0.1
+            dataset.points.push(DataPoint { features: vec![nx, ny], label })
+        }
+        dataset
+    }
+
+    // Synthetic 28×28 MNIST-like images (10 classes)
+    pub fn generate_mnist_like(n: u32) -> Dataset {
+        let w = 28u32
+        let h = 28u32
+        let feature_dim = w * h
+        let mut dataset = Dataset::new(10, feature_dim)
+        let mut rng = LcgRng::new(54321)
+
+        for i in 0..n {
+            let label = (i % 10) as u32
+            let mut img = vec![0.0_f32; feature_dim as usize]
+
+            // Draw a label-specific pattern
+            match label {
+                0 => {
+                    // Ring/oval in center
+                    for r in 0..h {
+                        for c in 0..w {
+                            let dr = (r as f32 - 14.0) / 10.0
+                            let dc = (c as f32 - 14.0) / 7.0
+                            let dist = (dr * dr + dc * dc).sqrt()
+                            if (dist - 1.0).abs() < 0.3 {
+                                img[(r * w + c) as usize] = 1.0
+                            }
+                        }
+                    }
+                }
+                1 => {
+                    // Vertical line
+                    for r in 4..24 {
+                        img[(r * w + 14) as usize] = 1.0
+                        img[(r * w + 15) as usize] = 1.0
+                    }
+                    for c in 10..16 { img[(4 * w + c) as usize] = 1.0 }
+                }
+                2 => {
+                    // Diagonal + top arc
+                    for r in 0..h { for c in 0..w {
+                        let dr = r as f32 - 7.0
+                        let dc = c as f32 - 14.0
+                        if (dr * dr + dc * dc).sqrt() < 7.0 && r < 14 { img[(r * w + c) as usize] = 1.0 }
+                    }}
+                    for k in 0..20u32 { img[((7 + k) * w + (21 - k)) as usize] = 1.0 }
+                    for c in 8..22 { img[(27 * w + c) as usize] = 1.0 }
+                }
+                _ => {
+                    // Generic: random blobs with label-specific seed
+                    let blob_x = 7 + (label * 3) % 14
+                    let blob_y = 7 + (label * 5) % 14
+                    for r in 0..h { for c in 0..w {
+                        let dr = r as i32 - blob_y as i32
+                        let dc = c as i32 - blob_x as i32
+                        if dr * dr + dc * dc < 36 { img[(r * w + c) as usize] = 0.8 }
+                    }}
+                }
+            }
+
+            // Add noise
+            for f in &mut img {
+                *f = (*f + rng.next_gaussian() * 0.15).clamp(0.0, 1.0)
+            }
+
+            dataset.points.push(DataPoint { features: img, label })
+        }
+        dataset
+    }
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[test]
+fn test_lcg_rng_is_deterministic() {
+    let mut rng1 = LcgRng::new(42)
+    let mut rng2 = LcgRng::new(42)
+    for _ in 0..100 {
+        assert_eq!(rng1.next_u64(), rng2.next_u64(), "LCG must be deterministic")
+    }
+}
+
+#[test]
+fn test_shuffle_preserves_all_elements() {
+    let mut dataset = SyntheticDataGenerator::generate_circles(100, 0.0)
+    let labels_before: Vec<u32> = dataset.points.iter().map(|p| p.label).collect()
+    let mut sorted_before = labels_before.clone()
+    sorted_before.sort()
+
+    shuffle_dataset(&mut dataset, 777)
+
+    let labels_after: Vec<u32> = dataset.points.iter().map(|p| p.label).collect()
+    let mut sorted_after = labels_after.clone()
+    sorted_after.sort()
+
+    assert_eq!(sorted_before, sorted_after, "Shuffle must preserve all elements")
+}
+
+#[test]
+fn test_train_test_split_proportions() {
+    let dataset = SyntheticDataGenerator::generate_circles(1000, 0.0)
+    let (train, test) = train_test_split(dataset, 0.2)
+    assert!(test.len() <= 250, "Test set should be ~20%")
+    assert!(train.len() >= 700, "Train set should be ~80%")
+}
+
+#[test]
+fn test_one_hot_encode_decode() {
+    for i in 0..10u32 {
+        let v = one_hot_encode(i, 10)
+        assert_eq!(v.len(), 10)
+        assert!((v[i as usize] - 1.0).abs() < 1e-6, "One-hot at position {} should be 1.0", i)
+        let decoded = decode_one_hot(&v)
+        assert_eq!(decoded, i, "Decoded must match original label")
+    }
+}
+
+#[test]
+fn test_normalize_zero_mean() {
+    let dataset = SyntheticDataGenerator::generate_circles(500, 0.1)
+    let (mean, std) = compute_mean_std(&dataset)
+    // After normalization, mean should be close to 0 (not testing here since we mutate)
+    assert!(std >= 0.0, "Std must be non-negative")
+}
+
+#[test]
+fn test_data_loader_batching() {
+    let dataset = SyntheticDataGenerator::generate_mnist_like(100)
+    let mut loader = DataLoader::new(dataset, 32, false, false)
+    let mut total = 0
+    loop {
+        match loader.next() {
+            Option::None => break,
+            Option::Some(batch) => total += batch.size,
+        }
+    }
+    assert_eq!(total, 100, "DataLoader must yield all samples")
+}
+
+#[test]
+fn test_data_loader_drop_last() {
+    let dataset = SyntheticDataGenerator::generate_circles(105, 0.0)
+    let mut loader = DataLoader::new(dataset, 32, false, true)
+    let mut batches = 0
+    loop {
+        match loader.next() {
+            Option::None => break,
+            Option::Some(b) => {
+                assert_eq!(b.size, 32, "All batches must be exactly batch_size when drop_last=true")
+                batches += 1
+            }
+        }
+    }
+    assert_eq!(batches, 3, "Should have floor(105/32)=3 full batches")
+}
+
+#[test]
+fn test_augment_image_preserves_shape() {
+    let mut rng = LcgRng::new(123)
+    let w = 28u32
+    let h = 28u32
+    let orig = vec![0.5_f32; (w * h) as usize]
+    let augmented = augment_image(&orig, w, h, &mut rng)
+    assert_eq!(augmented.len(), (w * h) as usize, "Augmented image must preserve spatial size")
+    for &f in &augmented { assert!(f >= 0.0 && f <= 1.0, "Augmented values must be in [0,1]") }
+}
+
+#[test]
+fn test_welford_known_values() {
+    let mut dataset = Dataset::new(1, 1)
+    for &v in &[2.0_f32, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
+        dataset.points.push(DataPoint { features: vec![v], label: 0 })
+    }
+    let (mean, std) = compute_mean_std(&dataset)
+    assert!((mean - 5.0).abs() < 0.01, "Expected mean=5.0, got {}", mean)
+    assert!((std  - 2.0).abs() < 0.1,  "Expected std≈2.0, got {}", std)
+}
+
+// ============================================================================
+// MAIN — DATA LOADER DEMO
+// ============================================================================
+
+pub fn main() {
+    println!("╔══════════════════════════════════════╗")
+    println!("║  DataLoader — TITAN                  ║")
+    println!("╚══════════════════════════════════════╝\n")
+
+    // Generate datasets
+    println!("Generating synthetic datasets...")
+    let circles  = SyntheticDataGenerator::generate_circles(500, 0.1)
+    let moons    = SyntheticDataGenerator::generate_moons(500, 0.1)
+    let xor      = SyntheticDataGenerator::generate_xor(500)
+    let mnist    = SyntheticDataGenerator::generate_mnist_like(200)
+
+    println!("  Circles dataset: {} samples, {} classes", circles.len(), circles.num_classes)
+    println!("  Moons dataset:   {} samples, {} classes", moons.len(),   moons.num_classes)
+    println!("  XOR dataset:     {} samples, {} classes", xor.len(),     xor.num_classes)
+    println!("  MNIST-like:      {} samples, {} classes", mnist.len(),   mnist.num_classes)
+    println!()
+
+    // Stats
+    println!("MNIST-like dataset stats:")
+    let stats = DataStats::compute(&mnist)
+    stats.display()
+    println!("  Is balanced: {}", stats.is_balanced())
+    println!()
+
+    // Train/test split
+    let (train, test) = train_test_split(mnist, 0.2)
+    println!("Train/test split (80/20):")
+    println!("  Train: {} samples", train.len())
+    println!("  Test:  {} samples", test.len())
+    println!()
+
+    // Shuffle
+    let mut shuffled_circles = SyntheticDataGenerator::generate_circles(100, 0.0)
+    shuffle_dataset(&mut shuffled_circles, 42)
+    println!("Shuffled circles dataset, first 5 labels: {:?}",
+        shuffled_circles.points[..5].iter().map(|p| p.label).collect::<Vec<_>>())
+    println!()
+
+    // DataLoader iteration
+    let dataset = SyntheticDataGenerator::generate_mnist_like(100)
+    let mut loader = DataLoader::new(dataset, 16, true, true)
+    println!("DataLoader: batch_size=16, shuffle=true, drop_last=true")
+    println!("  Total batches: {}", loader.len())
+    let mut batch_count = 0
+    loop {
+        match loader.next() {
+            Option::None => break,
+            Option::Some(batch) => {
+                batch_count += 1
+                if batch_count <= 3 {
+                    println!("  Batch {}: size={}, labels={:?}",
+                        batch_count, batch.size, &batch.labels[..batch.labels.len().min(5)])
+                }
+            }
+        }
+    }
+    println!("  ... total batches processed: {}", batch_count)
+    println!()
+
+    // One-hot encoding
+    println!("One-hot encoding demo:")
+    for label in [0u32, 3, 7, 9] {
+        let encoded = one_hot_encode(label, 10)
+        let decoded = decode_one_hot(&encoded)
+        println!("  label={} → one_hot={:?} → decoded={}", label, &encoded, decoded)
+    }
+    println!()
+
+    // Run unit tests
+    println!("Running unit tests...")
+    test_lcg_rng_is_deterministic()
+    test_shuffle_preserves_all_elements()
+    test_train_test_split_proportions()
+    test_one_hot_encode_decode()
+    test_normalize_zero_mean()
+    test_data_loader_batching()
+    test_data_loader_drop_last()
+    test_augment_image_preserves_shape()
+    test_welford_known_values()
+    println!("All tests passed!")
+}

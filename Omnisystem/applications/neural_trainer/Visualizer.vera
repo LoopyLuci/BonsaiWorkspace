@@ -1,0 +1,422 @@
+// Visualizer.vera — Training Progress Visualization Components
+// Omnisystem Showcase Application · Neural Trainer App
+// Language: VERA · ~500 LOC
+
+module TrainingVisualizer {
+
+    // ============================================================================
+    // SHARED HELPERS
+    // ============================================================================
+
+    fn clamp_f32(v: f32, lo: f32, hi: f32) -> f32 {
+        if v < lo { lo } else if v > hi { hi } else { v }
+    }
+
+    fn lerp_color(a: (u8,u8,u8), b: (u8,u8,u8), t: f32) -> (u8,u8,u8) {
+        let t = clamp_f32(t, 0.0, 1.0)
+        (
+            (a.0 as f32 + t * (b.0 as f32 - a.0 as f32)) as u8,
+            (a.1 as f32 + t * (b.1 as f32 - a.1 as f32)) as u8,
+            (a.2 as f32 + t * (b.2 as f32 - a.2 as f32)) as u8,
+        )
+    }
+
+    fn ansi_fg(r: u8, g: u8, b: u8, s: &str) -> String {
+        format!("\x1b[38;2;{};{};{}m{}\x1b[0m", r, g, b, s)
+    }
+
+    fn ansi_bold(s: &str) -> String {
+        format!("\x1b[1m{}\x1b[0m", s)
+    }
+
+    fn repeat_char(c: char, n: usize) -> String {
+        std::iter::repeat(c).take(n).collect()
+    }
+
+    // ============================================================================
+    // PROGRESS BAR COMPONENT
+    // ============================================================================
+
+    component ProgressBar {
+        props {
+            epoch: u32,
+            total: u32,
+            loss: f32,
+            acc: f32,
+            val_loss: f32,
+            val_acc: f32,
+            bar_width: u32,
+        }
+
+        state {
+            last_rendered: u32,
+        }
+
+        render -> String {
+            let pct = self.epoch as f32 / self.total as f32
+            let filled = (pct * self.bar_width as f32) as usize
+            let empty  = self.bar_width as usize - filled
+
+            // Color: red → yellow → green as training progresses
+            let color = lerp_color((220, 50, 50), (50, 200, 80), pct)
+            let bar_filled = ansi_fg(color.0, color.1, color.2, &repeat_char('█', filled))
+            let bar_empty  = ansi_fg(80, 80, 90, &repeat_char('░', empty))
+
+            let acc_color  = lerp_color((200, 80, 60), (50, 210, 100), self.acc)
+            let vacc_color = lerp_color((200, 80, 60), (50, 210, 100), self.val_acc)
+
+            format!(
+                "\r{}Epoch {:3}/{} [{}{}] {:.1}% │ loss={} acc={} │ val_loss={} val_acc={}   ",
+                ansi_fg(140, 160, 200, "▶ "),
+                self.epoch,
+                self.total,
+                bar_filled,
+                bar_empty,
+                pct * 100.0,
+                ansi_fg(255, 180, 80, &format!("{:.4}", self.loss)),
+                ansi_fg(acc_color.0, acc_color.1, acc_color.2, &format!("{:.3}", self.acc)),
+                ansi_fg(160, 120, 255, &format!("{:.4}", self.val_loss)),
+                ansi_fg(vacc_color.0, vacc_color.1, vacc_color.2, &format!("{:.3}", self.val_acc)),
+            )
+        }
+
+        fn print_final(&self) {
+            println!("{}", self.render())
+            println!()
+        }
+    }
+
+    // ============================================================================
+    // LOSS CHART COMPONENT (ASCII Art)
+    // ============================================================================
+
+    struct EpochPoint {
+        epoch: u32,
+        train_loss: f32,
+        val_loss: f32,
+        train_acc: f32,
+        val_acc: f32,
+    }
+
+    component LossChart {
+        props {
+            history: Vec<EpochPoint>,
+            chart_width: u32,
+            chart_height: u32,
+            title: String,
+        }
+
+        render -> String {
+            if self.history.is_empty() {
+                return format!("[LossChart] No data to plot\n")
+            }
+            let w = self.chart_width as usize
+            let h = self.chart_height as usize
+
+            let all_train: Vec<f32> = self.history.iter().map(|e| e.train_loss).collect()
+            let all_val:   Vec<f32> = self.history.iter().map(|e| e.val_loss).collect()
+            let all_acc:   Vec<f32> = self.history.iter().map(|e| e.train_acc).collect()
+            let all_vacc:  Vec<f32> = self.history.iter().map(|e| e.val_acc).collect()
+
+            let loss_max = all_train.iter().chain(all_val.iter()).cloned().fold(f32::NEG_INFINITY, f32::max)
+            let loss_min = all_train.iter().chain(all_val.iter()).cloned().fold(f32::INFINITY, f32::min)
+            let loss_range = (loss_max - loss_min).max(1e-6)
+
+            // Build 2D grid (h rows × w cols)
+            let mut grid = vec![vec![' '; w]; h]
+
+            let n = self.history.len()
+            for i in 0..n {
+                let x = if n > 1 { (i * (w - 1)) / (n - 1) } else { 0 }
+                // Train loss
+                let tl_y = ((1.0 - (all_train[i] - loss_min) / loss_range) * (h - 1) as f32) as usize
+                let vl_y = ((1.0 - (all_val[i]   - loss_min) / loss_range) * (h - 1) as f32) as usize
+                let tl_y = tl_y.min(h - 1)
+                let vl_y = vl_y.min(h - 1)
+                if grid[tl_y][x] == ' ' {
+                    grid[tl_y][x] = '●'  // train loss
+                } else {
+                    grid[tl_y][x] = '◈'  // overlap
+                }
+                if grid[vl_y][x] == ' ' {
+                    grid[vl_y][x] = '○'  // val loss
+                }
+                // Connect adjacent points with line characters
+                if i > 0 {
+                    let px = if n > 1 { ((i - 1) * (w - 1)) / (n - 1) } else { 0 }
+                    let prev_tl_y = ((1.0 - (all_train[i-1] - loss_min) / loss_range) * (h - 1) as f32) as usize
+                    let prev_tl_y = prev_tl_y.min(h - 1)
+                    // Draw line between prev and current
+                    let steps = (x - px).max(1)
+                    for s in 1..steps {
+                        let xi = px + s
+                        let t  = s as f32 / steps as f32
+                        let yi = (prev_tl_y as f32 + t * (tl_y as f32 - prev_tl_y as f32)).round() as usize
+                        let yi = yi.min(h - 1)
+                        if grid[yi][xi] == ' ' { grid[yi][xi] = '·' }
+                    }
+                }
+            }
+
+            // Render
+            let mut out = String::new()
+            let separator = repeat_char('─', w + 8)
+            out.push_str(&format!("\n  ┌─ {} {}\n", ansi_bold(&self.title), repeat_char('─', w.saturating_sub(self.title.len() + 3))))
+            for row in 0..h {
+                let label_val = loss_max - (row as f32 / (h - 1) as f32) * loss_range
+                let label = format!("{:5.3}", label_val)
+                out.push_str(&ansi_fg(100, 110, 130, &label))
+                out.push_str(" │")
+                for col in 0..w {
+                    let ch = grid[row][col]
+                    let colored = match ch {
+                        '●' => ansi_fg(80, 180, 255, "●"),
+                        '○' => ansi_fg(255, 140, 60, "○"),
+                        '◈' => ansi_fg(200, 100, 255, "◈"),
+                        '·' => ansi_fg(60, 80, 100, "·"),
+                        _   => " ".to_string(),
+                    }
+                    out.push_str(&colored)
+                }
+                out.push('\n')
+            }
+            out.push_str(&format!("       └{}\n", repeat_char('─', w + 1)))
+            out.push_str(&format!("       epoch: 1{}{}\n",
+                repeat_char(' ', w.saturating_sub(8)),
+                self.history.last().map(|e| e.epoch).unwrap_or(0)))
+            out.push_str(&format!("       {} train_loss  {} val_loss  {} overlap\n",
+                ansi_fg(80, 180, 255, "●"), ansi_fg(255, 140, 60, "○"), ansi_fg(200, 100, 255, "◈")))
+            out
+        }
+    }
+
+    // ============================================================================
+    // CONFUSION MATRIX COMPONENT
+    // ============================================================================
+
+    component ConfusionMatrix {
+        props {
+            predictions: Vec<u32>,
+            labels: Vec<u32>,
+            num_classes: u32,
+            class_names: Vec<String>,
+        }
+
+        render -> String {
+            let nc = self.num_classes as usize
+            let mut matrix = vec![vec![0u32; nc]; nc]
+            for (&pred, &true_lbl) in self.predictions.iter().zip(self.labels.iter()) {
+                if (pred as usize) < nc && (true_lbl as usize) < nc {
+                    matrix[true_lbl as usize][pred as usize] += 1
+                }
+            }
+
+            // Find max value for color scaling
+            let max_val = matrix.iter().flat_map(|r| r.iter()).cloned().max().unwrap_or(1)
+
+            let mut out = String::new()
+            out.push_str(&format!("\n  Confusion Matrix ({} × {})\n", nc, nc))
+            out.push_str("  Rows=True, Cols=Predicted\n\n")
+
+            // Header row
+            out.push_str("       ")
+            for j in 0..nc {
+                let name = self.class_names.get(j).map(|s| s.as_str()).unwrap_or("")
+                out.push_str(&format!("{:^5}", if name.is_empty() { format!("{}", j) } else { name[..name.len().min(4)].to_string() }))
+            }
+            out.push('\n')
+
+            let sep = repeat_char('─', 7 + nc * 5)
+            out.push_str(&format!("  {}\n", sep))
+
+            for i in 0..nc {
+                let row_name = self.class_names.get(i).map(|s| s.as_str()).unwrap_or("")
+                let label = if row_name.is_empty() { format!("{:2}", i) } else { format!("{:4}", &row_name[..row_name.len().min(4)]) }
+                out.push_str(&format!("  {} │", label))
+                for j in 0..nc {
+                    let v = matrix[i][j]
+                    let intensity = v as f32 / max_val as f32
+                    let color = if i == j {
+                        // Diagonal: green (correct predictions)
+                        lerp_color((20, 80, 20), (50, 220, 80), intensity)
+                    } else {
+                        // Off-diagonal: red (errors)
+                        lerp_color((20, 20, 40), (220, 60, 60), intensity)
+                    }
+                    let cell = format!("{:4} ", v)
+                    out.push_str(&ansi_fg(color.0, color.1, color.2, &cell))
+                }
+                // Row total and accuracy
+                let row_total: u32 = matrix[i].iter().sum()
+                let row_correct = matrix[i][i]
+                let row_acc = if row_total > 0 { row_correct as f32 / row_total as f32 } else { 0.0 }
+                out.push_str(&format!("│ {}/{} ({:.1}%)\n", row_correct, row_total, row_acc * 100.0))
+            }
+
+            out.push_str(&format!("  {}\n", sep))
+
+            // Overall accuracy
+            let total_correct: u32 = (0..nc).map(|i| matrix[i][i]).sum()
+            let total: u32 = matrix.iter().flat_map(|r| r.iter()).sum()
+            let overall_acc = if total > 0 { total_correct as f32 / total as f32 } else { 0.0 }
+            out.push_str(&format!("  Overall accuracy: {}/{} = {:.2}%\n", total_correct, total, overall_acc * 100.0))
+            out
+        }
+    }
+
+    // ============================================================================
+    // WEIGHT HISTOGRAM COMPONENT
+    // ============================================================================
+
+    component WeightHistogram {
+        props {
+            weights: Vec<f32>,
+            layer_name: String,
+            num_bins: u32,
+            bar_height: u32,
+        }
+
+        render -> String {
+            if self.weights.is_empty() {
+                return format!("[WeightHistogram] No weights for layer '{}'\n", self.layer_name)
+            }
+
+            let min = self.weights.iter().cloned().fold(f32::INFINITY, f32::min)
+            let max = self.weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            let range = (max - min).max(1e-8)
+            let nb = self.num_bins as usize
+
+            // Count into bins
+            let mut bins = vec![0u32; nb]
+            for &w in &self.weights {
+                let bin = ((w - min) / range * (nb - 1) as f32) as usize
+                let bin = bin.min(nb - 1)
+                bins[bin] += 1
+            }
+            let max_count = *bins.iter().max().unwrap_or(&1)
+
+            // Render bars vertically
+            let bh = self.bar_height as usize
+            let mut out = String::new()
+            out.push_str(&format!("\n  Weight Distribution: {} ({} params)\n", self.layer_name, self.weights.len()))
+            let mean: f32 = self.weights.iter().sum::<f32>() / self.weights.len() as f32
+            let std: f32  = (self.weights.iter().map(|&w| (w - mean).powi(2)).sum::<f32>() / self.weights.len() as f32).sqrt()
+            out.push_str(&format!("  mean={:.4}  std={:.4}  min={:.4}  max={:.4}\n\n", mean, std, min, max))
+
+            for row in (0..bh).rev() {
+                let threshold = (row as f32 / bh as f32) * max_count as f32
+                out.push_str("  ")
+                for &count in &bins {
+                    let bar_char = if count as f32 >= threshold {
+                        let intensity = count as f32 / max_count as f32
+                        let color = lerp_color((60, 60, 180), (130, 200, 255), intensity)
+                        ansi_fg(color.0, color.1, color.2, "█")
+                    } else {
+                        ansi_fg(30, 30, 40, "░")
+                    }
+                    out.push_str(&bar_char)
+                }
+                if row == bh - 1 {
+                    out.push_str(&format!(" {}", max_count))
+                } else if row == 0 {
+                    out.push_str(" 0")
+                }
+                out.push('\n')
+            }
+            // X-axis labels
+            out.push_str("  ")
+            out.push_str(&format!("{:<width$}", format!("{:.2}", min), width = nb / 2))
+            out.push_str(&format!("{:>width$}", format!("{:.2}", max), width = nb / 2))
+            out.push('\n')
+            out
+        }
+    }
+
+    // ============================================================================
+    // TRAINING DASHBOARD COMPONENT
+    // ============================================================================
+
+    component TrainingDashboard {
+        props {
+            history: Vec<EpochPoint>,
+            current_epoch: u32,
+            total_epochs: u32,
+            current_loss: f32,
+            current_acc: f32,
+            current_val_loss: f32,
+            current_val_acc: f32,
+            model_params: u32,
+            batch_size: u32,
+            learning_rate: f32,
+        }
+
+        render -> String {
+            let width = 70usize
+            let border = repeat_char('═', width)
+            let mut out = String::new()
+
+            out.push_str(&format!("\n╔{}╗\n", border))
+            out.push_str(&format!("║{:^width$}║\n",
+                ansi_bold("Neural Network Training Dashboard"), width = width + 11))
+            out.push_str(&format!("╠{}╣\n", border))
+
+            // Config row
+            out.push_str(&format!("║  {:<68}║\n",
+                format!("Params: {}  │  Batch: {}  │  LR: {:.4}  │  Epoch: {}/{}",
+                    self.model_params, self.batch_size, self.learning_rate,
+                    self.current_epoch, self.total_epochs)))
+
+            out.push_str(&format!("╠{}╣\n", border))
+
+            // Current metrics
+            let train_color = lerp_color((220, 80, 60), (60, 210, 80), self.current_acc)
+            let val_color   = lerp_color((220, 80, 60), (60, 210, 80), self.current_val_acc)
+
+            out.push_str(&format!("║  {:<68}║\n",
+                format!("train_loss: {}  train_acc: {}  val_loss: {}  val_acc: {}",
+                    ansi_fg(255, 180, 60, &format!("{:.4}", self.current_loss)),
+                    ansi_fg(train_color.0, train_color.1, train_color.2, &format!("{:.3}", self.current_acc)),
+                    ansi_fg(160, 100, 255, &format!("{:.4}", self.current_val_loss)),
+                    ansi_fg(val_color.0, val_color.1, val_color.2, &format!("{:.3}", self.current_val_acc)))))
+
+            out.push_str(&format!("╠{}╣\n", border))
+
+            // Progress bar
+            let progress_bar = ProgressBar {
+                epoch: self.current_epoch,
+                total: self.total_epochs,
+                loss: self.current_loss,
+                acc: self.current_acc,
+                val_loss: self.current_val_loss,
+                val_acc: self.current_val_acc,
+                bar_width: 40,
+            }
+            let pct = self.current_epoch as f32 / self.total_epochs as f32
+            let filled = (pct * 40.0) as usize
+            let empty  = 40 - filled
+            out.push_str(&format!("║  [{:>40}{}] {:.1}%   ║\n",
+                repeat_char('█', filled),
+                repeat_char('░', empty),
+                pct * 100.0))
+
+            out.push_str(&format!("╠{}╣\n", border))
+
+            // Mini loss table (last 5 epochs)
+            let show = self.history.len().min(5)
+            if show > 0 {
+                out.push_str(&format!("║  {:<68}║\n", ansi_bold("Recent History:")))
+                out.push_str(&format!("║  {:<68}║\n",
+                    format!("{:>5}  {:>10}  {:>10}  {:>10}  {:>10}", "Epoch", "TrainLoss", "TrainAcc", "ValLoss", "ValAcc")))
+                for ep in self.history.iter().rev().take(5).rev() {
+                    let line = format!("{:>5}  {:>10.4}  {:>10.3}  {:>10.4}  {:>10.3}",
+                        ep.epoch, ep.train_loss, ep.train_acc, ep.val_loss, ep.val_acc)
+                    out.push_str(&format!("║  {:<68}║\n", line))
+                }
+            }
+
+            out.push_str(&format!("╚{}╝\n", border))
+            out
+        }
+    }
+
+}  // module TrainingVisualizer

@@ -1,0 +1,361 @@
+// Option A: Real-Time Data Dashboard - GPU Rendering Pipeline
+// HELIX: GPU-accelerated candlestick and indicator visualization
+
+// Vertex shader for candlestick rendering
+shader vertex CandleVertexShader {
+    inputs {
+        position: vec3,
+        color: vec4,
+        candle_width: float,
+        open: float,
+        high: float,
+        low: float,
+        close: float
+    }
+
+    outputs {
+        v_color: vec4,
+        v_position: vec3,
+        v_open: float,
+        v_high: float,
+        v_low: float,
+        v_close: float
+    }
+
+    uniforms {
+        mvp: mat4,
+        screen_width: float,
+        screen_height: float,
+        price_scale: float,
+        time_scale: float
+    }
+
+    code {
+        void main() {
+            // Transform to world space
+            vec4 world_pos = vec4(position, 1.0);
+
+            // Scale by price (Y axis)
+            world_pos.y = world_pos.y * price_scale;
+
+            // Apply MVP transform
+            gl_Position = mvp * world_pos;
+
+            // Pass data to fragment shader
+            v_color = color;
+            v_position = position;
+            v_open = open * price_scale;
+            v_high = high * price_scale;
+            v_low = low * price_scale;
+            v_close = close * price_scale;
+        }
+    }
+}
+
+// Fragment shader for candlestick coloring
+shader fragment CandleFragmentShader {
+    inputs {
+        v_color: vec4,
+        v_position: vec3,
+        v_open: float,
+        v_high: float,
+        v_low: float,
+        v_close: float
+    }
+
+    outputs {
+        out_color: vec4
+    }
+
+    uniforms {
+        bull_color: vec4,    // Green for up
+        bear_color: vec4     // Red for down
+    }
+
+    code {
+        void main() {
+            // Determine candle color based on open/close
+            vec4 color = (v_close > v_open) ? bull_color : bear_color;
+
+            // Add some shading based on position
+            float brightness = 0.5 + 0.5 * sin(v_position.x);
+            out_color = color * brightness;
+        }
+    }
+}
+
+// Compute shader for moving average line calculation
+shader compute MovingAverageLine {
+    inputs {
+        price_buffer: RWBuffer<float>,
+        period: uint
+    }
+
+    outputs {
+        ma_buffer: RWBuffer<float>
+    }
+
+    code {
+        [numthreads(256, 1, 1)]
+        void main(uint3 thread_id : SV_DispatchThreadID) {
+            uint idx = thread_id.x;
+            if (idx < period) return;
+
+            float sum = 0.0;
+            for (uint i = idx - period; i < idx; i++) {
+                sum += price_buffer[i];
+            }
+
+            ma_buffer[idx] = sum / float(period);
+        }
+    }
+}
+
+// Compute shader for Bollinger Bands
+shader compute BollingerBands {
+    inputs {
+        price_buffer: RWBuffer<float>,
+        period: uint,
+        num_stddev: float
+    }
+
+    outputs {
+        upper_buffer: RWBuffer<float>,
+        middle_buffer: RWBuffer<float>,
+        lower_buffer: RWBuffer<float>
+    }
+
+    code {
+        [numthreads(256, 1, 1)]
+        void main(uint3 thread_id : SV_DispatchThreadID) {
+            uint idx = thread_id.x;
+            if (idx < period) return;
+
+            // Calculate mean
+            float sum = 0.0;
+            for (uint i = idx - period; i < idx; i++) {
+                sum += price_buffer[i];
+            }
+            float mean = sum / float(period);
+
+            // Calculate variance
+            float variance = 0.0;
+            for (uint i = idx - period; i < idx; i++) {
+                float diff = price_buffer[i] - mean;
+                variance += diff * diff;
+            }
+            variance /= float(period);
+            float stddev = sqrt(variance);
+
+            // Store bands
+            middle_buffer[idx] = mean;
+            upper_buffer[idx] = mean + (num_stddev * stddev);
+            lower_buffer[idx] = mean - (num_stddev * stddev);
+        }
+    }
+}
+
+// GPU rendering pipeline
+pipeline CandlestickRenderPipeline {
+    stages {
+        vertex: CandleVertexShader,
+        fragment: CandleFragmentShader
+    }
+
+    render_targets {
+        target_0: RGBA8,
+        depth: Depth32F
+    }
+
+    blend_state {
+        enabled: true,
+        src_blend: SrcAlpha,
+        dst_blend: OneMinusSrcAlpha
+    }
+
+    depth_state {
+        enabled: true,
+        write_enabled: true,
+        comparison: Less
+    }
+
+    rasterizer_state {
+        fill_mode: Solid,
+        cull_mode: Back
+    }
+}
+
+// Compute pipeline for analytics
+pipeline AnalyticsPipeline {
+    compute_stages {
+        stage_0: MovingAverageLine,
+        stage_1: BollingerBands
+    }
+
+    resources {
+        price_buffer: shared,
+        ma_buffer: shared,
+        bollinger_buffers: shared
+    }
+}
+
+// Candlestick rendering system
+struct CandleRenderer {
+    pipeline: CandlestickRenderPipeline,
+    vertex_buffer: GpuBuffer,
+    candle_count: u32,
+    max_candles: u32
+}
+
+impl CandleRenderer {
+    fn new(max_candles: u32) -> Self {
+        CandleRenderer {
+            pipeline: CandlestickRenderPipeline::new(),
+            vertex_buffer: GpuBuffer::new(GpuBufferUsage::Vertex),
+            candle_count: 0,
+            max_candles: max_candles
+        }
+    }
+
+    fn add_candle(open: f32, high: f32, low: f32, close: f32, x_pos: f32) {
+        // Generate 2 vertices per candle (high-low wick, open-close body)
+        // Would add to vertex_buffer
+        println!("[CandleRenderer] Added candle: O:{:.2} H:{:.2} L:{:.2} C:{:.2}",
+            open, high, low, close);
+    }
+
+    fn render(&self, target: &GpuRenderTarget) {
+        println!("[CandleRenderer] Rendering {} candlesticks", self.candle_count);
+
+        // Would:
+        // 1. Set render target
+        // 2. Bind vertex buffer
+        // 3. Bind shader pipeline
+        // 4. Draw call for all candles
+        // 5. Present to screen
+    }
+}
+
+// Line chart renderer for moving averages
+struct LineChartRenderer {
+    pipeline: CandlestickRenderPipeline,
+    vertex_buffer: GpuBuffer,
+    point_count: u32
+}
+
+impl LineChartRenderer {
+    fn new() -> Self {
+        LineChartRenderer {
+            pipeline: CandlestickRenderPipeline::new(),
+            vertex_buffer: GpuBuffer::new(GpuBufferUsage::Vertex),
+            point_count: 0
+        }
+    }
+
+    fn add_line(points: &Vec<f32>, color: [f32; 4], line_width: f32) {
+        println!("[LineChartRenderer] Adding polyline with {} points", points.len());
+        // Would generate line strip geometry
+    }
+
+    fn render(&self, target: &GpuRenderTarget) {
+        println!("[LineChartRenderer] Rendering {} data points", self.point_count);
+    }
+}
+
+// Analytics compute system
+struct AnalyticsCompute {
+    pipeline: AnalyticsPipeline,
+    price_buffer: GpuBuffer,
+    ma_buffer: GpuBuffer,
+    bollinger_buffers: [GpuBuffer; 3]  // upper, middle, lower
+}
+
+impl AnalyticsCompute {
+    fn new(buffer_size: u32) -> Self {
+        AnalyticsCompute {
+            pipeline: AnalyticsPipeline::new(),
+            price_buffer: GpuBuffer::new(GpuBufferUsage::UniformStorage),
+            ma_buffer: GpuBuffer::new(GpuBufferUsage::UniformStorage),
+            bollinger_buffers: [
+                GpuBuffer::new(GpuBufferUsage::UniformStorage),
+                GpuBuffer::new(GpuBufferUsage::UniformStorage),
+                GpuBuffer::new(GpuBufferUsage::UniformStorage)
+            ]
+        }
+    }
+
+    fn update_prices(&mut self, prices: &Vec<f32>) {
+        println!("[AnalyticsCompute] Uploading {} prices to GPU", prices.len());
+        // Would copy prices to GPU buffer
+    }
+
+    fn compute_moving_average(&self, period: u32) {
+        println!("[AnalyticsCompute] Computing {}-period moving average on GPU", period);
+        // Would dispatch compute shader with period parameter
+    }
+
+    fn compute_bollinger_bands(&self, period: u32, stddev: f32) {
+        println!("[AnalyticsCompute] Computing Bollinger Bands ({}±{}) on GPU", period, stddev);
+        // Would dispatch Bollinger compute shader
+    }
+}
+
+// Visualization system coordinator
+struct VisualizationSystem {
+    candle_renderer: CandleRenderer,
+    line_renderer: LineChartRenderer,
+    analytics: AnalyticsCompute,
+    render_target: GpuRenderTarget,
+    frame_count: u64,
+    frame_time_ms: f32
+}
+
+impl VisualizationSystem {
+    fn new(width: u32, height: u32) -> Self {
+        VisualizationSystem {
+            candle_renderer: CandleRenderer::new(10000),
+            line_renderer: LineChartRenderer::new(),
+            analytics: AnalyticsCompute::new(10000),
+            render_target: GpuRenderTarget::new(width, height),
+            frame_count: 0,
+            frame_time_ms: 0.0
+        }
+    }
+
+    fn update_data(&mut self, prices: &Vec<f32>) {
+        self.analytics.update_prices(prices);
+        self.analytics.compute_moving_average(20);
+        self.analytics.compute_bollinger_bands(20, 2.0);
+    }
+
+    fn render(&mut self) {
+        self.frame_count = self.frame_count + 1;
+
+        // Clear render target
+        self.render_target.clear([0.1, 0.1, 0.1, 1.0]);
+
+        // Render candlesticks
+        self.candle_renderer.render(&self.render_target);
+
+        // Render moving average lines
+        self.line_renderer.render(&self.render_target);
+
+        // Present to screen
+        self.render_target.present();
+
+        if self.frame_count % 60 == 0 {
+            println!("[Visualization] Frame {}: {:.2}ms ({:.0} FPS)",
+                self.frame_count,
+                self.frame_time_ms,
+                1000.0 / self.frame_time_ms.max(0.001));
+        }
+    }
+}
+
+fn initialize_visualization_system() {
+    println!("[Visualization] Initializing GPU rendering pipeline");
+    println!("[Visualization] Vertex shader: CandleVertexShader");
+    println!("[Visualization] Fragment shader: CandleFragmentShader");
+    println!("[Visualization] Compute shaders: MovingAverageLine, BollingerBands");
+    println!("[Visualization] Ready for 60 FPS rendering");
+}

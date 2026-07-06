@@ -1,0 +1,383 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// NETWORK BENCHMARK — Actor message throughput, fan-out latency, pub/sub broadcast
+// Targets: 100K msg/sec, fan-out <5ms for 1000 actors, pub/sub broadcast to 100 subscribers
+// Language: AETHER — ~600 LOC
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// ACTOR SYSTEM SIMULATION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+actor MessageCounter {
+    let received: u64 = 0
+    let processed: u64 = 0
+
+    message Ping { seq: u64, payload: Vec<u8> }
+    message Reset { }
+    message GetStats { reply_to: ActorRef }
+    message Stats { received: u64, processed: u64 }
+
+    handler Ping(msg) {
+        self.received += 1
+        self.processed += 1
+    }
+
+    handler Reset(_msg) {
+        self.received = 0
+        self.processed = 0
+    }
+
+    handler GetStats(msg) {
+        msg.reply_to.send(Stats {
+            received: self.received,
+            processed: self.processed,
+        })
+    }
+}
+
+actor FanOutCoordinator {
+    let workers: Vec<ActorRef> = Vec::new()
+    let fan_out_count: u64 = 0
+    let total_dispatched: u64 = 0
+
+    message RegisterWorker { worker: ActorRef }
+    message FanOut { payload: Vec<u8> }
+    message Shutdown { }
+
+    handler RegisterWorker(msg) {
+        self.workers.push(msg.worker)
+    }
+
+    handler FanOut(msg) {
+        self.fan_out_count += 1
+        for worker in &self.workers {
+            worker.send(MessageCounter::Ping {
+                seq: self.fan_out_count,
+                payload: msg.payload.clone(),
+            })
+            self.total_dispatched += 1
+        }
+    }
+}
+
+actor PubSubBroker {
+    let subscriptions: HashMap<String, Vec<ActorRef>> = HashMap::new()
+    let published_count: u64 = 0
+    let delivered_count: u64 = 0
+
+    message Subscribe { topic: String, subscriber: ActorRef }
+    message Unsubscribe { topic: String, subscriber_id: u64 }
+    message Publish { topic: String, message: Vec<u8> }
+    message BrokerStats { reply_to: ActorRef }
+    message BrokerStatsReply { published: u64, delivered: u64, topics: usize }
+
+    handler Subscribe(msg) {
+        self.subscriptions.entry(msg.topic).or_insert_with(Vec::new).push(msg.subscriber)
+    }
+
+    handler Publish(msg) {
+        self.published_count += 1
+        if let Some(subscribers) = self.subscriptions.get(&msg.topic) {
+            for subscriber in subscribers {
+                subscriber.send(MessageCounter::Ping {
+                    seq: self.published_count,
+                    payload: msg.message.clone(),
+                })
+                self.delivered_count += 1
+            }
+        }
+    }
+
+    handler BrokerStats(msg) {
+        msg.reply_to.send(BrokerStatsReply {
+            published: self.published_count,
+            delivered: self.delivered_count,
+            topics: self.subscriptions.len(),
+        })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK INFRASTRUCTURE (TITAN-compatible stubs within AETHER)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+actor BenchmarkRunner {
+    let results: Vec<BenchResult> = Vec::new()
+    let start_time: u64 = 0
+
+    message RunThroughput { message_count: u64 }
+    message RunFanOut { worker_count: usize, messages_per_worker: u64 }
+    message RunPubSub { subscriber_count: usize, message_count: u64 }
+    message PrintResults { }
+
+    handler RunThroughput(msg) {
+        let counter = spawn MessageCounter { }
+        let start = now_ms()
+
+        for i in 0..msg.message_count {
+            counter.send(MessageCounter::Ping {
+                seq: i,
+                payload: vec![0x42u8; 64],
+            })
+        }
+
+        // Drain mailbox
+        yield_until_idle()
+
+        let elapsed = now_ms() - start
+        let msgs_per_sec = if elapsed == 0 { msg.message_count * 1000 } else { (msg.message_count * 1000) / elapsed }
+
+        self.results.push(BenchResult {
+            name: "Actor message throughput".to_string(),
+            value: msgs_per_sec,
+            unit: "msg/sec".to_string(),
+            target: 100_000,
+            passed: msgs_per_sec >= 100_000,
+        })
+    }
+
+    handler RunFanOut(msg) {
+        let coordinator = spawn FanOutCoordinator { }
+
+        for _ in 0..msg.worker_count {
+            let worker = spawn MessageCounter { }
+            coordinator.send(FanOutCoordinator::RegisterWorker { worker })
+        }
+
+        let start = now_ms()
+
+        for i in 0..msg.messages_per_worker {
+            coordinator.send(FanOutCoordinator::FanOut {
+                payload: vec![i as u8; 32],
+            })
+        }
+
+        yield_until_idle()
+
+        let elapsed = now_ms() - start
+
+        self.results.push(BenchResult {
+            name: format!("Fan-out latency ({} workers)", msg.worker_count),
+            value: elapsed,
+            unit: "ms".to_string(),
+            target: 5,
+            passed: elapsed < 5,
+        })
+    }
+
+    handler RunPubSub(msg) {
+        let broker = spawn PubSubBroker { }
+        let topic = "benchmark.events".to_string()
+
+        for _ in 0..msg.subscriber_count {
+            let sub = spawn MessageCounter { }
+            broker.send(PubSubBroker::Subscribe {
+                topic: topic.clone(),
+                subscriber: sub,
+            })
+        }
+
+        let start = now_ms()
+
+        for i in 0..msg.message_count {
+            broker.send(PubSubBroker::Publish {
+                topic: topic.clone(),
+                message: vec![i as u8; 16],
+            })
+        }
+
+        yield_until_idle()
+
+        let elapsed = now_ms() - start
+        let total_delivered = msg.message_count * msg.subscriber_count as u64
+        let delivery_rate = if elapsed == 0 { total_delivered * 1000 } else { (total_delivered * 1000) / elapsed }
+
+        self.results.push(BenchResult {
+            name: format!("Pub/Sub broadcast ({} subscribers)", msg.subscriber_count),
+            value: delivery_rate,
+            unit: "deliveries/sec".to_string(),
+            target: 50_000,
+            passed: delivery_rate >= 50_000,
+        })
+    }
+
+    handler PrintResults(_msg) {
+        println!("╔════════════════════════════════════════════════════════════════════════╗")
+        println!("║  NETWORK BENCHMARK RESULTS                                            ║")
+        println!("╚════════════════════════════════════════════════════════════════════════╝")
+        println!("")
+
+        let mut all_passed = true
+        for result in &self.results {
+            let status = if result.passed { "✓ PASS" } else { "✗ FAIL" }
+            println!("  [{}] {}", status, result.name)
+            println!("        value: {} {}  target: {} {}", result.value, result.unit, result.target, result.unit)
+            all_passed &= result.passed
+        }
+
+        println!("")
+        if all_passed {
+            println!("  ✓ ALL NETWORK BENCHMARKS PASSED")
+        } else {
+            println!("  ✗ SOME BENCHMARKS FAILED")
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK RESULT TYPE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+struct BenchResult {
+    name: String,
+    value: u64,
+    unit: String,
+    target: u64,
+    passed: bool,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// LATENCY HISTOGRAM ACTOR — Tracks percentile distribution of message latencies
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+actor LatencyHistogram {
+    let buckets: Vec<u64> = vec![0; 1000]   // 0–999ms buckets
+    let total: u64 = 0
+    let overflows: u64 = 0
+
+    message Record { latency_ms: u64 }
+    message Query { percentile: f64, reply_to: ActorRef }
+    message Percentile { p_value: u64, percentile: f64 }
+
+    handler Record(msg) {
+        self.total += 1
+        if msg.latency_ms < self.buckets.len() as u64 {
+            self.buckets[msg.latency_ms as usize] += 1
+        } else {
+            self.overflows += 1
+        }
+    }
+
+    handler Query(msg) {
+        let target = (self.total as f64 * msg.percentile / 100.0) as u64
+        let mut cumulative = 0u64
+        let mut p_ms = 0u64
+
+        for (i, &count) in self.buckets.iter().enumerate() {
+            cumulative += count
+            if cumulative >= target {
+                p_ms = i as u64
+                break
+            }
+        }
+
+        msg.reply_to.send(LatencyHistogram::Percentile {
+            p_value: p_ms,
+            percentile: msg.percentile,
+        })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PIPELINE ACTOR CHAIN — Tests multi-hop actor pipeline latency
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+actor PipelineStage {
+    let stage_id: u32 = 0
+    let next: Option<ActorRef> = None
+    let processed: u64 = 0
+
+    message Process { data: Vec<u8>, hop_count: u32, origin_time: u64 }
+    message SetNext { next: ActorRef }
+
+    handler SetNext(msg) {
+        self.next = Some(msg.next)
+    }
+
+    handler Process(msg) {
+        self.processed += 1
+
+        // Transform data: XOR each byte with stage_id
+        let mut transformed = msg.data.clone()
+        for byte in &mut transformed {
+            *byte ^= self.stage_id as u8
+        }
+
+        if let Some(ref next) = self.next {
+            next.send(PipelineStage::Process {
+                data: transformed,
+                hop_count: msg.hop_count + 1,
+                origin_time: msg.origin_time,
+            })
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// WORK-STEALING SCHEDULER SIMULATION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+actor WorkerPool {
+    let workers: Vec<ActorRef> = Vec::new()
+    let next_worker: usize = 0
+    let total_dispatched: u64 = 0
+
+    message AddWorker { worker: ActorRef }
+    message Dispatch { task: Vec<u8> }
+    message PoolStats { reply_to: ActorRef }
+    message PoolStatsReply { dispatched: u64, worker_count: usize }
+
+    handler AddWorker(msg) {
+        self.workers.push(msg.worker)
+    }
+
+    handler Dispatch(msg) {
+        if self.workers.is_empty() { return }
+
+        // Round-robin dispatch (in production: work-stealing based on mailbox depth)
+        let worker = &self.workers[self.next_worker % self.workers.len()]
+        worker.send(MessageCounter::Ping {
+            seq: self.total_dispatched,
+            payload: msg.task,
+        })
+        self.next_worker += 1
+        self.total_dispatched += 1
+    }
+
+    handler PoolStats(msg) {
+        msg.reply_to.send(PoolStatsReply {
+            dispatched: self.total_dispatched,
+            worker_count: self.workers.len(),
+        })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MAIN ENTRY
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+fn main() {
+    println!("╔════════════════════════════════════════════════════════════════════════╗")
+    println!("║  NETWORK BENCHMARK (AETHER) — Actor/Pub-Sub Performance               ║")
+    println!("╚════════════════════════════════════════════════════════════════════════╝")
+    println!("")
+
+    let runner = spawn BenchmarkRunner { }
+
+    // Benchmark 1: Raw actor message throughput (100K messages)
+    println!("[Bench 1] Actor message throughput — 100,000 messages")
+    runner.send(BenchmarkRunner::RunThroughput { message_count: 100_000 })
+
+    // Benchmark 2: Fan-out to 1000 workers
+    println!("[Bench 2] Fan-out latency — 1000 workers, 1 message each")
+    runner.send(BenchmarkRunner::RunFanOut { worker_count: 1000, messages_per_worker: 1 })
+
+    // Benchmark 3: Pub/Sub broadcast to 100 subscribers
+    println!("[Bench 3] Pub/Sub broadcast — 100 subscribers, 500 messages")
+    runner.send(BenchmarkRunner::RunPubSub { subscriber_count: 100, message_count: 500 })
+
+    // Print all results
+    runner.send(BenchmarkRunner::PrintResults { })
+
+    run_event_loop()
+}

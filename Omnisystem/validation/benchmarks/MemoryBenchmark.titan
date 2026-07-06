@@ -1,0 +1,427 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MEMORY BENCHMARK — Allocator throughput, GC pause time, cross-language heap sharing
+// Targets: BumpAlloc 1M/sec, GC pause <10ms, cross-language overhead <2x
+// Language: TITAN — ~600 LOC
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::Instant;
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUMP ALLOCATOR SIMULATION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct BumpAllocSim {
+    heap: Vec<u8>,
+    offset: usize,
+    alloc_count: u64,
+    free_count: u64,
+}
+
+impl BumpAllocSim {
+    pub fn new(heap_size: usize) -> Self {
+        BumpAllocSim {
+            heap: vec![0u8; heap_size],
+            offset: 0,
+            alloc_count: 0,
+            free_count: 0,
+        }
+    }
+
+    pub fn alloc(&mut self, size: usize, align: usize) -> Option<usize> {
+        let aligned = (self.offset + align - 1) & !(align - 1);
+        if aligned + size > self.heap.len() {
+            return None;
+        }
+        self.offset = aligned + size;
+        self.alloc_count += 1;
+        Some(aligned)
+    }
+
+    pub fn reset(&mut self) {
+        self.offset = 0;
+    }
+
+    pub fn write_at(&mut self, ptr: usize, data: &[u8]) {
+        if ptr + data.len() <= self.heap.len() {
+            self.heap[ptr..ptr + data.len()].copy_from_slice(data);
+        }
+    }
+
+    pub fn read_at(&self, ptr: usize, len: usize) -> &[u8] {
+        let end = (ptr + len).min(self.heap.len());
+        &self.heap[ptr..end]
+    }
+
+    pub fn utilization(&self) -> f64 {
+        self.offset as f64 / self.heap.len() as f64
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SLAB ALLOCATOR SIMULATION (fixed-size object pools)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct SlabAllocSim {
+    object_size: usize,
+    pool: Vec<u8>,
+    free_list: Vec<usize>,
+    alloc_count: u64,
+}
+
+impl SlabAllocSim {
+    pub fn new(object_size: usize, pool_count: usize) -> Self {
+        let mut free_list = Vec::with_capacity(pool_count);
+        for i in (0..pool_count).rev() {
+            free_list.push(i * object_size);
+        }
+        SlabAllocSim {
+            object_size,
+            pool: vec![0u8; object_size * pool_count],
+            free_list,
+            alloc_count: 0,
+        }
+    }
+
+    pub fn alloc(&mut self) -> Option<usize> {
+        self.free_list.pop().map(|ptr| {
+            self.alloc_count += 1;
+            ptr
+        })
+    }
+
+    pub fn free(&mut self, ptr: usize) {
+        if ptr + self.object_size <= self.pool.len() {
+            // Zero on free to catch use-after-free
+            for b in &mut self.pool[ptr..ptr + self.object_size] { *b = 0; }
+            self.free_list.push(ptr);
+        }
+    }
+
+    pub fn available(&self) -> usize {
+        self.free_list.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// GARBAGE COLLECTOR SIMULATION (mark-and-sweep on object graph)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct GcObject {
+    pub id: u64,
+    pub refs: Vec<u64>,
+    pub size: usize,
+    pub marked: bool,
+}
+
+pub struct GcSim {
+    objects: HashMap<u64, GcObject>,
+    roots: Vec<u64>,
+    next_id: u64,
+    collections: u64,
+    total_freed: usize,
+}
+
+impl GcSim {
+    pub fn new() -> Self {
+        GcSim { objects: HashMap::new(), roots: Vec::new(), next_id: 1, collections: 0, total_freed: 0 }
+    }
+
+    pub fn alloc(&mut self, size: usize, refs: Vec<u64>) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.objects.insert(id, GcObject { id, refs, size, marked: false });
+        id
+    }
+
+    pub fn add_root(&mut self, id: u64) {
+        self.roots.push(id);
+    }
+
+    pub fn drop_root(&mut self, id: u64) {
+        self.roots.retain(|&r| r != id);
+    }
+
+    pub fn collect(&mut self) -> usize {
+        // Mark phase: BFS from roots
+        let mut queue: Vec<u64> = self.roots.clone();
+        while let Some(id) = queue.pop() {
+            if let Some(obj) = self.objects.get_mut(&id) {
+                if !obj.marked {
+                    obj.marked = true;
+                    let refs = obj.refs.clone();
+                    queue.extend(refs);
+                }
+            }
+        }
+
+        // Sweep phase: remove unmarked objects
+        let before = self.objects.len();
+        let mut freed_bytes = 0usize;
+        self.objects.retain(|_, obj| {
+            if obj.marked {
+                obj.marked = false; // reset for next collection
+                true
+            } else {
+                freed_bytes += obj.size;
+                false
+            }
+        });
+        let freed_count = before - self.objects.len();
+        self.collections += 1;
+        self.total_freed += freed_bytes;
+        freed_count
+    }
+
+    pub fn live_count(&self) -> usize {
+        self.objects.len()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK 1: BumpAllocator Throughput (target: 1M allocs/sec)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn bench_bump_allocator() -> (u64, bool) {
+    println!("[Bench 1] BumpAllocator throughput (target: 1,000,000 allocs/sec)");
+    let mut alloc = BumpAllocSim::new(64 * 1024 * 1024); // 64 MB heap
+
+    let start = Instant::now();
+    let mut count = 0u64;
+    let mut batch = 0u32;
+
+    'outer: loop {
+        // Allocate until heap full, then reset (simulating arena behavior)
+        for _ in 0..1000 {
+            match alloc.alloc(64, 8) {
+                Some(ptr) => {
+                    alloc.write_at(ptr, &[0xAAu8; 64]);
+                    count += 1;
+                }
+                None => {
+                    alloc.reset();
+                    batch += 1;
+                }
+            }
+        }
+        if start.elapsed().as_millis() >= 1000 { break 'outer; }
+    }
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let allocs_per_sec = (count * 1000) / elapsed_ms.max(1);
+    let passed = allocs_per_sec >= 1_000_000;
+
+    println!("  {} allocs/sec ({} allocs in {}ms) — {}",
+        allocs_per_sec, count, elapsed_ms,
+        if passed { "✓ PASS" } else { "✗ FAIL" });
+
+    (allocs_per_sec, passed)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK 2: GC Pause Time Under Load (target: <10ms per collection)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn bench_gc_pause() -> (u64, bool) {
+    println!("[Bench 2] GC pause time under load (target: <10ms per collection)");
+    let mut gc = GcSim::new();
+
+    // Build a live object graph: 10 roots, each with a chain of 100 objects
+    for root_i in 0..10u64 {
+        let mut prev = gc.alloc(256, Vec::new());
+        gc.add_root(prev);
+        for _ in 0..99 {
+            let next = gc.alloc(256, vec![prev]);
+            prev = next;
+        }
+    }
+
+    // Also allocate garbage: 5000 unreachable objects
+    for _ in 0..5000 {
+        gc.alloc(128, Vec::new());
+    }
+
+    println!("  Live objects before GC: {}", gc.live_count());
+
+    let mut max_pause_ms = 0u64;
+    let mut total_freed = 0usize;
+
+    for _round in 0..10 {
+        // Add more garbage each round
+        for _ in 0..500 {
+            gc.alloc(64, Vec::new());
+        }
+
+        let start = Instant::now();
+        let freed = gc.collect();
+        let pause_ms = start.elapsed().as_millis() as u64;
+
+        total_freed += freed;
+        if pause_ms > max_pause_ms { max_pause_ms = pause_ms; }
+    }
+
+    let passed = max_pause_ms < 10;
+    println!("  max pause: {}ms, total freed: {} objects, live: {} — {}",
+        max_pause_ms, total_freed, gc.live_count(),
+        if passed { "✓ PASS" } else { "✗ FAIL" });
+
+    (max_pause_ms, passed)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK 3: Cross-Language Heap Sharing Overhead (target: <2x native)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn bench_cross_language_heap() -> (f64, bool) {
+    println!("[Bench 3] Cross-language heap sharing overhead (target: <2x native)");
+
+    let iterations = 10_000u32;
+
+    // Native (single language) allocation path
+    let mut native_alloc = BumpAllocSim::new(4 * 1024 * 1024);
+    let start = Instant::now();
+    for i in 0..iterations {
+        if native_alloc.alloc(32, 8).is_none() { native_alloc.reset(); }
+    }
+    let native_ms = start.elapsed().as_micros() as f64 / 1000.0;
+
+    // Cross-language: simulate boundary crossing overhead (serialize + deserialize + alloc)
+    let mut cross_alloc = BumpAllocSim::new(4 * 1024 * 1024);
+    let start = Instant::now();
+    for i in 0..iterations {
+        // Simulate cross-language marshal: 4-byte type tag + value
+        let tag_bytes = [(i as u32).to_le_bytes()[0]; 4];
+        if let Some(ptr) = cross_alloc.alloc(36, 8) { // 4 extra bytes for tag
+            cross_alloc.write_at(ptr, &tag_bytes);
+        } else {
+            cross_alloc.reset();
+        }
+    }
+    let cross_ms = start.elapsed().as_micros() as f64 / 1000.0;
+
+    let overhead_ratio = if native_ms > 0.0 { cross_ms / native_ms } else { 1.0 };
+    let passed = overhead_ratio < 2.0;
+
+    println!("  native: {:.3}ms, cross-lang: {:.3}ms, overhead: {:.2}x — {}",
+        native_ms, cross_ms, overhead_ratio,
+        if passed { "✓ PASS" } else { "✗ FAIL" });
+
+    (overhead_ratio, passed)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BENCHMARK 4: Slab Allocator Throughput for Fixed-Size Objects
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn bench_slab_allocator() -> (u64, bool) {
+    println!("[Bench 4] SlabAllocator throughput for actor mailbox objects");
+    let mut slab = SlabAllocSim::new(128, 100_000); // 100K 128-byte slots
+
+    let start = Instant::now();
+    let mut count = 0u64;
+    let mut ptrs = Vec::new();
+
+    loop {
+        // Alternate alloc and free to simulate actor message lifecycle
+        for _ in 0..1000 {
+            match slab.alloc() {
+                Some(ptr) => { ptrs.push(ptr); count += 1; }
+                None => {
+                    // Free half on exhaustion
+                    let half = ptrs.len() / 2;
+                    let to_free: Vec<usize> = ptrs.drain(..half).collect();
+                    for ptr in to_free { slab.free(ptr); }
+                }
+            }
+        }
+        if start.elapsed().as_millis() >= 500 { break; }
+    }
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let allocs_per_sec = (count * 1000) / elapsed_ms.max(1);
+    let passed = allocs_per_sec >= 500_000;
+
+    println!("  {} allocs/sec ({} allocs in {}ms) — {}",
+        allocs_per_sec, count, elapsed_ms,
+        if passed { "✓ PASS" } else { "✗ FAIL" });
+
+    (allocs_per_sec, passed)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MAIN
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn main() {
+    println!("╔════════════════════════════════════════════════════════════════════════╗");
+    println!("║  MEMORY BENCHMARK — Allocator Throughput & GC Performance             ║");
+    println!("╚════════════════════════════════════════════════════════════════════════╝");
+    println!("");
+
+    let (bump_rate, b1) = bench_bump_allocator();
+    println!("");
+    let (gc_pause, b2) = bench_gc_pause();
+    println!("");
+    let (overhead, b3) = bench_cross_language_heap();
+    println!("");
+    let (slab_rate, b4) = bench_slab_allocator();
+    println!("");
+
+    println!("═══════════════════════════════════════════════════════════");
+    println!("  MEMORY BENCHMARK SUMMARY");
+    println!("  BumpAlloc:    {} allocs/sec  (target: ≥1M)", bump_rate);
+    println!("  GC max pause: {}ms           (target: <10ms)", gc_pause);
+    println!("  Cross-lang:   {:.2}x overhead  (target: <2x)", overhead);
+    println!("  SlabAlloc:    {} allocs/sec  (target: ≥500K)", slab_rate);
+    println!("");
+    if b1 && b2 && b3 && b4 {
+        println!("  ✓ ALL MEMORY BENCHMARKS PASSED");
+    } else {
+        println!("  ✗ SOME BENCHMARKS FAILED");
+    }
+    println!("═══════════════════════════════════════════════════════════");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bump_alloc() {
+        let mut alloc = BumpAllocSim::new(1024);
+        let ptr = alloc.alloc(64, 8).unwrap();
+        assert_eq!(ptr, 0);
+        let ptr2 = alloc.alloc(64, 8).unwrap();
+        assert_eq!(ptr2, 64);
+    }
+
+    #[test]
+    fn test_bump_reset() {
+        let mut alloc = BumpAllocSim::new(64);
+        let _ = alloc.alloc(64, 1).unwrap();
+        assert!(alloc.alloc(1, 1).is_none());
+        alloc.reset();
+        assert!(alloc.alloc(1, 1).is_some());
+    }
+
+    #[test]
+    fn test_slab_alloc_free() {
+        let mut slab = SlabAllocSim::new(64, 4);
+        let p1 = slab.alloc().unwrap();
+        let p2 = slab.alloc().unwrap();
+        assert_ne!(p1, p2);
+        slab.free(p1);
+        assert_eq!(slab.available(), 3);
+    }
+
+    #[test]
+    fn test_gc_collect() {
+        let mut gc = GcSim::new();
+        let root = gc.alloc(128, Vec::new());
+        gc.add_root(root);
+        let _garbage = gc.alloc(128, Vec::new()); // no root
+        assert_eq!(gc.live_count(), 2);
+        gc.collect();
+        assert_eq!(gc.live_count(), 1);
+    }
+}

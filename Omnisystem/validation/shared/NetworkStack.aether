@@ -1,0 +1,302 @@
+// Omnisystem Validation Suite - Distributed Networking Layer
+// AETHER Actor-based networking for all 3 applications
+
+// TCP connection actor
+actor TcpSocket {
+    // State
+    let remote_addr: u32
+    let remote_port: u16
+    let local_port: u16
+    let state: u8                   // 0=closed, 1=connecting, 2=established, 3=closing
+    let socket_id: u32
+    let recv_buffer: Vec<u8>
+    let send_queue: Vec<NetworkPacket>
+    let is_connected: bool
+
+    // Messages
+    message Connect {
+        address: u32,
+        port: u16
+    }
+
+    message Send {
+        data: Vec<u8>
+    }
+
+    message Receive {
+        callback: fn(Vec<u8>)
+    }
+
+    message Close
+
+    message GetStatus {
+        reply_to: channel
+    }
+
+    // Handler: Connect to remote host
+    handler Connect(msg) {
+        println!("[TcpSocket] Connecting to {}.{}.{}.{} port {}",
+            (msg.address >> 24) & 0xFF,
+            (msg.address >> 16) & 0xFF,
+            (msg.address >> 8) & 0xFF,
+            msg.address & 0xFF,
+            msg.port);
+
+        self.remote_addr = msg.address;
+        self.remote_port = msg.port;
+        self.state = 1;  // Connecting
+        self.is_connected = false;
+
+        // Simulate connection establishment
+        self.state = 2;  // Established
+        self.is_connected = true;
+        println!("[TcpSocket] Connected successfully");
+    }
+
+    // Handler: Send data
+    handler Send(msg) {
+        if !self.is_connected {
+            println!("[TcpSocket] Error: not connected");
+            return;
+        }
+
+        let packet = NetworkPacket {
+            source_addr: 0,         // Local address would be filled in
+            dest_addr: self.remote_addr,
+            port: self.remote_port,
+            protocol: 6,            // TCP
+            payload: msg.data.clone(),
+            timestamp_ms: 0,        // Would be filled from system timer
+            sequence_num: 0,
+            length: msg.data.len() as u16
+        };
+
+        self.send_queue.push(packet);
+        println!("[TcpSocket] Queued {} bytes for transmission", msg.data.len());
+    }
+
+    // Handler: Close connection
+    handler Close {
+        if self.is_connected {
+            println!("[TcpSocket] Closing connection");
+            self.state = 3;  // Closing
+            self.is_connected = false;
+        }
+    }
+}
+
+// UDP datagram socket actor
+actor UdpSocket {
+    let local_port: u16
+    let recv_buffer: Vec<u8>
+    let is_bound: bool
+    let socket_id: u32
+
+    message Bind {
+        port: u16
+    }
+
+    message SendTo {
+        address: u32,
+        port: u16,
+        data: Vec<u8>
+    }
+
+    message RecvFrom {
+        max_size: u32
+    }
+
+    handler Bind(msg) {
+        println!("[UdpSocket] Binding to port {}", msg.port);
+        self.local_port = msg.port;
+        self.is_bound = true;
+    }
+
+    handler SendTo(msg) {
+        if !self.is_bound {
+            println!("[UdpSocket] Error: socket not bound");
+            return;
+        }
+
+        println!("[UdpSocket] Sending {} bytes to {}.{}.{}.{}:{}",
+            msg.data.len(),
+            (msg.address >> 24) & 0xFF,
+            (msg.address >> 16) & 0xFF,
+            (msg.address >> 8) & 0xFF,
+            msg.address & 0xFF,
+            msg.port);
+    }
+}
+
+// Data ingestion channel - manages streaming data from external sources
+actor DataIngestionChannel {
+    let source_name: String
+    let is_connected: bool
+    let packets_received: u64
+    let bytes_received: u64
+    let last_timestamp: u64
+
+    message Connect {
+        source_url: String
+    }
+
+    message Subscribe {
+        topic: String
+    }
+
+    message Poll {
+        reply_to: channel
+    }
+
+    message Disconnect
+
+    handler Connect(msg) {
+        println!("[DataIngestion] Connecting to: {}", msg.source_url);
+        self.source_name = msg.source_url;
+        self.is_connected = true;
+        self.packets_received = 0;
+        self.bytes_received = 0;
+    }
+
+    handler Subscribe(msg) {
+        if !self.is_connected {
+            println!("[DataIngestion] Error: not connected");
+            return;
+        }
+        println!("[DataIngestion] Subscribed to topic: {}", msg.topic);
+    }
+
+    handler Poll {
+        if !self.is_connected {
+            println!("[DataIngestion] Polling: no connection");
+            return;
+        }
+
+        // Simulate receiving data
+        self.packets_received = self.packets_received + 1;
+        self.bytes_received = self.bytes_received + 1024;
+
+        if self.packets_received % 1000 == 0 {
+            println!("[DataIngestion] Received {} packets ({} KB total)",
+                self.packets_received,
+                self.bytes_received / 1024);
+        }
+    }
+
+    handler Disconnect {
+        println!("[DataIngestion] Disconnecting");
+        self.is_connected = false;
+    }
+}
+
+// Pub/Sub message broker
+actor MessageBroker {
+    let subscriptions: HashMap<String, Vec<channel>>
+    let messages_published: u64
+
+    message Subscribe {
+        topic: String,
+        subscriber: channel
+    }
+
+    message Publish {
+        topic: String,
+        message: String
+    }
+
+    message GetStats {
+        reply_to: channel
+    }
+
+    handler Subscribe(msg) {
+        println!("[Broker] New subscriber for topic: {}", msg.topic);
+        // Would add to subscriptions list
+    }
+
+    handler Publish(msg) {
+        self.messages_published = self.messages_published + 1;
+        println!("[Broker] Published to {}: {} (total: {})",
+            msg.topic,
+            msg.message,
+            self.messages_published);
+    }
+}
+
+// Network monitor for diagnostics
+actor NetworkMonitor {
+    let total_packets_sent: u64
+    let total_packets_recv: u64
+    let total_bytes_sent: u64
+    let total_bytes_recv: u64
+    let error_count: u64
+
+    message RecordSend {
+        size: u32
+    }
+
+    message RecordRecv {
+        size: u32
+    }
+
+    message RecordError
+
+    message GetStats {
+        reply_to: channel
+    }
+
+    handler RecordSend(msg) {
+        self.total_packets_sent = self.total_packets_sent + 1;
+        self.total_bytes_sent = self.total_bytes_sent + msg.size as u64;
+    }
+
+    handler RecordRecv(msg) {
+        self.total_packets_recv = self.total_packets_recv + 1;
+        self.total_bytes_recv = self.total_bytes_recv + msg.size as u64;
+    }
+
+    handler RecordError {
+        self.error_count = self.error_count + 1;
+    }
+}
+
+// Network initialization and coordination
+fn initialize_network_stack() {
+    println!("[Network] Initializing Omnisystem network stack");
+
+    // Create broker
+    spawn MessageBroker {
+        subscriptions: HashMap::new(),
+        messages_published: 0
+    };
+
+    // Create monitor
+    spawn NetworkMonitor {
+        total_packets_sent: 0,
+        total_packets_recv: 0,
+        total_bytes_sent: 0,
+        total_bytes_recv: 0,
+        error_count: 0
+    };
+
+    println!("[Network] Network stack initialized");
+}
+
+// Utility function to parse network packet
+fn parse_network_packet(data: &Vec<u8>) -> Option<NetworkPacket> {
+    if data.len() < 20 {
+        return None;  // Invalid packet too short
+    }
+
+    let packet = NetworkPacket {
+        source_addr: 0,
+        dest_addr: 0,
+        port: 0,
+        protocol: 0,
+        payload: Vec::new(),
+        timestamp_ms: 0,
+        sequence_num: 0,
+        length: data.len() as u16
+    };
+
+    Some(packet)
+}

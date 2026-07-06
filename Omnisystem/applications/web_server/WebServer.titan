@@ -1,0 +1,1123 @@
+// WebServer.titan — HTTP/1.1 Web Server
+// Omnisystem Showcase Application · Web Server App
+// Language: TITAN · ~2000 LOC
+
+use omnisystem::{String, Vec, HashMap, Option, Result, Box}
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub workers: u32,
+    pub max_connections: u32,
+    pub read_timeout_ms: u64,
+    pub write_timeout_ms: u64,
+    pub static_dir: String,
+    pub keep_alive_requests: u32,
+    pub max_body_bytes: u64,
+    pub log_level: String,
+}
+
+impl ServerConfig {
+    pub fn default() -> Self {
+        ServerConfig {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+            workers: 4,
+            max_connections: 10000,
+            read_timeout_ms: 30000,
+            write_timeout_ms: 30000,
+            static_dir: "./static".to_string(),
+            keep_alive_requests: 100,
+            max_body_bytes: 10485760,
+            log_level: "info".to_string(),
+        }
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port
+        self
+    }
+
+    pub fn with_host(mut self, host: String) -> Self {
+        self.host = host
+        self
+    }
+
+    pub fn with_workers(mut self, workers: u32) -> Self {
+        self.workers = workers
+        self
+    }
+
+    pub fn with_static_dir(mut self, dir: String) -> Self {
+        self.static_dir = dir
+        self
+    }
+
+    pub fn with_log_level(mut self, level: String) -> Self {
+        self.log_level = level
+        self
+    }
+}
+
+// ============================================================================
+// HTTP METHOD
+// ============================================================================
+
+pub enum HttpMethod {
+    GET,
+    POST,
+    PUT,
+    DELETE,
+    PATCH,
+    HEAD,
+    OPTIONS,
+}
+
+impl HttpMethod {
+    pub fn from_str(s: &str) -> Option<HttpMethod> {
+        match s {
+            "GET"     => Option::Some(HttpMethod::GET),
+            "POST"    => Option::Some(HttpMethod::POST),
+            "PUT"     => Option::Some(HttpMethod::PUT),
+            "DELETE"  => Option::Some(HttpMethod::DELETE),
+            "PATCH"   => Option::Some(HttpMethod::PATCH),
+            "HEAD"    => Option::Some(HttpMethod::HEAD),
+            "OPTIONS" => Option::Some(HttpMethod::OPTIONS),
+            _         => Option::None,
+        }
+    }
+
+    pub fn to_str(&self) -> &str {
+        match self {
+            HttpMethod::GET     => "GET",
+            HttpMethod::POST    => "POST",
+            HttpMethod::PUT     => "PUT",
+            HttpMethod::DELETE  => "DELETE",
+            HttpMethod::PATCH   => "PATCH",
+            HttpMethod::HEAD    => "HEAD",
+            HttpMethod::OPTIONS => "OPTIONS",
+        }
+    }
+}
+
+// ============================================================================
+// HTTP REQUEST
+// ============================================================================
+
+pub struct HttpRequest {
+    pub method: HttpMethod,
+    pub path: String,
+    pub raw_path: String,
+    pub http_version: String,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+    pub query_params: HashMap<String, String>,
+    pub path_params: HashMap<String, String>,
+    pub remote_addr: String,
+}
+
+impl HttpRequest {
+    pub fn new(method: HttpMethod, path: String) -> Self {
+        HttpRequest {
+            method,
+            path: path.clone(),
+            raw_path: path,
+            http_version: "HTTP/1.1".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+            query_params: HashMap::new(),
+            path_params: HashMap::new(),
+            remote_addr: "0.0.0.0:0".to_string(),
+        }
+    }
+
+    pub fn content_length(&self) -> u64 {
+        match self.headers.get("content-length") {
+            Option::Some(v) => v.parse::<u64>().unwrap_or(0),
+            Option::None    => 0,
+        }
+    }
+
+    pub fn content_type(&self) -> String {
+        match self.headers.get("content-type") {
+            Option::Some(v) => v.clone(),
+            Option::None    => "application/octet-stream".to_string(),
+        }
+    }
+
+    pub fn is_keep_alive(&self) -> bool {
+        match self.headers.get("connection") {
+            Option::Some(v) => v.to_lowercase() != "close",
+            Option::None    => self.http_version == "HTTP/1.1",
+        }
+    }
+
+    pub fn body_as_str(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
+
+    pub fn authorization_header(&self) -> Option<String> {
+        self.headers.get("authorization").cloned()
+    }
+
+    pub fn remote_ip(&self) -> String {
+        // Extract IP from "IP:port" string
+        let addr = &self.remote_addr
+        match addr.rfind(':') {
+            Option::Some(idx) => addr[..idx].to_string(),
+            Option::None      => addr.clone(),
+        }
+    }
+}
+
+// ============================================================================
+// HTTP RESPONSE
+// ============================================================================
+
+pub struct HttpResponse {
+    pub status: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    pub fn new(status: u16, status_text: &str) -> Self {
+        let mut headers = HashMap::new()
+        headers.insert("Server".to_string(), "OmniServer/1.0 (Titan)".to_string())
+        headers.insert("Connection".to_string(), "keep-alive".to_string())
+        HttpResponse {
+            status,
+            status_text: status_text.to_string(),
+            headers,
+            body: Vec::new(),
+        }
+    }
+
+    // --- builder shortcuts ---
+
+    pub fn ok() -> Self {
+        HttpResponse::new(200, "OK")
+    }
+
+    pub fn created() -> Self {
+        HttpResponse::new(201, "Created")
+    }
+
+    pub fn no_content() -> Self {
+        HttpResponse::new(204, "No Content")
+    }
+
+    pub fn bad_request() -> Self {
+        HttpResponse::new(400, "Bad Request")
+    }
+
+    pub fn unauthorized() -> Self {
+        HttpResponse::new(401, "Unauthorized")
+    }
+
+    pub fn forbidden() -> Self {
+        HttpResponse::new(403, "Forbidden")
+    }
+
+    pub fn not_found() -> Self {
+        HttpResponse::new(404, "Not Found")
+    }
+
+    pub fn method_not_allowed() -> Self {
+        HttpResponse::new(405, "Method Not Allowed")
+    }
+
+    pub fn too_many_requests() -> Self {
+        HttpResponse::new(429, "Too Many Requests")
+    }
+
+    pub fn internal_error() -> Self {
+        HttpResponse::new(500, "Internal Server Error")
+    }
+
+    // --- body builders ---
+
+    pub fn json(mut self, data: &str) -> Self {
+        self.headers.insert("Content-Type".to_string(), "application/json; charset=utf-8".to_string())
+        self.body = data.as_bytes().to_vec()
+        self.headers.insert("Content-Length".to_string(), self.body.len().to_string())
+        self
+    }
+
+    pub fn html(mut self, data: &str) -> Self {
+        self.headers.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string())
+        self.body = data.as_bytes().to_vec()
+        self.headers.insert("Content-Length".to_string(), self.body.len().to_string())
+        self
+    }
+
+    pub fn text(mut self, data: &str) -> Self {
+        self.headers.insert("Content-Type".to_string(), "text/plain; charset=utf-8".to_string())
+        self.body = data.as_bytes().to_vec()
+        self.headers.insert("Content-Length".to_string(), self.body.len().to_string())
+        self
+    }
+
+    pub fn bytes(mut self, data: Vec<u8>, mime: &str) -> Self {
+        self.headers.insert("Content-Type".to_string(), mime.to_string())
+        self.headers.insert("Content-Length".to_string(), data.len().to_string())
+        self.body = data
+        self
+    }
+
+    pub fn with_header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.to_string(), value.to_string())
+        self
+    }
+
+    pub fn with_cors(mut self) -> Self {
+        self.headers.insert("Access-Control-Allow-Origin".to_string(), "*".to_string())
+        self.headers.insert("Access-Control-Allow-Methods".to_string(), "GET, POST, PUT, DELETE, PATCH, OPTIONS".to_string())
+        self.headers.insert("Access-Control-Allow-Headers".to_string(), "Content-Type, Authorization".to_string())
+        self
+    }
+
+    pub fn close_connection(mut self) -> Self {
+        self.headers.insert("Connection".to_string(), "close".to_string())
+        self
+    }
+}
+
+// ============================================================================
+// TRIE-BASED ROUTER
+// ============================================================================
+
+pub struct TrieNode {
+    children: HashMap<String, TrieNode>,
+    param_child: Option<Box<TrieNode>>,
+    param_name: Option<String>,
+    wildcard_child: Option<Box<TrieNode>>,
+    handlers: HashMap<String, u32>,  // method -> handler_id
+}
+
+impl TrieNode {
+    pub fn new() -> Self {
+        TrieNode {
+            children: HashMap::new(),
+            param_child: Option::None,
+            param_name: Option::None,
+            wildcard_child: Option::None,
+            handlers: HashMap::new(),
+        }
+    }
+}
+
+pub struct RouteMatch {
+    pub handler_id: u32,
+    pub path_params: HashMap<String, String>,
+}
+
+pub struct Router {
+    root: TrieNode,
+    next_handler_id: u32,
+}
+
+impl Router {
+    pub fn new() -> Self {
+        Router {
+            root: TrieNode::new(),
+            next_handler_id: 1,
+        }
+    }
+
+    pub fn register_route(&mut self, method: &str, pattern: &str, handler_id: u32) {
+        let segments = Self::split_path(pattern)
+        let mut node = &mut self.root
+        for seg in segments {
+            if seg.starts_with(':') {
+                // Param segment
+                let param_name = seg[1..].to_string()
+                if node.param_child.is_none() {
+                    node.param_child = Option::Some(Box::new(TrieNode::new()))
+                    node.param_name = Option::Some(param_name.clone())
+                }
+                node = node.param_child.as_mut().unwrap().as_mut()
+            } else if seg == "*" {
+                if node.wildcard_child.is_none() {
+                    node.wildcard_child = Option::Some(Box::new(TrieNode::new()))
+                }
+                node = node.wildcard_child.as_mut().unwrap().as_mut()
+                break
+            } else {
+                if !node.children.contains_key(&seg) {
+                    node.children.insert(seg.clone(), TrieNode::new())
+                }
+                node = node.children.get_mut(&seg).unwrap()
+            }
+        }
+        node.handlers.insert(method.to_string(), handler_id)
+    }
+
+    pub fn match_route(&self, method: &str, path: &str) -> Option<RouteMatch> {
+        let segments = Self::split_path(path)
+        let mut params = HashMap::new()
+        match Self::traverse(&self.root, &segments, 0, &mut params, method) {
+            Option::Some(handler_id) => Option::Some(RouteMatch { handler_id, path_params: params }),
+            Option::None => Option::None,
+        }
+    }
+
+    fn traverse(node: &TrieNode, segs: &Vec<String>, idx: usize, params: &mut HashMap<String, String>, method: &str) -> Option<u32> {
+        if idx == segs.len() {
+            return node.handlers.get(method).cloned()
+        }
+        let seg = &segs[idx]
+        // Literal match first
+        if let Option::Some(child) = node.children.get(seg) {
+            if let Option::Some(id) = Self::traverse(child, segs, idx + 1, params, method) {
+                return Option::Some(id)
+            }
+        }
+        // Param match
+        if let Option::Some(ref param_child) = node.param_child {
+            let pname = node.param_name.as_ref().map(|s| s.clone()).unwrap_or_default()
+            params.insert(pname.clone(), seg.clone())
+            if let Option::Some(id) = Self::traverse(param_child, segs, idx + 1, params, method) {
+                return Option::Some(id)
+            }
+            params.remove(&pname)
+        }
+        // Wildcard match
+        if let Option::Some(ref wc) = node.wildcard_child {
+            return wc.handlers.get(method).cloned()
+        }
+        Option::None
+    }
+
+    fn split_path(path: &str) -> Vec<String> {
+        path.split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    pub fn allocate_handler_id(&mut self) -> u32 {
+        let id = self.next_handler_id
+        self.next_handler_id += 1
+        id
+    }
+}
+
+// ============================================================================
+// REQUEST PARSER
+// ============================================================================
+
+pub struct RequestParser {}
+
+impl RequestParser {
+    pub fn parse(raw: &[u8]) -> Result<HttpRequest, String> {
+        let text = match String::from_utf8(raw.to_vec()) {
+            Result::Ok(s)  => s,
+            Result::Err(_) => return Result::Err("Invalid UTF-8 in request".to_string()),
+        }
+
+        // Find header/body split
+        let header_end = match text.find("\r\n\r\n") {
+            Option::Some(i) => i,
+            Option::None    => return Result::Err("Incomplete HTTP request: no header terminator".to_string()),
+        }
+        let header_section = &text[..header_end]
+        let body_start = header_end + 4
+        let body_bytes = if body_start < raw.len() { raw[body_start..].to_vec() } else { Vec::new() }
+
+        let mut lines = header_section.lines()
+
+        // Request line
+        let request_line = match lines.next() {
+            Option::Some(l) => l,
+            Option::None    => return Result::Err("Empty request".to_string()),
+        }
+        let parts: Vec<&str> = request_line.splitn(3, ' ').collect()
+        if parts.len() != 3 {
+            return Result::Err(format!("Malformed request line: {}", request_line))
+        }
+
+        let method = match HttpMethod::from_str(parts[0]) {
+            Option::Some(m) => m,
+            Option::None    => return Result::Err(format!("Unknown HTTP method: {}", parts[0])),
+        }
+        let raw_path = parts[1].to_string()
+        let http_version = parts[2].to_string()
+
+        // Split path and query string
+        let (path, query_params) = Self::parse_path_and_query(&raw_path)
+
+        // Parse headers
+        let mut headers: HashMap<String, String> = HashMap::new()
+        for line in lines {
+            if line.is_empty() { break }
+            match line.find(':') {
+                Option::Some(colon_idx) => {
+                    let key = line[..colon_idx].trim().to_lowercase()
+                    let val = line[colon_idx + 1..].trim().to_string()
+                    // Header folding: if key exists, append with comma
+                    if headers.contains_key(&key) {
+                        let existing = headers.get(&key).unwrap().clone()
+                        headers.insert(key, format!("{}, {}", existing, val))
+                    } else {
+                        headers.insert(key, val)
+                    }
+                }
+                Option::None => {} // Ignore malformed header lines
+            }
+        }
+
+        // Handle chunked transfer encoding
+        let body = if headers.get("transfer-encoding").map(|v| v.as_str()) == Option::Some("chunked") {
+            Self::decode_chunked(&body_bytes).unwrap_or(body_bytes)
+        } else {
+            // Honor content-length
+            let cl = headers.get("content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(body_bytes.len())
+            body_bytes[..cl.min(body_bytes.len())].to_vec()
+        }
+
+        Result::Ok(HttpRequest {
+            method,
+            path,
+            raw_path,
+            http_version,
+            headers,
+            body,
+            query_params,
+            path_params: HashMap::new(),
+            remote_addr: "0.0.0.0:0".to_string(),
+        })
+    }
+
+    fn parse_path_and_query(raw: &str) -> (String, HashMap<String, String>) {
+        let mut params = HashMap::new()
+        match raw.find('?') {
+            Option::Some(q) => {
+                let path = raw[..q].to_string()
+                let qs = &raw[q + 1..]
+                for pair in qs.split('&') {
+                    match pair.find('=') {
+                        Option::Some(eq) => {
+                            let k = Self::url_decode(&pair[..eq])
+                            let v = Self::url_decode(&pair[eq + 1..])
+                            params.insert(k, v)
+                        }
+                        Option::None => {
+                            params.insert(Self::url_decode(pair), String::new())
+                        }
+                    }
+                }
+                (path, params)
+            }
+            Option::None => (raw.to_string(), params),
+        }
+    }
+
+    fn url_decode(s: &str) -> String {
+        let mut result = String::new()
+        let bytes = s.as_bytes()
+        let mut i = 0
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let hex = &s[i + 1..i + 3]
+                if let Result::Ok(byte) = u8::from_str_radix(hex, 16) {
+                    result.push(byte as char)
+                    i += 3
+                    continue
+                }
+            } else if bytes[i] == b'+' {
+                result.push(' ')
+                i += 1
+                continue
+            }
+            result.push(bytes[i] as char)
+            i += 1
+        }
+        result
+    }
+
+    fn decode_chunked(data: &[u8]) -> Option<Vec<u8>> {
+        let mut result = Vec::new()
+        let mut pos = 0
+        loop {
+            // Find CRLF for chunk size line
+            let crlf = Self::find_crlf(data, pos)?
+            let size_str = String::from_utf8(data[pos..crlf].to_vec()).ok()?
+            let size_str = size_str.trim()
+            // Chunk extensions after semicolon
+            let size_str = match size_str.find(';') {
+                Option::Some(sc) => &size_str[..sc],
+                Option::None     => size_str,
+            }
+            let chunk_size = usize::from_str_radix(size_str.trim(), 16).ok()?
+            pos = crlf + 2
+            if chunk_size == 0 { break }
+            if pos + chunk_size > data.len() { return Option::None }
+            result.extend_from_slice(&data[pos..pos + chunk_size])
+            pos += chunk_size + 2 // skip trailing CRLF
+        }
+        Option::Some(result)
+    }
+
+    fn find_crlf(data: &[u8], start: usize) -> Option<usize> {
+        let mut i = start
+        while i + 1 < data.len() {
+            if data[i] == b'\r' && data[i + 1] == b'\n' {
+                return Option::Some(i)
+            }
+            i += 1
+        }
+        Option::None
+    }
+}
+
+// ============================================================================
+// RESPONSE WRITER
+// ============================================================================
+
+pub struct ResponseWriter {}
+
+impl ResponseWriter {
+    pub fn serialize(resp: &HttpResponse) -> Vec<u8> {
+        let mut out = String::new()
+        out.push_str(&format!("HTTP/1.1 {} {}\r\n", resp.status, resp.status_text))
+        for (k, v) in &resp.headers {
+            out.push_str(&format!("{}: {}\r\n", k, v))
+        }
+        out.push_str("\r\n")
+        let mut bytes = out.into_bytes()
+        bytes.extend_from_slice(&resp.body)
+        bytes
+    }
+}
+
+// ============================================================================
+// STATIC FILE SERVER
+// ============================================================================
+
+pub struct MimeEntry {
+    extension: String,
+    mime_type: String,
+}
+
+pub struct StaticFileServer {
+    root_dir: String,
+    etag_cache: HashMap<String, String>,
+    mime_types: Vec<MimeEntry>,
+}
+
+impl StaticFileServer {
+    pub fn new(root_dir: String) -> Self {
+        let mime_types = vec![
+            MimeEntry { extension: "html".to_string(), mime_type: "text/html; charset=utf-8".to_string() },
+            MimeEntry { extension: "htm".to_string(),  mime_type: "text/html; charset=utf-8".to_string() },
+            MimeEntry { extension: "css".to_string(),  mime_type: "text/css; charset=utf-8".to_string() },
+            MimeEntry { extension: "js".to_string(),   mime_type: "application/javascript; charset=utf-8".to_string() },
+            MimeEntry { extension: "mjs".to_string(),  mime_type: "application/javascript; charset=utf-8".to_string() },
+            MimeEntry { extension: "json".to_string(), mime_type: "application/json".to_string() },
+            MimeEntry { extension: "png".to_string(),  mime_type: "image/png".to_string() },
+            MimeEntry { extension: "jpg".to_string(),  mime_type: "image/jpeg".to_string() },
+            MimeEntry { extension: "jpeg".to_string(), mime_type: "image/jpeg".to_string() },
+            MimeEntry { extension: "gif".to_string(),  mime_type: "image/gif".to_string() },
+            MimeEntry { extension: "svg".to_string(),  mime_type: "image/svg+xml".to_string() },
+            MimeEntry { extension: "ico".to_string(),  mime_type: "image/x-icon".to_string() },
+            MimeEntry { extension: "woff".to_string(), mime_type: "font/woff".to_string() },
+            MimeEntry { extension: "woff2".to_string(),mime_type: "font/woff2".to_string() },
+            MimeEntry { extension: "ttf".to_string(),  mime_type: "font/ttf".to_string() },
+            MimeEntry { extension: "mp4".to_string(),  mime_type: "video/mp4".to_string() },
+            MimeEntry { extension: "webm".to_string(), mime_type: "video/webm".to_string() },
+            MimeEntry { extension: "mp3".to_string(),  mime_type: "audio/mpeg".to_string() },
+            MimeEntry { extension: "txt".to_string(),  mime_type: "text/plain; charset=utf-8".to_string() },
+            MimeEntry { extension: "xml".to_string(),  mime_type: "application/xml".to_string() },
+            MimeEntry { extension: "pdf".to_string(),  mime_type: "application/pdf".to_string() },
+            MimeEntry { extension: "wasm".to_string(), mime_type: "application/wasm".to_string() },
+        ]
+        StaticFileServer {
+            root_dir,
+            etag_cache: HashMap::new(),
+            mime_types,
+        }
+    }
+
+    pub fn detect_mime(&self, path: &str) -> String {
+        let ext = match path.rfind('.') {
+            Option::Some(i) => &path[i + 1..],
+            Option::None    => "",
+        }
+        for entry in &self.mime_types {
+            if entry.extension == ext.to_lowercase() {
+                return entry.mime_type.clone()
+            }
+        }
+        "application/octet-stream".to_string()
+    }
+
+    pub fn compute_etag(data: &[u8]) -> String {
+        // FNV-1a hash
+        let mut hash: u64 = 14695981039346656037
+        for byte in data {
+            hash ^= *byte as u64
+            hash = hash.wrapping_mul(1099511628211)
+        }
+        format!("\"{:016x}\"", hash)
+    }
+
+    pub fn serve(&mut self, req: &HttpRequest) -> HttpResponse {
+        // Sanitize path to prevent directory traversal
+        let rel_path = req.path.trim_start_matches('/')
+        if rel_path.contains("..") || rel_path.contains('\0') {
+            return HttpResponse::forbidden().text("Forbidden")
+        }
+
+        let file_path = if rel_path.is_empty() {
+            format!("{}/index.html", self.root_dir)
+        } else {
+            format!("{}/{}", self.root_dir, rel_path)
+        }
+
+        // Simulate file read (in real system: filesystem::read_file)
+        let (content, last_modified) = self.read_file(&file_path)
+
+        match content {
+            Option::Some(data) => {
+                let etag = Self::compute_etag(&data)
+                let mime = self.detect_mime(&file_path)
+
+                // Check If-None-Match for conditional GET
+                if let Option::Some(client_etag) = req.headers.get("if-none-match") {
+                    if client_etag == &etag {
+                        return HttpResponse::new(304, "Not Modified")
+                    }
+                }
+
+                HttpResponse::ok()
+                    .bytes(data, &mime)
+                    .with_header("ETag", &etag)
+                    .with_header("Last-Modified", &last_modified)
+                    .with_header("Cache-Control", "public, max-age=3600")
+            }
+            Option::None => {
+                HttpResponse::not_found().html("<html><body><h1>404 Not Found</h1></body></html>")
+            }
+        }
+    }
+
+    fn read_file(&self, path: &str) -> (Option<Vec<u8>>, String) {
+        // Filesystem integration point — stub returns synthetic content for demo
+        let content = format!("<!-- Static file: {} -->\n<html><body><h1>OmniServer Static</h1><p>Serving: {}</p></body></html>", path, path)
+        (Option::Some(content.into_bytes()), "Sat, 28 Jun 2026 00:00:00 GMT".to_string())
+    }
+}
+
+// ============================================================================
+// MIDDLEWARE TRAIT AND IMPLEMENTATIONS
+// ============================================================================
+
+pub trait Middleware {
+    fn process_request(&mut self, req: &mut HttpRequest) -> Option<HttpResponse>
+    fn process_response(&mut self, req: &HttpRequest, resp: &mut HttpResponse)
+}
+
+pub struct LoggingMiddleware {
+    requests_logged: u64,
+}
+
+impl LoggingMiddleware {
+    pub fn new() -> Self {
+        LoggingMiddleware { requests_logged: 0 }
+    }
+}
+
+impl Middleware for LoggingMiddleware {
+    fn process_request(&mut self, req: &mut HttpRequest) -> Option<HttpResponse> {
+        self.requests_logged += 1
+        println!("[REQUEST #{} ] {} {} from {}",
+            self.requests_logged,
+            req.method.to_str(),
+            req.path,
+            req.remote_addr)
+        Option::None
+    }
+
+    fn process_response(&mut self, req: &HttpRequest, resp: &mut HttpResponse) {
+        println!("[RESPONSE    ] {} {} -> {} {}",
+            req.method.to_str(),
+            req.path,
+            resp.status,
+            resp.status_text)
+    }
+}
+
+pub struct CompressionMiddleware {
+    min_size_bytes: usize,
+}
+
+impl CompressionMiddleware {
+    pub fn new() -> Self {
+        CompressionMiddleware { min_size_bytes: 1024 }
+    }
+
+    // Run-length encoding as a lightweight compression demo
+    fn rle_compress(data: &[u8]) -> Vec<u8> {
+        if data.is_empty() { return Vec::new() }
+        let mut out = Vec::new()
+        let mut i = 0
+        while i < data.len() {
+            let byte = data[i]
+            let mut count: u8 = 1
+            while i + count as usize < data.len() && data[i + count as usize] == byte && count < 255 {
+                count += 1
+            }
+            out.push(count)
+            out.push(byte)
+            i += count as usize
+        }
+        out
+    }
+}
+
+impl Middleware for CompressionMiddleware {
+    fn process_request(&mut self, _req: &mut HttpRequest) -> Option<HttpResponse> {
+        Option::None
+    }
+
+    fn process_response(&mut self, req: &HttpRequest, resp: &mut HttpResponse) {
+        let accepts_encoding = req.headers.get("accept-encoding")
+            .map(|v| v.contains("omni-rle"))
+            .unwrap_or(false)
+        if accepts_encoding && resp.body.len() >= self.min_size_bytes {
+            let compressed = Self::rle_compress(&resp.body)
+            if compressed.len() < resp.body.len() {
+                resp.body = compressed
+                resp.headers.insert("Content-Encoding".to_string(), "omni-rle".to_string())
+                resp.headers.insert("Content-Length".to_string(), resp.body.len().to_string())
+            }
+        }
+    }
+}
+
+pub struct CorsMiddleware {
+    allowed_origins: Vec<String>,
+    allow_all: bool,
+}
+
+impl CorsMiddleware {
+    pub fn new_permissive() -> Self {
+        CorsMiddleware {
+            allowed_origins: Vec::new(),
+            allow_all: true,
+        }
+    }
+
+    pub fn new_restricted(origins: Vec<String>) -> Self {
+        CorsMiddleware {
+            allowed_origins: origins,
+            allow_all: false,
+        }
+    }
+
+    fn is_allowed(&self, origin: &str) -> bool {
+        if self.allow_all { return true }
+        self.allowed_origins.iter().any(|o| o == origin)
+    }
+}
+
+impl Middleware for CorsMiddleware {
+    fn process_request(&mut self, req: &mut HttpRequest) -> Option<HttpResponse> {
+        // Handle preflight
+        if req.method.to_str() == "OPTIONS" {
+            let origin = req.headers.get("origin").cloned().unwrap_or_default()
+            if self.is_allowed(&origin) {
+                return Option::Some(
+                    HttpResponse::no_content()
+                        .with_header("Access-Control-Allow-Origin", &origin)
+                        .with_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+                        .with_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+                        .with_header("Access-Control-Max-Age", "86400")
+                )
+            }
+        }
+        Option::None
+    }
+
+    fn process_response(&mut self, req: &HttpRequest, resp: &mut HttpResponse) {
+        let origin = req.headers.get("origin").cloned().unwrap_or_else(|| "*".to_string())
+        if self.is_allowed(&origin) {
+            resp.headers.insert("Access-Control-Allow-Origin".to_string(), origin)
+            resp.headers.insert("Vary".to_string(), "Origin".to_string())
+        }
+    }
+}
+
+// ============================================================================
+// SERVER METRICS
+// ============================================================================
+
+pub struct ServerMetrics {
+    pub total_requests: u64,
+    pub active_connections: u32,
+    pub requests_per_route: HashMap<String, u64>,
+    pub error_count: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub start_time_ms: u64,
+}
+
+impl ServerMetrics {
+    pub fn new(start_time_ms: u64) -> Self {
+        ServerMetrics {
+            total_requests: 0,
+            active_connections: 0,
+            requests_per_route: HashMap::new(),
+            error_count: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            start_time_ms,
+        }
+    }
+
+    pub fn record_request(&mut self, path: &str, bytes_in: u64) {
+        self.total_requests += 1
+        self.bytes_received += bytes_in
+        let count = self.requests_per_route.entry(path.to_string()).or_insert(0)
+        *count += 1
+    }
+
+    pub fn record_response(&mut self, bytes_out: u64, is_error: bool) {
+        self.bytes_sent += bytes_out
+        if is_error { self.error_count += 1 }
+    }
+
+    pub fn to_json(&self, now_ms: u64) -> String {
+        let uptime_s = (now_ms - self.start_time_ms) / 1000
+        let rps = if uptime_s > 0 { self.total_requests / uptime_s } else { 0 }
+        format!(r#"{{"total_requests":{},"active_connections":{},"error_count":{},"bytes_sent":{},"bytes_received":{},"uptime_seconds":{},"requests_per_second":{},"status":"ok"}}"#,
+            self.total_requests,
+            self.active_connections,
+            self.error_count,
+            self.bytes_sent,
+            self.bytes_received,
+            uptime_s,
+            rps)
+    }
+}
+
+// ============================================================================
+// CONNECTION HANDLER
+// ============================================================================
+
+pub struct ConnectionHandler {
+    config: ServerConfig,
+    router: Router,
+    static_server: StaticFileServer,
+    metrics: ServerMetrics,
+    logging: LoggingMiddleware,
+    cors: CorsMiddleware,
+    compression: CompressionMiddleware,
+}
+
+impl ConnectionHandler {
+    pub fn new(config: ServerConfig, router: Router) -> Self {
+        let static_dir = config.static_dir.clone()
+        ConnectionHandler {
+            config,
+            router,
+            static_server: StaticFileServer::new(static_dir),
+            metrics: ServerMetrics::new(0),
+            logging: LoggingMiddleware::new(),
+            cors: CorsMiddleware::new_permissive(),
+            compression: CompressionMiddleware::new(),
+        }
+    }
+
+    pub fn handle_connection(&mut self, raw_bytes: Vec<u8>, remote_addr: String) -> Vec<u8> {
+        // Parse request
+        let mut req = match RequestParser::parse(&raw_bytes) {
+            Result::Ok(r)  => r,
+            Result::Err(e) => {
+                let resp = HttpResponse::bad_request().text(&format!("Parse error: {}", e))
+                return ResponseWriter::serialize(&resp)
+            }
+        }
+        req.remote_addr = remote_addr
+        self.metrics.record_request(&req.path, raw_bytes.len() as u64)
+
+        // Logging middleware (request phase)
+        self.logging.process_request(&mut req)
+
+        // CORS preflight check
+        if let Option::Some(preflight) = self.cors.process_request(&mut req) {
+            return ResponseWriter::serialize(&preflight)
+        }
+
+        // Route the request
+        let mut resp = self.dispatch(&mut req)
+
+        // Post-process through middlewares
+        self.cors.process_response(&req, &mut resp)
+        self.compression.process_response(&req, &mut resp)
+        self.logging.process_response(&req, &mut resp)
+
+        let is_error = resp.status >= 400
+        let out = ResponseWriter::serialize(&resp)
+        self.metrics.record_response(out.len() as u64, is_error)
+        out
+    }
+
+    fn dispatch(&mut self, req: &mut HttpRequest) -> HttpResponse {
+        // Built-in routes
+        let path = req.path.clone()
+        let method = req.method.to_str().to_string()
+
+        if method == "GET" && path == "/health" {
+            return HttpResponse::ok().json(r#"{"status":"ok","version":"1.0.0","language":"TITAN"}"#)
+        }
+
+        if method == "GET" && path == "/metrics" {
+            return HttpResponse::ok().json(&self.metrics.to_json(0))
+        }
+
+        if method == "GET" && (path == "/" || path.is_empty()) {
+            return self.static_server.serve(req)
+        }
+
+        // Router-based dispatch
+        match self.router.match_route(&method, &path) {
+            Option::Some(route_match) => {
+                req.path_params = route_match.path_params
+                self.invoke_handler(route_match.handler_id, req)
+            }
+            Option::None => {
+                // Try static file serving for GET requests
+                if method == "GET" {
+                    self.static_server.serve(req)
+                } else {
+                    HttpResponse::not_found().json(r#"{"error":"Route not found"}"#)
+                }
+            }
+        }
+    }
+
+    fn invoke_handler(&mut self, handler_id: u32, req: &HttpRequest) -> HttpResponse {
+        // Handler dispatch table — handlers registered externally
+        match handler_id {
+            1 => self.handle_api_users_list(req),
+            2 => self.handle_api_users_create(req),
+            3 => self.handle_api_users_get(req),
+            4 => self.handle_api_users_delete(req),
+            _ => HttpResponse::not_found().json(r#"{"error":"Handler not implemented"}"#),
+        }
+    }
+
+    // Built-in stub handlers for demo
+    fn handle_api_users_list(&self, _req: &HttpRequest) -> HttpResponse {
+        HttpResponse::ok().json(r#"{"users":[],"total":0}"#)
+    }
+
+    fn handle_api_users_create(&self, _req: &HttpRequest) -> HttpResponse {
+        HttpResponse::created().json(r#"{"id":1,"name":"New User","email":"new@example.com"}"#)
+    }
+
+    fn handle_api_users_get(&self, req: &HttpRequest) -> HttpResponse {
+        let id = req.path_params.get("id").map(|s| s.as_str()).unwrap_or("0")
+        HttpResponse::ok().json(&format!(r#"{{"id":{},"name":"User {}","email":"user{}@example.com"}}"#, id, id, id))
+    }
+
+    fn handle_api_users_delete(&self, req: &HttpRequest) -> HttpResponse {
+        let id = req.path_params.get("id").map(|s| s.as_str()).unwrap_or("0")
+        println!("Deleted user {}", id)
+        HttpResponse::no_content()
+    }
+}
+
+// ============================================================================
+// MAIN SERVER
+// ============================================================================
+
+pub struct WebServer {
+    config: ServerConfig,
+    handler: ConnectionHandler,
+}
+
+impl WebServer {
+    pub fn new(config: ServerConfig) -> Self {
+        let mut router = Router::new()
+        // Register API routes
+        router.register_route("GET",    "/api/users",     1)
+        router.register_route("POST",   "/api/users",     2)
+        router.register_route("GET",    "/api/users/:id", 3)
+        router.register_route("DELETE", "/api/users/:id", 4)
+
+        WebServer {
+            handler: ConnectionHandler::new(config.clone(), router),
+            config,
+        }
+    }
+
+    pub fn listen(&mut self) {
+        println!("OmniServer listening on {}:{}", self.config.host, self.config.port)
+        println!("Workers: {} | Max connections: {}", self.config.workers, self.config.max_connections)
+        println!("Static dir: {}", self.config.static_dir)
+        println!("Press Ctrl+C to stop.\n")
+
+        // Simulate accepting connections in a loop
+        let mut conn_id = 0u64
+        loop {
+            conn_id += 1
+            let raw = Self::simulate_incoming_request(conn_id)
+            let remote = format!("127.0.0.1:{}", 40000 + (conn_id % 10000))
+            let response_bytes = self.handler.handle_connection(raw, remote)
+            println!("  Sent {} bytes for connection #{}", response_bytes.len(), conn_id)
+            if conn_id >= 5 {
+                println!("\nDemo complete — {} connections handled.", conn_id)
+                println!("{}", self.handler.metrics.to_json(5000))
+                break
+            }
+        }
+    }
+
+    fn simulate_incoming_request(id: u64) -> Vec<u8> {
+        let path = match id % 5 {
+            0 => "/",
+            1 => "/health",
+            2 => "/metrics",
+            3 => "/api/users",
+            _ => "/api/users/42",
+        }
+        let raw = format!("GET {} HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: OmniClient/1.0\r\nAccept: application/json\r\nConnection: keep-alive\r\n\r\n", path)
+        raw.into_bytes()
+    }
+}
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
+
+pub fn main() {
+    let config = ServerConfig::default()
+        .with_port(8080)
+        .with_host("0.0.0.0".to_string())
+        .with_workers(4)
+        .with_static_dir("./static".to_string())
+        .with_log_level("info".to_string())
+
+    println!("=== OmniServer HTTP/1.1 — Powered by TITAN ===")
+    println!("Initializing with config:")
+    println!("  Host:        {}", config.host)
+    println!("  Port:        {}", config.port)
+    println!("  Workers:     {}", config.workers)
+    println!("  Max conns:   {}", config.max_connections)
+    println!("  Timeout:     {}ms", config.read_timeout_ms)
+    println!("  Static dir:  {}", config.static_dir)
+    println!()
+
+    let mut server = WebServer::new(config)
+    server.listen()
+}
