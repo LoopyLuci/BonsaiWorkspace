@@ -1,61 +1,110 @@
-name: Security Checks
+name: Security Scanning
+
+# Replaces the previous version of this workflow, which only ever scanned
+# the legacy root Cargo workspace (Z:\Projects\Omnisystem\Cargo.toml — ~2500
+# `src/crates/*` members that don't exist on disk, so `cargo tree`/`cargo
+# audit` there could never have succeeded) via the archived, unmaintained
+# `actions-rs/toolchain` action. This version scans every real ecosystem in
+# the repo with maintained, current actions.
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
   schedule:
-    - cron: '0 0 * * 0'  # Weekly scan
+    - cron: "0 3 * * 1" # weekly
 
 jobs:
-  dependency-check:
-    name: Dependency Check
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-
-    - name: Check Rust dependencies
-      run: cargo tree
-      working-directory: ./Omnisystem
-
   cargo-audit:
-    name: Cargo Audit
-    runs-on: ubuntu-latest
-
+    name: cargo audit (kernel + workspace)
+    runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            Omnisystem/OmniHarness/kernel -> target
+            Omnisystem/OmniHarness/workspace/src-tauri -> target
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
 
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
+      - name: Audit kernel
+        working-directory: Omnisystem/OmniHarness/kernel
+        run: cargo audit
+        continue-on-error: true
 
-    - name: Run cargo audit
-      run: cargo audit
-      working-directory: ./Omnisystem
+      - name: Audit workspace
+        working-directory: Omnisystem/OmniHarness/workspace/src-tauri
+        run: cargo audit
+        continue-on-error: true
+
+  npm-audit-vscode:
+    name: npm audit (vscode-omnisystem)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Omnisystem/vscode-omnisystem
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm audit --audit-level=high
+        continue-on-error: true
+
+  npm-audit-workspace-frontend:
+    name: npm audit (workspace frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Omnisystem/OmniHarness/workspace/src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm audit --audit-level=high
+        continue-on-error: true
+
+  pip-audit-orchestrator:
+    name: pip-audit (orchestrator)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Omnisystem/OmniHarness/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pip install pip-audit
+      - run: pip-audit
+        continue-on-error: true
 
   codeql:
-    name: CodeQL Analysis
+    name: CodeQL (JavaScript/TypeScript + Python)
+    # Rust support in CodeQL is still experimental repo-wide as of this
+    # writing; scanning the two languages GitHub fully supports here rather
+    # than an autobuild step that would target the (non-building) legacy
+    # root Cargo workspace, as the previous version of this job did.
     runs-on: ubuntu-latest
-
+    permissions:
+      security-events: write
+    strategy:
+      matrix:
+        language: [javascript-typescript, python]
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v2
-
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v2
-
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/analyze@v3

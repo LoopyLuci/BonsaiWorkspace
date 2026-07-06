@@ -1,0 +1,82 @@
+name: Release
+
+# Builds real, installable artifacts on a version tag push: the Workspace
+# desktop app (Tauri installer) and the VS Code extension (.vsix), attached
+# to a GitHub Release. Windows-only for the Tauri build: every native
+# dependency in workspace/src-tauri (audio/PTY/GPU/X11-adjacent crates) has
+# only ever been built and verified on Windows in this project's history —
+# publishing untested macOS/Linux installers would be a false promise, not
+# "enterprise grade."
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-workspace-app:
+    name: Build Workspace desktop app (Windows installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Omnisystem/OmniHarness/workspace/src/package-lock.json
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Omnisystem/OmniHarness/workspace/src-tauri -> target"
+          shared-key: "workspace-release"
+
+      - name: Install frontend dependencies
+        working-directory: Omnisystem/OmniHarness/workspace/src
+        run: npm ci
+
+      - name: Build Tauri app (release installer)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: Omnisystem/OmniHarness/workspace
+          tagName: ${{ github.ref_name }}
+          releaseName: "Workspace ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+
+  package-vscode-extension:
+    name: Package VS Code extension (.vsix)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Omnisystem/vscode-omnisystem
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Omnisystem/vscode-omnisystem/package-lock.json
+
+      - run: npm ci
+      - run: npx vsce package --out omnisystem-${{ github.ref_name }}.vsix
+
+      - name: Attach .vsix to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: Omnisystem/vscode-omnisystem/omnisystem-${{ github.ref_name }}.vsix

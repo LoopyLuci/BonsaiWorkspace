@@ -1,0 +1,125 @@
+name: Rust — OmniHarness
+
+# Covers the real, working Rust code: the ~35 shared crates, the Tauri
+# "Workspace" desktop app that consumes them, and the standalone gRPC kernel.
+# Deliberately does NOT touch Z:\Projects\Omnisystem\Cargo.toml (the legacy
+# root workspace) — that manifest references ~2500 `src/crates/*` members
+# that no longer exist on disk and cannot resolve (`cargo metadata` fails
+# immediately). CI targets the paths that actually build and ship.
+#
+# windows-latest is the primary, required target: this is a Windows desktop
+# app (Tauri + native audio/PTY/GPU deps) and every line of this codebase has
+# only ever been built/tested on Windows this project's history. We are not
+# pretending cross-platform support that hasn't been exercised.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "Omnisystem/OmniHarness/crates/**"
+      - "Omnisystem/OmniHarness/kernel/**"
+      - "Omnisystem/OmniHarness/workspace/src-tauri/**"
+      - "Omnisystem/OmniHarness/native/**"
+      - "Omnisystem/OmniHarness/proto/**"
+      - ".github/workflows/rust-omniharness.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "Omnisystem/OmniHarness/crates/**"
+      - "Omnisystem/OmniHarness/kernel/**"
+      - "Omnisystem/OmniHarness/workspace/src-tauri/**"
+      - "Omnisystem/OmniHarness/native/**"
+      - "Omnisystem/OmniHarness/proto/**"
+      - ".github/workflows/rust-omniharness.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  workspace:
+    name: Workspace (Tauri app) — check + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Omnisystem/OmniHarness/workspace/src-tauri -> target"
+          shared-key: "workspace-src-tauri"
+
+      - name: cargo check
+        working-directory: Omnisystem/OmniHarness/workspace/src-tauri
+        run: cargo check --lib
+
+      - name: cargo test
+        working-directory: Omnisystem/OmniHarness/workspace/src-tauri
+        run: cargo test --lib
+
+  kernel:
+    name: Kernel (gRPC substrate) — check + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Omnisystem/OmniHarness/kernel -> target"
+          shared-key: "kernel"
+
+      - name: cargo check
+        working-directory: Omnisystem/OmniHarness/kernel
+        run: cargo check
+
+      - name: cargo test
+        working-directory: Omnisystem/OmniHarness/kernel
+        run: cargo test
+
+  lint:
+    name: fmt + clippy (informational)
+    runs-on: windows-latest
+    # Non-blocking: this is a large, long-lived codebase that predates a
+    # formatting/lint policy. Reported for visibility rather than gating —
+    # flip continue-on-error to false once a deliberate fmt/clippy sweep
+    # has been done, otherwise every PR fails on unrelated pre-existing debt.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: cargo fmt --check (workspace)
+        working-directory: Omnisystem/OmniHarness/workspace/src-tauri
+        run: cargo fmt --check
+        continue-on-error: true
+
+      - name: cargo clippy (workspace)
+        working-directory: Omnisystem/OmniHarness/workspace/src-tauri
+        run: cargo clippy --lib -- -D warnings
+        continue-on-error: true
