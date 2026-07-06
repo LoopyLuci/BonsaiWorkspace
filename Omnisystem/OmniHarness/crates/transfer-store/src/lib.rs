@@ -1,4 +1,3 @@
-pub mod core;
+pub mod store;
 
-#[doc = "Core module"]
-pub use core::*;
+pub use store::*;

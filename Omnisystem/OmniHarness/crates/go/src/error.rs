@@ -1,20 +1,21 @@
-//! Error types
+use thiserror::Error;
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+#[derive(Debug, Error)]
+pub enum GoError {
+    #[error("invalid position: ({0}, {1})")]
+    InvalidPosition(u8, u8),
+    #[error("occupied: ({0}, {1})")]
+    Occupied(u8, u8),
+    #[error("suicide move")]
+    Suicide,
+    #[error("ko violation")]
+    Ko,
+    #[error("game already over")]
+    GameOver,
+    #[error("not your turn")]
+    WrongTurn,
+    #[error("game not found: {0}")]
+    GameNotFound(String),
+    #[error("invalid SGF: {0}")]
+    InvalidSgf(String),
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;

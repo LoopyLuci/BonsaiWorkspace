@@ -186,4 +186,7 @@ pub enum ViolationType {
     PeerMessage,
     ResourceExceeded,
     SignatureInvalid,
+    /// A capability request with no more specific classification was denied
+    /// (e.g. no token registered for the sandbox at all).
+    CapabilityDenied,
 }

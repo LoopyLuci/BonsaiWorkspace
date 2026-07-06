@@ -11,7 +11,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PlayerKind {
     Human,
-    BonsAI,
+    OmniAI,
     Agent { agent_id: String },
 }
 
@@ -208,7 +208,7 @@ impl ChessGameSession {
     fn rebuild_pgn(&mut self) {
         let mut pgn = String::new();
         // Headers
-        writeln!(pgn, "[Event \"BonsAI Chess\"]").ok();
+        writeln!(pgn, "[Event \"OmniAI Chess\"]").ok();
         writeln!(pgn, "[White \"{}\"]", self.white.name).ok();
         writeln!(pgn, "[Black \"{}\"]", self.black.name).ok();
         writeln!(pgn, "[Result \"{}\"]", self.pgn_result_str()).ok();
@@ -233,9 +233,9 @@ impl ChessGameSession {
         }
     }
 
-    /// Whether the AI (BonsAI) should move next.
+    /// Whether the AI (OmniAI) should move next.
     pub fn needs_ai_move(&self) -> bool {
-        self.result == GameResult::Ongoing && self.current_player().kind == PlayerKind::BonsAI
+        self.result == GameResult::Ongoing && self.current_player().kind == PlayerKind::OmniAI
     }
 
     /// Legal moves in current position.
@@ -260,8 +260,8 @@ mod tests {
         };
         let black = Player {
             id: "ai".into(),
-            name: "BonsAI".into(),
-            kind: PlayerKind::BonsAI,
+            name: "OmniAI".into(),
+            kind: PlayerKind::OmniAI,
             color: ChessColor::Black,
             elo: None,
         };

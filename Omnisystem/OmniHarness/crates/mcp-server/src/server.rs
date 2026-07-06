@@ -13,11 +13,15 @@ use crate::uacs::{UacsState, UacsMode, HeadlessConfig, HITLConfig};
 
 pub struct AppState {
     pub uacs: Arc<UacsState>,
+    /// Outbound channel for host-side events (e.g. SystemEventBus) that the
+    /// MCP server should be able to relay to connected clients. `None` when
+    /// running standalone via `run_server`.
+    pub event_tx: Option<tokio::sync::broadcast::Sender<Value>>,
 }
 
 pub async fn run_server(host: &str, port: u16) -> anyhow::Result<()> {
     let uacs = Arc::new(UacsState::new(UacsMode::Headless));
-    let state = Arc::new(AppState { uacs });
+    let state = Arc::new(AppState { uacs, event_tx: None });
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     let app = build_router(state);
@@ -28,9 +32,28 @@ pub async fn run_server(host: &str, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Same as [`run_server`], but wired to an external event channel so the
+/// host process can forward its own event bus into the MCP server.
+pub async fn run_server_with_event_tx(
+    host: &str,
+    port: u16,
+    event_tx: tokio::sync::broadcast::Sender<Value>,
+) -> anyhow::Result<()> {
+    let uacs = Arc::new(UacsState::new(UacsMode::Headless));
+    let state = Arc::new(AppState { uacs, event_tx: Some(event_tx) });
+
+    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+    let app = build_router(state);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("Universal Agent Control System (event-linked) listening on {}", addr);
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
 pub async fn run_uacs_visual(host: &str, port: u16, hitl: HITLConfig) -> anyhow::Result<()> {
     let uacs = Arc::new(UacsState::visual_with_hitl(hitl));
-    let state = Arc::new(AppState { uacs });
+    let state = Arc::new(AppState { uacs, event_tx: None });
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     let app = build_router(state);
@@ -44,7 +67,7 @@ pub async fn run_uacs_visual(host: &str, port: u16, hitl: HITLConfig) -> anyhow:
 
 pub async fn run_uacs_headless(host: &str, port: u16, config: HeadlessConfig, hitl: HITLConfig) -> anyhow::Result<()> {
     let uacs = Arc::new(UacsState::headless_with_config(config, hitl));
-    let state = Arc::new(AppState { uacs });
+    let state = Arc::new(AppState { uacs, event_tx: None });
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
     let app = build_router(state);

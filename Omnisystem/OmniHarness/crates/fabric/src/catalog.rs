@@ -1,10 +1,10 @@
 //! Task Catalog — 50 production-grade distributed computing task profiles.
 //!
-//! Each [`TaskProfile`] is a registered, schedulable workload the Bonsai
+//! Each [`TaskProfile`] is a registered, schedulable workload the Workspace
 //! Compute Fabric knows how to distribute. Profiles describe the scheduling
 //! topology, resource shape, data volume, and URV cost band so the
 //! `CoordinatorActor` can match a task to capable nodes and the marketplace
-//! can price it. Eight profiles are *Bonsai-native* — they make the ecosystem
+//! can price it. Eight profiles are *Workspace-native* — they make the ecosystem
 //! improve itself (F³ fuzzing, Survival rule synthesis, scheduler evolution,
 //! causal fault localisation, agent evolution, KDB indexing, proof search).
 
@@ -25,7 +25,7 @@ pub enum TaskCategory {
     Cryptography,
     Security,
     EdgeIot,
-    BonsaiNative,
+    WorkspaceNative,
     Interop,
 }
 
@@ -40,7 +40,7 @@ impl TaskCategory {
             TaskCategory::Cryptography => "Cryptography & Privacy",
             TaskCategory::Security => "Security & Program Analysis",
             TaskCategory::EdgeIot => "Real-Time Edge & IoT",
-            TaskCategory::BonsaiNative => "Bonsai Self-Improvement",
+            TaskCategory::WorkspaceNative => "Workspace Self-Improvement",
             TaskCategory::Interop => "Interoperability & Volunteer Computing",
         }
     }
@@ -687,11 +687,11 @@ pub const CATALOG: &[TaskProfile] = &[
         bonsai_native: false,
     },
 
-    // ── Bonsai Self-Improvement (8) — the differentiators ─────────────────────
+    // ── Workspace Self-Improvement (8) — the differentiators ─────────────────────
     TaskProfile {
         id: "self-optimising-scheduler-evolution",
         name: "Self-Optimising Scheduler Evolution",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "The fabric runs hundreds of scheduling-algorithm variants against historical task traces; a genetic loop breeds the best and hot-reloads it into the live CoordinatorActor.",
         scheduling: Evolutionary,
         task_type: Script,
@@ -704,7 +704,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "swarm-forced-failure-finder",
         name: "Swarm-Based Forced Failure Finder",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "F³ fuzzing campaigns fan out across all idle devices, each testing different components (Tauri commands, WASM tools, CRDT merges). Crashes flow into the Survival KB.",
         scheduling: EmbarrassinglyParallel,
         task_type: Script,
@@ -717,7 +717,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "distributed-causal-fault-localisation",
         name: "Distributed Causal Fault Localisation",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "Replay the Universe Event Log from the last good snapshot; each device tests a different causal hypothesis to pinpoint the event sequence that caused a failure.",
         scheduling: EmbarrassinglyParallel,
         task_type: Script,
@@ -730,7 +730,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "federated-survival-rule-synthesis",
         name: "Federated Survival Rule Synthesis",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "Each device mines its local crash logs to propose new survival rules; an aggregator merges, deduplicates, and validates them against a shared corpus before deployment.",
         scheduling: SecureAggregation,
         task_type: Script,
@@ -743,7 +743,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "agent-persona-evolution",
         name: "Agent Persona Evolution",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "Each device mutates an agent's system prompt, temperature, and tool permissions; mutated agents are benchmarked and the fittest breed hyper-specialised personas.",
         scheduling: Evolutionary,
         task_type: Inference,
@@ -756,8 +756,8 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "distributed-semantic-index-kdb",
         name: "Distributed KDB Semantic Indexing",
-        category: BonsaiNative,
-        description: "All Bonsai docs, chat logs, and code are embedded and indexed: each device builds a local HNSW shard and a coordinator merges into the global Knowledge Database index.",
+        category: WorkspaceNative,
+        description: "All Workspace docs, chat logs, and code are embedded and indexed: each device builds a local HNSW shard and a coordinator merges into the global Knowledge Database index.",
         scheduling: MapReduce,
         task_type: DataProcess,
         resources: rp(4, 8192, Optional, Moderate, false, false),
@@ -769,7 +769,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "swarm-memory-consolidation",
         name: "Swarm-Wide Memory Consolidation",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "Instead of a single DreamAgent, the swarm consolidates memory: each device processes a subset of the day's memory nodes and a central agent synthesises BONSAI.md.",
         scheduling: MapReduce,
         task_type: Inference,
@@ -782,7 +782,7 @@ pub const CATALOG: &[TaskProfile] = &[
     TaskProfile {
         id: "distributed-axiom-proof-search",
         name: "Distributed Axiom Proof Search",
-        category: BonsaiNative,
+        category: WorkspaceNative,
         description: "A conjecture is decomposed into lemmas; each device runs the Axiom tactic engine on a lemma and broadcasts proofs so others can unblock dependent goals.",
         scheduling: DynamicTaskGraph,
         task_type: Script,
@@ -798,7 +798,7 @@ pub const CATALOG: &[TaskProfile] = &[
         id: "boinc-folding-bridge",
         name: "BOINC / Folding@home Bridge",
         category: Interop,
-        description: "Run work units from established volunteer projects (Folding@home, Rosetta@home, SETI@home); credits earned convert to Bonsai credits.",
+        description: "Run work units from established volunteer projects (Folding@home, Rosetta@home, SETI@home); credits earned convert to Workspace credits.",
         scheduling: EmbarrassinglyParallel,
         task_type: Script,
         resources: rp(2, 2048, Optional, Moderate, false, true),
@@ -809,8 +809,8 @@ pub const CATALOG: &[TaskProfile] = &[
     },
     TaskProfile {
         id: "bonsai-genesis",
-        name: "Bonsai-Genesis — The Swarm Evolves the Fabric",
-        category: BonsaiNative,
+        name: "Workspace-Genesis — The Swarm Evolves the Fabric",
+        category: WorkspaceNative,
         description: "The meta-task: each device proposes a modification to the fabric's scheduling, allocation, or fault-tolerance policy; the swarm evaluates it in a shadow environment and the best are rolled out live.",
         scheduling: Evolutionary,
         task_type: Script,
@@ -864,7 +864,7 @@ pub fn count() -> usize {
 
 pub fn category_summary() -> Vec<(&'static str, usize)> {
     use TaskCategory::*;
-    [AiMl, BuildCi, Multimedia, Simulation, DataAnalytics, Cryptography, Security, EdgeIot, BonsaiNative, Interop]
+    [AiMl, BuildCi, Multimedia, Simulation, DataAnalytics, Cryptography, Security, EdgeIot, WorkspaceNative, Interop]
         .iter()
         .map(|c| (c.as_str(), by_category(*c).len()))
         .filter(|(_, n)| *n > 0)

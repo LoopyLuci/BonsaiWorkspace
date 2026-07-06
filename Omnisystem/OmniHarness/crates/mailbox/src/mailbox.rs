@@ -2,7 +2,7 @@
 
 use crate::envelope::{AgentId, MailEnvelope};
 use crate::error::{MailboxError, MailboxResult};
-use p2p_crypto::BonsaiIdentity;
+use p2p_crypto::WorkspaceIdentity;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -12,7 +12,7 @@ const INBOX_CAPACITY: usize = 1024;
 /// Registry entry for a locally-registered agent.
 struct AgentEntry {
     #[allow(dead_code)]
-    identity: Arc<BonsaiIdentity>,
+    identity: Arc<WorkspaceIdentity>,
     /// Channel into the agent's inbox.
     inbox_tx: mpsc::Sender<MailEnvelope>,
 }
@@ -31,7 +31,7 @@ impl AgentMailbox {
     }
 
     /// Register an agent, returning its inbox receiver.
-    pub fn register(&self, identity: Arc<BonsaiIdentity>) -> mpsc::Receiver<MailEnvelope> {
+    pub fn register(&self, identity: Arc<WorkspaceIdentity>) -> mpsc::Receiver<MailEnvelope> {
         let agent_id = identity.fingerprint().to_string();
         let (tx, rx) = mpsc::channel(INBOX_CAPACITY);
         self.agents.insert(
@@ -66,7 +66,7 @@ impl AgentMailbox {
     /// Build + sign + deliver a message from `sender` to `recipient_id`.
     pub async fn send_to(
         &self,
-        sender: &Arc<BonsaiIdentity>,
+        sender: &Arc<WorkspaceIdentity>,
         recipient_id: &AgentId,
         topic: &str,
         payload: Vec<u8>,
@@ -116,13 +116,13 @@ impl Default for AgentMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2p_crypto::BonsaiIdentity;
+    use p2p_crypto::WorkspaceIdentity;
 
     #[tokio::test]
     async fn local_delivery() {
         let mailbox = AgentMailbox::new();
-        let alice = Arc::new(BonsaiIdentity::generate());
-        let bob = Arc::new(BonsaiIdentity::generate());
+        let alice = Arc::new(WorkspaceIdentity::generate());
+        let bob = Arc::new(WorkspaceIdentity::generate());
 
         let bob_id = bob.fingerprint().to_string();
         let mut bob_rx = mailbox.register(bob.clone());
@@ -141,7 +141,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_recipient_error() {
         let mailbox = AgentMailbox::new();
-        let alice = Arc::new(BonsaiIdentity::generate());
+        let alice = Arc::new(WorkspaceIdentity::generate());
         mailbox.register(alice.clone());
 
         let result = mailbox

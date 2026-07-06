@@ -242,26 +242,26 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 // ── Capability penalty table ──────────────────────────────────────────────────
 
-use crate::BonsaiEffect;
+use crate::WorkspaceEffect;
 
 /// Compute the appropriate penalty for a set of declared effects.
-pub fn effect_penalty(effects: &[BonsaiEffect]) -> u8 {
+pub fn effect_penalty(effects: &[WorkspaceEffect]) -> u8 {
     let mut penalty: u8 = 0;
     for e in effects {
         penalty = penalty.saturating_add(match e {
-            BonsaiEffect::ShellExec => 10,
-            BonsaiEffect::Spawn => 8,
-            BonsaiEffect::NetworkIO => 5,
-            BonsaiEffect::FileIO => 4,
-            BonsaiEffect::WriteUserData => 4,
-            BonsaiEffect::VideoCapture => 3,
-            BonsaiEffect::AudioCapture => 3,
-            BonsaiEffect::GpuAccess => 2,
-            BonsaiEffect::ModelInference => 1,
-            BonsaiEffect::ReadUserData => 1,
-            BonsaiEffect::Crypto => 2,
-            BonsaiEffect::Telemetry => 0,
-            BonsaiEffect::Custom(_) => 3,
+            WorkspaceEffect::ShellExec => 10,
+            WorkspaceEffect::Spawn => 8,
+            WorkspaceEffect::NetworkIO => 5,
+            WorkspaceEffect::FileIO => 4,
+            WorkspaceEffect::WriteUserData => 4,
+            WorkspaceEffect::VideoCapture => 3,
+            WorkspaceEffect::AudioCapture => 3,
+            WorkspaceEffect::GpuAccess => 2,
+            WorkspaceEffect::ModelInference => 1,
+            WorkspaceEffect::ReadUserData => 1,
+            WorkspaceEffect::Crypto => 2,
+            WorkspaceEffect::Telemetry => 0,
+            WorkspaceEffect::Custom(_) => 3,
         });
     }
     penalty.min(30)
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn effect_penalty_shell_exec() {
-        let effects = vec![BonsaiEffect::ShellExec, BonsaiEffect::NetworkIO];
+        let effects = vec![WorkspaceEffect::ShellExec, WorkspaceEffect::NetworkIO];
         assert_eq!(effect_penalty(&effects), 15);
     }
 }

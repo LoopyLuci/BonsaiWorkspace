@@ -75,8 +75,8 @@ impl OmnisystemRuntime {
                 // Can always switch to full mode
                 *self.mode.write() = mode;
             }
-            OmniMode::Bonsai => {
-                // Switching to Bonsai - ensure minimal modules are active
+            OmniMode::Lite => {
+                // Switching to Lite - ensure minimal modules are active
                 // This would disable non-essential capabilities
                 *self.mode.write() = mode;
             }

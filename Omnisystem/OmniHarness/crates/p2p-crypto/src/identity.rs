@@ -61,12 +61,12 @@ impl IdentityPublicKey {
 // ── Full identity (private) ───────────────────────────────────────────────────
 
 /// A Bonsai node's full identity (private keys — never serialised to disk directly).
-pub struct BonsaiIdentity {
+pub struct WorkspaceIdentity {
     signing_key: SigningKey,
     pub public_key: IdentityPublicKey,
 }
 
-impl BonsaiIdentity {
+impl WorkspaceIdentity {
     /// Generate a fresh random identity.
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
@@ -105,7 +105,7 @@ impl BonsaiIdentity {
     }
 }
 
-impl Drop for BonsaiIdentity {
+impl Drop for WorkspaceIdentity {
     fn drop(&mut self) {
         // Zeroize the signing key bytes on drop
         let mut seed = self.signing_key.to_bytes();
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn generate_and_sign() {
-        let id = BonsaiIdentity::generate();
+        let id = WorkspaceIdentity::generate();
         let msg = b"hello bonsai";
         let sig = id.sign(msg);
         id.public_key.verify(msg, &sig).unwrap();
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn hex_roundtrip() {
-        let id = BonsaiIdentity::generate();
+        let id = WorkspaceIdentity::generate();
         let hex = id.public_key.to_hex();
         let recovered = IdentityPublicKey::from_hex(&hex).unwrap();
         assert_eq!(id.public_key.ed25519_pk, recovered.ed25519_pk);
@@ -137,8 +137,8 @@ mod tests {
 
     #[test]
     fn wrong_sig_rejected() {
-        let id = BonsaiIdentity::generate();
-        let other = BonsaiIdentity::generate();
+        let id = WorkspaceIdentity::generate();
+        let other = WorkspaceIdentity::generate();
         let sig = other.sign(b"tampered");
         assert!(id.public_key.verify(b"tampered", &sig).is_err());
     }

@@ -1,100 +1,185 @@
 /// Bonsai Linter MCP Tool Handlers
-/// Exposes bonsai-lint functionality via MCP protocol
-
+/// Exposes bonsai-lint functionality via MCP protocol.
+///
+/// `handle_lint_file`/`handle_lint_repo` used to return two hardcoded fake
+/// diagnostics (or a fixed `files_scanned: 256` / `total_issues: 87` summary)
+/// regardless of what file or repo was actually passed in. This is the
+/// implementation `tool_registry.rs` actually dispatches "bonsai_lint_file"/
+/// "bonsai_lint_repo" to — the separate, real recursive scanner in
+/// `lint_commands.rs`/`lint_integration.rs` was never wired to these tool
+/// names at all. Now both delegate to the same real scan engine
+/// (`scan_rules`) that `bug_hunt_tools.rs` uses.
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::path::Path;
 
-/// Handle bonsai_lint - lint files or directories
+/// Map the shared rule engine's severity vocabulary (critical/high/medium/
+/// low/info) onto this tool surface's documented one (error/warning/hint),
+/// since callers built against this MCP tool expect those three buckets.
+fn map_severity(sev: &str) -> &'static str {
+    match sev {
+        "critical" | "high" => "error",
+        "medium" => "warning",
+        _ => "hint",
+    }
+}
+
+/// Handle bonsai_lint - lint a single file
 pub async fn handle_lint_file(args: Value) -> Result<Value> {
     let path = args["path"].as_str().ok_or_else(|| {
         anyhow::anyhow!("missing path parameter")
     })?;
-    let languages = args["languages"].as_array();
-    let rules = args["rules"].as_array();
     let fix = args["fix"].as_bool().unwrap_or(false);
 
     tracing::info!("Linting file: {} (fix={})", path, fix);
 
-    // Mock diagnostics
-    let diagnostics = vec![
-        json!({
+    let path_buf = std::path::PathBuf::from(path);
+    if !path_buf.exists() {
+        return Ok(json!({
             "file": path,
-            "line": 12,
-            "column": 5,
-            "rule": "unused-import",
-            "severity": "warning",
-            "message": "Unused import 'fmt'",
-            "fix": Some("Remove import")
-        }),
-        json!({
-            "file": path,
-            "line": 45,
-            "column": 1,
-            "rule": "missing-error-handling",
-            "severity": "error",
-            "message": "Function call result not handled",
-            "fix": None::<String>
-        }),
-    ];
+            "status": "error",
+            "message": format!("File not found: {path}"),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }));
+    }
+    let content = tokio::fs::read_to_string(&path_buf).await?;
+    let ext = crate::scan_rules::ext_of(&path_buf);
 
-    let result = json!({
+    let mut diagnostics = Vec::new();
+    let mut warnings = 0u32;
+    let mut errors = 0u32;
+    let mut hints = 0u32;
+    for (line_num, line) in content.lines().enumerate() {
+        for m in crate::scan_rules::scan_line(line, ext) {
+            let sev = map_severity(m.severity);
+            match sev {
+                "error" => errors += 1,
+                "warning" => warnings += 1,
+                _ => hints += 1,
+            }
+            diagnostics.push(json!({
+                "file": path,
+                "line": line_num + 1,
+                "column": m.column,
+                "rule": m.rule_id,
+                "severity": sev,
+                "message": m.message,
+                "fix": m.suggested_fix.map(|(_, new)| new),
+            }));
+        }
+    }
+
+    Ok(json!({
         "file": path,
         "status": "complete",
         "diagnostics": diagnostics,
-        "total": 2,
-        "warnings": 1,
-        "errors": 1,
-        "fixed": if fix { 1 } else { 0 },
+        "total": diagnostics.len(),
+        "warnings": warnings,
+        "errors": errors,
+        "hints": hints,
+        // Fixes are never applied silently as a side effect of linting — a
+        // caller that wants a fix applied must call bonsai_apply_fix (or
+        // bug_hunt_tools::handle_auto_fix) explicitly with confirmation.
+        "fix_requested": fix,
+        "fixed": 0,
         "timestamp": chrono::Utc::now().to_rfc3339()
-    });
-
-    Ok(result)
+    }))
 }
 
-/// Handle bonsai_lint_repo - lint entire repository
+/// Handle bonsai_lint_repo - lint entire repository (recursive, from cwd)
 pub async fn handle_lint_repo(args: Value) -> Result<Value> {
     let quick = args["quick"].as_bool().unwrap_or(true);
 
     tracing::info!("Linting repository (quick={})", quick);
 
-    let result = json!({
+    let start = std::time::Instant::now();
+    let mut files_scanned = 0usize;
+    let mut warnings = 0u32;
+    let mut errors = 0u32;
+    let mut hints = 0u32;
+    let mut by_language: std::collections::HashMap<&'static str, (u32, u32)> = std::collections::HashMap::new();
+    let mut by_rule: std::collections::HashMap<String, (u32, &'static str)> = std::collections::HashMap::new();
+
+    let mut stack = vec![std::path::PathBuf::from(".")];
+    while let Some(dir) = stack.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else { continue };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(metadata) = entry.metadata().await else { continue };
+            if metadata.is_dir() {
+                if !crate::scan_rules::is_excluded_dir(&name) {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            let ext = crate::scan_rules::ext_of(&path);
+            if !crate::scan_rules::is_scannable_ext(ext) {
+                continue;
+            }
+            let Ok(content) = tokio::fs::read_to_string(&path).await else { continue };
+            files_scanned += 1;
+            let lang = match ext {
+                "rs" => "rust",
+                "py" => "python",
+                "ts" | "tsx" | "js" | "jsx" => "javascript",
+                "go" => "go",
+                _ => "other",
+            };
+            let lang_entry = by_language.entry(lang).or_insert((0, 0));
+            lang_entry.0 += 1;
+
+            if quick && files_scanned > 2000 {
+                // Quick mode still scans real files, just caps how many —
+                // a genuine bound rather than a fabricated summary.
+                continue;
+            }
+
+            for line in content.lines() {
+                for m in crate::scan_rules::scan_line(line, ext) {
+                    let sev = map_severity(m.severity);
+                    match sev {
+                        "error" => errors += 1,
+                        "warning" => warnings += 1,
+                        _ => hints += 1,
+                    }
+                    lang_entry.1 += 1;
+                    by_rule.entry(m.rule_id.to_string()).or_insert((0, sev)).0 += 1;
+                }
+            }
+        }
+    }
+
+    let mut top_violations: Vec<Value> = by_rule
+        .into_iter()
+        .map(|(rule, (count, sev))| json!({ "rule": rule, "count": count, "severity": sev }))
+        .collect();
+    top_violations.sort_by_key(|v| std::cmp::Reverse(v["count"].as_u64().unwrap_or(0)));
+    top_violations.truncate(10);
+
+    let languages: serde_json::Map<String, Value> = by_language
+        .into_iter()
+        .map(|(lang, (files, issues))| (lang.to_string(), json!({ "files": files, "issues": issues })))
+        .collect();
+
+    Ok(json!({
         "mode": if quick { "quick" } else { "full" },
         "status": "complete",
         "summary": {
-            "files_scanned": 256,
-            "total_issues": 87,
-            "warnings": 45,
-            "errors": 23,
-            "hints": 19,
-            "fixed": 12
+            "files_scanned": files_scanned,
+            "total_issues": warnings + errors + hints,
+            "warnings": warnings,
+            "errors": errors,
+            "hints": hints,
+            "fixed": 0,
         },
-        "languages": {
-            "rust": { "files": 120, "issues": 45 },
-            "python": { "files": 87, "issues": 32 },
-            "javascript": { "files": 49, "issues": 10 }
-        },
-        "top_violations": [
-            {
-                "rule": "unused-import",
-                "count": 23,
-                "severity": "warning"
-            },
-            {
-                "rule": "unread-variable",
-                "count": 15,
-                "severity": "warning"
-            },
-            {
-                "rule": "missing-docstring",
-                "count": 12,
-                "severity": "hint"
-            }
-        ],
+        "languages": languages,
+        "top_violations": top_violations,
+        "duration_ms": start.elapsed().as_millis(),
         "timestamp": chrono::Utc::now().to_rfc3339()
-    });
-
-    Ok(result)
+    }))
 }
 
 /// Handle bonsai_generate_lint_rule - AI-powered rule generation
@@ -178,6 +263,15 @@ pub async fn handle_explain_diagnostic(args: Value) -> Result<Value> {
 }
 
 /// Handle bonsai_apply_fix - apply a fix from a diagnostic
+///
+/// This tool surface addresses a fix by `(file, line, fix_id)` rather than a
+/// stored finding id (that's `bug_hunt_tools::handle_auto_fix`'s job), so
+/// there's no record here of what the "before" text should be. Previously
+/// this returned a fabricated `"before": "unused code here"` / `"after": "//
+/// code removed"` unconditionally, regardless of the file's real content —
+/// this now at least verifies the file and line genuinely exist before
+/// reporting anything, and returns the real current line instead of inventing
+/// text, rather than claiming a specific rewrite that never happened.
 pub async fn handle_apply_fix(args: Value) -> Result<Value> {
     let file = args["file"].as_str().ok_or_else(|| {
         anyhow::anyhow!("missing file parameter")
@@ -191,17 +285,43 @@ pub async fn handle_apply_fix(args: Value) -> Result<Value> {
 
     tracing::info!("Applying fix {} at {}:{}", fix_id, file, line);
 
-    let result = json!({
-        "status": "applied",
+    let content = match tokio::fs::read_to_string(file).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(json!({
+                "status": "error",
+                "file": file,
+                "line": line,
+                "fix_id": fix_id,
+                "message": format!("Could not read {file}: {e}"),
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }));
+        }
+    };
+    let Some(current_line) = content.lines().nth((line.saturating_sub(1)) as usize) else {
+        return Ok(json!({
+            "status": "error",
+            "file": file,
+            "line": line,
+            "fix_id": fix_id,
+            "message": format!("{file} has no line {line}"),
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }));
+    };
+
+    // No specific rewrite is known at this address — this endpoint records
+    // the fix request against the real current line, but does not invent or
+    // apply a text change. Use `bonsai_scan_repo` + `bonsai_auto_fix` for
+    // findings that have a concrete, mechanically-safe suggested_fix.
+    Ok(json!({
+        "status": "not_applied",
         "file": file,
         "line": line,
         "fix_id": fix_id,
-        "before": "unused code here",
-        "after": "// code removed",
+        "current_line": current_line,
+        "message": "No mechanical rewrite is registered for this fix_id — review and edit manually, or use bug_hunt_tools' bonsai_auto_fix for findings with a concrete suggested fix.",
         "timestamp": chrono::Utc::now().to_rfc3339()
-    });
-
-    Ok(result)
+    }))
 }
 
 /// Handle bonsai_dismiss_diagnostic - mark diagnostic as dismissed

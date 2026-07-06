@@ -1,4 +1,10 @@
-pub mod core;
+pub mod coordinator;
+pub mod types;
+pub mod catalog;
 
-#[doc = "Core module"]
-pub use core::*;
+pub use coordinator::CoordinatorActor;
+pub use types::{ComputeNode, ComputeProject, FabricTask, TaskResult, TaskStatus, TaskType};
+pub use catalog::{
+    CATALOG, TaskProfile, TaskCategory, SchedulingStrategy, GpuRequirement,
+    NetworkClass, DataVolume, ResourceProfile,
+};

@@ -6,8 +6,7 @@
 
 use std::sync::Arc;
 use dashmap::DashMap;
-use std::collections::HashMap;
-use crate::module_system::{OmniModule, ModuleState, ModuleMetadata};
+use crate::module_system::OmniModule;
 use crate::module_registry::ModuleRegistry;
 use crate::error::{Error, Result};
 
@@ -146,11 +145,9 @@ impl AppModuleLoader {
     /// Unloads and immediately reloads the module without affecting
     /// other modules (if hot_swappable is enabled in manifest)
     pub fn hot_reload_application(&self, app_name: &str) -> Result<()> {
-        // Get metadata to check hot_swappable
-        let metadata = self.registry.get_metadata(app_name)?;
+        // Confirm the module is registered before attempting the swap
+        self.registry.get_metadata(app_name)?;
 
-        // For now, use basic unload/reload
-        // In production, would check hot_swappable flag from manifest
         self.unload_application(app_name)?;
         self.load_application(app_name)?;
 

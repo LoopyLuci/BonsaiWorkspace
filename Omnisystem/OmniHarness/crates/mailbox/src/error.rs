@@ -1,20 +1,19 @@
-//! Error types
+use thiserror::Error;
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+#[derive(Debug, Error)]
+pub enum MailboxError {
+    #[error("unknown recipient: {0}")]
+    UnknownRecipient(String),
+    #[error("inbox full for agent: {0}")]
+    InboxFull(String),
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("crypto error: {0}")]
+    Crypto(String),
+    #[error("relay error: {0}")]
+    Relay(String),
+    #[error("mailbox closed")]
+    Closed,
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type MailboxResult<T> = Result<T, MailboxError>;

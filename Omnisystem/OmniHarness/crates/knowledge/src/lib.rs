@@ -1,4 +1,5 @@
-pub mod core;
+pub mod graph;
+pub mod types;
 
-#[doc = "Core module"]
-pub use core::*;
+pub use graph::*;
+pub use types::*;

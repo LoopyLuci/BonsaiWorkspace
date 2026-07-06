@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GoPlayerKind {
     Human,
-    BonsAI,
+    OmniAI,
     Agent { agent_id: String },
 }
 
@@ -176,7 +176,7 @@ impl GoGameSession {
 
     /// Whether the AI should move next.
     pub fn needs_ai_move(&self) -> bool {
-        self.result == GoGameResult::Ongoing && self.current_player().kind == GoPlayerKind::BonsAI
+        self.result == GoGameResult::Ongoing && self.current_player().kind == GoPlayerKind::OmniAI
     }
 
     /// Export game as SGF string.
@@ -209,8 +209,8 @@ mod tests {
         };
         let w = GoPlayer {
             id: "ai".into(),
-            name: "BonsAI".into(),
-            kind: GoPlayerKind::BonsAI,
+            name: "OmniAI".into(),
+            kind: GoPlayerKind::OmniAI,
             color: GoColor::White,
             rank: None,
         };

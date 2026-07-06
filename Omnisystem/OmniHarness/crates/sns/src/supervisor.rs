@@ -51,6 +51,21 @@ pub enum SandboxMessage {
 
 pub type ViolationSink = mpsc::Sender<CapabilityViolation>;
 
+/// A recovery action invoked when a sandboxed component crashes: given
+/// `(sandbox_id, component, error)`, attempt to bring it back. Registered
+/// per-component via `register_restart_handler`, or as a catch-all via
+/// `set_default_crash_handler` for components with no specific handler.
+pub type CrashHandler = Arc<
+    dyn Fn(String, String, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// A crashed sandbox stops being auto-restarted after this many crashes, so a
+/// component that crashes on every launch (bad binary, corrupt model, etc.)
+/// doesn't spin forever burning CPU/GPU trying the same broken restart.
+const MAX_AUTO_RESTARTS: u32 = 5;
+
 /// Central authority for all sandbox lifecycle and capability enforcement.
 pub struct SandboxSupervisor {
     sandboxes:      Arc<DashMap<String, SandboxInfo>>,
@@ -58,6 +73,8 @@ pub struct SandboxSupervisor {
     violations:     Arc<DashMap<String, Vec<CapabilityViolation>>>,
     message_tx:     mpsc::Sender<SandboxMessage>,
     violation_sink: Option<ViolationSink>,
+    restart_handlers: Arc<DashMap<String, CrashHandler>>,
+    default_crash_handler: Arc<tokio::sync::RwLock<Option<CrashHandler>>>,
 }
 
 impl SandboxSupervisor {
@@ -65,10 +82,15 @@ impl SandboxSupervisor {
         let (tx, mut rx) = mpsc::channel::<SandboxMessage>(4096);
         let sandboxes: Arc<DashMap<String, SandboxInfo>> = Arc::new(DashMap::new());
         let tokens = Arc::new(DashMap::new());
-        let violations = Arc::new(DashMap::new());
+        let violations: Arc<DashMap<String, Vec<CapabilityViolation>>> = Arc::new(DashMap::new());
+        let restart_handlers: Arc<DashMap<String, CrashHandler>> = Arc::new(DashMap::new());
+        let default_crash_handler: Arc<tokio::sync::RwLock<Option<CrashHandler>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
 
         let sb = sandboxes.clone();
         let viol = violations.clone();
+        let handlers = restart_handlers.clone();
+        let default_handler = default_crash_handler.clone();
 
         // Background message processor
         tokio::spawn(async move {
@@ -78,15 +100,56 @@ impl SandboxSupervisor {
                         // Always respond to prevent deadlock — default deny if token missing
                         let _ = respond.send(false);
                         warn!("SNS: capability request from {} for {} {} — denied (no token)", sandbox_id, action, resource);
+
+                        let component = sb.get(&sandbox_id).map(|i| i.component.clone()).unwrap_or_default();
+                        if let Some(mut info) = sb.get_mut(&sandbox_id) {
+                            info.violations += 1;
+                        }
+                        let v = CapabilityViolation {
+                            sandbox_id: sandbox_id.clone(),
+                            component,
+                            violation_type: ViolationType::CapabilityDenied,
+                            attempted_action: format!("{action} {resource}"),
+                            blocked: true,
+                            timestamp_ns: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_nanos() as u64)
+                                .unwrap_or(0),
+                        };
+                        viol.entry(sandbox_id).or_default().push(v);
                     }
                     SandboxMessage::CrashReport { sandbox_id, error, backtrace } => {
                         warn!("SNS: crash in sandbox {}: {}", sandbox_id, &error[..error.len().min(80)]);
-                        if let Some(mut info) = sb.get_mut(&sandbox_id) {
+                        if !backtrace.is_empty() {
+                            tracing::debug!("SNS: backtrace for {}:\n{}", sandbox_id, backtrace);
+                        }
+                        let (component, crash_count) = if let Some(mut info) = sb.get_mut(&sandbox_id) {
                             info.status = SandboxStatus::Crashed;
                             info.crashes += 1;
+                            (info.component.clone(), info.crashes)
+                        } else {
+                            (String::new(), 0)
+                        };
+
+                        if crash_count > MAX_AUTO_RESTARTS {
+                            warn!(
+                                "SNS: sandbox {} ({}) exceeded max auto-restart attempts ({}), giving up",
+                                sandbox_id, component, MAX_AUTO_RESTARTS
+                            );
+                            continue;
                         }
-                        // Attempt auto-restart for non-critical sandboxes
-                        // Full restart logic wired in Phase 2
+
+                        let handler = handlers.get(&component).map(|h| h.clone());
+                        let handler = match handler {
+                            Some(h) => Some(h),
+                            None => default_handler.read().await.clone(),
+                        };
+                        if let Some(handler) = handler {
+                            let (sid, comp, err) = (sandbox_id.clone(), component.clone(), error.clone());
+                            tokio::spawn(async move { handler(sid, comp, err).await; });
+                        } else {
+                            warn!("SNS: no restart handler for component '{}' (sandbox {})", component, sandbox_id);
+                        }
                     }
                     SandboxMessage::ResourceReport { sandbox_id, cpu_pct, mem_bytes } => {
                         if let Some(mut info) = sb.get_mut(&sandbox_id) {
@@ -103,7 +166,26 @@ impl SandboxSupervisor {
             }
         });
 
-        Arc::new(Self { sandboxes, tokens, violations, message_tx: tx, violation_sink: None })
+        Arc::new(Self {
+            sandboxes, tokens, violations, message_tx: tx, violation_sink: None,
+            restart_handlers, default_crash_handler,
+        })
+    }
+
+    /// Register a recovery action for a specific component name (e.g.
+    /// `"model_server"`). Invoked with `(sandbox_id, component, error)`
+    /// whenever a `CrashReport` for that component arrives, up to
+    /// `MAX_AUTO_RESTARTS` times per sandbox.
+    pub fn register_restart_handler(&self, component: &str, handler: CrashHandler) {
+        self.restart_handlers.insert(component.to_string(), handler);
+    }
+
+    /// Register a catch-all recovery action used when a crashed component has
+    /// no specific handler registered — e.g. routing to the Survival KB's
+    /// `repair_error` so unrecognized crashes still get an automatic repair
+    /// attempt instead of just being logged and left crashed.
+    pub async fn set_default_crash_handler(&self, handler: CrashHandler) {
+        *self.default_crash_handler.write().await = Some(handler);
     }
 
     /// Register a new sandbox with a capability token.
@@ -205,7 +287,7 @@ impl SandboxSupervisor {
         // Apply default policies per component type
         match component {
             "model_server" => {
-                token.filesystem.read_paths = vec!["~/.bonsai/models/".into()];
+                token.filesystem.read_paths = vec!["~/.workspace/models/".into()];
                 token.network = crate::capability::NetworkCapability::Whitelist {
                     hosts: vec!["127.0.0.1".into()],
                     ports: vec![8080],
@@ -214,12 +296,12 @@ impl SandboxSupervisor {
             }
             "training_script" => {
                 token.filesystem.read_paths = vec![
-                    "~/.bonsai/training_data/".into(),
-                    "~/.bonsai/models/".into(),
+                    "~/.workspace/training_data/".into(),
+                    "~/.workspace/models/".into(),
                 ];
                 token.filesystem.write_paths = vec![
-                    "~/.bonsai/adapters/".into(),
-                    "~/.bonsai/training_output/".into(),
+                    "~/.workspace/adapters/".into(),
+                    "~/.workspace/training_output/".into(),
                 ];
                 token.filesystem.allow_temp = true;
                 token.network = crate::capability::NetworkCapability::Whitelist {
@@ -242,8 +324,8 @@ impl SandboxSupervisor {
                 token.resources.max_memory_bytes = 256 * 1024 * 1024;
             }
             "swarm_agent" => {
-                token.filesystem.read_paths = vec!["~/.bonsai/workspace/".into()];
-                token.filesystem.write_paths = vec!["~/.bonsai/workspace/".into()];
+                token.filesystem.read_paths = vec!["~/.workspace/".into()];
+                token.filesystem.write_paths = vec!["~/.workspace/".into()];
                 token.allowed_peers = vec!["daemon_main".into(), "swarm_orchestrator".into()];
             }
             _ => {}

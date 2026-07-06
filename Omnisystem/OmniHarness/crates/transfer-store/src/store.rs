@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-const MAGIC: &[u8; 8] = b"BONSAI01";
+const MAGIC: &[u8; 8] = b"WORKSP01";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const BLAKE3_TAG_LEN: usize = 32;

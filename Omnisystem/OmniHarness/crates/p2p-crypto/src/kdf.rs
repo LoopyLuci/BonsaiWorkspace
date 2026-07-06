@@ -4,7 +4,7 @@
 //! An optional password/PIN adds a second layer above the phrase.
 
 use crate::error::{CryptoError, CryptoResult};
-use crate::identity::BonsaiIdentity;
+use crate::identity::WorkspaceIdentity;
 use argon2::{Algorithm, Argon2, Params, Version};
 use bip39::{Language, Mnemonic};
 use rand::rngs::OsRng;
@@ -32,16 +32,16 @@ pub fn generate_phrase() -> CryptoResult<String> {
     Ok(mnemonic.to_string())
 }
 
-/// Derive a `BonsaiIdentity` from a BIP-39 phrase (+ optional password).
+/// Derive a `WorkspaceIdentity` from a BIP-39 phrase (+ optional password).
 ///
 /// `params` can be overridden for tests; pass `None` for production defaults.
 pub fn derive_identity_from_phrase(
     phrase: &str,
     password: Option<&str>,
     test_params: Option<Params>,
-) -> CryptoResult<BonsaiIdentity> {
+) -> CryptoResult<WorkspaceIdentity> {
     let seed = kdf_phrase_to_seed(phrase, password, test_params)?;
-    BonsaiIdentity::from_seed(&seed)
+    WorkspaceIdentity::from_seed(&seed)
 }
 
 /// Derive a 32-byte seed from a BIP-39 phrase + optional password using Argon2id.

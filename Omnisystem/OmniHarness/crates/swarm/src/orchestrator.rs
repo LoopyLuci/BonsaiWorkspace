@@ -147,6 +147,53 @@ impl SwarmOrchestrator {
         (orch, handle)
     }
 
+    /// Construct a swarm record *without* starting the internal `run_loop` —
+    /// used to mirror a swarm that's actually being executed by a different,
+    /// real engine (the Tauri app's own `swarm_orchestrator.rs`, which
+    /// dispatches real LLM inference) rather than this crate's own
+    /// `seed_plan`/command-loop, which is a stub planner with no real task
+    /// executor behind it. The caller drives `hierarchy`/`ledger`/`dag`
+    /// directly via this instance's public fields and the status helpers
+    /// below, from the real lifecycle points in the real engine.
+    pub fn new_bridged(id: Uuid, spec: SwarmSpec, registry: CapabilityRegistry) -> Arc<Self> {
+        // The receiver is intentionally dropped: a bridged swarm is never
+        // driven via `SwarmCommand`/`cmd_tx.send` (there's no run_loop
+        // consuming it), so `send_command` against a bridged swarm_id is a
+        // no-op by design — callers needing to affect a bridged run's real
+        // execution (e.g. cancellation) must go through the real engine's
+        // own mechanism instead (see `swarm_commands::swarm_cancel`).
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        Arc::new(Self {
+            id,
+            spec,
+            status: Arc::new(RwLock::new(SwarmStatus::Initialising)),
+            dag: Arc::new(RwLock::new(TaskDag::new())),
+            hierarchy: AgentHierarchy::new(id),
+            ledger: SwarmLedger::new(id),
+            registry,
+            cmd_tx,
+            created_at: Utc::now(),
+            started_at: Arc::new(RwLock::new(None)),
+            completed_at: Arc::new(RwLock::new(None)),
+            result_summary: Arc::new(RwLock::new(None)),
+        })
+    }
+
+    /// Directly set status — bridged swarms don't go through the
+    /// command-channel/run_loop that normally drives status transitions.
+    pub async fn set_status(&self, status: SwarmStatus) {
+        *self.status.write().await = status;
+    }
+
+    pub async fn mark_started(&self) {
+        *self.started_at.write().await = Some(Utc::now());
+    }
+
+    pub async fn mark_completed(&self, summary: impl Into<String>) {
+        *self.completed_at.write().await = Some(Utc::now());
+        *self.result_summary.write().await = Some(summary.into());
+    }
+
     async fn run_loop(&self, mut cmd_rx: mpsc::UnboundedReceiver<SwarmCommand>) {
         self.ledger.append(LedgerEventKind::SwarmCreated, None).await;
         *self.status.write().await = SwarmStatus::Planning;
@@ -357,6 +404,15 @@ impl SwarmRegistry {
         self.swarms.read().await.get(&id).cloned()
     }
 
+    /// Register an externally-constructed (bridged) orchestrator — see
+    /// `SwarmOrchestrator::new_bridged`. Used when a real swarm run driven by
+    /// a different engine wants to publish its live state through this
+    /// registry (and therefore the Swarm Commander UI) instead of going
+    /// through `create_swarm`'s own stub planner/executor.
+    pub async fn register_bridged(&self, orch: Arc<SwarmOrchestrator>) {
+        self.swarms.write().await.insert(orch.id, orch);
+    }
+
     pub async fn send_command(&self, id: Uuid, cmd: SwarmCommand) -> bool {
         if let Some(orch) = self.get(id).await {
             orch.cmd_tx.send(cmd).is_ok()
@@ -418,5 +474,79 @@ impl SwarmRegistry {
 impl Default for SwarmRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::CapabilityRegistry;
+
+    fn test_spec() -> SwarmSpec {
+        SwarmSpec {
+            name: "test".into(),
+            goal: "test goal".into(),
+            max_workers: 2,
+            allowed_tools: vec![],
+            timeout_secs: None,
+            workspace_path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn bridged_swarm_does_not_run_the_stub_planner() {
+        let id = Uuid::new_v4();
+        let orch = SwarmOrchestrator::new_bridged(id, test_spec(), CapabilityRegistry::new());
+        // Give any (incorrectly) spawned background task a chance to run.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // A real `spawn()`'d swarm's run_loop immediately calls seed_plan(),
+        // populating 3 fake tasks and a ProjectManager hierarchy node. A
+        // bridged swarm must NOT do this — the caller (swarm_orchestrator.rs
+        // in the Tauri app) drives hierarchy/ledger/dag from real events.
+        assert_eq!(orch.dag.read().await.nodes.len(), 0);
+        assert_eq!(orch.hierarchy.count().await, 0);
+        assert_eq!(*orch.status.read().await, SwarmStatus::Initialising);
+    }
+
+    #[tokio::test]
+    async fn register_bridged_makes_swarm_retrievable() {
+        let registry = SwarmRegistry::new();
+        let id = Uuid::new_v4();
+        let orch = SwarmOrchestrator::new_bridged(id, test_spec(), registry.capability_registry().clone());
+        registry.register_bridged(orch).await;
+
+        let fetched = registry.get(id).await;
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().spec.name, "test");
+    }
+
+    #[tokio::test]
+    async fn bridged_swarm_status_and_completion_helpers_work() {
+        let orch = SwarmOrchestrator::new_bridged(Uuid::new_v4(), test_spec(), CapabilityRegistry::new());
+        orch.set_status(SwarmStatus::Running).await;
+        orch.mark_started().await;
+        assert_eq!(*orch.status.read().await, SwarmStatus::Running);
+        assert!(orch.started_at.read().await.is_some());
+
+        orch.mark_completed("done").await;
+        assert_eq!(orch.result_summary.read().await.as_deref(), Some("done"));
+        assert!(orch.completed_at.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn sending_a_command_to_a_bridged_swarm_is_a_documented_no_op() {
+        // The bridged constructor intentionally drops its cmd_rx — this
+        // pins down that `send_command` returns false (rather than
+        // panicking) so callers relying on a bridged swarm's cmd_tx don't
+        // get a surprise. Real control (e.g. cancellation) must go through
+        // the actual engine instead — see swarm_commands::swarm_cancel.
+        let registry = SwarmRegistry::new();
+        let id = Uuid::new_v4();
+        let orch = SwarmOrchestrator::new_bridged(id, test_spec(), registry.capability_registry().clone());
+        registry.register_bridged(orch).await;
+
+        let sent = registry.send_command(id, SwarmCommand::Pause).await;
+        assert!(!sent);
     }
 }

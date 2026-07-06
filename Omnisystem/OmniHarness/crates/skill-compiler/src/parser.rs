@@ -13,11 +13,11 @@ pub struct SkillMetadata {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
-    pub bonsai: Option<BonsaiExtension>,
+    pub workspace: Option<WorkspaceExtension>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BonsaiExtension {
+pub struct WorkspaceExtension {
     pub tool: Option<bool>,
     pub category: Option<String>,
     pub sandbox_tier: Option<String>,

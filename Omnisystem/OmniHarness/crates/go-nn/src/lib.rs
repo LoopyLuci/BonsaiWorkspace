@@ -1,4 +1,9 @@
-pub mod core;
+pub mod evaluator;
+pub mod model;
+pub mod train;
+pub mod training_loop;
+pub mod types;
 
-#[doc = "Core module"]
-pub use core::*;
+pub use evaluator::*;
+pub use model::*;
+pub use types::*;
