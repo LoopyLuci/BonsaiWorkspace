@@ -48,12 +48,30 @@ pub enum Node {
     Expr(Expr),
     If { cond: Expr, then_branch: Vec<Node>, else_branch: Vec<Node> },
     For { var: String, iter: Expr, body: Vec<Node> },
+    /// `match subject { Pat(bindings) => { nodes } .. }` used as a node
+    /// (as opposed to `ast::Expr::Match`-style value position, which this
+    /// bootstrap doesn't have — only the node form is needed). Same
+    /// simplified-pattern tradeoff as the Sylva bootstrap's `Expr::Match`.
+    Match { subject: Expr, arms: Vec<(String, Vec<String>, Vec<Node>)> },
+    /// `let name = expr` appearing directly among a tag's children (Rust
+    /// markup blocks can mix plain statements with node children) —
+    /// contributes nothing to the rendered output itself, just binds
+    /// `name` in the enclosing render scope for subsequent sibling nodes.
+    Let { name: String, value: Expr },
 }
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Expr(Expr),
     Assign { name: String, value: Expr, span: Span },
+    /// `self.field = expr` / `obj[i] = expr` — an assignment whose target
+    /// isn't a plain name (see `Assign` above), used by the
+    /// omni-integration dialect's event handlers. This bootstrap's `Env`
+    /// only models plain-name variable slots, not object/state field
+    /// mutation, so this is evaluated for its value and side effects on the
+    /// RHS, but the target write itself is a no-op — a parse-level-only
+    /// extension, same tradeoff as `ast::Expr::Match` in the Sylva bootstrap.
+    AssignTarget { target: Expr, value: Expr, span: Span },
     If { branches: Vec<(Expr, Vec<Stmt>)>, orelse: Vec<Stmt>, span: Span },
     Return { value: Option<Expr>, span: Span },
 }
@@ -72,6 +90,20 @@ pub enum Expr {
     /// `fn() { stmt* }` or `|| expr` — event-handler / callback closures.
     Lambda { params: Vec<String>, body: Vec<Stmt>, span: Span },
     List { elems: Vec<Expr>, span: Span },
+    /// A markup element used as a plain expression value (e.g.
+    /// `.map(|a| <AgentNode .../>)`), as opposed to a `render`/`{if}`/
+    /// `{for}` node position. Deliberately NOT reachable from general
+    /// expression parsing (only from specific fresh-operand positions like
+    /// a `|param| ..` closure body) — see `lexer.rs`'s module doc comment
+    /// on why `<` is never allowed to be ambiguous with less-than.
+    Markup(Box<Node>, Span),
+    /// `if cond { expr } else { expr }` used in expression position (e.g.
+    /// an attribute value) — as opposed to `parse_if_stmt`'s statement form.
+    IfExpr { cond: Box<Expr>, then_: Box<Expr>, else_: Box<Expr>, span: Span },
+    /// `match subject { Pat(bindings) => expr, .. }` in expression position
+    /// (as opposed to `ast::Node::Match`'s node-tree form). Same simplified
+    /// (no real enum/variant matching) tradeoff.
+    MatchExpr { subject: Box<Expr>, arms: Vec<(String, Vec<String>, Expr)>, span: Span },
 }
 
 impl Expr {
@@ -88,6 +120,9 @@ impl Expr {
             | Expr::Attr { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::List { span, .. } => *span,
+            Expr::Markup(_, span) => *span,
+            Expr::IfExpr { span, .. } => *span,
+            Expr::MatchExpr { span, .. } => *span,
         }
     }
 }

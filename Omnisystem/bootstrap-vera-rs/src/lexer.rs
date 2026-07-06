@@ -30,7 +30,7 @@ pub struct Token {
 
 const KEYWORDS: &[&str] = &[
     "component", "state", "computed", "fn", "let", "if", "else", "for", "in", "return",
-    "true", "false", "and", "or", "not",
+    "true", "false", "and", "or", "not", "match",
 ];
 
 pub struct Lexer<'a> {
@@ -86,6 +86,13 @@ impl<'a> Lexer<'a> {
             }
             if c == '"' {
                 out.push(self.lex_string(start)?);
+                continue;
+            }
+            // Rust-style raw string `r"..."` / `r#"..."#` — checked before
+            // the general identifier path ('r' alone is a valid identifier)
+            // and before '#' would otherwise be an unrecognized character.
+            if c == 'r' && (self.peek(1) == '"' || self.peek(1) == '#') {
+                out.push(self.lex_raw_string(start)?);
                 continue;
             }
             if is_ident_start(c) {
@@ -158,6 +165,42 @@ impl<'a> Lexer<'a> {
         Ok(self.mk(TokKind::Str, s, start))
     }
 
+    /// `r"..."` / `r#"..."#` / `r##"..."##` — no escape processing, and
+    /// embedded newlines are allowed (used for multi-line format templates).
+    fn lex_raw_string(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // 'r'
+        let mut hashes = 0usize;
+        while self.peek(0) == '#' {
+            self.advance();
+            hashes += 1;
+        }
+        if self.peek(0) != '"' {
+            return Err(Box::new(self.err("expected '\"' to start a raw string", start)));
+        }
+        self.advance(); // opening '"'
+        let mut s = String::new();
+        loop {
+            if self.peek(0) == '\0' {
+                return Err(Box::new(self.err("unterminated raw string literal", start)));
+            }
+            if self.peek(0) == '"' {
+                let mut k = 1;
+                while k <= hashes && self.peek(k) == '#' {
+                    k += 1;
+                }
+                if k == hashes + 1 {
+                    self.advance();
+                    for _ in 0..hashes {
+                        self.advance();
+                    }
+                    break;
+                }
+            }
+            s.push(self.advance());
+        }
+        Ok(self.mk(TokKind::Str, s, start))
+    }
+
     fn lex_ident_or_keyword(&mut self, start: Pos) -> Token {
         let mut s = String::new();
         while is_ident_continue(self.peek(0)) {
@@ -185,7 +228,17 @@ impl<'a> Lexer<'a> {
             };
         }
         let s: String = match c {
-            '=' => two!('=', "==".to_string(), "=".to_string()),
+            '=' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "==".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    "=>".to_string()
+                } else {
+                    "=".to_string()
+                }
+            }
             '!' => two!('=', "!=".to_string(), "!".to_string()),
             '<' => two!('=', "<=".to_string(), "<".to_string()),
             '>' => two!('=', ">=".to_string(), ">".to_string()),
@@ -202,7 +255,7 @@ impl<'a> Lexer<'a> {
             '}' => "}".to_string(),
             ',' => ",".to_string(),
             ':' => ":".to_string(),
-            '.' => ".".to_string(),
+            '.' => two!('.', "..".to_string(), ".".to_string()),
             ';' => ";".to_string(),
             '|' => two!('|', "||".to_string(), "|".to_string()),
             '&' => two!('&', "&&".to_string(), "&".to_string()),
@@ -212,9 +265,17 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// Any non-ASCII character (`≤`, `→`, emoji, ...) is treated as
+/// identifier-like too, not just Unicode *letters* — Vera's markup mode
+/// (see the module doc comment) reconstructs bare inline text nodes
+/// (`<span>parallel ≤ {n}</span>`) from the ordinary token stream (see
+/// `parser.rs::parse_node`'s bare-text case), and a symbol like `≤` used as
+/// literal text content would otherwise be an unrecognized-character lex
+/// error. Vera has no actual use for these as *operators*, so there's no
+/// ambiguity to worry about.
 fn is_ident_start(c: char) -> bool {
-    c.is_alphabetic() || c == '_'
+    c.is_alphabetic() || c == '_' || !c.is_ascii()
 }
 fn is_ident_continue(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+    c.is_alphanumeric() || c == '_' || !c.is_ascii()
 }

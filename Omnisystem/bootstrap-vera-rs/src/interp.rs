@@ -168,6 +168,24 @@ impl Interp {
                 out.push(Value::Element(Rc::new(ElementVal { tag: tag.clone(), attrs: attr_vals, children: child_vals })));
                 Ok(())
             }
+            // See `ast::Node::Match`'s doc comment — no real pattern
+            // matching underneath; renders the first arm whose pattern
+            // name is `_` if any, else the first arm outright.
+            Node::Let { name, value } => {
+                let v = self.eval(value, env)?;
+                env.declare(name, v);
+                Ok(())
+            }
+            Node::Match { subject, arms } => {
+                self.eval(subject, env)?;
+                let arm = arms.iter().find(|(name, ..)| name == "_").or_else(|| arms.first());
+                if let Some((_, _, nodes)) = arm {
+                    for n in nodes {
+                        self.render_node(n, env, out)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -189,6 +207,11 @@ impl Interp {
                 env.assign_existing_or_local(name, v.clone());
                 Ok(v)
             }
+            // See `ast::Stmt::AssignTarget`'s doc comment: the write itself
+            // is a no-op (this bootstrap's `Env` has no object/state field
+            // mutation model), but the value expression is still evaluated
+            // for any side effects/errors in it.
+            Stmt::AssignTarget { value, .. } => self.eval(value, env),
             Stmt::If { branches, orelse, .. } => {
                 for (cond, body) in branches {
                     if self.eval(cond, env)?.truthy() {
@@ -222,6 +245,28 @@ impl Interp {
                     v.push(self.eval(e, env)?);
                 }
                 Ok(Value::List(Rc::new(RefCell::new(v))))
+            }
+            Expr::Markup(node, _) => {
+                let mut out = Vec::new();
+                self.render_node(node, env, &mut out)?;
+                Ok(out.into_iter().next().unwrap_or(Value::Unit))
+            }
+            Expr::IfExpr { cond, then_, else_, .. } => {
+                if self.eval(cond, env)?.truthy() {
+                    self.eval(then_, env)
+                } else {
+                    self.eval(else_, env)
+                }
+            }
+            // See `ast::Expr::MatchExpr`'s doc comment — no real pattern
+            // matching underneath.
+            Expr::MatchExpr { subject, arms, .. } => {
+                self.eval(subject, env)?;
+                let arm = arms.iter().find(|(name, ..)| name == "_").or_else(|| arms.first());
+                match arm {
+                    Some((_, _, body)) => self.eval(body, env),
+                    None => Ok(Value::Unit),
+                }
             }
             Expr::BinOp { op, left, right, span } => {
                 let l = self.eval(left, env)?;
