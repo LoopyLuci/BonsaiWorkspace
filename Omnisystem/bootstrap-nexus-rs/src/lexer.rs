@@ -190,6 +190,9 @@ impl<'a> Lexer<'a> {
             '}' => "}".to_string(),
             ':' => ":".to_string(),
             '.' => ".".to_string(),
+            '@' => "@".to_string(),
+            ';' => ";".to_string(),
+            '%' => "%".to_string(),
             other => return Err(Box::new(self.err(format!("unexpected character '{other}'"), start))),
         };
         Ok(self.mk(TokKind::Op, s, start))

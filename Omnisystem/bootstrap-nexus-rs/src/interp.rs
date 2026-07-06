@@ -196,6 +196,9 @@ impl Solver {
                     _ => Err(self.rt(format!("unknown operator '{op}'"), *span)),
                 }
             }
+            Expr::Str { span, .. } => {
+                Err(self.rt("a CSS-style string/keyword/token value is not a solvable numeric layout expression", *span))
+            }
         }
     }
 }
@@ -228,6 +231,7 @@ fn describe_expr(e: &Expr) -> String {
         Expr::PropRef { obj, prop, .. } => format!("{obj}.{prop}"),
         Expr::UnaryOp { op, expr, .. } => format!("{op}{}", describe_expr(expr)),
         Expr::BinOp { op, left, right, .. } => format!("{} {} {}", describe_expr(left), op, describe_expr(right)),
+        Expr::Str { v, .. } => format!("{v:?}"),
     }
 }
 

@@ -52,4 +52,12 @@ pub enum Expr {
     PropRef { obj: String, prop: String, span: Span },
     BinOp { op: String, left: Box<Expr>, right: Box<Expr>, span: Span },
     UnaryOp { op: String, expr: Box<Expr>, span: Span },
+    /// A non-numeric CSS-style value: a quoted string, a bare keyword-like
+    /// word (`flex`, `space-between`), a number fused with a unit suffix
+    /// (`100vh`, `640px`), or a bare `{token}` reference. Used only by the
+    /// responsive-design-token dialect (`tokens`/`breakpoints`/`layout`
+    /// blocks in the omni-integration specs) layered on top of Nexus's
+    /// native numeric box/constraint grammar — never produced by, or
+    /// solvable as, a real geometry equation.
+    Str { v: String, span: Span },
 }
