@@ -103,6 +103,20 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_number(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        // Hex literal (`0xFFu`) — WGSL/Rust-dialect glue code. Kept as its
+        // decimal-string equivalent since Helix's numeric model is
+        // uniformly f64/i64 internally, not textual.
+        if self.peek(0) == '0' && (self.peek(1) == 'x' || self.peek(1) == 'X') {
+            self.advance();
+            self.advance();
+            let mut hex = String::new();
+            while self.peek(0).is_ascii_hexdigit() {
+                hex.push(self.advance());
+            }
+            self.skip_numeric_suffix();
+            let v = i64::from_str_radix(&hex, 16).unwrap_or(0);
+            return Ok(self.mk(TokKind::Int, v.to_string(), start));
+        }
         let mut s = String::new();
         let mut is_float = false;
         while self.peek(0).is_ascii_digit() {
@@ -115,13 +129,40 @@ impl<'a> Lexer<'a> {
                 s.push(self.advance());
             }
         }
-        // Trailing `f` suffix (`1.0f`), common in shader literals — consumed
-        // and ignored (Helix's numeric model is uniformly f64 internally).
-        if self.peek(0) == 'f' && !is_ident_continue(self.peek(1)) {
-            self.advance();
+        // Scientific notation (`1e-8`, `1e30`) — common in shader constant
+        // expressions.
+        if (self.peek(0) == 'e' || self.peek(0) == 'E') && (self.peek(1).is_ascii_digit() || ((self.peek(1) == '+' || self.peek(1) == '-') && self.peek(2).is_ascii_digit())) {
             is_float = true;
+            s.push(self.advance()); // 'e'/'E'
+            if self.peek(0) == '+' || self.peek(0) == '-' {
+                s.push(self.advance());
+            }
+            while self.peek(0).is_ascii_digit() {
+                s.push(self.advance());
+            }
+        }
+        // Trailing `f`/`f32`/`u`/`u32`/`i32` suffix, common in shader
+        // literals — consumed and ignored (Helix's numeric model is
+        // uniformly f64/i64 internally, not width-typed).
+        if matches!(self.peek(0), 'f' | 'u' | 'i') && !is_ident_continue(self.peek(1)) {
+            is_float = is_float || self.peek(0) == 'f';
+            self.advance();
+        } else if matches!(self.peek(0), 'f' | 'u' | 'i') && self.peek(1).is_ascii_digit() {
+            is_float = is_float || self.peek(0) == 'f';
+            self.skip_numeric_suffix();
         }
         Ok(self.mk(if is_float { TokKind::Float } else { TokKind::Int }, s, start))
+    }
+
+    /// Consumes a `u32`/`f32`/`i32`-shaped width suffix fused directly onto
+    /// a numeric literal with no separating whitespace.
+    fn skip_numeric_suffix(&mut self) {
+        if matches!(self.peek(0), 'u' | 'f' | 'i') {
+            self.advance();
+            while self.peek(0).is_ascii_digit() {
+                self.advance();
+            }
+        }
     }
 
     fn lex_ident_or_keyword(&mut self, start: Pos) -> Token {
@@ -153,12 +194,42 @@ impl<'a> Lexer<'a> {
         let s: String = match c {
             '=' => two!('=', "==".to_string(), "=".to_string()),
             '!' => two!('=', "!=".to_string(), "!".to_string()),
-            '<' => two!('=', "<=".to_string(), "<".to_string()),
-            '>' => two!('=', ">=".to_string(), ">".to_string()),
+            '<' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "<=".to_string()
+                } else if self.peek(0) == '<' {
+                    self.advance();
+                    "<<".to_string()
+                } else {
+                    "<".to_string()
+                }
+            }
+            '>' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    ">=".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    ">>".to_string()
+                } else {
+                    ">".to_string()
+                }
+            }
             '+' => two!('=', "+=".to_string(), "+".to_string()),
-            '-' => "-".to_string(),
-            '*' => "*".to_string(),
-            '/' => "/".to_string(),
+            '-' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "-=".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    "->".to_string()
+                } else {
+                    "-".to_string()
+                }
+            }
+            '*' => two!('=', "*=".to_string(), "*".to_string()),
+            '/' => two!('=', "/=".to_string(), "/".to_string()),
             '%' => "%".to_string(),
             '(' => "(".to_string(),
             ')' => ")".to_string(),
@@ -167,11 +238,20 @@ impl<'a> Lexer<'a> {
             '{' => "{".to_string(),
             '}' => "}".to_string(),
             ',' => ",".to_string(),
-            ':' => ":".to_string(),
-            '.' => ".".to_string(),
+            ':' => two!(':', "::".to_string(), ":".to_string()),
+            '.' => {
+                if self.peek(0) == '.' {
+                    self.advance();
+                    "..".to_string()
+                } else {
+                    ".".to_string()
+                }
+            }
             ';' => ";".to_string(),
             '|' => two!('|', "||".to_string(), "|".to_string()),
             '&' => two!('&', "&&".to_string(), "&".to_string()),
+            '^' => "^".to_string(),
+            '@' => "@".to_string(),
             other => return Err(Box::new(self.err(format!("unexpected character '{other}'"), start))),
         };
         Ok(self.mk(TokKind::Op, s, start))

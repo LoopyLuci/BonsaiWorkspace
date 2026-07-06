@@ -67,6 +67,18 @@ pub enum Stmt {
     /// just the parser, so the error message can explain why.
     For { var: String, hi: Expr, body: Vec<Stmt>, span: Span },
     Return { value: Option<Expr>, span: Span },
+    /// `var name[: type] [= expr]` — WGSL/Rust-dialect mutable local
+    /// declaration used inside `pipeline`/`shader` `code { }` blocks; any
+    /// type annotation is parsed (so it must be valid) and discarded. Kept
+    /// distinct from `Let` (which always has a value) since `var acc: T`
+    /// with no initializer is common in shader code.
+    Var { name: String, value: Option<Expr>, span: Span },
+    /// `while cond { .. }` — the WGSL/Rust-dialect loop form; native Helix
+    /// otherwise only has bounded `for i in 0..N`.
+    While { cond: Expr, body: Vec<Stmt>, span: Span },
+    /// `for (init; cond; step) { .. }` — the C-style/WGSL three-clause for
+    /// loop, structurally distinct from native Helix's `for i in 0..N`.
+    CFor { init: Box<Stmt>, cond: Expr, step: Box<Stmt>, body: Vec<Stmt>, span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -81,4 +93,20 @@ pub enum Expr {
     /// `.xyz` / `.rgb` / `.x` swizzle or plain field access.
     Attr { obj: Box<Expr>, name: String, span: Span },
     Index { obj: Box<Expr>, index: Box<Expr>, span: Span },
+    /// A struct literal (named or anonymous — field names discarded, only
+    /// values kept) or an array literal (`[16, 16, 1]`) — the Rust-dialect
+    /// GPU-binding glue code's data-construction forms, none of which have
+    /// a real geometry/GPU meaning in this bootstrap.
+    List { elems: Vec<Expr>, span: Span },
+    /// `obj.method(args)` — distinct from the native `Call` (which is
+    /// always a bare free-function name) because the callee here is an
+    /// arbitrary expression (`gpu::create_buffer(..)`, `pass.set_pipeline(..)`).
+    MethodCall { obj: Box<Expr>, method: String, args: Vec<Expr>, span: Span },
+    /// `|params| expr` / `|params| { stmts }` — Rust-dialect closure
+    /// (`.map(|c| { .. })`); a block body is reduced to its trailing
+    /// expression, same approach used by the other bootstraps' closures.
+    Lambda { params: Vec<String>, body: Box<Expr>, span: Span },
+    /// `if cond { expr } else { expr }` used as an expression (e.g. a
+    /// `let`'s value) — distinct from `Stmt::If`, which is a statement.
+    IfExpr { cond: Box<Expr>, then_: Box<Expr>, orelse: Box<Expr>, span: Span },
 }

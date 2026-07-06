@@ -215,6 +215,29 @@ impl Interp {
                 };
                 Err(Flow::Return(v))
             }
+            Stmt::Var { name, value, .. } => {
+                let v = match value {
+                    Some(e) => self.eval(e, env)?,
+                    None => Value::Unit,
+                };
+                env.declare(name, v.clone());
+                Ok(v)
+            }
+            Stmt::While { cond, body, .. } => {
+                while self.eval(cond, env)?.truthy() {
+                    self.exec_block(body, &env.child())?;
+                }
+                Ok(Value::Unit)
+            }
+            Stmt::CFor { init, cond, step, body, .. } => {
+                let scope = env.child();
+                self.exec_stmt(init, &scope)?;
+                while self.eval(cond, &scope)?.truthy() {
+                    self.exec_block(body, &scope.child())?;
+                    self.exec_stmt(step, &scope)?;
+                }
+                Ok(Value::Unit)
+            }
         }
     }
 
@@ -348,6 +371,21 @@ impl Interp {
                 }
                 let arg_vals = args.iter().map(|a| self.eval(a, env)).collect::<Result<Vec<_>, _>>()?;
                 self.call(func, arg_vals, *span)
+            }
+            Expr::List { elems, .. } => {
+                let vals = elems.iter().map(|e| self.eval(e, env)).collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Buffer(Rc::new(RefCell::new(vals))))
+            }
+            Expr::MethodCall { obj, args, span, .. } => {
+                self.eval(obj, env)?;
+                for a in args {
+                    self.eval(a, env)?;
+                }
+                Err(self.rt("method-call syntax (Rust-dialect GPU-binding glue code) is parsed but not evaluable in this bootstrap", *span))
+            }
+            Expr::Lambda { span, .. } => Err(self.rt("closures (Rust-dialect glue code) are parsed but not evaluable in this bootstrap", *span)),
+            Expr::IfExpr { cond, then_, orelse, .. } => {
+                if self.eval(cond, env)?.truthy() { self.eval(then_, env) } else { self.eval(orelse, env) }
             }
         }
     }
