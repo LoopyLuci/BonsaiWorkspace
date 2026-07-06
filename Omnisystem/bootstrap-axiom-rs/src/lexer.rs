@@ -11,6 +11,7 @@ pub enum TokKind {
     Ident,
     Keyword,
     Int,
+    Str,
     Bool,
     Op,
     Eof,
@@ -23,7 +24,12 @@ pub struct Token {
     pub span: Span,
 }
 
-const KEYWORDS: &[&str] = &["axiom", "theorem", "invariant", "forall", "in", "over", "states", "let", "and", "or", "not", "true", "false"];
+const KEYWORDS: &[&str] = &[
+    "axiom", "theorem", "invariant", "forall", "in", "over", "states", "let", "and", "or", "not", "true", "false",
+    // Structured-theorem-block keywords (preconditions/postconditions/invariants/
+    // assertions blocks, plus statement/quantifier forms used inside them).
+    "preconditions", "postconditions", "invariants", "assertions", "if", "else", "assert", "exists", "where",
+];
 
 pub struct Lexer<'a> {
     chars: Vec<char>,
@@ -76,6 +82,14 @@ impl<'a> Lexer<'a> {
                 out.push(self.lex_number(start)?);
                 continue;
             }
+            if c == '"' {
+                out.push(self.lex_string(start)?);
+                continue;
+            }
+            if c == '\'' {
+                out.push(self.lex_char(start)?);
+                continue;
+            }
             if is_ident_start(c) {
                 out.push(self.lex_ident_or_keyword(start));
                 continue;
@@ -121,10 +135,86 @@ impl<'a> Lexer<'a> {
         if self.peek(0) == '-' {
             s.push(self.advance());
         }
-        while self.peek(0).is_ascii_digit() {
-            s.push(self.advance());
+        // Digits may contain `_` separators (e.g. `1_000_000`) — stripped here
+        // since Axiom's Int value model has no concept of them; only affects
+        // literal spelling, not magnitude.
+        while self.peek(0).is_ascii_digit() || self.peek(0) == '_' {
+            let c = self.advance();
+            if c != '_' {
+                s.push(c);
+            }
+        }
+        // Rust-style integer-type suffixes (`1_000_000_000u64`, `64u32`) are
+        // consumed and discarded — this bootstrap's Int is uniformly i64.
+        if matches!(self.peek(0), 'u' | 'i') {
+            let save = self.i;
+            let (save_line, save_col) = (self.line, self.col);
+            self.advance();
+            let mut suffix_digits = false;
+            while self.peek(0).is_ascii_digit() {
+                self.advance();
+                suffix_digits = true;
+            }
+            if !suffix_digits {
+                // Not actually a suffix (e.g. bare trailing ident) — rewind.
+                self.i = save;
+                self.line = save_line;
+                self.col = save_col;
+            }
         }
         Ok(self.mk(TokKind::Int, s, start))
+    }
+
+    fn lex_string(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // opening '"'
+        let mut s = String::new();
+        loop {
+            match self.peek(0) {
+                '"' => {
+                    self.advance();
+                    break;
+                }
+                '\0' | '\n' => return Err(Box::new(self.err("unterminated string literal", start))),
+                '\\' => {
+                    self.advance();
+                    let esc = self.advance();
+                    s.push(match esc {
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        '"' => '"',
+                        '\\' => '\\',
+                        other => other,
+                    });
+                }
+                _ => s.push(self.advance()),
+            }
+        }
+        Ok(self.mk(TokKind::Str, s, start))
+    }
+
+    /// `'c'` / `'\n'` — modeled as a one-character `Str` (this bootstrap has
+    /// no separate char value type; parse-level dialect extension only).
+    fn lex_char(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // opening '\''
+        let c = if self.peek(0) == '\\' {
+            self.advance();
+            match self.advance() {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\'' => '\'',
+                '\\' => '\\',
+                other => other,
+            }
+        } else {
+            self.advance()
+        };
+        if self.peek(0) != '\'' {
+            return Err(Box::new(self.err("unterminated character literal", start)));
+        }
+        self.advance();
+        Ok(self.mk(TokKind::Str, c.to_string(), start))
     }
 
     fn lex_ident_or_keyword(&mut self, start: Pos) -> Token {
@@ -162,11 +252,24 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     "=>".to_string()
                 } else {
-                    return Err(Box::new(self.err("bare '=' is not valid — did you mean '==' (equality) or '=>' (implication)?", start)));
+                    // Bare '=' is valid only as `let name = expr` assignment
+                    // (see `parser.rs::parse_theorem_stmt`) in the
+                    // omni-integration structured-theorem dialect; this
+                    // bootstrap's original ground/quantified propositions
+                    // never used bare '=' (equality is always '==').
+                    "=".to_string()
                 }
             }
             '!' => two!('=', "!=".to_string(), "!".to_string()),
-            '<' => two!('=', "<=".to_string(), "<".to_string()),
+            '<' => {
+                if self.peek(0) == '=' && self.peek(1) == '>' {
+                    self.advance();
+                    self.advance();
+                    "<=>".to_string()
+                } else {
+                    two!('=', "<=".to_string(), "<".to_string())
+                }
+            }
             '>' => two!('=', ">=".to_string(), ">".to_string()),
             '+' => "+".to_string(),
             '-' => "-".to_string(),
@@ -177,6 +280,10 @@ impl<'a> Lexer<'a> {
             ')' => ")".to_string(),
             '{' => "{".to_string(),
             '}' => "}".to_string(),
+            '[' => "[".to_string(),
+            ']' => "]".to_string(),
+            '|' => two!('|', "||".to_string(), "|".to_string()),
+            '&' => two!('&', "&&".to_string(), "&".to_string()),
             ',' => ",".to_string(),
             ':' => ":".to_string(),
             '.' => {

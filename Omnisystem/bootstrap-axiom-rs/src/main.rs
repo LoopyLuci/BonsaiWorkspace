@@ -62,6 +62,30 @@ fn cmd_run(file: &str) -> i32 {
     }
 }
 
+/// Lex + parse only (no verification) — fast feedback for specs that use
+/// this bootstrap's parse-level omni-integration dialect extension (see
+/// `ast::TheoremBody::Structured`) but aren't meant to be exhaustively
+/// verified by `run`. Mirrors `Omnisystem/bootstrap`'s Titan `check` command.
+fn cmd_check(file: &str) -> i32 {
+    let src = match read_source(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    match parse_file(&src, file) {
+        Ok(_) => {
+            println!("{file}: OK (parsed)");
+            0
+        }
+        Err(e) => {
+            report(&e, &src);
+            1
+        }
+    }
+}
+
 fn cmd_tokens(file: &str) -> i32 {
     let src = match read_source(file) {
         Ok(s) => s,
@@ -169,10 +193,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         Some("run") => args.get(1).map(|f| cmd_run(f)).unwrap_or(2),
+        Some("check") => args.get(1).map(|f| cmd_check(f)).unwrap_or(2),
         Some("tokens") => args.get(1).map(|f| cmd_tokens(f)).unwrap_or(2),
         Some("test") => cmd_test(args.get(1).map(String::as_str).unwrap_or("tests")),
         _ => {
-            println!("Axiom seed {VERSION}\n\nUsage: axiom-seed <run|tokens|test> [file|dir]");
+            println!("Axiom seed {VERSION}\n\nUsage: axiom-seed <run|check|tokens|test> [file|dir]");
             0
         }
     };

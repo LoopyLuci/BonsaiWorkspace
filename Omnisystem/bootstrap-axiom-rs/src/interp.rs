@@ -82,11 +82,21 @@ impl Verifier {
     }
 
     fn verify_theorem(&mut self, t: &TheoremDef) -> RResult<bool> {
+        // Structured theorems (`preconditions`/`postconditions`/`invariants`/
+        // `assertions` blocks — the omni-integration dialect) are a
+        // lex/parse-level extension only; this bounded-exhaustive checker
+        // doesn't model preconditions or method-call/string semantics, so it
+        // deliberately doesn't attempt to verify them. See `ast::TheoremBody`.
+        let TheoremBody::Simple(body) = &t.body else {
+            self.print(&format!("theorem {} -> SKIPPED (structured theorem; parse-only, not exhaustively verified)", t.name));
+            return Ok(true);
+        };
+
         if t.foralls.is_empty() {
             let env = self.base_env();
-            let v = self.eval(&t.body, &env)?;
+            let v = self.eval(body, &env)?;
             let Some(b) = v.as_bool() else {
-                return Err(self.rt(format!("theorem '{}' must be a boolean proposition, got {}", t.name, v.type_name()), t.body.span()));
+                return Err(self.rt(format!("theorem '{}' must be a boolean proposition, got {}", t.name, v.type_name()), body.span()));
             };
             self.print(&format!("theorem {} -> {}", t.name, if b { "PROVEN (ground)".to_string() } else { "DISPROVEN".to_string() }));
             return Ok(b);
@@ -105,9 +115,9 @@ impl Verifier {
             for (name, val) in &combo {
                 env.insert(name.clone(), Value::Int(*val));
             }
-            let v = self.eval(&t.body, &env)?;
+            let v = self.eval(body, &env)?;
             let Some(b) = v.as_bool() else {
-                return Err(self.rt(format!("theorem '{}' must be a boolean proposition, got {}", t.name, v.type_name()), t.body.span()));
+                return Err(self.rt(format!("theorem '{}' must be a boolean proposition, got {}", t.name, v.type_name()), body.span()));
             };
             if !b {
                 let ce = combo.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(", ");
@@ -225,6 +235,25 @@ impl Verifier {
                     other => Err(self.rt(format!("unknown operator '{other}'"), *span)),
                 }
             }
+            // Str/Call/MethodCall/Index/Closure/ForallIn/ExistsIn/After are a
+            // lex/parse-level-only extension for the omni-integration
+            // dialect (structured theorems) — see `ast::TheoremBody`. This
+            // bootstrap's bounded-exhaustive checker never evaluates a
+            // structured theorem's body (verify_theorem short-circuits
+            // before calling `eval` on any of these), so reaching this arm
+            // would indicate a real, reportable gap rather than something to
+            // silently paper over.
+            Expr::Str { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::MethodCall { span, .. }
+            | Expr::Index { span, .. }
+            | Expr::Closure { span, .. }
+            | Expr::ForallIn { span, .. }
+            | Expr::ExistsIn { span, .. }
+            | Expr::Range { span, .. } => Err(self.rt(
+                "this expression form is part of the omni-integration parse-level dialect extension and isn't evaluated by this bootstrap's bounded-exhaustive checker",
+                *span,
+            )),
         }
     }
 }
