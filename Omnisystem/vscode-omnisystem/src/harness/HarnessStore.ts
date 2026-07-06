@@ -27,6 +27,112 @@ export interface ProviderDef {
     baseUrlEnv?: string;   // env var for a custom base URL (local providers)
     defaultBaseUrl?: string;
     example?: string;      // example model id
+    /** Extra candidate base URLs to probe for this provider (local providers only). */
+    probeUrls?: string[];
+}
+
+/** A locally-detected model, extracted from a real probe response — no invented fields. */
+export interface LocalDetectedModel {
+    id: string;             // model id/name as reported by the backend
+    sizeBytes?: number;      // Ollama: models[].size
+    family?: string;         // Ollama: models[].details.family
+    parameterSize?: string;  // Ollama: models[].details.parameter_size
+    quantization?: string;   // Ollama: models[].details.quantization_level
+}
+
+/** Result of probing one local backend (Ollama or an OpenAI-compatible server). */
+export interface LocalProviderProbeResult {
+    providerId: string;      // 'ollama' | 'local'
+    detected: boolean;
+    baseUrl?: string;        // the URL that actually responded
+    models: LocalDetectedModel[];
+    backendLabel?: string;   // which known backend matched by port (e.g. "LM Studio")
+}
+
+/** Common local-OpenAI-compatible backends we auto-probe by their well-known default port. */
+const LOCAL_OPENAI_CANDIDATES: Array<{ url: string; label: string }> = [
+    { url: 'http://localhost:8081/v1', label: 'llama.cpp (custom/8081)' },
+    { url: 'http://localhost:1234/v1', label: 'LM Studio' },
+    { url: 'http://localhost:8080/v1', label: 'llama.cpp server' },
+];
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response | undefined> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const resp = await fetch(url, { signal: controller.signal });
+        if (!resp.ok) { return undefined; }
+        return resp;
+    } catch {
+        return undefined;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+interface OllamaTagsResponse {
+    models?: Array<{
+        name: string;
+        size?: number;
+        details?: { family?: string; parameter_size?: string; quantization_level?: string };
+    }>;
+}
+
+interface OpenAiModelsResponse {
+    data?: Array<{ id: string; [key: string]: unknown }>;
+}
+
+/** Probe Ollama's real /api/tags endpoint. Tries `preferredBaseUrl` (a user override) first, then the default. */
+async function probeOllama(preferredBaseUrl: string | undefined, timeoutMs: number): Promise<LocalProviderProbeResult> {
+    const candidates = [preferredBaseUrl, 'http://localhost:11434'].filter(Boolean) as string[];
+    for (const base of candidates) {
+        const trimmed = base.replace(/\/+$/, '');
+        const resp = await fetchWithTimeout(`${trimmed}/api/tags`, timeoutMs);
+        if (!resp) { continue; }
+        try {
+            const json = (await resp.json()) as OllamaTagsResponse;
+            const models: LocalDetectedModel[] = (json.models ?? []).map((m) => ({
+                id: m.name,
+                sizeBytes: m.size,
+                family: m.details?.family,
+                parameterSize: m.details?.parameter_size,
+                quantization: m.details?.quantization_level,
+            }));
+            return { providerId: 'ollama', detected: true, baseUrl: trimmed, models, backendLabel: 'Ollama' };
+        } catch {
+            // Non-JSON or unexpected shape — treat as not detected.
+        }
+    }
+    return { providerId: 'ollama', detected: false, models: [] };
+}
+
+/**
+ * Probe local OpenAI-compatible servers. Tries a user-set base URL first (if any),
+ * then a short list of well-known default ports in parallel, first success wins.
+ */
+async function probeLocalOpenAi(preferredBaseUrl: string | undefined, timeoutMs: number): Promise<LocalProviderProbeResult> {
+    const tryOne = async (base: string, label: string): Promise<LocalProviderProbeResult | undefined> => {
+        const trimmed = base.replace(/\/+$/, '');
+        const resp = await fetchWithTimeout(`${trimmed}/models`, timeoutMs);
+        if (!resp) { return undefined; }
+        try {
+            const json = (await resp.json()) as OpenAiModelsResponse;
+            const models: LocalDetectedModel[] = (json.data ?? []).map((m) => ({ id: m.id }));
+            return { providerId: 'local', detected: true, baseUrl: trimmed, models, backendLabel: label };
+        } catch {
+            return undefined;
+        }
+    };
+
+    if (preferredBaseUrl) {
+        const preferred = await tryOne(preferredBaseUrl, 'Custom');
+        if (preferred) { return preferred; }
+    }
+
+    const results = await Promise.all(
+        LOCAL_OPENAI_CANDIDATES.map((c) => tryOne(c.url, c.label)),
+    );
+    return results.find((r) => r?.detected) ?? { providerId: 'local', detected: false, models: [] };
 }
 
 export interface AgentPreset {
@@ -201,10 +307,47 @@ function builtinAgents(): AgentPreset[] {
 export class HarnessStore {
     constructor(private readonly ctx: vscode.ExtensionContext) {}
 
+    /** Last real probe results, kept for synchronous reads (e.g. writeEnvFile) between refreshes. */
+    private localProbeCache: LocalProviderProbeResult[] = [];
+
     // ── Providers ────────────────────────────────────────────────────────────
 
     listProviders(): ProviderDef[] {
         return KNOWN_PROVIDERS;
+    }
+
+    private static localOverrideKey(id: string): string {
+        return `omniharness.localBaseUrlOverride.${id}`;
+    }
+
+    /** A user-typed "advanced/custom" base URL for a local provider, if they've set one. */
+    getLocalBaseUrlOverride(id: string): string | undefined {
+        return this.ctx.globalState.get<string>(HarnessStore.localOverrideKey(id)) || undefined;
+    }
+
+    async setLocalBaseUrlOverride(id: string, url: string): Promise<void> {
+        await this.ctx.globalState.update(HarnessStore.localOverrideKey(id), url.trim() || undefined);
+    }
+
+    /**
+     * Real network auto-detection for local model runtimes: HTTP-probes Ollama's
+     * `/api/tags` and a short list of common OpenAI-compatible ports (LM Studio,
+     * llama.cpp) with a short timeout, in parallel. A user-set override URL (if
+     * any) is tried first and preferred over the guessed defaults. No state is
+     * faked — a backend only reports `detected: true` if it actually answered.
+     */
+    async probeLocalProviders(timeoutMs = 800): Promise<LocalProviderProbeResult[]> {
+        const [ollama, local] = await Promise.all([
+            probeOllama(this.getLocalBaseUrlOverride('ollama'), timeoutMs),
+            probeLocalOpenAi(this.getLocalBaseUrlOverride('local'), timeoutMs),
+        ]);
+        this.localProbeCache = [ollama, local];
+        return this.localProbeCache;
+    }
+
+    /** The last known probe results without re-probing the network (may be empty before the first probe). */
+    getLastLocalProbe(): LocalProviderProbeResult[] {
+        return this.localProbeCache;
     }
 
     async getKey(providerId: string): Promise<string | undefined> {
@@ -224,11 +367,16 @@ export class HarnessStore {
     }
 
     /** Snapshot of which providers currently have a key configured. */
-    async providerStatus(): Promise<Array<ProviderDef & { configured: boolean }>> {
-        const out: Array<ProviderDef & { configured: boolean }> = [];
+    async providerStatus(): Promise<Array<ProviderDef & { configured: boolean; localModels?: LocalDetectedModel[]; localBackendLabel?: string }>> {
+        const probes = await this.probeLocalProviders();
+        const out: Array<ProviderDef & { configured: boolean; localModels?: LocalDetectedModel[]; localBackendLabel?: string }> = [];
         for (const p of KNOWN_PROVIDERS) {
-            const configured = p.kind === 'local' ? true : await this.hasKey(p.id);
-            out.push({ ...p, configured });
+            if (p.kind === 'local') {
+                const probe = probes.find((r) => r.providerId === p.id);
+                out.push({ ...p, configured: !!probe?.detected, localModels: probe?.models ?? [], localBackendLabel: probe?.backendLabel });
+            } else {
+                out.push({ ...p, configured: await this.hasKey(p.id) });
+            }
         }
         return out;
     }

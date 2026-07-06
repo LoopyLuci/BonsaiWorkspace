@@ -11,6 +11,24 @@ export interface ProviderDef {
     baseUrlEnv?: string;
     defaultBaseUrl?: string;
     example?: string;
+    /** Extra candidate base URLs to probe for this provider (local providers only). */
+    probeUrls?: string[];
+}
+/** A locally-detected model, extracted from a real probe response — no invented fields. */
+export interface LocalDetectedModel {
+    id: string;
+    sizeBytes?: number;
+    family?: string;
+    parameterSize?: string;
+    quantization?: string;
+}
+/** Result of probing one local backend (Ollama or an OpenAI-compatible server). */
+export interface LocalProviderProbeResult {
+    providerId: string;
+    detected: boolean;
+    baseUrl?: string;
+    models: LocalDetectedModel[];
+    backendLabel?: string;
 }
 export interface AgentPreset {
     id: string;
@@ -71,13 +89,31 @@ export declare const KNOWN_PROVIDERS: ProviderDef[];
 export declare class HarnessStore {
     private readonly ctx;
     constructor(ctx: vscode.ExtensionContext);
+    /** Last real probe results, kept for synchronous reads (e.g. writeEnvFile) between refreshes. */
+    private localProbeCache;
     listProviders(): ProviderDef[];
+    private static localOverrideKey;
+    /** A user-typed "advanced/custom" base URL for a local provider, if they've set one. */
+    getLocalBaseUrlOverride(id: string): string | undefined;
+    setLocalBaseUrlOverride(id: string, url: string): Promise<void>;
+    /**
+     * Real network auto-detection for local model runtimes: HTTP-probes Ollama's
+     * `/api/tags` and a short list of common OpenAI-compatible ports (LM Studio,
+     * llama.cpp) with a short timeout, in parallel. A user-set override URL (if
+     * any) is tried first and preferred over the guessed defaults. No state is
+     * faked — a backend only reports `detected: true` if it actually answered.
+     */
+    probeLocalProviders(timeoutMs?: number): Promise<LocalProviderProbeResult[]>;
+    /** The last known probe results without re-probing the network (may be empty before the first probe). */
+    getLastLocalProbe(): LocalProviderProbeResult[];
     getKey(providerId: string): Promise<string | undefined>;
     hasKey(providerId: string): Promise<boolean>;
     setKey(providerId: string, key: string): Promise<void>;
     /** Snapshot of which providers currently have a key configured. */
     providerStatus(): Promise<Array<ProviderDef & {
         configured: boolean;
+        localModels?: LocalDetectedModel[];
+        localBackendLabel?: string;
     }>>;
     /**
      * Write all configured keys into an `.env` file at the OmniHarness root so the

@@ -922,8 +922,24 @@
     state.providers.forEach((p) => {
       const card = el('div', 'prov');
       if (p.kind === 'local') {
-        card.innerHTML = `<div class="prow"><span class="pname">${esc(p.label)}</span><span class="badge on">enabled</span></div>
-          <div class="local">Base URL: <code>${esc(p.defaultBaseUrl || '')}</code> · example: <code>${esc(p.example || '')}</code></div>`;
+        const models = p.localModels || [];
+        const detected = !!p.configured;
+        const badge = detected ? `<span class="badge on">${esc(p.localBackendLabel || 'detected')}</span>` : `<span class="badge off">not detected</span>`;
+        const list = detected && models.length
+          ? `<div class="local">${models.map((m) => {
+              const bits = [m.parameterSize, m.quantization, m.sizeBytes ? `${(m.sizeBytes / 1e9).toFixed(1)}GB` : ''].filter(Boolean).join(' · ');
+              return `<div class="model-row"><span class="model-name">${esc(m.id)}</span>${bits ? ` <span class="model-meta">${esc(bits)}</span>` : ''}</div>`;
+            }).join('')}</div>`
+          : detected
+            ? `<div class="local">Running — no models reported.</div>`
+            : `<div class="local">Not running. Start ${esc(p.label)}, or set a custom port below.</div>`;
+        card.innerHTML = `<div class="prow"><span class="pname">${esc(p.label)}</span>${badge}</div>${list}`;
+        const row = el('div', 'row2');
+        const inp = el('input', 'field'); inp.type = 'text'; inp.placeholder = `Custom base URL (advanced, default ${p.defaultBaseUrl || ''})`;
+        const save = el('button', 'btn sm', 'Save');
+        save.onclick = () => { vscode.postMessage({ type: 'saveLocalUrl', provider: p.id, url: inp.value }); inp.value = ''; };
+        row.appendChild(inp); row.appendChild(save);
+        card.appendChild(row);
       } else {
         card.innerHTML = `<div class="prow"><span class="pname">${esc(p.label)}</span>
           <span class="badge ${p.configured ? 'on' : 'off'}">${p.configured ? 'key set' : 'no key'}</span></div>`;

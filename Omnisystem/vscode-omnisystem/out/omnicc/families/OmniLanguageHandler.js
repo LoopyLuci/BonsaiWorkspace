@@ -324,23 +324,78 @@ function generateTitan(ir, opts) {
     }
     for (const unit of ir.units) {
         const body = (0, BodyTranslator_1.translateBody)(unit.originalSource ?? '', ir.sourceLanguage, 'titan');
+        const vis = unit.visibility === 'public' ? 'pub ' : '';
+        // Faithful type text: prefer a known return/declared type, else preserve
+        // the source type text, else fall back to Titan's most permissive type.
+        const declType = unit.signature.returns.name !== 'void' && unit.signature.returns.name !== 'Unknown'
+            ? unit.signature.returns.name
+            : (unit.signature.returns.originalSrc && unit.signature.returns.originalSrc !== '?'
+                ? unit.signature.returns.originalSrc
+                : 'Any');
         switch (unit.kind) {
             case 'struct':
+            case 'record':
+            case 'tuple-type':
                 lines.push(`pub struct ${unit.name} {\n${body}\n}`);
                 break;
             case 'enum':
+            case 'union':
+            case 'tagged-union':
+                // Titan models sum types as enums (tagged unions).
                 lines.push(`pub enum ${unit.name} {\n${body}\n}`);
                 break;
             case 'trait':
+            case 'interface':
+            case 'protocol':
+            case 'mixin':
+                // Titan expresses all abstract contracts as traits.
                 lines.push(`pub trait ${unit.name} {\n${body}\n}`);
                 break;
             case 'class':
+            case 'actor':
                 lines.push(`pub actor ${unit.name} {\n${body}\n}`);
                 break;
+            case 'type-alias':
+            case 'newtype':
+            case 'opaque-type':
+                lines.push(`${vis}type ${unit.name} = ${declType};`);
+                break;
+            case 'constant':
+                lines.push(`${vis}const ${unit.name}: ${declType} = ${constInit(unit)};`);
+                break;
+            case 'variable':
+            case 'field':
+            case 'property':
+                lines.push(`${vis}let ${unit.isFinal ? '' : 'mut '}${unit.name}: ${declType};`);
+                break;
+            case 'namespace':
+            case 'module-decl':
+            case 'package-decl': {
+                // Recurse so nested items aren't lost — a namespace with no
+                // faithful expansion would otherwise silently drop its children.
+                const nested = unit.children.length > 0
+                    ? generateTitan({ ...ir, name: unit.name, units: unit.children, imports: [] }, opts)
+                        .split('\n').map(l => l ? `    ${l}` : l).join('\n')
+                    : body;
+                lines.push(`pub mod ${unit.name} {\n${nested}\n}`);
+                break;
+            }
+            case 'macro':
+                // Titan has no macro syntax yet; preserve intent explicitly as an
+                // annotated fn rather than silently discarding the construct.
+                lines.push(`#[macro]\n${vis}fn ${unit.name}() {\n${body}\n}`);
+                break;
+            case 'theorem':
+            case 'proof':
+            case 'axiom-decl':
+            case 'invariant':
+                // Formal units belong to Axiom; when the target is Titan, keep
+                // them as a checked assertion fn so the guarantee isn't lost.
+                lines.push(`// formal: originally a ${unit.kind} (see Axiom target for full form)\n${vis}fn assert_${unit.name}() {\n${body}\n}`);
+                break;
             default: {
-                const vis = unit.visibility === 'public' ? 'pub ' : '';
                 const async_ = unit.isAsync ? 'async ' : '';
-                const pStr = unit.signature.params.map(p => `${p.name}: ${p.type.name !== 'Unknown' ? p.type.name : 'String'}`).join(', ');
+                const pStr = unit.signature.params.map(p => `${p.name}: ${p.type.name !== 'Unknown' ? p.type.name : 'Any'}`).join(', ');
                 const ret = unit.signature.returns.name !== 'void' && unit.signature.returns.name !== 'Unknown'
                     ? ` -> ${unit.signature.returns.name}` : '';
                 lines.push(`${vis}${async_}fn ${unit.name}(${pStr})${ret} {\n${body}\n}`);
@@ -349,6 +404,19 @@ function generateTitan(ir, opts) {
         lines.push('');
     }
     return lines.join('\n');
+}
+/** Best-effort initializer for a constant, preserving the source value when
+ *  present rather than fabricating one. */
+function constInit(unit) {
+    const src = unit.originalSource ?? '';
+    const eq = src.indexOf('=');
+    if (eq >= 0) {
+        const rhs = src.slice(eq + 1).replace(/;+\s*$/, '').trim();
+        if (rhs) {
+            return rhs;
+        }
+    }
+    return 'Default::default()';
 }
 function generateVera(ir, opts) {
     const lines = [`// ${ir.name} — Vera UI Component`, `// Source: ${ir.sourceLanguage}`, ''];
@@ -359,13 +427,13 @@ function generateVera(ir, opts) {
     const compName = components[0]?.name ?? ir.name;
     lines.push(`export component ${compName} {`);
     // Props from constants
-    for (const c of consts.slice(0, 5)) {
+    for (const c of consts) {
         lines.push(`    prop ${c.name}: String = ""`);
     }
     // State from events
     if (events.length > 0) {
         lines.push('');
-        for (const e of events.slice(0, 3)) {
+        for (const e of events) {
             lines.push(`    state is_${e.name}_active: Bool = false`);
         }
     }
@@ -380,14 +448,14 @@ function generateVera(ir, opts) {
     // Event handlers
     if (events.length > 0) {
         lines.push('');
-        for (const e of events.slice(0, 3)) {
+        for (const e of events) {
             const body = (0, BodyTranslator_1.translateBody)(e.originalSource ?? '', ir.sourceLanguage, 'titan', '        ');
             lines.push(`    on_${e.name}() {\n${body}\n    }`);
         }
     }
     lines.push('}');
     // Standalone functions
-    for (const fn of fns.slice(0, 5)) {
+    for (const fn of fns) {
         const pStr = fn.signature.params.map(p => `${p.name}: String`).join(', ');
         const fnBody = (0, BodyTranslator_1.translateBody)(fn.originalSource ?? '', ir.sourceLanguage, 'titan');
         lines.push('', `fn ${fn.name}(${pStr}) {`, fnBody || '    return ()', '}');
@@ -410,7 +478,7 @@ function generateNexus(ir, opts) {
     lines.push('        max_width: 1200px;');
     lines.push('        padding: 16px;');
     lines.push('    }');
-    for (const unit of ir.units.filter(u => u.kind !== 'widget-layout').slice(0, 5)) {
+    for (const unit of ir.units.filter(u => u.kind !== 'widget-layout')) {
         lines.push('');
         lines.push(`    grid .${unit.name.toLowerCase()} {`);
         lines.push('        columns: 12;');
@@ -436,7 +504,7 @@ function generateHelix(ir, opts) {
     lines.push('    }');
     lines.push('}');
     lines.push('');
-    for (const unit of ir.units.filter(u => u.kind === 'function').slice(0, 5)) {
+    for (const unit of ir.units.filter(u => u.kind === 'function')) {
         const pStr = unit.signature.params.map(p => `${p.name}: Vec4`).join(', ');
         const helixBody = (0, BodyTranslator_1.translateBody)(unit.originalSource ?? '', ir.sourceLanguage, 'helix', '    ');
         lines.push(`fn ${unit.name}(${pStr}) -> Vec4 {`);
@@ -451,12 +519,12 @@ function generateAether(ir, opts) {
     const actorName = ir.units.find(u => u.kind === 'class')?.name ?? ir.name;
     lines.push(`pub actor ${actorName} {`);
     // State fields from constants
-    for (const c of ir.units.filter(u => u.kind === 'constant').slice(0, 3)) {
+    for (const c of ir.units.filter(u => u.kind === 'constant')) {
         lines.push(`    let ${c.name}: String`);
     }
     lines.push('');
     // Messages
-    const msgs = ir.units.filter(u => u.kind === 'interface').slice(0, 3);
+    const msgs = ir.units.filter(u => u.kind === 'interface');
     for (const msg of msgs) {
         lines.push(`    message ${msg.name.split('.').pop()} {`);
         lines.push('        data: String');
@@ -485,7 +553,7 @@ function generateAether(ir, opts) {
 function generateAxiom(ir, opts) {
     const lines = [`// ${ir.name} — Axiom Formal Verification`, `// Source: ${ir.sourceLanguage}`, ''];
     const fns = ir.units.filter(u => u.kind === 'function');
-    for (const fn of fns.slice(0, 5)) {
+    for (const fn of fns) {
         lines.push(`theorem ${fn.name}_correctness {`);
         lines.push('    preconditions {');
         lines.push(`        // input assumptions for ${fn.name}`);
@@ -528,7 +596,7 @@ function generateSylva(ir, opts) {
     const fns = ir.units.filter(u => u.kind === 'function');
     if (fns.length > 0) {
         lines.push(`pipeline ${ir.name}Pipeline {`);
-        for (const fn of fns.slice(0, 4)) {
+        for (const fn of fns) {
             lines.push(`    step ${fn.name} { }`);
         }
         lines.push('}');

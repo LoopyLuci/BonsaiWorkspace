@@ -136,7 +136,7 @@ ctxMenu.addEventListener('click',e=>{
   if(!item)return;
   ctxMenu.classList.remove('open');
   switch(item.dataset.action){
-    case 'ctx-new-file': openApp('code-studio'); break;
+    case 'ctx-new-file': openApp('new-file'); break;
     case 'ctx-open-term': openApp('terminal'); break;
     case 'ctx-refresh': post('getFiles'); break;
     case 'ctx-open': if(ctxTarget&&ctxTarget.path)post('openFile',{text:ctxTarget.path}); break;
@@ -152,23 +152,41 @@ let zTop=10;
 const windows={};
 let selectedDesktopIcon=null;
 
-const appMeta={
-  'harness':{title:'OmniHarness AI',icon:'🤖'},
-  'file-manager':{title:'Files',icon:'📁'},
-  'terminal':{title:'Terminal',icon:'💻'},
-  'code-studio':{title:'Code Studio',icon:'✨'},
-  'bonsai':{title:'Bonsai Hub',icon:'🌿'},
-  'compiler':{title:'OmniCC Build',icon:'⚙️'},
-  'ml-studio':{title:'ML Studio',icon:'🧠'},
-  'pkg-manager':{title:'OmniPM',icon:'📦'},
-  'app-converter':{title:'App Converter',icon:'🔄'},
-  'settings':{title:'Settings',icon:'⚙'},
-  'system-monitor':{title:'System Monitor',icon:'📊'},
-  'sandbox':{title:'Sandbox & Immune System',icon:'🛡️'},
-  'bug-hunter':{title:'Bug Hunter',icon:'🐛'},
-};
+// ─── APP REGISTRY ──────────────────────────────────────────────────────────────
+// Single source of truth for every OmniOS Desktop app: desktop icon, Start Menu
+// entry, taskbar/window chrome, and dispatch all read from this one list. Adding
+// a new app means adding one entry here — nothing else needs to be touched.
+//   kind: 'embedded' → renders inside a managed window via buildAppContent()
+//         'external' → hands off to the extension host (spawns/focuses its own
+//                       process or native window; no embedded webview window)
+const APP_REGISTRY=[
+  {id:'harness',        title:'OmniHarness AI',      icon:'🤖',  gradient:['#5B3FA8','#7C5CD0'], kind:'embedded', desktop:true, pinned:true},
+  {id:'file-manager',   title:'Files',               icon:'📁',  gradient:['#FFB800','#FF6600'], kind:'embedded', desktop:true, pinned:true},
+  {id:'terminal',       title:'Terminal',            icon:'💻',  gradient:['#001A00','#003300'], kind:'embedded', desktop:true, pinned:true},
+  {id:'workspace-ide',  title:'Workspace IDE',       icon:'🧩',  gradient:['#004499','#0077CC'], kind:'external', desktop:true, pinned:true},
+  {id:'compiler',       title:'OmniCC Build',        icon:'⚙️',  gradient:['#1A0A00','#3D1A00'], kind:'embedded', desktop:true, pinned:true},
+  {id:'ml-studio',      title:'ML Studio',           icon:'🧠',  gradient:['#1A0033','#330066'], kind:'embedded', desktop:true, pinned:true},
+  {id:'pkg-manager',    title:'OmniPM',              icon:'📦',  gradient:['#001833','#003366'], kind:'embedded', desktop:true, pinned:true},
+  {id:'app-converter',  title:'App Converter',       icon:'🔄',  gradient:['#1A1A00','#333300'], kind:'embedded', desktop:true, pinned:false},
+  {id:'settings',       title:'Settings',            icon:'⚙',   gradient:['#0A0A1A','#1A1A2E'], kind:'embedded', desktop:true, pinned:false},
+  {id:'system-monitor', title:'System Monitor',      icon:'📊',  gradient:['#001A33','#003355'], kind:'embedded', desktop:true, pinned:true},
+  {id:'sandbox',        title:'Sandbox & Immune System', icon:'🛡️', gradient:['#003322','#006644'], kind:'embedded', desktop:false, pinned:true},
+  {id:'bug-hunter',     title:'Bug Hunter',          icon:'🐛',  gradient:['#330011','#660022'], kind:'embedded', desktop:true, pinned:true},
+  {id:'new-file',       title:'New File',            icon:'✨',  gradient:['#003344','#005577'], kind:'embedded', desktop:false, pinned:false},
+];
+const appMeta={};
+APP_REGISTRY.forEach(a=>{appMeta[a.id]={title:a.title,icon:a.icon,kind:a.kind};});
+function appById(id){return APP_REGISTRY.find(a=>a.id===id);}
 
 function openApp(appId){
+  const reg=appById(appId);
+  // External apps (standalone Tauri/native processes, e.g. the restored Workspace IDE)
+  // aren't embeddable webview windows — hand off to the extension host to launch them.
+  if(reg&&reg.kind==='external'){
+    post('openApp',{app:appId});
+    notify(reg.title,'Launching '+reg.title+'…',reg.icon);
+    return;
+  }
   if(windows[appId]){
     restoreWindow(appId);
     bringToFront(appId);
@@ -364,35 +382,106 @@ function makeResizable(win,handle){
   function onUp(){resizing=false;document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);debouncedSaveWin&&debouncedSaveWin();}
 }
 
-// ─── DESKTOP ICON INTERACTION ─────────────────────────────────────────────────
-try {
-  const icons = qa('.desktop-icon');
-  if (icons.length === 0) {
-    // Fallback: scan for icons injected after parse
-    setTimeout(()=>{
-      qa('.desktop-icon').forEach(icon=>{
-        icon.addEventListener('click',e=>{
-          e.stopPropagation();
-          qa('.desktop-icon').forEach(i=>i.classList.remove('selected'));
-          icon.classList.add('selected');
-          selectedDesktopIcon=icon;
-          openApp(icon.dataset.app);
-        });
-      });
-    }, 200);
-  } else {
-    icons.forEach(icon=>{
-      icon.addEventListener('click',e=>{
-        e.stopPropagation();
-        qa('.desktop-icon').forEach(i=>i.classList.remove('selected'));
-        icon.classList.add('selected');
-        selectedDesktopIcon=icon;
-        openApp(icon.dataset.app);
-      });
-    });
+// ─── DESKTOP ICONS: render from registry + free drag-to-rearrange ────────────
+// Positions are stored as percentages of the desktop-icons container, persisted
+// via vscode.setState. Percentage-based placement means a resize (any screen
+// size, any zoom level) rescales every icon's position proportionally instead
+// of letting it drift off-screen — no clamping math needed on window resize.
+const desktopIconsEl = el('desktop-icons');
+
+function loadIconPositions(){ return (vscode.getState()||{}).iconPositions || {}; }
+function saveIconPosition(appId,leftPct,topPct){
+  const state = vscode.getState()||{};
+  const positions = Object.assign({}, state.iconPositions||{}, {[appId]:{left:leftPct,top:topPct}});
+  vscode.setState(Object.assign({}, state, {iconPositions:positions}));
+}
+
+function bindDesktopIcon(icon){
+  let dragging=false, moved=false, startX=0, startY=0, origLeftPx=0, origTopPx=0;
+  icon.addEventListener('mousedown', e=>{
+    e.stopPropagation();
+    moved=false;
+    dragging=true;
+    icon.classList.add('dragging');
+    const rect=desktopIconsEl.getBoundingClientRect();
+    startX=e.clientX; startY=e.clientY;
+    origLeftPx=(parseFloat(icon.style.left)||0)/100*rect.width;
+    origTopPx=(parseFloat(icon.style.top)||0)/100*rect.height;
+    document.addEventListener('mousemove',onMove);
+    document.addEventListener('mouseup',onUp);
+  });
+  function onMove(e){
+    if(!dragging)return;
+    const dx=e.clientX-startX, dy=e.clientY-startY;
+    if(Math.abs(dx)>3||Math.abs(dy)>3) moved=true;
+    if(!moved)return;
+    const rect=desktopIconsEl.getBoundingClientRect();
+    const iw=icon.offsetWidth||72, ih=icon.offsetHeight||90;
+    const leftPx=Math.max(0,Math.min(origLeftPx+dx,rect.width-iw));
+    const topPx=Math.max(0,Math.min(origTopPx+dy,rect.height-ih));
+    icon.style.left=(leftPx/rect.width*100)+'%';
+    icon.style.top=(topPx/rect.height*100)+'%';
   }
+  function onUp(){
+    if(!dragging)return;
+    dragging=false;
+    icon.classList.remove('dragging');
+    document.removeEventListener('mousemove',onMove);
+    document.removeEventListener('mouseup',onUp);
+    if(moved){
+      saveIconPosition(icon.dataset.app, parseFloat(icon.style.left), parseFloat(icon.style.top));
+    } else {
+      qa('.desktop-icon').forEach(i=>i.classList.remove('selected'));
+      icon.classList.add('selected');
+      selectedDesktopIcon=icon;
+      openApp(icon.dataset.app);
+    }
+  }
+}
+
+function renderDesktopIcons(){
+  if(!desktopIconsEl) return;
+  desktopIconsEl.innerHTML='';
+  const positions=loadIconPositions();
+  const apps=APP_REGISTRY.filter(a=>a.desktop);
+  const rowsPerCol=6;
+  apps.forEach((app,i)=>{
+    const div=document.createElement('div');
+    div.className='desktop-icon';
+    div.dataset.app=app.id;
+    const saved=positions[app.id];
+    const col=Math.floor(i/rowsPerCol), row=i%rowsPerCol;
+    const defaultLeft=4+col*11, defaultTop=4+row*15;
+    div.style.left=(saved?saved.left:defaultLeft)+'%';
+    div.style.top=(saved?saved.top:defaultTop)+'%';
+    div.innerHTML=
+      '<div class="di-icon" style="background:linear-gradient(135deg,'+app.gradient[0]+','+app.gradient[1]+')">'+app.icon+'</div>'
+      +'<div class="di-label">'+app.title+'</div>';
+    bindDesktopIcon(div);
+    desktopIconsEl.appendChild(div);
+  });
+}
+
+function renderStartMenuPinned(){
+  const smPinnedEl=el('sm-pinned');
+  if(!smPinnedEl) return;
+  smPinnedEl.innerHTML='';
+  APP_REGISTRY.filter(a=>a.pinned).forEach(app=>{
+    const div=document.createElement('div');
+    div.className='sm-app-btn';
+    div.dataset.app=app.id;
+    div.innerHTML=
+      '<div class="sm-app-icon" style="background:linear-gradient(135deg,'+app.gradient[0]+','+app.gradient[1]+')">'+app.icon+'</div>'
+      +'<div class="sm-app-name">'+app.title+'</div>';
+    smPinnedEl.appendChild(div);
+  });
+}
+
+try {
+  renderDesktopIcons();
+  renderStartMenuPinned();
 } catch(iconErr) {
-  window.onerror('Icon binding error: '+iconErr.message,'desktop',0,0,iconErr);
+  window.onerror('Desktop render error: '+iconErr.message,'desktop',0,0,iconErr);
 }
 document.getElementById('desktop-area').addEventListener('click',()=>{
   qa('.desktop-icon').forEach(i=>i.classList.remove('selected'));
@@ -785,8 +874,7 @@ function buildAppContent(appId, container){
     case 'harness': buildHarness(container); break;
     case 'file-manager': buildFileManager(container); break;
     case 'terminal': buildTerminal(container); break;
-    case 'code-studio': buildCodeStudio(container); break;
-    case 'bonsai': buildBonsai(container); break;
+    case 'new-file': buildNewFileWizard(container); break;
     case 'compiler': buildCompiler(container); break;
     case 'ml-studio': buildMlStudio(container); break;
     case 'pkg-manager': buildPkgManager(container); break;
@@ -1465,10 +1553,10 @@ const langColors={
   titan:['#00D4FF','#003366'],vera:['#FFB800','#332200'],helix:['#FF6688','#330011'],
   aether:['#00FF88','#003322'],axiom:['#CC88FF','#220044'],sylva:['#88FF44','#223300'],nexus:['#FF8844','#332200']
 };
-function buildCodeStudio(c){
+function buildNewFileWizard(c){
   c.innerHTML=
     '<div class="app-container">'
-    +'<div class="app-header"><span style="font-size:22px">✨</span><h2>Code Studio</h2><span class="badge">Omni-Languages</span></div>'
+    +'<div class="app-header"><span style="font-size:22px">✨</span><h2>New File</h2><span class="badge">Omni-Languages</span></div>'
     +'<div class="card">'
     +'<div class="section-label">New File</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px" id="cs-lang-btns"></div>'
@@ -1515,9 +1603,9 @@ function buildCodeStudio(c){
 
   el('cs-create-btn').onclick=()=>{
     const name=el('cs-name').value.trim();
-    if(!name){notify('Code Studio','Please enter a filename','⚠️');return;}
+    if(!name){notify('New File','Please enter a filename','⚠️');return;}
     post('scaffold',{lang:selectedLang,name});
-    notify('Code Studio','Creating '+name+'.'+selectedLang,'✨');
+    notify('New File','Creating '+name+'.'+selectedLang,'✨');
     el('cs-name').value='';
   };
 
@@ -1584,61 +1672,6 @@ function handleHarnessStatus(msg){
     status.style.color='var(--red)';
     modelsBox.innerHTML='<div style="color:var(--text-dim);font-size:11px">Orchestrator is not running. Click Start Server above.</div>';
   }
-}
-
-// ── BONSAI HUB ────────────────────────────────────────────────────────────────
-function buildBonsai(c){
-  c.innerHTML=
-    '<div class="app-container">'
-    +'<div class="app-header">'
-    +'<span style="font-size:26px">🌿</span>'
-    +'<div><h2>Bonsai Hub</h2><div style="font-size:10px;color:var(--text-dim)">The Complete App Ecosystem</div></div>'
-    +'<span class="badge">v2.0</span>'
-    +'</div>'
-    +'<div class="bonsai-grid">'
-    +'<div class="bonsai-card">'
-    +'<div class="bonsai-card-title">🖥️ Launcher <span class="status-dot green"></span></div>'
-    +'<div class="bonsai-card-desc">Tauri desktop app — native OS integration, system tray, auto-launch, unified control panel for all Bonsai components.</div>'
-    +'<div class="row" style="flex-wrap:wrap;gap:6px">'
-    +'<button class="btn btn-green btn-sm" id="bonsai-launch-btn">Launch App</button>'
-    +'<button class="btn btn-accent btn-sm" onclick="post(\'openApp\',{app:\'bonsaiControlPanel\'})">Status</button>'
-    +'</div>'
-    +'</div>'
-    +'<div class="bonsai-card">'
-    +'<div class="bonsai-card-title">📱 Buddy <span class="status-dot gold"></span></div>'
-    +'<div class="bonsai-card-desc">Android companion — 9 sub-apps including task sync, notifications, remote build, file browser, and system stats.</div>'
-    +'<div class="row" style="flex-wrap:wrap;gap:6px">'
-    +'<button class="btn btn-accent btn-sm" onclick="post(\'openApp\',{app:\'bonsaiBuddyConnect\'})">Connect</button>'
-    +'<button class="btn btn-gold btn-sm" onclick="post(\'openApp\',{app:\'bonsaiBuddyBuild\'})">Build APK</button>'
-    +'</div>'
-    +'</div>'
-    +'<div class="bonsai-card">'
-    +'<div class="bonsai-card-title">🌐 Browser Extension <span class="status-dot gold"></span></div>'
-    +'<div class="bonsai-card-desc">Chrome + Firefox extension — web capture, Bonsai search, bookmark sync, and instant code snippet injection.</div>'
-    +'<div class="row" style="flex-wrap:wrap;gap:6px">'
-    +'<button class="btn btn-accent btn-sm" onclick="post(\'openApp\',{app:\'bonsaiBrowserExtBuild\'})">Build Extension</button>'
-    +'<button class="btn btn-gold btn-sm" onclick="post(\'openApp\',{app:\'bonsaiBrowserExtInstall\'})">Install Dev</button>'
-    +'</div>'
-    +'</div>'
-    +'<div class="bonsai-card">'
-    +'<div class="bonsai-card-title">⚡ Control Panel <span class="status-dot green"></span></div>'
-    +'<div class="bonsai-card-desc">Web UI at localhost:8080 — unified dashboard for all ecosystem services, metrics, logs, and configuration.</div>'
-    +'<div class="row" style="flex-wrap:wrap;gap:6px">'
-    +'<button class="btn btn-primary btn-sm" onclick="post(\'openApp\',{app:\'bonsaiControlPanel\'})">Open localhost:8080</button>'
-    +'</div>'
-    +'</div>'
-    +'</div>'
-    +'<button class="btn btn-primary" style="width:100%;padding:12px" id="bonsai-dashboard-btn">🌿 Open Bonsai Dashboard</button>'
-    +'<div class="bonsai-status-row">'
-    +'<span><span class="status-dot green"></span>Launcher: Running</span>'
-    +'<span><span class="status-dot gold"></span>Buddy: Pairing</span>'
-    +'<span><span class="status-dot gold"></span>Extension: Building</span>'
-    +'<span><span class="status-dot green"></span>Panel: Online</span>'
-    +'</div>'
-    +'</div>';
-
-  el('bonsai-launch-btn').onclick=()=>post('bonsaiLaunch');
-  el('bonsai-dashboard-btn').onclick=()=>post('openApp',{app:'openBonsaiDashboard'});
 }
 
 // ── COMPILER ──────────────────────────────────────────────────────────────────
@@ -1840,7 +1873,7 @@ function buildMlStudio(c){
   renderLayers();
   qa('.ml-add-layer',c).forEach(b=>{b.onclick=()=>{layers.push(b.dataset.layer);renderLayers();};});
   el('ml-open-btn').onclick=()=>post('openFile',{text:'ml_model.sylva'});
-  el('ml-new-model-btn').onclick=()=>{openApp('code-studio');};
+  el('ml-new-model-btn').onclick=()=>{openApp('new-file');};
 
   el('ml-train-btn').onclick=()=>{
     const lr=parseFloat(el('hp-lr').value)||0.001;
@@ -2418,7 +2451,7 @@ function buildSystemMonitor(c){
     +'<div class="card">'
     +'<div class="section-label">System Health</div>'
     +'<div class="col" style="gap:6px">'
-    +['Compiler','Runtime','LSP','OmniPM','Bonsai','OmniOS'].map(s=>
+    +['Compiler','Runtime','LSP','OmniPM','Workspace','OmniOS'].map(s=>
       '<div class="sys-health-item">'
       +'<span class="pulse"></span>'
       +'<span class="sys-health-name">'+s+'</span>'
@@ -3160,7 +3193,10 @@ function handleWindowStateLoaded(state){
   if(!state)return;
   Object.keys(state).forEach(id=>{
     const s=state[id];
-    if(!s)return;
+    // Skip anything that isn't a real, currently-registered app (renamed/removed
+    // apps, e.g. an old saved "desktop"/"bonsai" entry) — never resurrect a blank
+    // or dead window just because it happened to be open in a past session.
+    if(!s||!appById(id))return;
     openApp(id);
     const w=windows[id];
     if(!w)return;

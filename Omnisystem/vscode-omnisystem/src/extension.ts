@@ -1227,6 +1227,52 @@ function cmdDesktopWorkspace(): void {
     OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
 }
 
+// ─── Workspace IDE ─────────────────────────────────────────────────────────────
+// Workspace IDE is the restored, rebranded Bonsai Workspace: a standalone Tauri app
+// (Omnisystem/OmniHarness/workspace) with a real Svelte editor/terminal/panel UI wired
+// to the OmniHarness backend. It's launched as an external process rather than
+// embedded like the other OmniOS Desktop panels (Tauri owns its own native window).
+
+function workspaceIdeDir(): string | undefined {
+    const root = workspaceRoot();
+    if (!root) return undefined;
+    const candidates = [
+        path.join(root, 'Omnisystem', 'OmniHarness', 'workspace'),
+        path.join(root, 'OmniHarness', 'workspace'),
+    ];
+    return candidates.find((c) => fs.existsSync(path.join(c, 'src-tauri', 'tauri.conf.json')));
+}
+
+// Tracks the child process across repeated command invocations within this
+// extension-host session, so double-clicking the desktop icon (or invoking
+// the command twice) focuses/notifies instead of spawning a second `cargo
+// tauri dev` — which would fight the first one for the same dev-server port.
+let workspaceIdeProc: ReturnType<typeof spawn> | undefined;
+
+function cmdOpenWorkspaceIde(): void {
+    if (workspaceIdeProc && workspaceIdeProc.exitCode === null && !workspaceIdeProc.killed) {
+        vscode.window.showInformationMessage('Workspace IDE is already running (see "Omnisystem" output channel).');
+        outputChannel.show(true);
+        return;
+    }
+    const dir = workspaceIdeDir();
+    if (!dir) {
+        vscode.window.showErrorMessage('Workspace IDE not found (expected Omnisystem/OmniHarness/workspace in this repo).');
+        return;
+    }
+    outputChannel.appendLine(`[Workspace IDE] Launching from ${dir}`);
+    const proc = spawn('npm', ['run', 'tauri', 'dev'], { cwd: dir, shell: true });
+    workspaceIdeProc = proc;
+    proc.stdout?.on('data', (d) => outputChannel.appendLine(`[Workspace IDE] ${d}`));
+    proc.stderr?.on('data', (d) => outputChannel.appendLine(`[Workspace IDE] ${d}`));
+    proc.on('error', (e) => vscode.window.showErrorMessage(`Failed to launch Workspace IDE: ${e.message}`));
+    proc.on('exit', (code) => {
+        outputChannel.appendLine(`[Workspace IDE] Process exited with code ${code}`);
+        if (workspaceIdeProc === proc) workspaceIdeProc = undefined;
+    });
+    vscode.window.showInformationMessage('Launching Workspace IDE… (see "Omnisystem" output channel for progress)');
+}
+
 function cmdOpenDesktopDashboard(): void {
     OmnisystemDashboardPanel.createOrShow(extensionContext.extensionUri);
 }
@@ -1676,6 +1722,7 @@ function registerCommands(ctx: vscode.ExtensionContext): void {
     reg('omnisystem.desktopDeploy',           () => cmdDesktopDeploy());
     reg('omnisystem.desktopModelManager',     () => cmdDesktopModelManager());
     reg('omnisystem.desktopWorkspace',        () => cmdDesktopWorkspace());
+    reg('omnisystem.workspace-ide',            () => cmdOpenWorkspaceIde());
     reg('omnisystem.desktopNotifications',    () => cmdDesktopNotifications());
     reg('omnisystem.desktopSystemTray',       () => cmdDesktopSystemTray());
     reg('omnisystem.desktopInit',             () => { cmdDesktopInit().catch(e => outputChannel.appendLine(`[Desktop Init] ${e}`)); });

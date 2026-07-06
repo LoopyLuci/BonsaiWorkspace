@@ -846,20 +846,23 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 #desktop{position:fixed;inset:0;z-index:1;display:flex;flex-direction:column}
 #desktop-area{flex:1;position:relative;overflow:hidden}
 #desktop-icons{
-  position:absolute;top:16px;left:16px;display:flex;flex-direction:column;gap:8px;z-index:2
+  position:absolute;inset:16px 8px 8px 16px;z-index:2;
 }
+/* Icons are free-positioned (drag-to-rearrange via JS) but sized with clamp()
+   so they shrink on small/high-DPI screens instead of overflowing off-screen. */
 .desktop-icon{
-  width:72px;display:flex;flex-direction:column;align-items:center;gap:5px;
-  padding:8px 4px;border-radius:10px;cursor:pointer;transition:background 0.15s,transform 0.12s;
-  border:1.5px solid transparent;
+  position:absolute;width:clamp(56px,6vw,76px);display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:8px 4px;border-radius:10px;cursor:grab;transition:background 0.15s,transform 0.12s;
+  border:1.5px solid transparent;user-select:none;touch-action:none;
 }
 .desktop-icon:hover{background:rgba(0,212,255,0.09);border-color:rgba(0,212,255,0.2)}
 .desktop-icon.selected{background:rgba(0,212,255,0.16);border-color:rgba(0,212,255,0.4)}
+.desktop-icon.dragging{cursor:grabbing;z-index:3;background:rgba(0,212,255,0.14);border-color:rgba(0,212,255,0.35)}
 .di-icon{
-  width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
-  font-size:22px;box-shadow:0 4px 16px rgba(0,0,0,0.5);
+  width:clamp(36px,4.2vw,46px);height:clamp(36px,4.2vw,46px);border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:clamp(16px,2.2vw,22px);box-shadow:0 4px 16px rgba(0,0,0,0.5);pointer-events:none;
 }
-.di-label{font-size:10px;color:var(--text);text-align:center;line-height:1.3;text-shadow:0 1px 4px rgba(0,0,0,0.8)}
+.di-label{font-size:clamp(9px,1vw,10.5px);color:var(--text);text-align:center;line-height:1.3;text-shadow:0 1px 4px rgba(0,0,0,0.8);pointer-events:none}
 
 /* TASKBAR */
 #taskbar{
@@ -1199,56 +1202,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 <!-- Desktop -->
 <div id="desktop">
   <div id="desktop-area">
-    <div id="desktop-icons">
-      <div class="desktop-icon" data-app="harness" data-icon="🤖" data-label="OmniHarness AI">
-        <div class="di-icon" style="background:linear-gradient(135deg,#5B3FA8,#7C5CD0)">🤖</div>
-        <div class="di-label">OmniHarness AI</div>
-      </div>
-      <div class="desktop-icon" data-app="file-manager" data-icon="📁" data-label="Files">
-        <div class="di-icon" style="background:linear-gradient(135deg,#FFB800,#FF6600)">📁</div>
-        <div class="di-label">Files</div>
-      </div>
-      <div class="desktop-icon" data-app="terminal" data-icon="💻" data-label="Terminal">
-        <div class="di-icon" style="background:linear-gradient(135deg,#001A00,#003300)">💻</div>
-        <div class="di-label">Terminal</div>
-      </div>
-      <div class="desktop-icon" data-app="code-studio" data-icon="✨" data-label="Code Studio">
-        <div class="di-icon" style="background:linear-gradient(135deg,#004499,#0077CC)">✨</div>
-        <div class="di-label">Code Studio</div>
-      </div>
-      <div class="desktop-icon" data-app="desktop" data-icon="🌿" data-label="Omnisystem Hub">
-        <div class="di-icon" style="background:linear-gradient(135deg,#003300,#006600)">🌿</div>
-        <div class="di-label">Omnisystem Hub</div>
-      </div>
-      <div class="desktop-icon" data-app="compiler" data-icon="⚙️" data-label="OmniCC Build">
-        <div class="di-icon" style="background:linear-gradient(135deg,#1A0A00,#3D1A00)">⚙️</div>
-        <div class="di-label">OmniCC Build</div>
-      </div>
-      <div class="desktop-icon" data-app="ml-studio" data-icon="🧠" data-label="ML Studio">
-        <div class="di-icon" style="background:linear-gradient(135deg,#1A0033,#330066)">🧠</div>
-        <div class="di-label">ML Studio</div>
-      </div>
-      <div class="desktop-icon" data-app="pkg-manager" data-icon="📦" data-label="OmniPM">
-        <div class="di-icon" style="background:linear-gradient(135deg,#001833,#003366)">📦</div>
-        <div class="di-label">OmniPM</div>
-      </div>
-      <div class="desktop-icon" data-app="app-converter" data-icon="🔄" data-label="App Converter">
-        <div class="di-icon" style="background:linear-gradient(135deg,#1A1A00,#333300)">🔄</div>
-        <div class="di-label">App Converter</div>
-      </div>
-      <div class="desktop-icon" data-app="settings" data-icon="⚙" data-label="Settings">
-        <div class="di-icon" style="background:linear-gradient(135deg,#0A0A1A,#1A1A2E)">⚙</div>
-        <div class="di-label">Settings</div>
-      </div>
-      <div class="desktop-icon" data-app="system-monitor" data-icon="📊" data-label="System Monitor">
-        <div class="di-icon" style="background:linear-gradient(135deg,#001A33,#003355)">📊</div>
-        <div class="di-label">System Monitor</div>
-      </div>
-      <div class="desktop-icon" data-app="bug-hunter" data-icon="🐛" data-label="Bug Hunter">
-        <div class="di-icon" style="background:linear-gradient(135deg,#330011,#660022)">🐛</div>
-        <div class="di-label">Bug Hunter</div>
-      </div>
-    </div>
+    <!-- Populated at runtime by desktop-client.js from APP_REGISTRY (single source
+         of truth for every app: desktop icon, Start Menu entry, and dispatch). -->
+    <div id="desktop-icons"></div>
     <div id="windows-layer"></div>
   </div>
 
@@ -1274,52 +1230,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
   <div id="sm-body">
     <div>
       <div class="sm-section-label">Pinned</div>
-      <div id="sm-pinned">
-        <div class="sm-app-btn" data-app="harness">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#5B3FA8,#7C5CD0)">🤖</div>
-          <div class="sm-app-name">OmniHarness</div>
-        </div>
-        <div class="sm-app-btn" data-app="file-manager">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#FFB800,#FF6600)">📁</div>
-          <div class="sm-app-name">Files</div>
-        </div>
-        <div class="sm-app-btn" data-app="terminal">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#001A00,#003300)">💻</div>
-          <div class="sm-app-name">Terminal</div>
-        </div>
-        <div class="sm-app-btn" data-app="code-studio">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#004499,#0077CC)">✨</div>
-          <div class="sm-app-name">Code Studio</div>
-        </div>
-        <div class="sm-app-btn" data-app="desktop">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#003300,#006600)">🌿</div>
-          <div class="sm-app-name">Omnisystem Hub</div>
-        </div>
-        <div class="sm-app-btn" data-app="compiler">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#1A0A00,#3D1A00)">⚙️</div>
-          <div class="sm-app-name">OmniCC</div>
-        </div>
-        <div class="sm-app-btn" data-app="ml-studio">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#1A0033,#330066)">🧠</div>
-          <div class="sm-app-name">ML Studio</div>
-        </div>
-        <div class="sm-app-btn" data-app="pkg-manager">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#001833,#003366)">📦</div>
-          <div class="sm-app-name">OmniPM</div>
-        </div>
-        <div class="sm-app-btn" data-app="system-monitor">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#001A33,#003355)">📊</div>
-          <div class="sm-app-name">Monitor</div>
-        </div>
-        <div class="sm-app-btn" data-app="sandbox">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#003322,#00664422)">🛡️</div>
-          <div class="sm-app-name">Sandbox</div>
-        </div>
-        <div class="sm-app-btn" data-app="bug-hunter">
-          <div class="sm-app-icon" style="background:linear-gradient(135deg,#330011,#660022)">🐛</div>
-          <div class="sm-app-name">Bug Hunter</div>
-        </div>
-      </div>
+      <!-- Populated at runtime by desktop-client.js from APP_REGISTRY. -->
+      <div id="sm-pinned"></div>
     </div>
     <div>
       <div class="sm-section-label">System</div>

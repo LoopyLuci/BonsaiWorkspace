@@ -258,8 +258,11 @@ export class OmniHarnessViewProvider implements vscode.WebviewViewProvider {
                 if (alive) { await this.probeServer(); }
                 else { this.post({ type: 'serverStatus', alive: false }); }
             } else if (alive && (++tick % 4 === 0)) {
-                // ~every 60s while healthy: refresh the model catalogue quietly.
+                // ~every 60s while healthy: refresh the model catalogue quietly, and
+                // re-probe local runtimes (Ollama / LM Studio / llama.cpp) so a backend
+                // started after us appears with zero manual reload.
                 await this.sendModels();
+                await this.refreshState();
             }
         }, 15000);
         view.onDidDispose(() => {
@@ -329,6 +332,7 @@ export class OmniHarnessViewProvider implements vscode.WebviewViewProvider {
             case 'refreshModels':await this.sendModels(); break;
             case 'approve':      this.resolveApproval(String(msg.id), !!msg.approved); break;
             case 'saveKey':      await this.onSaveKey(String(msg.provider), String(msg.key ?? '')); break;
+            case 'saveLocalUrl': await this.store.setLocalBaseUrlOverride(String(msg.provider), String(msg.url ?? '')); await this.refreshState(); break;
             case 'applyEnv':     await this.onApplyEnv(); break;
             case 'saveAgent':    await this.onSaveAgent(msg.agent as AgentPreset); break;
             case 'deleteAgent':  await this.store.deleteAgent(String(msg.id)); await this.refreshState(); break;
