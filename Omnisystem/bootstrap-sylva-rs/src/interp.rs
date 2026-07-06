@@ -238,6 +238,13 @@ impl Interp {
                     Err(self.rt("'del' only supports plain names in this bootstrap", *span))
                 }
             }
+            // Parse-level-only omni-integration dialect extension (see
+            // `ast::Stmt::ConfigBlock`) — not modeled as a runtime value.
+            Stmt::ConfigBlock { .. } => Ok(()),
+            // `mod`'s items are executed inline at the enclosing scope —
+            // this bootstrap has no module/namespace system to give them
+            // their own scope, which is fine for the parse-only `check` bar.
+            Stmt::Mod { body, .. } => self.exec_block(body, env),
         }
     }
 
@@ -445,6 +452,27 @@ impl Interp {
                     v.push(self.eval(e, env)?);
                 }
                 Ok(Value::List(Rc::new(RefCell::new(v))))
+            }
+            Expr::Try { inner, .. } => self.eval(inner, env),
+            // Parse-level-only omni-integration dialect extension (see
+            // `ast::Expr::Match`'s doc comment) — evaluates the first arm
+            // whose pattern name is `_` if any (a catch-all is nearly
+            // always present and nearly always the intended fallback),
+            // otherwise the first arm outright. Not real pattern matching.
+            Expr::Match { arms, .. } => {
+                let arm = arms.iter().find(|(name, ..)| name == "_").or_else(|| arms.first());
+                match arm {
+                    Some((_, _, body)) => self.eval(body, env),
+                    None => Ok(Value::None),
+                }
+            }
+            Expr::Repeat { value, count, span } => {
+                let val = self.eval(value, env)?;
+                let n = match self.eval(count, env)? {
+                    Value::Int(n) => n,
+                    other => return Err(self.rt(format!("'vec![value; count]' requires an integer count, got {}", other.type_name()), *span)),
+                };
+                Ok(Value::List(Rc::new(RefCell::new(vec![val; n.max(0) as usize]))))
             }
             Expr::Tuple { elems, .. } => {
                 let mut v = Vec::with_capacity(elems.len());
@@ -739,6 +767,11 @@ impl Interp {
                             }
                         }
                         "**" => Ok(if *b >= 0 { Int(a.pow((*b) as u32)) } else { Float((*a as f64).powi(*b as i32)) }),
+                        "^" => Ok(Int(a ^ b)),
+                        "|" => Ok(Int(a | b)),
+                        "&" => Ok(Int(a & b)),
+                        "<<" => Ok(Int(a.wrapping_shl(*b as u32))),
+                        ">>" => Ok(Int(a.wrapping_shr(*b as u32))),
                         _ => Err(self.rt(format!("unsupported operator '{op}'"), span)),
                     };
                 }

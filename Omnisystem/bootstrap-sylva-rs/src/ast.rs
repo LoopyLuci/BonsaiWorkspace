@@ -71,6 +71,13 @@ pub enum Stmt {
     Assert { cond: Expr, msg: Option<Expr>, span: Span },
     Global { names: Vec<String> },
     Del { target: Expr, span: Span },
+    /// `layer`/`model`/`pipeline NAME { field: expr, ... }` — a declarative
+    /// ML-pipeline config-block DSL used by the omni-integration specs
+    /// (distinct from `class`: flat field/value pairs, no methods).
+    ConfigBlock { kind: String, name: String, fields: Vec<(String, Expr)>, span: Span },
+    /// `[pub] mod NAME { items }` — a Rust module; `body` holds its nested
+    /// items exactly like `Module.body` (structs/fns/impls/nested mods).
+    Mod { name: String, body: Vec<Stmt>, span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +114,24 @@ pub enum Expr {
     Ternary { body: Box<Expr>, cond: Box<Expr>, orelse: Box<Expr>, span: Span }, // `a if cond else b`
     Await { expr: Box<Expr>, span: Span },
     Yield { value: Option<Box<Expr>>, span: Span },
+    /// `vec![value; count]` — a Rust-macro repeat-element list literal
+    /// (`name!(...)` and `name![a, b]` reuse `Call`/`List` instead; only the
+    /// `; count` shape needs a dedicated node).
+    Repeat { value: Box<Expr>, count: Box<Expr>, span: Span },
+    /// `match subject { Pat(bindings) => arm, .. }`. Patterns are reduced to
+    /// (name, bound-identifiers) — `Some(e)`, `None`, `_` — with no real
+    /// enum/variant matching underneath (this interpreter has no such
+    /// value); an arm whose body is a statement rather than an expression
+    /// (`None => return Vec::new()`) is parsed but its body replaced with
+    /// `None_` (this is a parse-level-only construct, same tradeoff as
+    /// `ast::TheoremBody::Structured` in the Axiom bootstrap).
+    Match { subject: Box<Expr>, arms: Vec<(String, Vec<String>, Expr)>, span: Span },
+    /// `expr?` — Rust's try-operator (propagate on error), and also used as
+    /// a bare "optional slot" marker in some omni-integration list literals
+    /// (e.g. `[system?, user(prompt)]`). This interpreter doesn't model
+    /// Result/Option deeply, so it evaluates `inner` and passes its value
+    /// through unchanged in both readings — a parse-level simplification.
+    Try { inner: Box<Expr>, span: Span },
 }
 
 impl Expr {
@@ -136,7 +161,10 @@ impl Expr {
             | Expr::Lambda { span, .. }
             | Expr::Ternary { span, .. }
             | Expr::Await { span, .. }
-            | Expr::Yield { span, .. } => *span,
+            | Expr::Yield { span, .. }
+            | Expr::Repeat { span, .. }
+            | Expr::Try { span, .. }
+            | Expr::Match { span, .. } => *span,
         }
     }
 }

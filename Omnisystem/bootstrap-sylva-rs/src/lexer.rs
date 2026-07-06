@@ -37,6 +37,17 @@ const KEYWORDS: &[&str] = &[
     "and", "or", "not", "lambda", "import", "from", "as", "try", "except", "finally", "raise",
     "yield", "async", "await", "with", "pass", "global", "nonlocal", "del", "assert", "is",
     "let", "const", "self",
+    // Rust-style `use path::{a, b}` import, used verbatim across several
+    // omni-integration specs regardless of a language's own native import
+    // syntax (Sylva's is `import`/`from..import`) — see `parse_use`.
+    "use",
+    // Some omni-integration specs are written wholesale in Rust syntax
+    // (struct/impl/fn/pub/mut) rather than Sylva's native Python-flavored
+    // grammar — see `parse_rust_fn`/`parse_rust_struct`/`parse_rust_impl`.
+    "pub", "fn", "struct", "impl", "mut", "mod", "match",
+    // Declarative config-block DSL (ML pipeline description) used by the
+    // omni-integration specs — see `parse_config_block`.
+    "layer", "model", "pipeline", "evolve",
 ];
 
 pub struct Lexer<'a> {
@@ -122,6 +133,15 @@ impl<'a> Lexer<'a> {
             if (c == 'f' || c == 'F') && (self.peek(1) == '"' || self.peek(1) == '\'') {
                 self.advance();
                 out.push(self.lex_string(start, true)?);
+                continue;
+            }
+            // Rust-style raw string: `r"..."` / `r#"..."#` / `r##"..."##`
+            // (arbitrarily many `#`s, matched on both sides). Must be
+            // checked before the general identifier path (`r` alone is a
+            // valid identifier) and before '#' is treated as a line-comment
+            // marker.
+            if c == 'r' && (self.peek(1) == '"' || self.peek(1) == '#') {
+                out.push(self.lex_raw_string(start)?);
                 continue;
             }
             if is_ident_start(c) {
@@ -262,6 +282,26 @@ impl<'a> Lexer<'a> {
                 s.push(self.advance());
             }
         }
+        // Rust-style numeric-type suffix (`0.0f32`, `128u64`, `12i32`) —
+        // consumed and discarded; this bootstrap's numbers are uniformly
+        // i64/f64. An `f` suffix also marks the literal as a float even
+        // with no decimal point (`0f32`).
+        if matches!(self.peek(0), 'f' | 'u' | 'i') {
+            let save = (self.i, self.line, self.col);
+            let kind = self.advance();
+            let mut has_digits = false;
+            while self.peek(0).is_ascii_digit() {
+                self.advance();
+                has_digits = true;
+            }
+            if has_digits {
+                if kind == 'f' {
+                    is_float = true;
+                }
+            } else {
+                (self.i, self.line, self.col) = save;
+            }
+        }
         Ok(self.mk(if is_float { TokKind::Float } else { TokKind::Int }, s, start))
     }
 
@@ -301,6 +341,44 @@ impl<'a> Lexer<'a> {
             s.push(self.advance());
         }
         Ok(self.mk(if is_fstring { TokKind::FStr } else { TokKind::Str }, s, start))
+    }
+
+    /// `r"..."` / `r#"..."#` / `r##"..."##` — no escape processing, and
+    /// (unlike `lex_string`) embedded newlines are allowed since these are
+    /// used for multi-line format templates in the omni-integration specs.
+    fn lex_raw_string(&mut self, start: Pos) -> Result<Token, Box<OmniError>> {
+        self.advance(); // 'r'
+        let mut hashes = 0usize;
+        while self.peek(0) == '#' {
+            self.advance();
+            hashes += 1;
+        }
+        if self.peek(0) != '"' {
+            return Err(Box::new(self.err("expected '\"' to start a raw string", start)));
+        }
+        self.advance(); // opening '"'
+        let mut s = String::new();
+        loop {
+            if self.peek(0) == '\0' {
+                return Err(Box::new(self.err("unterminated raw string literal", start)));
+            }
+            if self.peek(0) == '"' {
+                // Closing delimiter only if followed by exactly `hashes` '#'s.
+                let mut k = 1;
+                while k <= hashes && self.peek(k) == '#' {
+                    k += 1;
+                }
+                if k == hashes + 1 {
+                    self.advance(); // '"'
+                    for _ in 0..hashes {
+                        self.advance();
+                    }
+                    break;
+                }
+            }
+            s.push(self.advance());
+        }
+        Ok(self.mk(TokKind::Str, s, start))
     }
 
     fn escape(&self, e: char, start: Pos) -> Result<char, Box<OmniError>> {
@@ -351,10 +429,40 @@ impl<'a> Lexer<'a> {
             };
         }
         let s: String = match c {
-            '=' => two!('=', "==".to_string(), "=".to_string()),
+            '=' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "==".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    "=>".to_string()
+                } else {
+                    "=".to_string()
+                }
+            }
             '!' => two!('=', "!=".to_string(), "!".to_string()),
-            '<' => two!('=', "<=".to_string(), "<".to_string()),
-            '>' => two!('=', ">=".to_string(), ">".to_string()),
+            '<' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    "<=".to_string()
+                } else if self.peek(0) == '<' {
+                    self.advance();
+                    "<<".to_string()
+                } else {
+                    "<".to_string()
+                }
+            }
+            '>' => {
+                if self.peek(0) == '=' {
+                    self.advance();
+                    ">=".to_string()
+                } else if self.peek(0) == '>' {
+                    self.advance();
+                    ">>".to_string()
+                } else {
+                    ">".to_string()
+                }
+            }
             '+' => two!('=', "+=".to_string(), "+".to_string()),
             '-' => {
                 if self.peek(0) == '=' {
@@ -399,6 +507,9 @@ impl<'a> Lexer<'a> {
             '@' => "@".to_string(),
             '|' => two!('|', "||".to_string(), "|".to_string()),
             '&' => two!('&', "&&".to_string(), "&".to_string()),
+            ';' => ";".to_string(),
+            '?' => "?".to_string(),
+            '^' => "^".to_string(),
             other => return Err(Box::new(self.err(format!("unexpected character '{other}'"), start))),
         };
         Ok(self.mk(TokKind::Op, s, start))
