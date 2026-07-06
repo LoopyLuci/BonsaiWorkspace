@@ -1,0 +1,136 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS MODULE SYSTEM BRIDGE — Titan systems/core layer
+// Thin REST client into the real Universal Module System: PluginHost
+// (OmniHarness/workspace/src-tauri/src/plugin_host.rs), which implements
+// omnisystem-core's OmniModule trait and is registered through the module
+// registry. Matches ModelLoaderBridge.titan's REST-bridge convention —
+// Titan owns process orchestration / integration glue, not the module
+// lifecycle logic itself, which lives in Rust (plugin_host.rs +
+// omnisystem-core::module_registry).
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, bool}
+
+struct WorkspaceBridgeConfig {
+    host:       String,
+    port:       i32,
+    auth_token: Option<String>,
+}
+
+fn bridge_config_from_env() -> WorkspaceBridgeConfig {
+    WorkspaceBridgeConfig {
+        host:       std::env::var("OMNIHARNESS_WORKSPACE_HOST").unwrap_or_else(|_| "localhost".to_string()),
+        port:       std::env::var("OMNIHARNESS_WORKSPACE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8090),
+        auth_token: std::env::var("OMNIHARNESS_WORKSPACE_TOKEN").ok(),
+    }
+}
+
+// ── Module descriptor (mirrors plugin_host.rs's plugin listing shape) ────────
+
+struct ModuleDescriptor {
+    id:           String,
+    state:        String,   // Unloaded | Loaded | Active | Stopping | Error | Disabled
+    capabilities: Vec<String>,
+}
+
+// ── Bridge struct ─────────────────────────────────────────────────────────────
+
+pub struct ModuleSystemBridge {
+    config: WorkspaceBridgeConfig,
+}
+
+impl ModuleSystemBridge {
+    pub fn new(config: WorkspaceBridgeConfig) -> Self {
+        ModuleSystemBridge { config }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(bridge_config_from_env())
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}:{}", self.config.host, self.config.port)
+    }
+
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut h = vec![("content-type".to_string(), "application/json".to_string())]
+        if let Some(tok) = &self.config.auth_token {
+            h.push(("authorization".to_string(), format!("Bearer {}", tok)))
+        }
+        h
+    }
+
+    // ── Load / list / execute (proxies /api/v1/plugins/*) ────────────────────
+
+    pub fn load(&self, module_id: &str) -> Result<(), String> {
+        let body = format!(r#"{{"id":"{}"}}"#, module_id)
+        let url  = format!("{}/api/v1/plugins/load", self.base_url())
+        omnisystem::net::http_post_with_headers(&url, &body, self.headers())
+            .map_err(|e| format!("Module load failed: {}", e))?
+        Ok(())
+    }
+
+    pub fn list(&self) -> Result<Vec<ModuleDescriptor>, String> {
+        let url  = format!("{}/api/v1/plugins/list", self.base_url())
+        let resp = omnisystem::net::http_get_with_headers(&url, self.headers())
+            .map_err(|e| format!("Module list unavailable: {}", e))?
+        parse_module_list(resp)
+    }
+
+    pub fn execute(&self, module_id: &str, payload_json: &str) -> Result<String, String> {
+        let body = format!(r#"{{"id":"{}","payload":{}}}"#, module_id, payload_json)
+        let url  = format!("{}/api/v1/plugins/execute", self.base_url())
+        omnisystem::net::http_post_with_headers(&url, &body, self.headers())
+            .map_err(|e| format!("Module execute failed: {}", e))
+    }
+}
+
+fn extract_string(json: &str, field: &str) -> String {
+    let key = format!("\"{}\":\"", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find('"').unwrap_or(after.len())
+        return after[..end].to_string()
+    }
+    String::new()
+}
+
+fn extract_string_array(json: &str, field: &str) -> Vec<String> {
+    let key = format!("\"{}\":[", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find(']').unwrap_or(after.len())
+        return after[..end].split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+    vec![]
+}
+
+fn parse_module_list(json: String) -> Result<Vec<ModuleDescriptor>, String> {
+    // Module list is a flat JSON array of {id, state, capabilities} objects;
+    // split on top-level object boundaries and parse each with the same
+    // manual field-extraction style as ModelLoaderBridge.titan.
+    let entries: Vec<&str> = json.trim_start_matches('[').trim_end_matches(']').split("},{").collect()
+    let mut out = vec![]
+    for entry in entries {
+        if entry.trim().is_empty() { continue }
+        out.push(ModuleDescriptor {
+            id:           extract_string(entry, "id"),
+            state:        extract_string(entry, "state"),
+            capabilities: extract_string_array(entry, "capabilities"),
+        })
+    }
+    Ok(out)
+}
+
+// ── Public module interface ───────────────────────────────────────────────────
+
+pub mod ModuleSystem {
+    pub use super::{ModuleSystemBridge, WorkspaceBridgeConfig, ModuleDescriptor}
+
+    pub fn create() -> ModuleSystemBridge {
+        ModuleSystemBridge::from_env()
+    }
+}
