@@ -10,7 +10,11 @@
             [omniharness.policy  :as policy]
             [omniharness.react-engine :as react]
             [omniharness.planner :as planner]
-            [omniharness.patch-manager :as patches])
+            [omniharness.patch-manager :as patches]
+            ;; Registers the http-server mount state (started by boot! via
+            ;; mount/start below) — required here so `serve` actually has an
+            ;; HTTP API for orchestrator/omniharness/clj_client.py to call.
+            [omniharness.http-server])
   (:gen-class))
 
 (defn boot! []
@@ -72,7 +76,15 @@
       "verify"  (verify-kernel!)
       "agent"   (when-let [obj (second args)]
                   (run-agent! obj))
+      "serve"   (do
+                  ;; http-server (and the gRPC channel) are already running —
+                  ;; started by mount/start in boot!. Block the main thread
+                  ;; forever instead of falling through to shutdown!.
+                  (log/info "[Serve] HTTP API listening on :" (or (System/getenv "CLJ_HTTP_PORT") "8090")
+                            " — press Ctrl+C to stop.")
+                  @(promise))
       ;; Default: demo
-      (demo!)))
-  (Thread/sleep 500)
-  (shutdown!))
+      (demo!))
+    (when (not= cmd "serve")
+      (Thread/sleep 500)
+      (shutdown!))))

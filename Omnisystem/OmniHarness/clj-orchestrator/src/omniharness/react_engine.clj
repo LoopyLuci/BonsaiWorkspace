@@ -35,7 +35,7 @@
                             (.setName name) (.setDescription description)
                             (.setInputSchema (or schema "{}"))
                             .build)))
-        resp (.chat @model-stub (.build req-builder))]
+        resp (.chat model-stub (.build req-builder))]
     {:content       (.getContent resp)
      :model-used    (.getModelUsed resp)
      :finish-reason (.getFinishReason resp)
@@ -59,7 +59,7 @@
                 (.setArguments (if (string? args) args (json/generate-string args)))
                 (.setTimeoutMs 30000)
                 .build)
-        ^omniharness.v1.ToolExecuteResponse resp (.execute @tool-stub req)]
+        ^omniharness.v1.ToolExecuteResponse resp (.execute tool-stub req)]
     (if (.getSuccess resp)
       (.getResult resp)
       (str "Tool error: " (.getError resp)))))

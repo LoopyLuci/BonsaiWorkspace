@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
+use tonic::service::Interceptor;
 use tonic::{transport::Server, Request, Response, Status};
 
 use crate::{
@@ -435,17 +436,60 @@ impl HarnessService for HarnessSvc {
     }
 }
 
+// ── Auth interceptor ────────────────────────────────────────────────────────
+//
+// `AuthStore` (auth.rs) has always generated and persisted an admin key on
+// boot ("Set OMNIHARNESS_ADMIN_KEY env to use it") but nothing ever checked
+// it — every gRPC call was accepted unconditionally. This closes that gap,
+// opt-in via OMNIHARNESS_REQUIRE_AUTH so the default zero-config personal-use
+// experience (a lone kernel on 127.0.0.1) is unaffected; set it to "1" for
+// any deployment reachable by more than one trusted local process, e.g. a
+// shared machine or a non-loopback GRPC_ADDR bind.
+
+#[derive(Clone)]
+struct AuthInterceptor {
+    store: Arc<crate::auth::AuthStore>,
+    required: bool,
+}
+
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+        if !self.required {
+            return Ok(req);
+        }
+        let key = req
+            .metadata()
+            .get("x-omniharness-key")
+            .and_then(|v| v.to_str().ok());
+        match key.and_then(|k| self.store.verify_key(k)) {
+            Some(_) => Ok(req),
+            None => Err(Status::unauthenticated(
+                "missing or invalid x-omniharness-key metadata (OMNIHARNESS_REQUIRE_AUTH is set)",
+            )),
+        }
+    }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn serve(addr: SocketAddr, state: HarnessState) -> Result<()> {
+    let required = std::env::var("OMNIHARNESS_REQUIRE_AUTH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if required {
+        tracing::info!("[Auth] Enforcing x-omniharness-key on every gRPC call (OMNIHARNESS_REQUIRE_AUTH set)");
+    } else {
+        tracing::info!("[Auth] Not enforced — default for local/personal use. Set OMNIHARNESS_REQUIRE_AUTH=1 to require the admin key.");
+    }
+    let interceptor = AuthInterceptor { store: Arc::clone(&state.auth_store), required };
     let state = Arc::new(state);
     Server::builder()
-        .add_service(EventStoreServiceServer::new(EventStoreSvc(Arc::clone(&state))))
-        .add_service(ModelServiceServer::new(ModelSvc(Arc::clone(&state))))
-        .add_service(MemoryServiceServer::new(MemorySvc(Arc::clone(&state))))
-        .add_service(ToolServiceServer::new(ToolSvc(Arc::clone(&state))))
-        .add_service(SessionServiceServer::new(SessionSvc(Arc::clone(&state))))
-        .add_service(HarnessServiceServer::new(HarnessSvc(Arc::clone(&state))))
+        .add_service(EventStoreServiceServer::with_interceptor(EventStoreSvc(Arc::clone(&state)), interceptor.clone()))
+        .add_service(ModelServiceServer::with_interceptor(ModelSvc(Arc::clone(&state)), interceptor.clone()))
+        .add_service(MemoryServiceServer::with_interceptor(MemorySvc(Arc::clone(&state)), interceptor.clone()))
+        .add_service(ToolServiceServer::with_interceptor(ToolSvc(Arc::clone(&state)), interceptor.clone()))
+        .add_service(SessionServiceServer::with_interceptor(SessionSvc(Arc::clone(&state)), interceptor.clone()))
+        .add_service(HarnessServiceServer::with_interceptor(HarnessSvc(Arc::clone(&state)), interceptor))
         .serve(addr)
         .await?;
     Ok(())

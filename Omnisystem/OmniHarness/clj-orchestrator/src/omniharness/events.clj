@@ -17,7 +17,7 @@
                  (.setPayloadJson  (if (string? payload) payload (json/generate-string payload)))
                  (.setSessionId    (str session-id))
                  .build)
-         ^omniharness.v1.AppendResponse resp (.appendEvent @event-store-stub req)]
+         ^omniharness.v1.AppendResponse resp (.appendEvent event-store-stub req)]
      (if (.getSuccess resp)
        (do (log/debug "Event appended:" event-type (.getEventHash resp))
            {:event-hash (.getEventHash resp)
@@ -29,7 +29,7 @@
 (defn verify-chain!
   "Verify the full Merkle chain. Returns {:valid bool :tip hash :depth n}."
   []
-  (let [resp (.verifyChain @event-store-stub (VerifyRequest/getDefaultInstance))]
+  (let [resp (.verifyChain event-store-stub (VerifyRequest/getDefaultInstance))]
     {:valid (.getIsValid resp)
      :tip   (.getTipHash resp)
      :depth (.getDepth resp)}))
@@ -37,7 +37,7 @@
 (defn get-tip!
   "Get current chain tip hash and depth."
   []
-  (let [resp (.getTip @event-store-stub (TipRequest/getDefaultInstance))]
+  (let [resp (.getTip event-store-stub (TipRequest/getDefaultInstance))]
     {:tip   (.getTipHash resp)
      :depth (.getDepth resp)}))
 
@@ -51,7 +51,7 @@
                 (.setSinceTs      since-ts)
                 (.setLimit        limit)
                 .build)
-        iter (.queryEvents @event-store-stub req)]
+        iter (.queryEvents event-store-stub req)]
     (loop [acc []]
       (if (.hasNext iter)
         (let [ev (.next iter)]

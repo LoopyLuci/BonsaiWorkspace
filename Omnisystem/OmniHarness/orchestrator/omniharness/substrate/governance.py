@@ -11,7 +11,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class BudgetExceeded(RuntimeError):
@@ -84,6 +84,18 @@ class AuditLog:
     def __init__(self) -> None:
         self._events: List[Dict[str, Any]] = []
         self._head = "0" * 64
+        self._kernel_mirror: Optional[Callable[[str, Dict[str, Any]], None]] = None
+
+    def attach_kernel_mirror(self, fn: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Wires this audit chain up to also mirror every event into the
+        OmniHarness Rust kernel's own hash-chained event store (see
+        server.py's `_make_governor`) — gives the Rust workspace app's swarm
+        (mirrored under "workspace-swarm") and this Python substrate's swarm/
+        ensemble/evolution runs (mirrored under "orchestrator-substrate") a
+        shared, cross-language observable event stream, without either engine
+        depending on the other's internals. Optional; audit/governance work
+        identically without it (kernel unreachable == fn not called or no-ops)."""
+        self._kernel_mirror = fn
 
     def append(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> str:
         ts = time.time()
@@ -98,6 +110,11 @@ class AuditLog:
             "hash": digest,
         })
         self._head = digest
+        if self._kernel_mirror:
+            try:
+                self._kernel_mirror(kind, payload or {})
+            except Exception:
+                pass
         return digest
 
     def verify(self) -> bool:

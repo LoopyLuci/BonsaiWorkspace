@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -25,6 +26,7 @@ from .memory.vector import VectorClient
 from .memory.episodic import EpisodicMemory
 from .memory.graph import KnowledgeGraph
 from .grpc_client import GrpcClient
+from .clj_client import CljClient
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,7 @@ vec_store: VectorClient  | None = None
 episodic:  EpisodicMemory | None = None
 graph:     KnowledgeGraph | None = None
 grpc:      GrpcClient    | None = None
+clj:       CljClient     = CljClient()  # HTTP, connectionless — no connect/close needed
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -141,7 +144,41 @@ async def health():
             kernel_ok = status.get("healthy", False)
         except Exception:
             pass
-    return {"status": "ok", "providers": providers, "kernel": kernel_ok, "version": "1.0.0"}
+    clj_ok = await clj.health()
+    return {"status": "ok", "providers": providers, "kernel": kernel_ok, "clj_orchestrator": clj_ok, "version": "1.0.0"}
+
+# ── Clojure orchestrator (HTN planner / policy engine) ──────────────────────────
+
+class PlanReq(BaseModel):
+    task_name: str
+    params: dict = {}
+
+class PolicyCheckReq(BaseModel):
+    action: str
+    args: dict = {}
+
+@app.post("/api/planner/plan")
+async def planner_plan(req: PlanReq):
+    """HTN plan via clj-orchestrator. 503 if it isn't running — this is an
+    optional sidecar, not a required dependency of the orchestrator."""
+    result = await clj.plan(req.task_name, req.params)
+    if result is None:
+        raise HTTPException(503, "clj-orchestrator not reachable (start it: cd clj-orchestrator && lein run serve)")
+    return result
+
+@app.post("/api/planner/execute")
+async def planner_execute(req: PlanReq):
+    result = await clj.plan_execute(req.task_name, req.params)
+    if result is None:
+        raise HTTPException(503, "clj-orchestrator not reachable (start it: cd clj-orchestrator && lein run serve)")
+    return result
+
+@app.post("/api/planner/policy-check")
+async def planner_policy_check(req: PolicyCheckReq):
+    result = await clj.policy_check(req.action, req.args)
+    if result is None:
+        raise HTTPException(503, "clj-orchestrator not reachable (start it: cd clj-orchestrator && lein run serve)")
+    return result
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -356,7 +393,22 @@ async def _substrate_llm(model_id: str, messages: list[dict], system: str | None
 def _make_governor(budget: dict | None, policy: dict | None) -> Governor:
     b = Budget(**budget) if budget else Budget()
     p = CapabilityPolicy(**policy) if policy else CapabilityPolicy()
-    return Governor(budget=b, policy=p)
+    gov = Governor(budget=b, policy=p)
+    if grpc:
+        # One id per run, threaded through as the kernel event's session_id
+        # so every event this Governor's audit chain produces (swarm_start,
+        # agent:*, budget_exceeded, swarm_end, ...) can be correlated back to
+        # a single run in the kernel's event store — previously always "".
+        run_id = str(uuid.uuid4())
+        def _mirror_to_kernel(kind: str, payload: dict) -> None:
+            # Fire-and-forget — same graceful-degradation contract as every
+            # other `grpc.*` call in this file (kernel absent == silently skipped).
+            try:
+                asyncio.create_task(grpc.append_event("orchestrator-substrate", kind, payload, run_id))
+            except Exception:
+                pass
+        gov.audit.attach_kernel_mirror(_mirror_to_kernel)
+    return gov
 
 
 class SwarmReq(BaseModel):

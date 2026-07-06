@@ -3,8 +3,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any
+
+
+def _make_auth_interceptor(key: str):
+    """Attaches x-omniharness-key metadata to every call when
+    OMNIHARNESS_ADMIN_KEY is set. A no-op when unset (the kernel's default,
+    OMNIHARNESS_REQUIRE_AUTH-unset state doesn't check this header at all —
+    see kernel/src/grpc_server.rs's AuthInterceptor). Built lazily so the
+    `grpc.aio` import stays confined to connect(), matching the rest of
+    this module's lazy-import style.
+    """
+    import grpc
+
+    class _AuthInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
+        async def intercept_unary_unary(self, continuation, client_call_details, request):
+            md = list(client_call_details.metadata or [])
+            md.append(("x-omniharness-key", key))
+            new_details = client_call_details._replace(metadata=md)
+            return await continuation(new_details, request)
+
+    return _AuthInterceptor()
 
 
 class GrpcClient:
@@ -32,7 +53,9 @@ class GrpcClient:
 
         self._pb      = pb
         addr          = f"{self._host}:{self._port}"
-        self._channel = insecure_channel(addr)
+        admin_key     = os.environ.get("OMNIHARNESS_ADMIN_KEY")
+        interceptors  = [_make_auth_interceptor(admin_key)] if admin_key else None
+        self._channel = insecure_channel(addr, interceptors=interceptors)
         self._stubs   = {
             "event_store": stub.EventStoreServiceStub(self._channel),
             "model":       stub.ModelServiceStub(self._channel),
