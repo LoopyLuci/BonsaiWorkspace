@@ -10,7 +10,7 @@
 
 ### Local Deployment (Docker Compose)
 ```bash
-cd /path/to/BonsaiWorkspace
+cd /path/to/OmnisystemWorkspace
 docker-compose up -d
 
 # Wait for services to be healthy (30-60 seconds)
@@ -24,7 +24,7 @@ docker-compose ps
 
 ### Cloud Deployment (GKE/Kubernetes)
 ```bash
-cd /path/to/BonsaiWorkspace/infrastructure
+cd /path/to/OmnisystemWorkspace/infrastructure
 ./deploy-phase3.sh
 
 # Monitor deployment
@@ -74,7 +74,7 @@ kubectl get services -n omnisystem
 **Steps**:
 ```bash
 # 1. Navigate to workspace
-cd /path/to/BonsaiWorkspace
+cd /path/to/OmnisystemWorkspace
 
 # 2. Start all services
 docker-compose up -d
@@ -115,7 +115,7 @@ gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
 
 # 2. Run deployment script
-cd /path/to/BonsaiWorkspace/infrastructure
+cd /path/to/OmnisystemWorkspace/infrastructure
 export TF_VAR_gcp_project_id="YOUR_PROJECT_ID"
 export TF_VAR_gcp_region="us-central1"
 ./deploy-phase3.sh
@@ -159,7 +159,7 @@ minikube addons enable metrics-server
 minikube addons enable ingress
 
 # 3. Deploy manifests directly
-cd /path/to/BonsaiWorkspace/infrastructure
+cd /path/to/OmnisystemWorkspace/infrastructure
 kubectl apply -f k8s/omnisystem-deployment.yaml
 kubectl apply -f k8s/monitoring-stack.yaml
 

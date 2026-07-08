@@ -33,8 +33,8 @@ Complete documentation for the Omnisystem universal computing platform.
 
 #### Completion Reports (Phase Summaries)
 - [01-completion-reports/](01-completion-reports/) - Phase completion reports
-  - BONSAI_ECOSYSTEM_COMPLETION.md - Phase 1 completion
-  - BONSAI_ECOSYSTEM_PHASE_2_COMPLETE.md - Phase 2 completion
+  - OMNISYSTEM_ECOSYSTEM_COMPLETION.md - Phase 1 completion
+  - OMNISYSTEM_ECOSYSTEM_PHASE_2_COMPLETE.md - Phase 2 completion
   - BUILD_COMPLETION_SUMMARY_2026.md - Build status
   - OMNISYSTEM_FINAL_STATUS_REPORT.md - Final status
 
@@ -45,7 +45,7 @@ Complete documentation for the Omnisystem universal computing platform.
 
 #### Technical Assessments
 - [03-assessments/](03-assessments/) - Technical analysis
-  - BONSAI_ECOSYSTEM_INTEGRATION_ASSESSMENT.md - Integration analysis
+  - OMNISYSTEM_ECOSYSTEM_INTEGRATION_ASSESSMENT.md - Integration analysis
 
 #### Implementation Guides
 - [04-guides/](04-guides/) - How-to guides
@@ -139,7 +139,7 @@ Complete documentation for the Omnisystem universal computing platform.
 ## 🔗 Related Documentation
 
 - **CI/CD System** → See root [CI-CD-CONVERSION-SUMMARY.md](../CI-CD-CONVERSION-SUMMARY.md) or [02-phase-summaries/](02-phase-summaries/)
-- **BonsaiEcosystem** → See [01-completion-reports/](01-completion-reports/)
+- **OmnisystemEcosystem** → See [01-completion-reports/](01-completion-reports/)
 - **Contributing** → See root [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ## 📝 Last Updated

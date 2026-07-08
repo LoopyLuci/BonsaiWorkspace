@@ -741,7 +741,7 @@ let wm = core.get_window_manager();
 ### GUI Framework Integration
 
 Works with desktop GUI frameworks:
-- BonsaiEcosystem (custom Omnisystem GUI)
+- OmnisystemEcosystem (custom Omnisystem GUI)
 - Web-based UI (Tauri)
 - Native OS frameworks
 

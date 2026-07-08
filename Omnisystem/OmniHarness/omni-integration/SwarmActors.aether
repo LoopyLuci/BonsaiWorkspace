@@ -1,0 +1,133 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS SWARM ACTORS — Aether Actor System
+// Agent swarms as concurrent actors: pipeline, parallel/map-reduce,
+// orchestrator-workers, and debate topologies over a shared blackboard.
+// 100% AETHER — Message-passing concurrency for multi-agent AI
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, f32, bool}
+
+// ── Agent + message types ─────────────────────────────────────────────────────
+
+struct AgentSpec {
+    id:          String,
+    name:        String,
+    system:      String,
+    model:       String,
+    temperature: f32,
+    role:        String,   // orchestrator | worker | critic | judge | proposer
+}
+
+struct Task    { id: String, prompt: String }
+struct Result  { agent_id: String, output: String }
+struct Critique { from: String, target: String, note: String }
+
+// ── Shared blackboard actor ───────────────────────────────────────────────────
+
+actor Blackboard {
+    state {
+        data: HashMap<String, String>,
+        log:  Vec<String>,
+    }
+    message Post   { agent: String, key: String, value: String }
+    message Read   { key: String, reply_to: String }
+    message Value  { key: String, value: String }
+
+    handler Post(msg: Post) {
+        self.data.insert(msg.key.clone(), msg.value.clone())
+        self.log.push(format!("{} -> {}", msg.agent, msg.key))
+    }
+    handler Read(msg: Read) {
+        let v = self.data.get(&msg.key).unwrap_or("".to_string())
+        self.send(msg.reply_to, Value { key: msg.key, value: v })
+    }
+}
+
+// ── Worker agent actor — one model call per task ──────────────────────────────
+
+actor SwarmAgent {
+    state {
+        spec:  AgentSpec,
+        board: Arc<Blackboard>,
+    }
+    message Execute { task: Task, reply_to: String }
+
+    handler Execute(msg: Execute) {
+        // Route through the Aether ModelBridge for actual inference + governance.
+        let prompt = msg.task.prompt.clone()
+        let response = ModelBridge::infer(self.spec.model.clone(), prompt, self.spec.system.clone())
+        self.board.send(Post { agent: self.spec.id.clone(), key: format!("{}:last", self.spec.id), value: response.clone() })
+        self.send(msg.reply_to, Result { agent_id: self.spec.id.clone(), output: response })
+    }
+}
+
+// ── Coordinator actor — implements the four topologies ────────────────────────
+
+actor SwarmCoordinator {
+    state {
+        agents: Vec<Arc<SwarmAgent>>,
+        board:  Arc<Blackboard>,
+    }
+
+    // Sequential refinement: each agent improves the previous output.
+    async handler run_pipeline(task: Task) -> String {
+        let mut current = task.prompt.clone()
+        for agent in &self.agents {
+            let r = await agent.ask(Execute { task: Task { id: task.id.clone(), prompt: current.clone() } })
+            current = r.output
+        }
+        current
+    }
+
+    // Map-reduce: all agents attack the same task; results are merged.
+    async handler run_parallel(task: Task, reducer: Option<Arc<SwarmAgent>>) -> String {
+        let futures = self.agents.map(|a| a.ask(Execute { task: task.clone() }))
+        let results = await join_all(futures)
+        let combined = results.map(|r| format!("### {}\n{}", r.agent_id, r.output)).join("\n\n")
+        match reducer {
+            Some(r) => await r.ask(Execute { task: Task { id: task.id, prompt: combined } }).output,
+            None    => combined,
+        }
+    }
+
+    // Orchestrator decomposes → workers execute in parallel → orchestrator synthesizes.
+    async handler run_orchestrator(task: Task, lead: Arc<SwarmAgent>) -> String {
+        let plan = await lead.ask(Execute { task: Task {
+            id: task.id.clone(),
+            prompt: format!("Split into 2-5 parallel subtasks as a JSON array.\n\nTask: {}", task.prompt),
+        }})
+        let subtasks = parse_json_list(plan.output)
+        let futures = subtasks.enumerate().map(|(i, sub)| {
+            let worker = self.agents[i % self.agents.len()].clone()
+            worker.ask(Execute { task: Task { id: task.id.clone(), prompt: sub } })
+        })
+        let findings = await join_all(futures).map(|r| r.output).join("\n\n")
+        await lead.ask(Execute { task: Task {
+            id: task.id, prompt: format!("Synthesize final result from:\n{}", findings),
+        }}).output
+    }
+
+    // Debate: agents critique each other over N rounds toward consensus.
+    async handler run_debate(task: Task, rounds: i32) -> String {
+        let mut positions: HashMap<String, String> = HashMap::new()
+        for agent in &self.agents {
+            let r = await agent.ask(Execute { task: task.clone() })
+            positions.insert(agent.spec.id.clone(), r.output)
+        }
+        for _round in 0..rounds {
+            let mut next: HashMap<String, String> = HashMap::new()
+            for agent in &self.agents {
+                let others = positions.iter()
+                    .filter(|(k, _)| **k != agent.spec.id)
+                    .map(|(k, v)| format!("{}: {}", k, v)).join("\n\n")
+                let prompt = format!("Question: {}\n\nOthers said:\n{}\n\nCritique and refine your answer.", task.prompt, others)
+                let r = await agent.ask(Execute { task: Task { id: task.id.clone(), prompt: prompt } })
+                next.insert(agent.spec.id.clone(), r.output)
+            }
+            positions = next
+        }
+        let chair = &self.agents[0]
+        let all = positions.iter().map(|(k, v)| format!("{}: {}", k, v)).join("\n\n")
+        await chair.ask(Execute { task: Task { id: task.id, prompt: format!("State the consensus:\n{}", all) } }).output
+    }
+}

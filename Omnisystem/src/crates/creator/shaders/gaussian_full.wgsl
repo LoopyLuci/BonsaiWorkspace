@@ -1,4 +1,4 @@
-// Bonsai Creator — 3D Gaussian Splatting WebGPU shader.
+// Omnisystem Creator — 3D Gaussian Splatting WebGPU shader.
 //
 // Compute pass: radix_sort_histogram — compute view-space depth for each
 // Gaussian and initialise sorted_indices with identity permutation.

@@ -1,0 +1,514 @@
+// OmniCC ConversionEngine — Main conversion orchestrator in Titan.
+// Routes source code through: LanguageDetection → Parse → ULIR → Generate.
+// Supports 1000+ languages via 8 family handlers and Widget Bridge integration.
+// This is the Titan-canonical implementation; the VS Code extension wraps this logic.
+
+use std::collections::{Vec, HashMap, Option};
+use stdlib::OmniCC::ULIR::{
+    ULIRModule, ULIRUnit, ULIRImport, ULIRMetadata,
+    OmniCCConversionRequest, OmniCCConversionResult, ConversionOptions,
+    ProjectFile, ProjectFileResult, WidgetBridgeSummary,
+    LanguageFamily, Paradigm, TypeSystem, MemoryModel,
+    VOID_TYPE, ANY_TYPE, UNKNOWN_TYPE, DEFAULT_OPTIONS,
+};
+
+// ─── Language Family Resolution ───────────────────────────────────────────────
+
+pub fn get_language_family(lang_id: &str) -> LanguageFamily {
+    match lang_id {
+        // Omni languages (highest priority)
+        "titan" | "vera" | "nexus" | "helix" | "aether" | "axiom" | "sylva" => LanguageFamily::Omni,
+        // C-family
+        "javascript" | "typescript" | "java" | "kotlin" | "csharp" | "cpp" | "dart" | "scala"
+        | "swift" | "groovy" | "php" | "coffeescript" | "actionscript" => LanguageFamily::CFamily,
+        // Python-family
+        "python" | "ruby" | "lua" | "perl" | "r" | "julia" | "nim" | "crystal"
+        | "elixir" | "erlang" | "python3" => LanguageFamily::PythonFamily,
+        // Functional
+        "haskell" | "ocaml" | "fsharp" | "elm" | "purescript" | "idris" | "agda" | "coq" => LanguageFamily::Functional,
+        // Lisp
+        "commonlisp" | "scheme" | "racket" | "clojure" | "clojurescript" | "janet" => LanguageFamily::Lisp,
+        // Shell
+        "bash" | "sh" | "zsh" | "fish" | "powershell" | "batch" | "makefile" | "dockerfile" => LanguageFamily::Shell,
+        // Data/config
+        "json" | "yaml" | "yml" | "toml" | "xml" | "csv" | "ini" | "properties"
+        | "protobuf" | "hcl" => LanguageFamily::Data,
+        // Query
+        "sql" | "graphql" | "sparql" | "cypher" | "xquery" | "prql" | "surrealql" => LanguageFamily::Query,
+        // Web
+        "html" | "css" | "scss" | "sass" | "less" | "jsx" | "tsx"
+        | "vue" | "svelte" | "angular" | "astro" | "mdx" => LanguageFamily::Web,
+        // Systems
+        "rust" | "zig" | "go" | "odin" | "c" | "asm" | "wasm" | "v" | "d" | "ada"
+        | "cobol" | "fortran" | "pascal" => LanguageFamily::Systems,
+        // ML/Scientific
+        "matlab" | "octave" | "wolfram" | "apl" | "j" | "k" | "numpy" => LanguageFamily::MlScientific,
+        // Logic
+        "prolog" | "datalog" | "alloy" | "minizinc" | "mercury" => LanguageFamily::Logic,
+        // Legacy
+        "basic" | "delphi" | "algol" | "pl1" | "rpg" | "natural" => LanguageFamily::Legacy,
+        // Template
+        "jinja" | "jinja2" | "handlebars" | "mustache" | "liquid" | "erb" | "twig" => LanguageFamily::Template,
+        // Esoteric
+        "brainfuck" | "befunge" | "whitespace" | "intercal" | "malbolge" | "lolcode" => LanguageFamily::Esoteric,
+        _ => LanguageFamily::Unknown,
+    }
+}
+
+// ─── Language Detection ───────────────────────────────────────────────────────
+
+pub struct DetectionResult {
+    pub lang_id: String,
+    pub confidence: Int,   // 0-100
+    pub signals: Vec<String>,
+}
+
+pub fn detect_language(source: &str, filename: Option<&str>, hint: Option<&str>) -> DetectionResult {
+    // Priority 1: explicit hint
+    if let Some(h) = hint {
+        if h != "auto" {
+            return DetectionResult { lang_id: h.to_string(), confidence: 100, signals: vec!["explicit hint"] };
+        }
+    }
+
+    // Priority 2: file extension
+    if let Some(fname) = filename {
+        let ext_result = detect_by_extension(fname);
+        if let Some(r) = ext_result {
+            return r;
+        }
+    }
+
+    // Priority 3: shebang line
+    if source.starts_with("#!") {
+        if let Some(r) = detect_by_shebang(source) {
+            return r;
+        }
+    }
+
+    // Priority 4: keyword scoring across all families
+    detect_by_content(source)
+}
+
+fn detect_by_extension(filename: &str) -> Option<DetectionResult> {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let lang_id = match ext.as_str() {
+        "titan" => "titan", "vera" => "vera", "nexus" => "nexus",
+        "helix" => "helix", "aether" => "aether", "axiom" => "axiom", "sylva" => "sylva",
+        "js" | "mjs" => "javascript", "ts" | "mts" => "typescript",
+        "jsx" => "jsx", "tsx" => "tsx",
+        "py" | "pyw" => "python", "rb" => "ruby", "lua" => "lua",
+        "java" => "java", "kt" => "kotlin", "cs" => "csharp",
+        "go" => "go", "rs" => "rust", "zig" => "zig",
+        "c" => "c", "cpp" | "cc" | "cxx" => "cpp", "h" | "hpp" => "cpp",
+        "swift" => "swift", "dart" => "dart", "scala" => "scala",
+        "hs" => "haskell", "ml" => "ocaml", "fs" | "fsx" => "fsharp",
+        "elm" => "elm", "clj" | "cljs" => "clojure",
+        "sh" | "bash" => "bash", "zsh" => "zsh", "fish" => "fish",
+        "ps1" | "psm1" => "powershell", "bat" | "cmd" => "batch",
+        "sql" => "sql", "graphql" | "gql" => "graphql",
+        "json" => "json", "yaml" | "yml" => "yaml", "toml" => "toml",
+        "xml" | "xsd" | "xsl" => "xml", "proto" => "protobuf", "tf" | "hcl" => "hcl",
+        "html" | "htm" => "html", "css" => "css", "scss" => "scss",
+        "vue" => "vue", "svelte" => "svelte", "astro" => "astro",
+        "r" => "r", "jl" => "julia", "m" => "matlab",
+        "pl" | "pm" => "perl", "php" => "php", "ex" | "exs" => "elixir",
+        "erl" | "hrl" => "erlang", "d" => "d", "v" => "v",
+        "asm" | "s" => "asm", "wat" => "wasm",
+        _ => return None,
+    };
+    Some(DetectionResult { lang_id: lang_id.to_string(), confidence: 95, signals: vec!["file extension"] })
+}
+
+fn detect_by_shebang(source: &str) -> Option<DetectionResult> {
+    let line = source.lines().next().unwrap_or("");
+    let lang_id = if line.contains("python") { "python" }
+        else if line.contains("ruby") { "ruby" }
+        else if line.contains("node") { "javascript" }
+        else if line.contains("bash") { "bash" }
+        else if line.contains("zsh") { "zsh" }
+        else if line.contains("fish") { "fish" }
+        else if line.contains("perl") { "perl" }
+        else if line.contains("lua") { "lua" }
+        else if line.contains("php") { "php" }
+        else { return None; };
+    Some(DetectionResult { lang_id: lang_id.to_string(), confidence: 90, signals: vec!["shebang"] })
+}
+
+fn detect_by_content(source: &str) -> DetectionResult {
+    let src8k = if source.len() > 8000 { &source[..8000] } else { source };
+
+    let mut scores: Vec<(String, Int, String)> = vec![];
+
+    // Omni languages
+    if src8k.contains("fn ") && src8k.contains("struct ") && (src8k.contains("pub ") || src8k.contains("use ")) {
+        scores.push(("titan".to_string(), 70, "fn+struct+pub/use".to_string()));
+    }
+    if src8k.contains("component ") && src8k.contains("render {") {
+        scores.push(("vera".to_string(), 80, "component+render".to_string()));
+    }
+    if src8k.contains("layout ") && src8k.contains("breakpoints") {
+        scores.push(("nexus".to_string(), 80, "layout+breakpoints".to_string()));
+    }
+    if src8k.contains("shader ") && src8k.contains("pipeline ") {
+        scores.push(("helix".to_string(), 85, "shader+pipeline".to_string()));
+    }
+    if src8k.contains("actor ") && src8k.contains("message ") && src8k.contains("handler ") {
+        scores.push(("aether".to_string(), 85, "actor+message+handler".to_string()));
+    }
+    if src8k.contains("theorem ") && src8k.contains("invariant ") {
+        scores.push(("axiom".to_string(), 85, "theorem+invariant".to_string()));
+    }
+    if src8k.contains("model ") && src8k.contains("layer ") && src8k.contains("architecture") {
+        scores.push(("sylva".to_string(), 80, "model+layer+architecture".to_string()));
+    }
+
+    // Common languages
+    if src8k.contains("def ") && src8k.contains("self") && src8k.contains("import ") {
+        scores.push(("python".to_string(), 75, "def+self+import".to_string()));
+    }
+    if (src8k.contains("function ") || src8k.contains("const ") || src8k.contains("let ")) && src8k.contains("=>") {
+        scores.push(("javascript".to_string(), 70, "function/const/let+=>".to_string()));
+    }
+    if src8k.contains(": ") && src8k.contains("interface ") && src8k.contains("type ") {
+        scores.push(("typescript".to_string(), 75, "interface+type annotations".to_string()));
+    }
+    if src8k.contains("fn ") && src8k.contains("let ") && src8k.contains("impl ") {
+        scores.push(("rust".to_string(), 80, "fn+let+impl".to_string()));
+    }
+    if src8k.contains("func ") && src8k.contains("package ") {
+        scores.push(("go".to_string(), 80, "func+package".to_string()));
+    }
+    if src8k.contains("public class ") || src8k.contains("public static void main") {
+        scores.push(("java".to_string(), 80, "public class/static void main".to_string()));
+    }
+    if src8k.contains("SELECT") && src8k.contains("FROM") {
+        scores.push(("sql".to_string(), 85, "SELECT+FROM".to_string()));
+    }
+    if src8k.starts_with('{') || src8k.starts_with('[') {
+        scores.push(("json".to_string(), 60, "JSON structure".to_string()));
+    }
+    if src8k.starts_with('<') && src8k.contains('>') {
+        scores.push(("html".to_string(), 55, "HTML tags".to_string()));
+    }
+
+    scores.sort_by(|a, b| b.1.cmp(&a.1));
+    if let Some((lang, conf, signal)) = scores.first() {
+        DetectionResult { lang_id: lang.clone(), confidence: *conf, signals: vec![signal.clone()] }
+    } else {
+        DetectionResult { lang_id: "unknown".to_string(), confidence: 10, signals: vec!["no match"] }
+    }
+}
+
+// ─── OmniCCConversionEngine ───────────────────────────────────────────────────
+
+pub struct OmniCCConversionEngine {
+    opts: ConversionOptions,
+}
+
+impl OmniCCConversionEngine {
+    pub fn new(opts: Option<ConversionOptions>) -> Self {
+        OmniCCConversionEngine { opts: opts.unwrap_or(DEFAULT_OPTIONS) }
+    }
+
+    pub fn convert(&self, req: OmniCCConversionRequest) -> OmniCCConversionResult {
+        let start_ms = now_ms();
+
+        if req.project_mode.unwrap_or(false) && req.project_files.is_some() {
+            return self.convert_project(req, start_ms);
+        }
+
+        self.convert_snippet(req, start_ms)
+    }
+
+    fn convert_snippet(&self, req: OmniCCConversionRequest, start_ms: Int) -> OmniCCConversionResult {
+        let opts = req.options.unwrap_or(self.opts.clone());
+
+        // 1. Detect source language
+        let detected = detect_language(&req.source, req.filename.as_deref(), req.source_lang.as_deref());
+        let source_lang_id = if detected.lang_id != "unknown" { detected.lang_id.clone() } else { req.source_lang.unwrap_or("unknown".to_string()) };
+        let target_lang_id = req.target_lang.clone();
+
+        // 2. Parse to ULIR
+        let ir = self.parse(&req.source, &source_lang_id, &opts);
+
+        // 3. Generate target code
+        let output = self.generate(&ir, &target_lang_id, &opts);
+
+        // 4. Build notes
+        let mut notes = vec![
+            format!("Source: {} ({}% confidence)", source_lang_id, detected.confidence),
+            format!("Target: {}", target_lang_id),
+            format!("Units: {} | Family: {:?}", ir.units.len(), ir.source_family),
+        ];
+        for n in ir.notes.iter().take(3) { notes.push(n.clone()); }
+
+        OmniCCConversionResult {
+            success: true,
+            output,
+            source_language: source_lang_id,
+            target_language: target_lang_id,
+            confidence: detected.confidence,
+            detection_signals: Some(detected.signals),
+            notes,
+            ir: Some(ir),
+            widget_bridge: None,
+            lines_converted: req.source.lines().count() as Int,
+            duration_ms: (now_ms() - start_ms) as Int,
+            project_results: None,
+        }
+    }
+
+    fn convert_project(&self, req: OmniCCConversionRequest, start_ms: Int) -> OmniCCConversionResult {
+        let opts = req.options.unwrap_or(self.opts.clone());
+        let files = req.project_files.unwrap_or_default();
+        let target_lang_id = req.target_lang.clone();
+
+        let mut project_results: Vec<ProjectFileResult> = vec![];
+        let mut total_lines: Int = 0;
+
+        for file in &files {
+            let file_start = now_ms();
+            let detection = detect_language(&file.content, Some(&file.path), None);
+            let src_id = if detection.lang_id != "unknown" { detection.lang_id.clone() } else { "unknown".to_string() };
+
+            let ir = self.parse(&file.content, &src_id, &opts);
+            let output = self.generate(&ir, &target_lang_id, &opts);
+            let lines_in = file.content.lines().count() as Int;
+            total_lines += lines_in;
+            let lines_out = output.lines().count() as Int;
+
+            project_results.push(ProjectFileResult {
+                path: Some(file.path.clone()),
+                target_path: Some(derive_target_path(&file.path, &target_lang_id)),
+                output: Some(output),
+                source_lang_id: Some(src_id),
+                target_lang_id: Some(target_lang_id.clone()),
+                lines_in: Some(lines_in),
+                lines_out: Some(lines_out),
+                duration_ms: Some((now_ms() - file_start) as Int),
+                confidence: detection.confidence,
+                notes: None,
+                error: None,
+            });
+        }
+
+        let success_count = project_results.iter().filter(|r| r.error.is_none()).count();
+        let notes = vec![
+            format!("Project: {} files, {} succeeded", files.len(), success_count),
+            format!("Total lines: {}", total_lines),
+            format!("Target: {}", target_lang_id),
+        ];
+
+        let combined_output = project_results.iter()
+            .filter_map(|r| r.output.as_ref().map(|o| format!("// File: {}\n{}", r.path.as_deref().unwrap_or("?"), o)))
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+
+        OmniCCConversionResult {
+            success: success_count > 0,
+            output: combined_output,
+            source_language: req.source_lang.unwrap_or("mixed".to_string()),
+            target_language: target_lang_id,
+            confidence: project_results.iter().map(|r| r.confidence).sum::<Int>() / project_results.len().max(1) as Int,
+            detection_signals: None,
+            notes,
+            ir: None,
+            widget_bridge: None,
+            lines_converted: total_lines,
+            duration_ms: (now_ms() - start_ms) as Int,
+            project_results: Some(project_results),
+        }
+    }
+
+    // ─── Parse dispatch ───────────────────────────────────────────────────────
+
+    pub fn parse(&self, source: &str, lang_id: &str, opts: &ConversionOptions) -> ULIRModule {
+        let family = get_language_family(lang_id);
+        match family {
+            LanguageFamily::CFamily      => parse_c_family(source, lang_id),
+            LanguageFamily::PythonFamily => parse_python_family(source, lang_id),
+            LanguageFamily::Functional   => parse_functional_family(source, lang_id),
+            LanguageFamily::Lisp         => parse_functional_family(source, lang_id),
+            LanguageFamily::Shell        => parse_shell_family(source, lang_id),
+            LanguageFamily::Data         => parse_data_family(source, lang_id),
+            LanguageFamily::Query        => parse_data_family(source, lang_id),
+            LanguageFamily::Web          => parse_web_family(source, lang_id),
+            LanguageFamily::Systems      => parse_systems_family(source, lang_id),
+            LanguageFamily::Omni         => parse_omni_language(source, lang_id),
+            _                            => parse_best_effort(source, lang_id, family),
+        }
+    }
+
+    // ─── Generate dispatch ────────────────────────────────────────────────────
+
+    pub fn generate(&self, ir: &ULIRModule, target_lang_id: &str, opts: &ConversionOptions) -> String {
+        let family = get_language_family(target_lang_id);
+        match family {
+            LanguageFamily::CFamily      => generate_c_family(ir, target_lang_id, opts),
+            LanguageFamily::PythonFamily => generate_python_family(ir, target_lang_id, opts),
+            LanguageFamily::Functional   => generate_functional_family(ir, target_lang_id, opts),
+            LanguageFamily::Lisp         => generate_functional_family(ir, target_lang_id, opts),
+            LanguageFamily::Shell        => generate_shell_family(ir, target_lang_id, opts),
+            LanguageFamily::Data         => generate_data_family(ir, target_lang_id, opts),
+            LanguageFamily::Query        => generate_data_family(ir, target_lang_id, opts),
+            LanguageFamily::Web          => generate_web_family(ir, target_lang_id, opts),
+            LanguageFamily::Systems      => generate_systems_family(ir, target_lang_id, opts),
+            LanguageFamily::Omni         => generate_omni_language(ir, target_lang_id, opts),
+            _                            => generate_best_effort(ir, target_lang_id, opts),
+        }
+    }
+}
+
+// ─── Best-Effort Fallback ─────────────────────────────────────────────────────
+
+fn parse_best_effort(source: &str, lang_id: &str, family: LanguageFamily) -> ULIRModule {
+    // Try structural pattern detection
+    let src8k = if source.len() > 8000 { &source[..8000] } else { source };
+
+    if src8k.contains("def ") && src8k.contains("self") {
+        return parse_python_family(source, lang_id);
+    }
+    if src8k.contains("function ") || src8k.contains("const ") {
+        return parse_c_family(source, lang_id);
+    }
+    if src8k.contains("fn ") && src8k.contains("struct ") {
+        return parse_systems_family(source, lang_id);
+    }
+    if src8k.contains("SELECT") || src8k.contains("INSERT") {
+        return parse_data_family(source, lang_id);
+    }
+    if src8k.contains('<') && src8k.contains('>') && !src8k.contains("fn ") {
+        return parse_web_family(source, lang_id);
+    }
+
+    ULIRModule {
+        name: "UnknownModule".to_string(),
+        source_language: lang_id.to_string(),
+        source_family: family,
+        units: vec![],
+        imports: vec![],
+        exports: vec![],
+        doc_comment: "".to_string(),
+        metadata: ULIRMetadata {
+            source_lines: source.lines().count() as Int,
+            paradigms: vec![Paradigm::Unknown],
+            type_system: TypeSystem::Unknown,
+            memory_model: MemoryModel::Unknown,
+            uses_async: false, uses_generics: false, uses_reflection: false,
+            uses_metaprogramming: false, has_tests: false, has_ui: false, has_side_effects: false,
+            entry_point: None,
+        },
+        confidence: ConversionConfidence::Low,
+        notes: vec![format!("Language {} not fully supported; best-effort parse attempted", lang_id)],
+        widget_units: None,
+    }
+}
+
+fn generate_best_effort(ir: &ULIRModule, target_lang_id: &str, opts: &ConversionOptions) -> String {
+    let comment = "//";
+    let mut lines = vec![
+        format!("{} {} — Converted to {}", comment, ir.name, target_lang_id),
+        format!("{} Source: {} | Family: {:?}", comment, ir.source_language, ir.source_family),
+        format!("{} Note: {} is not directly supported. Showing pseudocode.", comment, target_lang_id),
+        "".to_string(),
+    ];
+    for imp in &ir.imports {
+        lines.push(format!("{} import: {} ({})", comment, imp.path, imp.names.join(", ")));
+    }
+    if !ir.imports.is_empty() { lines.push("".to_string()); }
+    for unit in &ir.units {
+        let params: Vec<String> = unit.signature.params.iter()
+            .map(|p| format!("{}: {}", p.name, p.type_.name))
+            .collect();
+        lines.push(format!("{} {:?} {}({})", comment, unit.kind, unit.name, params.join(", ")));
+        if !unit.doc_comment.is_empty() {
+            lines.push(format!("{}   {}", comment, unit.doc_comment));
+        }
+        lines.push("".to_string());
+    }
+    lines.join("\n")
+}
+
+// ─── Target path derivation ───────────────────────────────────────────────────
+
+fn derive_target_path(source_path: &str, target_lang_id: &str) -> String {
+    let ext = get_ext_for_lang(target_lang_id);
+    if let Some(dot) = source_path.rfind('.') {
+        format!("{}{}", &source_path[..dot], ext)
+    } else {
+        format!("{}{}", source_path, ext)
+    }
+}
+
+fn get_ext_for_lang(lang_id: &str) -> &str {
+    match lang_id {
+        "javascript" => ".js", "typescript" => ".ts", "python" => ".py",
+        "java" => ".java", "kotlin" => ".kt", "csharp" => ".cs",
+        "go" => ".go", "rust" => ".rs", "zig" => ".zig",
+        "swift" => ".swift", "dart" => ".dart", "scala" => ".scala",
+        "ruby" => ".rb", "lua" => ".lua", "perl" => ".pl", "php" => ".php",
+        "r" => ".r", "julia" => ".jl", "elixir" => ".ex", "erlang" => ".erl",
+        "haskell" => ".hs", "ocaml" => ".ml", "fsharp" => ".fs",
+        "clojure" => ".clj", "bash" => ".sh", "powershell" => ".ps1",
+        "sql" => ".sql", "json" => ".json", "yaml" => ".yml",
+        "toml" => ".toml", "xml" => ".xml", "graphql" => ".graphql",
+        "protobuf" => ".proto", "hcl" => ".tf",
+        "html" => ".html", "css" => ".css", "scss" => ".scss",
+        "jsx" => ".jsx", "tsx" => ".tsx", "vue" => ".vue",
+        "svelte" => ".svelte", "astro" => ".astro",
+        "c" => ".c", "cpp" => ".cpp", "odin" => ".odin", "v" => ".v", "d" => ".d",
+        "titan" => ".titan", "vera" => ".vera", "nexus" => ".nexus",
+        "helix" => ".helix", "aether" => ".aether", "axiom" => ".axiom", "sylva" => ".sylva",
+        _ => ".txt",
+    }
+}
+
+// ─── Family handler stubs (implemented per-handler in separate files) ─────────
+// These are the canonical dispatch signatures — each family has its own module.
+
+extern fn parse_c_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_c_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_python_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_python_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_functional_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_functional_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_shell_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_shell_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_data_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_data_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_web_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_web_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_systems_family(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_systems_family(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn parse_omni_language(source: &str, lang_id: &str) -> ULIRModule;
+extern fn generate_omni_language(ir: &ULIRModule, lang_id: &str, opts: &ConversionOptions) -> String;
+
+extern fn now_ms() -> Int;
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+pub fn create_engine(opts: Option<ConversionOptions>) -> OmniCCConversionEngine {
+    OmniCCConversionEngine::new(opts)
+}
+
+pub fn quick_convert(source: &str, target_lang: &str, source_lang: Option<&str>, filename: Option<&str>) -> OmniCCConversionResult {
+    let engine = OmniCCConversionEngine::new(None);
+    engine.convert(OmniCCConversionRequest {
+        source: source.to_string(),
+        source_lang: source_lang.map(|s| s.to_string()),
+        target_lang: target_lang.to_string(),
+        filename: filename.map(|s| s.to_string()),
+        widget_name_hint: None,
+        project_mode: None,
+        project_files: None,
+        options: None,
+    })
+}

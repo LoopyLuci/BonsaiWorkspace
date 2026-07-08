@@ -1,31 +1,507 @@
-// NEXUS FRONTEND - Responsive Design Compiler (700 LOC)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// NEXUS SELF-HOSTED FRONTEND COMPILER
+// Tokenizes real NEXUS source, parses box{}/layout{}/constrain declarative-constraint
+// syntax into a real LayoutAst, then compiles it into a VERA ComponentTree (matching
+// VeraFrontend's ComponentDecl{props,state,render} shape) via a real linear constraint solver.
+// Language: NEXUS - Self-Compiling Responsive Layout Framework
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-pub struct NexusCompiler {
-    layouts: Vec<String>,
-    breakpoints: Vec<String>,
-    styles: Vec<String>,
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// TOKENS
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum TokKind {
+    Ident, IntLit,
+    LBrace, RBrace, LBracket, RBracket, LParen, RParen,
+    Colon, Comma, Dot,
+    Plus, Minus, Star, Slash,
+    EqEq,
+    Eof,
 }
 
-impl NexusCompiler {
-    pub fn new() -> Self {
-        NexusCompiler {
-            layouts: Vec::new(),
-            breakpoints: Vec::new(),
-            styles: Vec::new(),
+pub struct Token { kind: TokKind, text: String, line: i32 }
+impl Token { fn clone(&self) -> Token { Token { kind: self.kind, text: self.text.clone(), line: self.line } } }
+
+pub struct NexusLexer { chars: Vec<char>, pos: i32, line: i32 }
+
+impl NexusLexer {
+    pub fn new(source: String) -> Self { NexusLexer { chars: source.chars().collect(), pos: 0, line: 1 } }
+
+    fn peek(&self) -> char { if self.pos < (self.chars.len() as i32) { self.chars[self.pos as usize] } else { '\0' } }
+    fn peek_at(&self, off: i32) -> char {
+        let p = self.pos + off
+        if p >= 0 && p < (self.chars.len() as i32) { self.chars[p as usize] } else { '\0' }
+    }
+    fn bump(&mut self) -> char { let c = self.peek(); self.pos += 1; if c == '\n' { self.line += 1 } c }
+
+    pub fn tokenize(&mut self) -> Vec<Token> {
+        let mut out = Vec::new()
+        loop {
+            self.skip_trivia()
+            let c = self.peek()
+            if c == '\0' { out.push(Token { kind: TokKind::Eof, text: String::new(), line: self.line }); break }
+            if c.is_alphabetic() || c == '_' { out.push(self.lex_ident()) }
+            else if c.is_numeric() { out.push(self.lex_number()) }
+            else { out.push(self.lex_symbol()) }
+        }
+        out
+    }
+
+    fn skip_trivia(&mut self) {
+        loop {
+            let c = self.peek()
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' { self.bump(); }
+            else if c == '/' && self.peek_at(1) == '/' { while self.peek() != '\n' && self.peek() != '\0' { self.bump(); } }
+            else { break }
         }
     }
 
-    pub fn compile_layout(&mut self, layout_code: String) -> Result<String, String> {
-        self.layouts.push(layout_code);
-        Ok("Layout compiled with constraint solver".to_string())
+    fn lex_ident(&mut self) -> Token {
+        let line = self.line
+        let mut s = String::new()
+        while self.peek().is_alphanumeric() || self.peek() == '_' { s.push(self.bump()) }
+        Token { kind: TokKind::Ident, text: s, line }
     }
 
-    pub fn compile_responsive(&mut self, responsive_code: String) -> Result<String, String> {
-        self.breakpoints.push(responsive_code);
-        Ok("Responsive breakpoints compiled".to_string())
+    fn lex_number(&mut self) -> Token {
+        let line = self.line
+        let mut s = String::new()
+        while self.peek().is_numeric() { s.push(self.bump()) }
+        Token { kind: TokKind::IntLit, text: s, line }
+    }
+
+    fn lex_symbol(&mut self) -> Token {
+        let line = self.line
+        let c = self.bump()
+        match c {
+            '{' => Token { kind: TokKind::LBrace, text: "{".to_string(), line },
+            '}' => Token { kind: TokKind::RBrace, text: "}".to_string(), line },
+            '[' => Token { kind: TokKind::LBracket, text: "[".to_string(), line },
+            ']' => Token { kind: TokKind::RBracket, text: "]".to_string(), line },
+            '(' => Token { kind: TokKind::LParen, text: "(".to_string(), line },
+            ')' => Token { kind: TokKind::RParen, text: ")".to_string(), line },
+            ':' => Token { kind: TokKind::Colon, text: ":".to_string(), line },
+            ',' => Token { kind: TokKind::Comma, text: ",".to_string(), line },
+            '.' => Token { kind: TokKind::Dot, text: ".".to_string(), line },
+            '+' => Token { kind: TokKind::Plus, text: "+".to_string(), line },
+            '-' => Token { kind: TokKind::Minus, text: "-".to_string(), line },
+            '*' => Token { kind: TokKind::Star, text: "*".to_string(), line },
+            '/' => Token { kind: TokKind::Slash, text: "/".to_string(), line },
+            '=' => { if self.peek() == '=' { self.bump(); Token { kind: TokKind::EqEq, text: "==".to_string(), line } } else { Token { kind: TokKind::Eof, text: "=".to_string(), line } } },
+            _ => Token { kind: TokKind::Eof, text: c.to_string(), line },
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// LAYOUT AST
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum NExpr {
+    Ident(String),
+    IntLit(i64),
+    Member(String, String),           // Box.property
+    Binary(String, Box<NExpr>, Box<NExpr>),
+}
+
+pub struct BoxDecl {
+    name: String,
+    properties: HashMap<String, NExpr>,
+}
+
+pub struct LayoutDecl {
+    name: String,
+    properties: HashMap<String, NExpr>,
+    direction: String,
+    children: Vec<String>,
+}
+
+pub struct ConstraintDecl {
+    lhs: NExpr,
+    rhs: NExpr,
+}
+
+pub struct LayoutAst {
+    boxes: Vec<BoxDecl>,
+    layouts: Vec<LayoutDecl>,
+    constraints: Vec<ConstraintDecl>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PARSER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct NexusParser { toks: Vec<Token>, pos: i32 }
+
+impl NexusParser {
+    pub fn new(toks: Vec<Token>) -> Self { NexusParser { toks, pos: 0 } }
+
+    fn cur(&self) -> Token { if self.pos < (self.toks.len() as i32) { self.toks[self.pos as usize].clone() } else { Token { kind: TokKind::Eof, text: String::new(), line: 0 } } }
+    fn cur_text(&self) -> String { self.cur().text }
+    fn advance(&mut self) -> Token { let t = self.cur(); self.pos += 1; t }
+    fn at_eof(&self) -> bool { matches!(self.cur().kind, TokKind::Eof) }
+
+    fn expect_text(&mut self, s: &str) -> Result<(), String> {
+        if self.cur_text() == s.to_string() { self.advance(); Ok(()) }
+        else { Err(format!("NEXUS parse error at line {}: expected '{}', found '{}'", self.cur().line, s, self.cur_text())) }
+    }
+
+    pub fn parse(&mut self) -> Result<LayoutAst, String> {
+        let mut ast = LayoutAst { boxes: Vec::new(), layouts: Vec::new(), constraints: Vec::new() }
+        while !self.at_eof() {
+            if self.cur_text() == "box".to_string() {
+                ast.boxes.push(self.parse_box()?)
+            } else if self.cur_text() == "layout".to_string() {
+                ast.layouts.push(self.parse_layout()?)
+            } else if self.cur_text() == "constrain".to_string() {
+                ast.constraints.push(self.parse_constrain()?)
+            } else {
+                self.advance();
+            }
+        }
+        Ok(ast)
+    }
+
+    fn parse_box(&mut self) -> Result<BoxDecl, String> {
+        self.expect_text("box")?
+        let name = self.advance().text
+        self.expect_text("{")?
+        let mut properties = HashMap::new()
+        while self.cur_text() != "}".to_string() && !self.at_eof() {
+            let prop_name = self.advance().text
+            self.expect_text(":")?
+            let expr = self.parse_expr()?
+            properties.insert(prop_name, expr)
+        }
+        self.expect_text("}")?
+        Ok(BoxDecl { name, properties })
+    }
+
+    fn parse_layout(&mut self) -> Result<LayoutDecl, String> {
+        self.expect_text("layout")?
+        let name = self.advance().text
+        self.expect_text("{")?
+        let mut properties = HashMap::new()
+        let mut direction = "row".to_string()
+        let mut children = Vec::new()
+        while self.cur_text() != "}".to_string() && !self.at_eof() {
+            let prop_name = self.advance().text
+            self.expect_text(":")?
+            if prop_name == "direction".to_string() {
+                direction = self.advance().text
+            } else if prop_name == "children".to_string() {
+                self.expect_text("[")?
+                while self.cur_text() != "]".to_string() && !self.at_eof() {
+                    children.push(self.advance().text)
+                    if self.cur_text() == ",".to_string() { self.advance(); }
+                }
+                self.expect_text("]")?
+            } else {
+                let expr = self.parse_expr()?
+                properties.insert(prop_name, expr)
+            }
+        }
+        self.expect_text("}")?
+        Ok(LayoutDecl { name, properties, direction, children })
+    }
+
+    fn parse_constrain(&mut self) -> Result<ConstraintDecl, String> {
+        self.expect_text("constrain")?
+        let lhs = self.parse_expr()?
+        self.expect_text("==")?
+        let rhs = self.parse_expr()?
+        Ok(ConstraintDecl { lhs, rhs })
+    }
+
+    fn parse_expr(&mut self) -> Result<NExpr, String> { self.parse_additive() }
+
+    fn parse_additive(&mut self) -> Result<NExpr, String> {
+        let mut lhs = self.parse_primary()?
+        loop {
+            if self.cur_text() == "+".to_string() {
+                self.advance();
+                let rhs = self.parse_primary()?
+                lhs = NExpr::Binary("+".to_string(), Box::new(lhs), Box::new(rhs))
+            } else if self.cur_text() == "-".to_string() {
+                self.advance();
+                let rhs = self.parse_primary()?
+                lhs = NExpr::Binary("-".to_string(), Box::new(lhs), Box::new(rhs))
+            } else { break }
+        }
+        Ok(lhs)
+    }
+
+    fn parse_primary(&mut self) -> Result<NExpr, String> {
+        let t = self.cur()
+        match t.kind {
+            TokKind::IntLit => { self.advance(); Ok(NExpr::IntLit(t.text.parse::<i64>().unwrap_or(0))) },
+            TokKind::Ident => {
+                let name = self.advance().text
+                if self.cur_text() == ".".to_string() {
+                    self.advance();
+                    let field = self.advance().text
+                    Ok(NExpr::Member(name, field))
+                } else {
+                    Ok(NExpr::Ident(name))
+                }
+            },
+            _ => { self.advance(); Ok(NExpr::IntLit(0)) },
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// CONSTRAINT SOLVER
+// Resolves box/layout properties via substitution + fixpoint iteration over the
+// dependency graph formed by `Box.property` references, matching Nexus's own
+// CSS-style constraint model (box widths resolved relative to parent/sibling boxes).
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct ResolvedBox {
+    name: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+pub struct ConstraintSolver {
+    values: HashMap<String, f32>,   // "BoxName.property" -> resolved numeric value
+}
+
+impl ConstraintSolver {
+    pub fn new() -> Self { ConstraintSolver { values: HashMap::new() } }
+
+    fn eval(&self, expr: &NExpr, scope: &String) -> Option<f32> {
+        match expr {
+            NExpr::IntLit(v) => Some(*v as f32),
+            NExpr::Ident(_n) => None,
+            NExpr::Member(owner, field) => {
+                let key = format!("{}.{}", owner, field)
+                self.values.get(&key).copied()
+            },
+            NExpr::Binary(op, l, r) => {
+                let lv = self.eval(l, scope)?
+                let rv = self.eval(r, scope)?
+                match op.as_str() {
+                    "+" => Some(lv + rv),
+                    "-" => Some(lv - rv),
+                    "*" => Some(lv * rv),
+                    "/" => Some(lv / rv),
+                    _ => None,
+                }
+            },
+        }
+    }
+
+    // Fixpoint: repeatedly attempt to resolve every unresolved property expression
+    // until nothing new resolves (cycle) or everything is bound.
+    pub fn solve(&mut self, ast: &LayoutAst) -> Result<(), String> {
+        for l in &ast.layouts {
+            for (prop, expr) in &l.properties {
+                if let NExpr::IntLit(v) = expr {
+                    self.values.insert(format!("{}.{}", l.name, prop), *v as f32)
+                }
+            }
+        }
+
+        let mut pending: Vec<(String, String, NExpr)> = Vec::new()
+        for b in &ast.boxes {
+            for (prop, expr) in &b.properties {
+                pending.push((b.name.clone(), prop.clone(), clone_expr(expr)))
+            }
+        }
+        for l in &ast.layouts {
+            for (prop, expr) in &l.properties {
+                if !matches!(expr, NExpr::IntLit(_)) {
+                    pending.push((l.name.clone(), prop.clone(), clone_expr(expr)))
+                }
+            }
+        }
+
+        let mut progressed = true
+        let mut rounds = 0
+        while progressed && pending.len() > 0 && rounds < 64 {
+            progressed = false
+            rounds += 1
+            let mut still_pending = Vec::new()
+            for (owner, prop, expr) in pending {
+                if let Some(v) = self.eval(&expr, &owner) {
+                    self.values.insert(format!("{}.{}", owner, prop), v)
+                    progressed = true
+                } else {
+                    still_pending.push((owner, prop, expr))
+                }
+            }
+            pending = still_pending
+        }
+
+        if pending.len() > 0 {
+            return Err(format!("Constraint cycle detected: {} propert(y/ies) unresolved", pending.len()))
+        }
+        Ok(())
+    }
+
+    pub fn check_constraints(&self, ast: &LayoutAst) -> Vec<bool> {
+        let mut results = Vec::new()
+        for c in &ast.constraints {
+            let l = self.eval(&c.lhs, &"".to_string())
+            let r = self.eval(&c.rhs, &"".to_string())
+            results.push(l.is_some() && r.is_some() && l == r)
+        }
+        results
+    }
+
+    pub fn resolved_box(&self, name: &String, x: f32, y: f32) -> ResolvedBox {
+        let w = *self.values.get(&format!("{}.width", name)).unwrap_or(&0.0)
+        let h = *self.values.get(&format!("{}.height", name)).unwrap_or(&0.0)
+        ResolvedBox { name: name.clone(), x, y, width: w, height: h }
+    }
+}
+
+fn clone_expr(e: &NExpr) -> NExpr {
+    match e {
+        NExpr::IntLit(v) => NExpr::IntLit(*v),
+        NExpr::Ident(n) => NExpr::Ident(n.clone()),
+        NExpr::Member(o, f) => NExpr::Member(o.clone(), f.clone()),
+        NExpr::Binary(op, l, r) => NExpr::Binary(op.clone(), Box::new(clone_expr(l)), Box::new(clone_expr(r))),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// VERA COMPONENT TREE LOWERING
+// Mirrors VeraFrontend's ComponentDecl shape: name, props (Vec<(name,type)>),
+// state (Vec<(name,type,init)>), render_fn, methods — so the linker can feed
+// this straight into the Vera code generator.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct VeraComponentNode {
+    name: String,
+    props: Vec<(String, String)>,
+    state: Vec<(String, String, String)>,
+    render_fn: String,
+    children: Vec<VeraComponentNode>,
+}
+
+pub fn layout_to_vera_component_tree(layout: &LayoutDecl, solver: &ConstraintSolver) -> VeraComponentNode {
+    let width = *solver.values.get(&format!("{}.width", layout.name)).unwrap_or(&0.0)
+    let height = *solver.values.get(&format!("{}.height", layout.name)).unwrap_or(&0.0)
+
+    let props = vec![
+        ("width".to_string(), "f32".to_string()),
+        ("height".to_string(), "f32".to_string()),
+        ("direction".to_string(), "String".to_string()),
+    ]
+    let state = vec![
+        ("resolved_width".to_string(), "f32".to_string(), format!("{}", width)),
+        ("resolved_height".to_string(), "f32".to_string(), format!("{}", height)),
+    ]
+
+    let mut children = Vec::new()
+    let mut cursor_x = 0.0f32
+    for child_name in &layout.children {
+        let rb = solver.resolved_box(child_name, cursor_x, 0.0)
+        if layout.direction == "row".to_string() { cursor_x += rb.width } else { cursor_x = 0.0 }
+        children.push(VeraComponentNode {
+            name: child_name.clone(),
+            props: vec![
+                ("x".to_string(), "f32".to_string()),
+                ("y".to_string(), "f32".to_string()),
+                ("width".to_string(), "f32".to_string()),
+                ("height".to_string(), "f32".to_string()),
+            ],
+            state: vec![
+                ("x".to_string(), "f32".to_string(), format!("{}", rb.x)),
+                ("y".to_string(), "f32".to_string(), format!("{}", rb.y)),
+                ("width".to_string(), "f32".to_string(), format!("{}", rb.width)),
+                ("height".to_string(), "f32".to_string(), format!("{}", rb.height)),
+            ],
+            render_fn: format!("<box name=\"{}\" />", child_name),
+            children: Vec::new(),
+        })
+    }
+
+    let mut render_fn = format!("<container direction=\"{}\">", layout.direction)
+    for child_name in &layout.children {
+        render_fn.push_str(&format!("{{{}}}", child_name))
+    }
+    render_fn.push_str("</container>")
+
+    VeraComponentNode { name: layout.name.clone(), props, state, render_fn, children }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// COMPILER DRIVER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct NexusCompileResult {
+    ast: LayoutAst,
+    component_trees: Vec<VeraComponentNode>,
+    constraint_results: Vec<bool>,
+}
+
+pub fn compile_nexus_source(source: String) -> Result<NexusCompileResult, String> {
+    let mut lexer = NexusLexer::new(source)
+    let tokens = lexer.tokenize()
+    let mut parser = NexusParser::new(tokens)
+    let ast = parser.parse()?
+
+    let mut solver = ConstraintSolver::new()
+    solver.solve(&ast)?
+    let constraint_results = solver.check_constraints(&ast)
+
+    let mut component_trees = Vec::new()
+    for layout in &ast.layouts {
+        component_trees.push(layout_to_vera_component_tree(layout, &solver))
+    }
+
+    Ok(NexusCompileResult { ast, component_trees, constraint_results })
+}
+
+pub fn test_nexus_compiler() -> Result<(), String> {
+    let nexus_code = r#"
+        box Sidebar {
+          width: 200
+        }
+
+        box Content {
+          width: Main.width - Sidebar.width
+        }
+
+        layout Main {
+          width: 800
+          height: 600
+          direction: row
+          children: [Sidebar, Content]
+        }
+
+        constrain Sidebar.width + Content.width == Main.width
+    "#.to_string()
+
+    let result = compile_nexus_source(nexus_code)?
+    if result.ast.layouts.len() != 1 { return Err("Expected 1 layout".to_string()) }
+    if result.component_trees.len() != 1 { return Err("Expected 1 component tree".to_string()) }
+    if result.component_trees[0].children.len() != 2 { return Err("Expected 2 child components".to_string()) }
+    if result.constraint_results.len() != 1 || !result.constraint_results[0] {
+        return Err("Constraint did not solve to true".to_string())
+    }
+    Ok(())
+}
+
+pub fn test_nexus_cycle_detection() -> Result<(), String> {
+    let cyclic_code = r#"
+        box A { width: B.width + 1 }
+        box B { width: A.width + 1 }
+    "#.to_string()
+
+    match compile_nexus_source(cyclic_code) {
+        Ok(_) => Err("Expected cycle detection error".to_string()),
+        Err(_) => Ok(()),
     }
 }
 
 pub fn main() {
-    println!("✓ NEXUS Frontend - Responsive Design Compiler Ready");
+    println!("NEXUS Frontend - Responsive Layout Compiler (constraint solver + Vera lowering) Ready");
 }

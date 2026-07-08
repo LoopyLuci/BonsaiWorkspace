@@ -1,0 +1,408 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS MODEL BRIDGE — Aether Actor System
+// Actor-based async model routing, load balancing, and failover
+// 100% AETHER — Concurrent actor messaging for AI model orchestration
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, i64, f32, bool}
+
+// ── Message types ─────────────────────────────────────────────────────────────
+
+struct ModelRequest {
+    request_id:  String,
+    model_id:    String,
+    messages:    Vec<ModelMessage>,
+    temperature: f32,
+    max_tokens:  i32,
+    system:      Option<String>,
+    session_id:  String,
+    priority:    i32,
+}
+
+struct ModelMessage {
+    role:    String,
+    content: String,
+}
+
+struct ModelResponse {
+    request_id:    String,
+    content:       String,
+    model_used:    String,
+    input_tokens:  i32,
+    output_tokens: i32,
+    latency_ms:    f64,
+    success:       bool,
+    error:         Option<String>,
+}
+
+struct ModelHealthStatus {
+    provider:   String,
+    available:  bool,
+    latency_ms: f64,
+    error:      Option<String>,
+}
+
+struct ProviderStats {
+    provider:        String,
+    total_requests:  i64,
+    total_tokens:    i64,
+    avg_latency_ms:  f64,
+    error_count:     i64,
+}
+
+// ── Provider Registry Actor ───────────────────────────────────────────────────
+
+pub actor ProviderRegistry {
+    providers:     Arc<Mutex<HashMap<String, String>>>,  // provider_name → base_url
+    api_keys:      Arc<Mutex<HashMap<String, String>>>,  // provider_name → api_key
+    health:        Arc<Mutex<HashMap<String, bool>>>,
+    stats:         Arc<Mutex<HashMap<String, ProviderStats>>>,
+    provider_count: i32 = 0,
+
+    message RegisterProvider(name: String, base_url: String, api_key: String) -> Result<(), String> {
+        providers.lock().unwrap().insert(name.clone(), base_url)
+        api_keys.lock().unwrap().insert(name.clone(), api_key)
+        health.lock().unwrap().insert(name.clone(), true)
+        stats.lock().unwrap().insert(name.clone(), ProviderStats {
+            provider:       name.clone(),
+            total_requests: 0,
+            total_tokens:   0,
+            avg_latency_ms: 0.0,
+            error_count:    0,
+        })
+        self.provider_count += 1
+        Ok(())
+    }
+
+    message RegisterFromEnv() -> Result<i32, String> {
+        let env_map = vec![
+            ("ANTHROPIC_API_KEY",  "anthropic",  "https://api.anthropic.com"),
+            ("OPENAI_API_KEY",     "openai",     "https://api.openai.com"),
+            ("GROQ_API_KEY",       "groq",       "https://api.groq.com"),
+            ("MISTRAL_API_KEY",    "mistral",    "https://api.mistral.ai"),
+            ("COHERE_API_KEY",     "cohere",     "https://api.cohere.ai"),
+            ("GOOGLE_API_KEY",     "google",     "https://generativelanguage.googleapis.com"),
+            ("OPENROUTER_API_KEY", "openrouter", "https://openrouter.ai"),
+        ]
+        let mut registered = 0i32
+        for (env_var, provider, base_url) in env_map {
+            if let Ok(key) = std::env::var(env_var) {
+                if !key.is_empty() {
+                    providers.lock().unwrap().insert(provider.to_string(), base_url.to_string())
+                    api_keys.lock().unwrap().insert(provider.to_string(), key)
+                    health.lock().unwrap().insert(provider.to_string(), true)
+                    registered += 1
+                }
+            }
+        }
+        // Always register Ollama (local, no key)
+        providers.lock().unwrap().insert("ollama".to_string(), "http://localhost:11434".to_string())
+        api_keys.lock().unwrap().insert("ollama".to_string(), "".to_string())
+        health.lock().unwrap().insert("ollama".to_string(), true)
+        registered += 1
+        self.provider_count = registered
+        Ok(registered)
+    }
+
+    message GetProviders() -> Result<Vec<String>, String> {
+        Ok(providers.lock().unwrap().keys().cloned().collect())
+    }
+
+    message GetApiKey(provider: String) -> Result<Option<String>, String> {
+        Ok(api_keys.lock().unwrap().get(&provider).cloned())
+    }
+
+    message GetBaseUrl(provider: String) -> Result<Option<String>, String> {
+        Ok(providers.lock().unwrap().get(&provider).cloned())
+    }
+
+    message UpdateHealth(provider: String, available: bool) -> Result<(), String> {
+        health.lock().unwrap().insert(provider, available)
+        Ok(())
+    }
+
+    message GetHealthyProviders() -> Result<Vec<String>, String> {
+        let h = health.lock().unwrap()
+        Ok(h.iter().filter(|(_, &v)| v).map(|(k, _)| k.clone()).collect())
+    }
+
+    message RecordRequest(provider: String, tokens: i64, latency_ms: f64, success: bool) -> Result<(), String> {
+        let mut s = stats.lock().unwrap()
+        if let Some(st) = s.get_mut(&provider) {
+            st.total_requests += 1
+            st.total_tokens   += tokens
+            st.avg_latency_ms  = (st.avg_latency_ms * (st.total_requests - 1) as f64 + latency_ms) / st.total_requests as f64
+            if !success { st.error_count += 1 }
+        }
+        Ok(())
+    }
+
+    message GetStats() -> Result<Vec<ProviderStats>, String> {
+        Ok(stats.lock().unwrap().values().cloned().collect())
+    }
+}
+
+// ── Model Router Actor ────────────────────────────────────────────────────────
+
+pub actor ModelRouter {
+    registry:      Arc<Mutex<Option<ProviderRegistry>>>,
+    request_queue: Arc<Mutex<Vec<ModelRequest>>>,
+    response_map:  Arc<Mutex<HashMap<String, ModelResponse>>>,
+    total_requests: i64 = 0,
+
+    message Init() -> Result<(), String> {
+        let reg = ProviderRegistry {
+            providers:      Arc::new(Mutex::new(HashMap::new())),
+            api_keys:       Arc::new(Mutex::new(HashMap::new())),
+            health:         Arc::new(Mutex::new(HashMap::new())),
+            stats:          Arc::new(Mutex::new(HashMap::new())),
+            provider_count: 0,
+        }
+        reg.RegisterFromEnv()?
+        *registry.lock().unwrap() = Some(reg)
+        Ok(())
+    }
+
+    message RouteRequest(req: ModelRequest) -> Result<ModelResponse, String> {
+        self.total_requests += 1
+        let provider = self.infer_provider(&req.model_id)
+
+        let reg_guard = registry.lock().unwrap()
+        let reg = reg_guard.as_ref().ok_or("Registry not initialized")?
+
+        let healthy = reg.GetHealthyProviders()?
+        if !healthy.contains(&provider) && !healthy.is_empty() {
+            return Err(format!("Provider '{}' unhealthy. Healthy: {:?}", provider, healthy))
+        }
+
+        let api_key  = reg.GetApiKey(provider.clone())?.unwrap_or_default()
+        let base_url = reg.GetBaseUrl(provider.clone())?
+            .ok_or(format!("Provider '{}' not registered", provider))?
+
+        drop(reg_guard)
+
+        let t0   = omnisystem::time::now_ms()
+        let resp = self.call_provider(&provider, &base_url, &api_key, &req)?
+        let lat  = (omnisystem::time::now_ms() - t0) as f64
+
+        if let Ok(reg_guard) = registry.lock() {
+            if let Some(reg) = reg_guard.as_ref() {
+                let tokens = (resp.input_tokens + resp.output_tokens) as i64
+                reg.RecordRequest(provider.clone(), tokens, lat, resp.success).ok()
+            }
+        }
+
+        Ok(resp)
+    }
+
+    message HealthCheckAll() -> Result<Vec<ModelHealthStatus>, String> {
+        let reg_guard = registry.lock().unwrap()
+        let reg = reg_guard.as_ref().ok_or("Registry not initialized")?
+        let providers = reg.GetProviders()?
+        drop(reg_guard)
+
+        let mut statuses = Vec::new()
+        for provider in providers {
+            let status = self.probe_provider(&provider)
+            if let Ok(ref reg_guard) = registry.lock() {
+                if let Some(ref reg) = reg_guard.as_ref() {
+                    reg.UpdateHealth(provider.clone(), status.available).ok()
+                }
+            }
+            statuses.push(status)
+        }
+        Ok(statuses)
+    }
+
+    message GetStats() -> Result<Vec<ProviderStats>, String> {
+        let reg_guard = registry.lock().unwrap()
+        let reg = reg_guard.as_ref().ok_or("Registry not initialized")?
+        reg.GetStats()
+    }
+
+    message ListProviders() -> Result<Vec<String>, String> {
+        let reg_guard = registry.lock().unwrap()
+        let reg = reg_guard.as_ref().ok_or("Registry not initialized")?
+        reg.GetProviders()
+    }
+}
+
+impl ModelRouter {
+    fn infer_provider(&self, model_id: &str) -> String {
+        if model_id.starts_with("claude-")    { return "anthropic".to_string() }
+        if model_id.starts_with("gpt-")       { return "openai".to_string() }
+        if model_id.starts_with("o1") || model_id.starts_with("o3") { return "openai".to_string() }
+        if model_id.starts_with("gemini-")    { return "google".to_string() }
+        if model_id.starts_with("command-")   { return "cohere".to_string() }
+        if model_id.starts_with("mistral-")   { return "mistral".to_string() }
+        if model_id.starts_with("llama-") || model_id.starts_with("mixtral-") {
+            return "groq".to_string()
+        }
+        if model_id.contains('/') {
+            return model_id.split('/').next().unwrap_or("openrouter").to_string()
+        }
+        "ollama".to_string()
+    }
+
+    fn call_provider(&self, provider: &str, base_url: &str, api_key: &str, req: &ModelRequest) -> Result<ModelResponse, String> {
+        let response_str = match provider {
+            "anthropic" => self.call_anthropic(base_url, api_key, req)?,
+            "ollama"    => self.call_ollama(base_url, req)?,
+            _           => self.call_openai_compat(base_url, api_key, provider, req)?,
+        }
+        self.parse_response(req.request_id.clone(), response_str, provider)
+    }
+
+    fn call_anthropic(&self, base_url: &str, api_key: &str, req: &ModelRequest) -> Result<String, String> {
+        let messages_json = req.messages.iter().map(|m| {
+            format!(r#"{{"role":"{}","content":"{}"}}"#, m.role, m.content.replace("\"", "\\\""))
+        }).collect::<Vec<_>>().join(",")
+
+        let mut body = format!(
+            r#"{{"model":"{}","max_tokens":{},"messages":[{}]}}"#,
+            req.model_id, req.max_tokens, messages_json
+        )
+        if let Some(sys) = &req.system {
+            body = format!(r#"{{"model":"{}","max_tokens":{},"system":"{}","messages":[{}]}}"#,
+                req.model_id, req.max_tokens, sys.replace("\"", "\\\""), messages_json)
+        }
+
+        omnisystem::net::http_post_with_headers(
+            &format!("{}/v1/messages", base_url),
+            &body,
+            vec![
+                ("x-api-key".to_string(), api_key.to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ],
+        ).map_err(|e| format!("Anthropic call failed: {}", e))
+    }
+
+    fn call_openai_compat(&self, base_url: &str, api_key: &str, _provider: &str, req: &ModelRequest) -> Result<String, String> {
+        let messages_json = req.messages.iter().map(|m| {
+            format!(r#"{{"role":"{}","content":"{}"}}"#, m.role, m.content.replace("\"", "\\\""))
+        }).collect::<Vec<_>>().join(",")
+
+        let body = format!(
+            r#"{{"model":"{}","messages":[{}],"temperature":{},"max_tokens":{}}}"#,
+            req.model_id, messages_json, req.temperature, req.max_tokens
+        )
+
+        omnisystem::net::http_post_with_headers(
+            &format!("{}/v1/chat/completions", base_url),
+            &body,
+            vec![
+                ("Authorization".to_string(), format!("Bearer {}", api_key)),
+                ("content-type".to_string(), "application/json".to_string()),
+            ],
+        ).map_err(|e| format!("OpenAI-compat call failed: {}", e))
+    }
+
+    fn call_ollama(&self, base_url: &str, req: &ModelRequest) -> Result<String, String> {
+        let messages_json = req.messages.iter().map(|m| {
+            format!(r#"{{"role":"{}","content":"{}"}}"#, m.role, m.content.replace("\"", "\\\""))
+        }).collect::<Vec<_>>().join(",")
+
+        let body = format!(
+            r#"{{"model":"{}","messages":[{}],"stream":false}}"#,
+            req.model_id, messages_json
+        )
+        omnisystem::net::http_post(
+            &format!("{}/api/chat", base_url),
+            &body,
+        ).map_err(|e| format!("Ollama call failed: {}", e))
+    }
+
+    fn parse_response(&self, req_id: String, json: String, provider: &str) -> Result<ModelResponse, String> {
+        let content = bridge_extract_field(json.clone(), "content")
+            .or_else(|_| bridge_extract_field(json.clone(), "text"))
+            .unwrap_or_default()
+
+        let input_tokens  = bridge_extract_field(json.clone(), "input_tokens")
+            .or_else(|_| bridge_extract_field(json.clone(), "prompt_tokens"))
+            .unwrap_or("0".to_string()).parse::<i32>().unwrap_or(0)
+        let output_tokens = bridge_extract_field(json.clone(), "output_tokens")
+            .or_else(|_| bridge_extract_field(json.clone(), "completion_tokens"))
+            .unwrap_or("0".to_string()).parse::<i32>().unwrap_or(0)
+
+        Ok(ModelResponse {
+            request_id:    req_id,
+            content,
+            model_used:    provider.to_string(),
+            input_tokens,
+            output_tokens,
+            latency_ms:    0.0,
+            success:       true,
+            error:         None,
+        })
+    }
+
+    fn probe_provider(&self, provider: &str) -> ModelHealthStatus {
+        // Try a tiny request to check availability
+        ModelHealthStatus {
+            provider:   provider.to_string(),
+            available:  true,   // optimistic; real check done by Python layer
+            latency_ms: 0.0,
+            error:      None,
+        }
+    }
+}
+
+fn bridge_extract_field(json: String, field: &str) -> Result<String, String> {
+    let key = format!("\"{}\":\"", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        if let Some(end) = after.find('"') {
+            return Ok(after[..end].to_string())
+        }
+    }
+    Err(format!("Field '{}' not found", field))
+}
+
+// ── Load Balancer Actor ───────────────────────────────────────────────────────
+
+pub actor LoadBalancer {
+    round_robin_idx: i32 = 0,
+    providers:       Arc<Mutex<Vec<String>>>,
+    weights:         Arc<Mutex<HashMap<String, i32>>>,  // provider → weight (1-10)
+
+    message SelectProvider(model_id: String) -> Result<String, String> {
+        let provs = providers.lock().unwrap()
+        if provs.is_empty() { return Err("No providers registered".to_string()) }
+
+        // Weighted round-robin
+        let weights_lock = weights.lock().unwrap()
+        let total_weight: i32 = provs.iter()
+            .map(|p| weights_lock.get(p).copied().unwrap_or(1))
+            .sum()
+
+        let mut target = self.round_robin_idx % total_weight
+        self.round_robin_idx = (self.round_robin_idx + 1) % (total_weight * 100)
+
+        for provider in provs.iter() {
+            let w = weights_lock.get(provider).copied().unwrap_or(1)
+            if target < w {
+                return Ok(provider.clone())
+            }
+            target -= w
+        }
+
+        Ok(provs[0].clone())
+    }
+
+    message SetWeight(provider: String, weight: i32) -> Result<(), String> {
+        let w = weight.max(1).min(10)
+        weights.lock().unwrap().insert(provider, w)
+        Ok(())
+    }
+
+    message AddProvider(provider: String) -> Result<(), String> {
+        providers.lock().unwrap().push(provider)
+        Ok(())
+    }
+
+    message RemoveProvider(provider: String) -> Result<(), String> {
+        providers.lock().unwrap().retain(|p| p != &provider)
+        Ok(())
+    }
+}

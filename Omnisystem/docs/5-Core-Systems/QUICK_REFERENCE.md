@@ -4,7 +4,7 @@
 
 ### Production Code
 ```
-app/src/main/java/ai/bonsai/buddy/
+app/src/main/java/ai/omnisystem/buddy/
 ├── data/remote_desktop/
 │   ├── RemoteDesktopModels.kt         (150 LOC) Data models
 │   ├── BrdfMobileClient.kt            (350 LOC) Core client
@@ -20,7 +20,7 @@ app/src/main/java/ai/bonsai/buddy/
 
 ### Test Code
 ```
-app/src/test/java/ai/bonsai/buddy/
+app/src/test/java/ai/omnisystem/buddy/
 ├── data/remote_desktop/
 │   ├── InputMapperTest.kt             (15 tests)
 │   ├── MediaCodecDecoderTest.kt       (10 tests)

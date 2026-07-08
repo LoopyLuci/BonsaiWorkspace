@@ -1,6 +1,6 @@
-# 🤖 Agent Integration Guide - Using Bonsai MCP Tools
+# 🤖 Agent Integration Guide - Using Omnisystem MCP Tools
 
-**Purpose:** Enable Claude and other agents to automatically use Bonsai MCP tools for code quality, bug hunting, and verification
+**Purpose:** Enable Claude and other agents to automatically use Omnisystem MCP tools for code quality, bug hunting, and verification
 
 **Status:** Ready for use once MCP server is running
 
@@ -35,22 +35,22 @@ Any agent that implements MCP client protocol can:
 
 **You ask:**
 ```
-"Scan the BonsaiWorkspace repository for all critical and high-severity 
+"Scan the OmnisystemWorkspace repository for all critical and high-severity 
 vulnerabilities. Show me the findings, explain each one, and fix the ones 
 you can automatically."
 ```
 
 **Claude automatically:**
-1. Calls `bonsai_scan_repo(path="Z:\Projects\BonsaiWorkspace", mode="full", ai_review=true)`
+1. Calls `omnisystem_scan_repo(path="Z:\Projects\OmnisystemWorkspace", mode="full", ai_review=true)`
 2. Gets back `scan_id: "scan-abc123"`
-3. Calls `bonsai_list_findings(scan_id="scan-abc123", severity="critical,high")`
-4. For each finding, calls `bonsai_explain_diagnostic(finding_id=...)`
-5. For fixable findings, calls `bonsai_auto_fix(finding_id=...)`
+3. Calls `omnisystem_list_findings(scan_id="scan-abc123", severity="critical,high")`
+4. For each finding, calls `omnisystem_explain_diagnostic(finding_id=...)`
+5. For fixable findings, calls `omnisystem_auto_fix(finding_id=...)`
 6. Summarizes results
 
 **Claude shows you:**
 ```
-Found 12 issues in BonsaiWorkspace:
+Found 12 issues in OmnisystemWorkspace:
 
 CRITICAL (3):
   ▸ SQL Injection in user_handler.rs:145
@@ -77,7 +77,7 @@ If it's verified, mark it as trusted."
 
 **Claude calls:**
 ```
-bonsai_verify_rule(rule_id="unused-import", proof_level="soundness")
+omnisystem_verify_rule(rule_id="unused-import", proof_level="soundness")
 ```
 
 **Result:**
@@ -97,9 +97,9 @@ Show me the metrics and trends."
 ```
 
 **Claude calls:**
-1. `bonsai_metrics(metric="cache_hit_rate", time_range="30d")`
-2. `bonsai_impact_analysis(rule_id=...)` for top rules
-3. `bonsai_metrics(metric="false_positive_rate", time_range="30d")`
+1. `omnisystem_metrics(metric="cache_hit_rate", time_range="30d")`
+2. `omnisystem_impact_analysis(rule_id=...)` for top rules
+3. `omnisystem_metrics(metric="false_positive_rate", time_range="30d")`
 
 **Result:**
 ```
@@ -130,10 +130,10 @@ Focus on effect violations and type safety issues."
 ```
 
 **Claude calls:**
-- `bonsai_omnisystem_lint(file="...", language="titan")`
-- `bonsai_omnisystem_lint(file="...", language="aether")`
-- `bonsai_omnisystem_lint(file="...", language="sylva")`
-- `bonsai_omnisystem_lint(file="...", language="axiom")`
+- `omnisystem_omnisystem_lint(file="...", language="titan")`
+- `omnisystem_omnisystem_lint(file="...", language="aether")`
+- `omnisystem_omnisystem_lint(file="...", language="sylva")`
+- `omnisystem_omnisystem_lint(file="...", language="axiom")`
 
 **Result:**
 ```
@@ -162,20 +162,20 @@ AXIOM files (1):
 
 ```
 Claude chains:
-1. bonsai_scan_repo() → scan_id
-2. bonsai_list_findings(scan_id) → findings[]
+1. omnisystem_scan_repo() → scan_id
+2. omnisystem_list_findings(scan_id) → findings[]
 3. FOR EACH finding:
-   - bonsai_auto_fix(finding_id) if fixable
-   - bonsai_explain_diagnostic(finding_id) if not
+   - omnisystem_auto_fix(finding_id) if fixable
+   - omnisystem_explain_diagnostic(finding_id) if not
 ```
 
 ### Pattern 2: Verify and Deploy
 
 ```
 Claude chains:
-1. bonsai_verify_rule(rule_id) for each rule
+1. omnisystem_verify_rule(rule_id) for each rule
 2. If verified, promote to "trusted"
-3. bonsai_marketplace_search() to find similar rules
+3. omnisystem_marketplace_search() to find similar rules
 4. Compare impact metrics
 ```
 
@@ -183,9 +183,9 @@ Claude chains:
 
 ```
 Claude chains:
-1. bonsai_metrics(metric="false_positive_rate")
+1. omnisystem_metrics(metric="false_positive_rate")
 2. IF fp_rate > threshold:
-   - bonsai_list_findings() to find culprits
+   - omnisystem_list_findings() to find culprits
    - Recommend rule adjustments
 ```
 
@@ -211,9 +211,9 @@ Response lists all 30 tools with schemas.
 {
   "method": "call_tool",
   "params": {
-    "name": "bonsai_scan_repo",
+    "name": "omnisystem_scan_repo",
     "arguments": {
-      "path": "Z:\\Projects\\BonsaiWorkspace",
+      "path": "Z:\\Projects\\OmnisystemWorkspace",
       "mode": "full",
       "ai_review": true,
       "output_format": "json"
@@ -224,13 +224,13 @@ Response lists all 30 tools with schemas.
 
 ### Streaming Results
 
-For long-running tools like `bonsai_scan_repo`, results stream back:
+For long-running tools like `omnisystem_scan_repo`, results stream back:
 
 ```json
 {
   "method": "call_tool",
   "params": {
-    "name": "bonsai_scan_repo",
+    "name": "omnisystem_scan_repo",
     "stream": true,
     "arguments": {...}
   }
@@ -254,10 +254,10 @@ Events stream:
 
 ```
 Every 1 hour:
-  1. bonsai_scan_repo(mode="incremental")
-  2. bonsai_list_findings(severity="high|critical")
+  1. omnisystem_scan_repo(mode="incremental")
+  2. omnisystem_list_findings(severity="high|critical")
   3. If findings > threshold:
-     - bonsai_prioritize_findings(strategy="impact")
+     - omnisystem_prioritize_findings(strategy="impact")
      - Alert team
      - Create issues
 ```
@@ -266,9 +266,9 @@ Every 1 hour:
 
 ```
 When new rule created:
-  1. bonsai_verify_rule(rule_id, proof_level="soundness")
+  1. omnisystem_verify_rule(rule_id, proof_level="soundness")
   2. If verified:
-     - bonsai_marketplace_publish(rule)
+     - omnisystem_marketplace_publish(rule)
   3. Else:
      - Log for manual review
      - Suggest refinements
@@ -278,11 +278,11 @@ When new rule created:
 
 ```
 When proposal created:
-  1. bonsai_team_profile(team_id) to get current rules
+  1. omnisystem_team_profile(team_id) to get current rules
   2. Test proposal against codebase
-  3. bonsai_prioritize_findings() by impact
+  3. omnisystem_prioritize_findings() by impact
   4. Present results
-  5. When approved: bonsai_vote_proposal(vote="approve")
+  5. When approved: omnisystem_vote_proposal(vote="approve")
 ```
 
 ---
@@ -292,9 +292,9 @@ When proposal created:
 ### Tool Permissions
 
 Some tools require elevated permissions:
-- `bonsai_auto_fix` – modify files
-- `bonsai_install_plugin` – change configuration
-- `bonsai_marketplace_publish` – publish to marketplace
+- `omnisystem_auto_fix` – modify files
+- `omnisystem_install_plugin` – change configuration
+- `omnisystem_marketplace_publish` – publish to marketplace
 
 These require explicit approval or auth token.
 
@@ -309,9 +309,9 @@ MCP server implements rate limits:
 
 All tool calls are logged:
 ```
-[2026-06-02 10:45:23] TOOL CALL: bonsai_scan_repo
+[2026-06-02 10:45:23] TOOL CALL: omnisystem_scan_repo
   Agent: claude-opus-4-8
-  Args: path=Z:\Projects\BonsaiWorkspace, mode=full
+  Args: path=Z:\Projects\OmnisystemWorkspace, mode=full
   Duration: 12500ms
   Status: success
   Findings: 87
@@ -353,7 +353,7 @@ curl http://localhost:3000/metrics/agents
 
 ### Step 1: Start MCP Server
 ```bash
-cd Z:\Projects\BonsaiWorkspace
+cd Z:\Projects\OmnisystemWorkspace
 cargo run --package mcp-server --release
 ```
 
@@ -372,7 +372,7 @@ curl http://localhost:3000/tools | jq '.[] | .name'
 
 In VS Code or web interface:
 ```
-"Scan the BonsaiWorkspace repository for all vulnerabilities 
+"Scan the OmnisystemWorkspace repository for all vulnerabilities 
 and automatically fix the ones you can."
 ```
 
@@ -384,10 +384,10 @@ Claude will automatically use the MCP tools!
 
 ### Test Lint Tool
 ```bash
-curl -X POST http://localhost:3000/tools/bonsai_lint \
+curl -X POST http://localhost:3000/tools/omnisystem_lint \
   -H "Content-Type: application/json" \
   -d '{
-    "path": "Z:\\Projects\\BonsaiWorkspace",
+    "path": "Z:\\Projects\\OmnisystemWorkspace",
     "languages": ["rust", "python"],
     "fix": false
   }'
@@ -395,10 +395,10 @@ curl -X POST http://localhost:3000/tools/bonsai_lint \
 
 ### Test Bug Hunter
 ```bash
-curl -X POST http://localhost:3000/tools/bonsai_scan_repo \
+curl -X POST http://localhost:3000/tools/omnisystem_scan_repo \
   -H "Content-Type: application/json" \
   -d '{
-    "path": "Z:\\Projects\\BonsaiWorkspace",
+    "path": "Z:\\Projects\\OmnisystemWorkspace",
     "mode": "quick",
     "ai_review": true
   }'
@@ -406,7 +406,7 @@ curl -X POST http://localhost:3000/tools/bonsai_scan_repo \
 
 ### Test Formal Verification
 ```bash
-curl -X POST http://localhost:3000/tools/bonsai_verify_rule \
+curl -X POST http://localhost:3000/tools/omnisystem_verify_rule \
   -H "Content-Type: application/json" \
   -d '{
     "rule_id": "unused-import",
@@ -431,9 +431,9 @@ See `mcp/mcp_config.json` for complete tool definitions including:
 - [ ] MCP server running: `curl http://localhost:3000/health`
 - [ ] Tools listed: `curl http://localhost:3000/tools | jq length`
 - [ ] Claude can discover MCP server
-- [ ] Can call `bonsai_lint` successfully
-- [ ] Can call `bonsai_scan_repo` successfully
-- [ ] Can call `bonsai_verify_rule` successfully
+- [ ] Can call `omnisystem_lint` successfully
+- [ ] Can call `omnisystem_scan_repo` successfully
+- [ ] Can call `omnisystem_verify_rule` successfully
 - [ ] Can chain multiple tools together
 
 ---

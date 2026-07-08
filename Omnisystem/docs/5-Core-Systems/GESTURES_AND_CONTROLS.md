@@ -1,6 +1,6 @@
 # Gestures and Controls Reference
 
-Complete guide to all gestures, keyboard shortcuts, and input methods in Bonsai Buddy's remote desktop client.
+Complete guide to all gestures, keyboard shortcuts, and input methods in Omnisystem Buddy's remote desktop client.
 
 ## Touch Gestures
 

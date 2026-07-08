@@ -1,0 +1,1805 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUG HUNTER & SURVIVAL SYSTEM — OMNISYSTEM ENTERPRISE FAULT INTELLIGENCE PLATFORM
+// Real-time bug detection, pattern recognition, personal use profiles, auto-recovery, survival mode
+// Personal use is first-class: every bug tracked per-developer, fix suggestions tuned to your workflow
+// Language: TITAN — 1,400+ LOC
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::time::Instant;
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// FIX ACTIONS — Concrete steps the Bug Hunter can execute automatically
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FixAction {
+    OpenFile { path: String, line: Option<u32> },         // Open file in editor at line
+    ApplyEdit { path: String, old: String, new: String }, // In-place text patch
+    ShowDiff  { path: String, patch: String },            // Display diff for review
+    ReloadWindow,                                          // Reload the VS Code window
+    RunCommand { cmd: String, cwd: String },              // Execute shell command
+    InstallDependency { name: String, version: String },  // npm/cargo install
+    UpdateConfig { key: String, value: String },          // Update workspace setting
+    CreateFile { path: String, content: String },         // Create a new file
+    NotifyUser { message: String, severity: String },     // Surface a notification
+    ManualStep { description: String },                   // Human must act
+}
+
+impl FixAction {
+    pub fn label(&self) -> String {
+        match self {
+            FixAction::OpenFile { path, line } =>
+                format!("Open {}{}", path, line.map(|l| format!(":{}", l)).unwrap_or_default()),
+            FixAction::ApplyEdit { path, .. } => format!("Patch {}", path),
+            FixAction::ShowDiff  { path, .. } => format!("Show diff in {}", path),
+            FixAction::ReloadWindow            => "Reload VS Code window".to_string(),
+            FixAction::RunCommand { cmd, .. }  => format!("Run: {}", cmd),
+            FixAction::InstallDependency { name, version } => format!("Install {}@{}", name, version),
+            FixAction::UpdateConfig { key, value }         => format!("Set {} = {}", key, value),
+            FixAction::CreateFile { path, .. }             => format!("Create {}", path),
+            FixAction::NotifyUser { message, .. }          => format!("Notify: {}", message),
+            FixAction::ManualStep { description }          => format!("Manual: {}", description),
+        }
+    }
+
+    pub fn is_safe_to_auto_apply(&self) -> bool {
+        matches!(self,
+            FixAction::OpenFile { .. }
+            | FixAction::ShowDiff { .. }
+            | FixAction::NotifyUser { .. }
+            | FixAction::UpdateConfig { .. }
+        )
+    }
+}
+
+// ── Auto-Fix Plan: ordered fix steps with confidence and rollback ─────────────
+
+#[derive(Clone, Debug)]
+pub struct AutoFixPlan {
+    pub bug_id: String,
+    pub steps: Vec<FixAction>,
+    pub confidence: u8,        // 0-100: certainty this plan will resolve the bug
+    pub risk_level: RiskLevel,
+    pub rollback: Vec<FixAction>,
+    pub estimated_minutes: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RiskLevel {
+    Safe,      // read-only, reversible
+    Low,       // minor config change, easily undone
+    Medium,    // file patch, requires review
+    High,      // structural change, could break other things
+    Critical,  // destructive — reload/reinstall required
+}
+
+impl AutoFixPlan {
+    pub fn new(bug_id: &str, confidence: u8, risk: RiskLevel) -> Self {
+        AutoFixPlan {
+            bug_id: bug_id.to_string(),
+            steps: Vec::new(),
+            confidence,
+            risk_level: risk,
+            rollback: Vec::new(),
+            estimated_minutes: 1,
+        }
+    }
+
+    pub fn with_step(mut self, action: FixAction) -> Self {
+        self.steps.push(action);
+        self
+    }
+
+    pub fn with_rollback(mut self, action: FixAction) -> Self {
+        self.rollback.push(action);
+        self
+    }
+
+    pub fn with_estimate(mut self, minutes: u32) -> Self {
+        self.estimated_minutes = minutes;
+        self
+    }
+
+    pub fn can_auto_apply(&self) -> bool {
+        self.confidence >= 85 && self.risk_level != RiskLevel::Critical
+            && self.steps.iter().all(|s| s.is_safe_to_auto_apply())
+    }
+}
+
+// ── Fix Confidence: per-suggestion certainty scoring ──────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct FixConfidence {
+    pub score: u8,             // 0-100
+    pub evidence: Vec<String>, // what signals raised/lowered confidence
+    pub caveat: Option<String>,// warning about edge cases
+}
+
+impl FixConfidence {
+    pub fn high(evidence: Vec<&str>) -> Self {
+        FixConfidence { score: 95, evidence: evidence.iter().map(|s| s.to_string()).collect(), caveat: None }
+    }
+    pub fn medium(score: u8, evidence: Vec<&str>, caveat: &str) -> Self {
+        FixConfidence { score, evidence: evidence.iter().map(|s| s.to_string()).collect(), caveat: Some(caveat.to_string()) }
+    }
+    pub fn low(reason: &str) -> Self {
+        FixConfidence { score: 40, evidence: vec![reason.to_string()], caveat: Some("Manual verification required".to_string()) }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUG SEVERITY & CATEGORY
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BugSeverity {
+    Cosmetic    = 1, // visible glitch, no functional impact
+    Minor       = 2, // degraded UX, workaround exists
+    Major       = 3, // broken feature, no workaround
+    Critical    = 4, // data loss or security risk
+    Fatal       = 5, // system unresponsive or corrupt
+}
+
+impl BugSeverity {
+    pub fn label(&self) -> &str {
+        match self {
+            BugSeverity::Cosmetic  => "COSMETIC",
+            BugSeverity::Minor     => "MINOR",
+            BugSeverity::Major     => "MAJOR",
+            BugSeverity::Critical  => "CRITICAL",
+            BugSeverity::Fatal     => "FATAL",
+        }
+    }
+    pub fn emoji(&self) -> &str {
+        match self {
+            BugSeverity::Cosmetic  => "✦",
+            BugSeverity::Minor     => "⚠",
+            BugSeverity::Major     => "✖",
+            BugSeverity::Critical  => "☣",
+            BugSeverity::Fatal     => "☠",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BugCategory {
+    VsCodeExtension,    // VS Code webview, CSP, resource loading
+    CssLayout,          // pointer-events, z-index, visibility
+    JavaScript,         // runtime errors, scoping, async issues
+    Ipc,                // IPC channel failures, timeout, misrouting
+    Compiler,           // frontend parse errors, codegen faults
+    Runtime,            // VM panics, allocator OOM, GC corruption
+    NativeBinding,      // GPU/Input/Display platform call failures
+    FileSystem,         // I/O errors, permission denied, path issues
+    Network,            // connection refused, timeout, protocol error
+    Security,           // CSP violation, permission bypass, injection
+    Performance,        // latency spike, memory leak, CPU saturation
+    UserInterface,      // widget state, event propagation, render glitch
+    BuildSystem,        // compilation failure, linker error, cache staleness
+    LanguageFrontend,   // lexer/parser/type-checker bugs
+    TypeScript,         // TypeScript type errors, compilation failures
+    PackageManager,     // npm/vsix bundle, node_modules, dependency issues
+    PtyTerminal,        // PTY resize, shell session, node-pty failures
+    Webview,            // VS Code webview init, message bridge, context issues
+    Unknown,
+}
+
+impl BugCategory {
+    pub fn label(&self) -> &str {
+        match self {
+            BugCategory::VsCodeExtension  => "VS Code Extension",
+            BugCategory::CssLayout        => "CSS / Layout",
+            BugCategory::JavaScript       => "JavaScript",
+            BugCategory::Ipc              => "IPC",
+            BugCategory::Compiler         => "Compiler",
+            BugCategory::Runtime          => "Runtime",
+            BugCategory::NativeBinding    => "Native Binding",
+            BugCategory::FileSystem       => "File System",
+            BugCategory::Network          => "Network",
+            BugCategory::Security         => "Security",
+            BugCategory::Performance      => "Performance",
+            BugCategory::UserInterface    => "User Interface",
+            BugCategory::BuildSystem      => "Build System",
+            BugCategory::LanguageFrontend => "Language Frontend",
+            BugCategory::TypeScript       => "TypeScript",
+            BugCategory::PackageManager   => "Package Manager",
+            BugCategory::PtyTerminal      => "PTY Terminal",
+            BugCategory::Webview          => "Webview",
+            BugCategory::Unknown          => "Unknown",
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUG RECORD
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug)]
+pub struct BugRecord {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub category: BugCategory,
+    pub severity: BugSeverity,
+    pub symptom: String,           // what the user observes
+    pub root_cause: String,        // technical explanation
+    pub reproduction_steps: Vec<String>,
+    pub fix_applied: String,       // what fixed it (empty if open)
+    pub fix_suggestions: Vec<String>, // ordered by confidence
+    pub files_affected: Vec<String>,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    pub occurrence_count: u64,
+    pub resolved: bool,
+    pub auto_recoverable: bool,    // can the survival system fix this automatically
+    pub recovery_strategy: RecoveryStrategy,
+    pub tags: Vec<String>,
+    pub fix_plan: Option<AutoFixPlan>, // structured auto-fix plan, if available
+}
+
+impl BugRecord {
+    pub fn new(id: &str, title: &str, category: BugCategory, severity: BugSeverity) -> Self {
+        BugRecord {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            category,
+            severity,
+            symptom: String::new(),
+            root_cause: String::new(),
+            reproduction_steps: Vec::new(),
+            fix_applied: String::new(),
+            fix_suggestions: Vec::new(),
+            files_affected: Vec::new(),
+            first_seen_ms: 0,
+            last_seen_ms: 0,
+            occurrence_count: 1,
+            resolved: false,
+            auto_recoverable: false,
+            recovery_strategy: RecoveryStrategy::ManualIntervention,
+            tags: Vec::new(),
+            fix_plan: None,
+        }
+    }
+
+    pub fn with_symptom(mut self, symptom: &str) -> Self {
+        self.symptom = symptom.to_string();
+        self
+    }
+
+    pub fn with_root_cause(mut self, cause: &str) -> Self {
+        self.root_cause = cause.to_string();
+        self
+    }
+
+    pub fn with_fix(mut self, fix: &str) -> Self {
+        self.fix_applied = fix.to_string();
+        self.resolved = true;
+        self
+    }
+
+    pub fn with_suggestions(mut self, suggestions: Vec<&str>) -> Self {
+        self.fix_suggestions = suggestions.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    pub fn with_files(mut self, files: Vec<&str>) -> Self {
+        self.files_affected = files.iter().map(|f| f.to_string()).collect();
+        self
+    }
+
+    pub fn auto_recover(mut self, strategy: RecoveryStrategy) -> Self {
+        self.auto_recoverable = true;
+        self.recovery_strategy = strategy;
+        self
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// RECOVERY STRATEGIES
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryStrategy {
+    Restart,                       // restart the failing component
+    Fallback(String),              // fall back to a safe alternative
+    DegradedMode(String),          // continue with reduced functionality
+    ClearCacheReload,              // wipe stale cache and reinitialize
+    ReloadWebview,                 // dispose and recreate webview panel
+    KillAndRespawnProcess,         // SIGKILL + respawn child process
+    RollbackToLastGoodState,       // restore from last known good snapshot
+    ApplyPatch(Vec<String>),       // apply automated code patch
+    NotifyUserAndWait,             // surface to user with clear instructions
+    ManualIntervention,            // requires human attention
+}
+
+impl RecoveryStrategy {
+    pub fn label(&self) -> String {
+        match self {
+            RecoveryStrategy::Restart                  => "Restart component".to_string(),
+            RecoveryStrategy::Fallback(alt)            => format!("Fallback → {}", alt),
+            RecoveryStrategy::DegradedMode(desc)       => format!("Degraded mode: {}", desc),
+            RecoveryStrategy::ClearCacheReload         => "Clear cache + reload".to_string(),
+            RecoveryStrategy::ReloadWebview            => "Reload webview".to_string(),
+            RecoveryStrategy::KillAndRespawnProcess    => "Kill + respawn process".to_string(),
+            RecoveryStrategy::RollbackToLastGoodState  => "Rollback to last good state".to_string(),
+            RecoveryStrategy::ApplyPatch(patches)      => format!("Apply {} patch(es)", patches.len()),
+            RecoveryStrategy::NotifyUserAndWait        => "Notify user + wait".to_string(),
+            RecoveryStrategy::ManualIntervention       => "Manual intervention required".to_string(),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// KNOWN BUG DATABASE — Pre-loaded with all bugs found during development
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct KnownBugDatabase {
+    pub bugs: HashMap<String, BugRecord>,
+    pub pattern_index: HashMap<String, Vec<String>>, // pattern string → bug IDs
+}
+
+impl KnownBugDatabase {
+    pub fn new() -> Self {
+        let mut db = KnownBugDatabase {
+            bugs: HashMap::new(),
+            pattern_index: HashMap::new(),
+        };
+        db.seed_known_bugs();
+        db
+    }
+
+    fn register(&mut self, bug: BugRecord) {
+        // Index the bug under its symptom keywords for fast pattern matching
+        let keywords: Vec<String> = bug.symptom.split_whitespace()
+            .chain(bug.root_cause.split_whitespace())
+            .filter(|w| w.len() > 4)
+            .map(|w| w.to_lowercase())
+            .collect();
+        for kw in &keywords {
+            self.pattern_index.entry(kw.clone()).or_default().push(bug.id.clone());
+        }
+        self.bugs.insert(bug.id.clone(), bug);
+    }
+
+    fn seed_known_bugs(&mut self) {
+        // ── BUG-001: VS Code Webview Inline Script CSP Block ──────────────────────────────────────────────
+        let mut b001 = BugRecord::new(
+            "BUG-001",
+            "VS Code webview inline scripts blocked by CSP",
+            BugCategory::VsCodeExtension,
+            BugSeverity::Fatal,
+        );
+        b001.description = "All JavaScript in the webview fails to execute. \
+            VS Code applies its own CSP as an HTTP-equivalent header that takes precedence \
+            over any meta-tag CSP in the HTML. Both nonce-based and unsafe-inline approaches \
+            are blocked.".to_string();
+        b001.symptom = "Clock shows 00:00:00 Mon Jan 01 (JS never ran). \
+            No green startup banner. Icons visible but completely unresponsive. \
+            No red error bar (because window.onerror never fires either).".to_string();
+        b001.root_cause = "VS Code's webview applies its own Content-Security-Policy as an \
+            HTTP-equivalent header AFTER the HTML is parsed. This header takes precedence \
+            over the meta-tag CSP. Even unsafe-inline and nonce-based CSPs in the meta-tag \
+            are overridden. Inline <script> blocks are unconditionally blocked.".to_string();
+        b001.reproduction_steps = vec![
+            "Create a VS Code webview panel with enableScripts: true".to_string(),
+            "Add a <meta http-equiv=\"Content-Security-Policy\"> with unsafe-inline".to_string(),
+            "Place JavaScript in a <script> block in the HTML".to_string(),
+            "Observe that no JS executes — clock stays at placeholder value".to_string(),
+        ];
+        b001.fix_applied = "Move ALL JavaScript to media/desktop-client.js. \
+            Load via webview.asWebviewUri(Uri.joinPath(extensionUri, 'media', 'desktop-client.js')). \
+            Use <script src=\"${scriptUri}\"></script> in the HTML template. \
+            Add 'media/' to localResourceRoots. Add !media/** to .vscodeignore.".to_string();
+        b001.fix_suggestions = vec![
+            "Move JS to external file in media/ and load via asWebviewUri()".to_string(),
+            "Never use inline <script> blocks in VS Code webviews".to_string(),
+            "Never use nonce-based or unsafe-inline CSP — VS Code overrides them".to_string(),
+        ];
+        b001.files_affected = vec![
+            "vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string(),
+            "vscode-omnisystem/media/desktop-client.js".to_string(),
+            "vscode-omnisystem/.vscodeignore".to_string(),
+        ];
+        b001.resolved = true;
+        b001.auto_recoverable = true;
+        b001.recovery_strategy = RecoveryStrategy::ApplyPatch(vec![
+            "Extract inline JS to media/*.js".to_string(),
+            "Update localResourceRoots to include media/".to_string(),
+            "Update .vscodeignore with !media/**".to_string(),
+        ]);
+        b001.tags = vec!["vscode".to_string(), "csp".to_string(), "webview".to_string(), "script".to_string()];
+        self.register(b001);
+
+        // ── BUG-002: pointer-events:none on #windows-layer Intercepts Clicks ─────────────────────────────
+        let mut b002 = BugRecord::new(
+            "BUG-002",
+            "#windows-layer with pointer-events:none blocks click events to desktop icons",
+            BugCategory::CssLayout,
+            BugSeverity::Critical,
+        );
+        b002.description = "An absolutely positioned full-screen div (#windows-layer) \
+            sits above the desktop icons in the stacking order. Even though it is \
+            visually transparent, it intercepts all pointer events, making icons \
+            completely unclickable.".to_string();
+        b002.symptom = "User can see all desktop icons but clicking on them does nothing. \
+            No hover effects, no context menus, no app launches.".to_string();
+        b002.root_cause = "#windows-layer has position:absolute; inset:0; z-index above icons. \
+            The default pointer-events CSS value is 'auto', meaning it intercepts all mouse \
+            events even when the element has no visible background. This shadows every icon \
+            beneath it in the DOM.".to_string();
+        b002.reproduction_steps = vec![
+            "Render OmniOS desktop with #desktop-icons and #windows-layer as siblings".to_string(),
+            "Give #windows-layer position:absolute; inset:0 with higher z-index".to_string(),
+            "Attempt to click a desktop icon".to_string(),
+            "Observe: click intercepted by invisible windows-layer, icon never receives event".to_string(),
+        ];
+        b002.fix_applied = "Add pointer-events:none to #windows-layer CSS. \
+            Add pointer-events:auto to each .window element so open windows remain interactive. \
+            This lets clicks pass through the layer itself but still land on any floating window.".to_string();
+        b002.fix_suggestions = vec![
+            "Set #windows-layer { pointer-events: none; }".to_string(),
+            "Set .window { pointer-events: auto; } for interactive windows".to_string(),
+            "Ensure desktop icons are NOT children of #windows-layer".to_string(),
+        ];
+        b002.files_affected = vec![
+            "vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string(),
+            "vscode-omnisystem/media/desktop-client.js".to_string(),
+        ];
+        b002.resolved = true;
+        b002.auto_recoverable = true;
+        b002.recovery_strategy = RecoveryStrategy::ApplyPatch(vec![
+            "Inject CSS: #windows-layer { pointer-events: none; }".to_string(),
+            "Inject CSS: .window { pointer-events: auto; }".to_string(),
+        ]);
+        b002.tags = vec!["css".to_string(), "pointer-events".to_string(), "click".to_string(), "z-index".to_string()];
+        self.register(b002);
+
+        // ── BUG-003: Clock Placeholder Diagnostic ─────────────────────────────────────────────────────────
+        let mut b003 = BugRecord::new(
+            "BUG-003",
+            "Clock shows 00:00:00 Mon Jan 01 — diagnostic indicator for JS not running",
+            BugCategory::JavaScript,
+            BugSeverity::Major,
+        );
+        b003.description = "The OmniOS desktop clock shows the raw HTML placeholder instead \
+            of the live time. This is a reliable diagnostic indicator that the webview \
+            JavaScript IIFE never executed — it is the first thing updateClock() does.".to_string();
+        b003.symptom = "Clock displays '00:00:00 Mon Jan 01' in the taskbar instead of current time.".to_string();
+        b003.root_cause = "This is a secondary symptom of BUG-001 (CSP blocking inline scripts). \
+            updateClock() is called immediately in the IIFE. If the clock is wrong, \
+            the entire script block never ran.".to_string();
+        b003.reproduction_steps = vec![
+            "Open OmniOS Desktop panel".to_string(),
+            "Observe clock in taskbar".to_string(),
+            "If it shows '00:00:00 Mon Jan 01', the JS IIFE did not execute".to_string(),
+        ];
+        b003.fix_applied = "Resolved as part of BUG-001 fix. Clock now updates correctly \
+            once JS runs via external asWebviewUri() script.".to_string();
+        b003.fix_suggestions = vec![
+            "Check if JS is executing — this symptom means the entire script is blocked".to_string(),
+            "See BUG-001 for the root cause and fix".to_string(),
+        ];
+        b003.files_affected = vec![
+            "vscode-omnisystem/media/desktop-client.js".to_string(),
+        ];
+        b003.resolved = true;
+        b003.auto_recoverable = false;
+        b003.recovery_strategy = RecoveryStrategy::Fallback(
+            "Show diagnostic red banner: 'JS not executing — check BUG-001'".to_string()
+        );
+        b003.tags = vec!["clock".to_string(), "diagnostic".to_string(), "javascript".to_string(), "iife".to_string()];
+        self.register(b003);
+
+        // ── BUG-004: IPC Channel Timeout Under Load ────────────────────────────────────────────────────────
+        let mut b004 = BugRecord::new(
+            "BUG-004",
+            "IPC JSON-RPC channel timeout when runtime process is slow to start",
+            BugCategory::Ipc,
+            BugSeverity::Major,
+        );
+        b004.description = "RuntimeClient.ts spawns 'omnicc runtime --ipc' and immediately \
+            sends a request before the process is ready. The child process takes up to 800ms \
+            to emit the ready signal. Requests sent before that window get no response \
+            and time out.".to_string();
+        b004.symptom = "First desktop action after opening the panel returns 'IPC timeout' error. \
+            Subsequent actions work fine.".to_string();
+        b004.root_cause = "Missing readiness handshake. RuntimeClient spawns the child process \
+            but does not wait for the '{\"jsonrpc\":\"2.0\",\"method\":\"runtime/ready\"}' \
+            notification before dispatching queued requests.".to_string();
+        b004.reproduction_steps = vec![
+            "Open OmniOS Desktop".to_string(),
+            "Immediately click 'Files' icon before 800ms startup window".to_string(),
+            "Observe IPC timeout error in the Files window".to_string(),
+        ];
+        b004.fix_applied = String::new(); // open
+        b004.fix_suggestions = vec![
+            "Queue all requests until runtime/ready notification is received".to_string(),
+            "Implement exponential backoff retry for the first 3 seconds".to_string(),
+            "Use a readiness Promise that resolves on runtime/ready before processing queue".to_string(),
+        ];
+        b004.files_affected = vec![
+            "vscode-omnisystem/src/runtime/RuntimeClient.ts".to_string(),
+        ];
+        b004.auto_recoverable = true;
+        b004.recovery_strategy = RecoveryStrategy::ApplyPatch(vec![
+            "Buffer requests until runtime/ready received".to_string(),
+            "Auto-retry with 100ms backoff up to 10 attempts".to_string(),
+        ]);
+        b004.tags = vec!["ipc".to_string(), "timeout".to_string(), "startup".to_string(), "runtime".to_string()];
+        self.register(b004);
+
+        // ── BUG-005: omnicc.js Missing Runtime --ipc Flag ─────────────────────────────────────────────────
+        let mut b005 = BugRecord::new(
+            "BUG-005",
+            "omnicc.js does not handle 'runtime --ipc' command — IPC mode stub needed",
+            BugCategory::BuildSystem,
+            BugSeverity::Major,
+        );
+        b005.description = "The RuntimeClient spawns 'omnicc runtime --ipc' but the \
+            current omnicc.js CLI does not implement the runtime sub-command with IPC mode. \
+            The process exits immediately instead of entering the JSON-RPC event loop.".to_string();
+        b005.symptom = "RuntimeClient immediately receives process exit (code 1) instead \
+            of the runtime/ready notification. All IPC calls fail.".to_string();
+        b005.root_cause = "omnicc.js CLI only handles 'build', 'run', 'test', 'clean'. \
+            The 'runtime --ipc' command needs to start an event loop reading from stdin, \
+            parsing Content-Length framed JSON-RPC, dispatching to fs/build/system handlers, \
+            and writing responses to stdout.".to_string();
+        b005.reproduction_steps = vec![
+            "Run: node bin/omnicc.js runtime --ipc".to_string(),
+            "Observe: process exits immediately with unknown command error".to_string(),
+        ];
+        b005.fix_applied = String::new(); // open
+        b005.fix_suggestions = vec![
+            "Add 'runtime' sub-command to omnicc.js with --ipc flag handler".to_string(),
+            "Implement Content-Length framed stdin reader".to_string(),
+            "Implement fs.*, build.*, system.* JSON-RPC method handlers".to_string(),
+            "Emit runtime/ready notification on startup".to_string(),
+        ];
+        b005.files_affected = vec![
+            "vscode-omnisystem/bin/omnicc.js".to_string(),
+        ];
+        b005.auto_recoverable = false;
+        b005.recovery_strategy = RecoveryStrategy::DegradedMode(
+            "Use direct Node.js child_process.spawn instead of IPC for fs.* operations".to_string()
+        );
+        b005.tags = vec!["ipc".to_string(), "omnicc".to_string(), "runtime".to_string(), "cli".to_string()];
+        self.register(b005);
+
+        // ── BUG-006: Compiler IR Lowering Hardcodes Registers ─────────────────────────────────────────────
+        let mut b006 = BugRecord::new(
+            "BUG-006",
+            "IR lowering hardcodes rax/x0 for all operands — no register allocation",
+            BugCategory::Compiler,
+            BugSeverity::Major,
+        );
+        b006.description = "The x86-64 and ARM64 IR lowering passes assign rax or x0 to \
+            every operand regardless of the operation. The RegisterAllocator struct exists \
+            and is correctly implemented but is not consulted during lowering. This produces \
+            incorrect code for any function with more than one live variable.".to_string();
+        b006.symptom = "All compiled functions produce machine code that overwrites rax \
+            on every operation. Programs with multiple variables compute wrong results.".to_string();
+        b006.root_cause = "lower_ir_to_x86_64() and lower_ir_to_arm64() use hardcoded \
+            register literals instead of calling RegisterAllocator::allocate(value_id). \
+            Branch backpatching is also absent — branch targets are all offset 0.".to_string();
+        b006.reproduction_steps = vec![
+            "Compile a Titan function with 2+ local variables".to_string(),
+            "Inspect the emitted machine code".to_string(),
+            "Observe: all MOV/ADD/SUB target rax, second variable overwrites first".to_string(),
+        ];
+        b006.fix_applied = String::new(); // open
+        b006.fix_suggestions = vec![
+            "Call RegisterAllocator::allocate(ir_value.id) for each operand".to_string(),
+            "Maintain a patch-list of branch instructions, resolve after all blocks emitted".to_string(),
+            "Add unit test: two-variable function, verify distinct registers used".to_string(),
+        ];
+        b006.files_affected = vec![
+            "Omnisystem/src/compiler/backend/TitanBackend.titan".to_string(),
+        ];
+        b006.auto_recoverable = false;
+        b006.recovery_strategy = RecoveryStrategy::DegradedMode(
+            "Emit interpreter bytecode path instead of native code until register allocator is wired".to_string()
+        );
+        b006.tags = vec!["compiler".to_string(), "codegen".to_string(), "register".to_string(), "x86".to_string()];
+        self.register(b006);
+
+        // ── BUG-007: TypeScript TS2352 Double-Cast Error ──────────────────────────────────────────────────
+        let mut b007 = BugRecord::new(
+            "BUG-007",
+            "TS2352: IPC message cast fails — must use double-cast pattern",
+            BugCategory::TypeScript,
+            BugSeverity::Critical,
+        );
+        b007.description = "The OmniOSDesktop.ts _handleMessage receives msg typed as \
+            {command:string;[key:string]:unknown}. TypeScript rejects direct cast to \
+            {callId,method,params} as an incompatible type. Build fails with TS2352.".to_string();
+        b007.symptom = "TypeScript build fails: TS2352 Conversion of type '{ [key: string]: unknown; \
+            command: string; }' to type '{ callId: string; method: string; params: unknown; }' \
+            may be a mistake.".to_string();
+        b007.root_cause = "TypeScript's structural type system cannot verify that the runtime object \
+            has the required keys when the declared type is too wide. The double-cast via `unknown` \
+            bypasses the constraint correctly.".to_string();
+        b007.fix_applied = "Changed: `msg as { callId: string; ... }` \
+            to: `msg as unknown as { callId: string; ... }`".to_string();
+        b007.fix_suggestions = vec![
+            "Use double cast: `msg as unknown as TargetType`".to_string(),
+            "Alternatively narrow with: `if ('callId' in msg && 'method' in msg)`".to_string(),
+        ];
+        b007.fix_plan = Some(AutoFixPlan::new("BUG-007", 100, RiskLevel::Safe)
+            .with_step(FixAction::OpenFile {
+                path: "vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string(),
+                line: Some(632),
+            })
+            .with_step(FixAction::ManualStep {
+                description: "Replace `msg as { callId... }` with `msg as unknown as { callId... }`".to_string(),
+            })
+            .with_estimate(2));
+        b007.files_affected = vec!["vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string()];
+        b007.resolved = true;
+        b007.auto_recoverable = false;
+        b007.tags = vec!["typescript".to_string(), "cast".to_string(), "ipc".to_string()];
+        self.register(b007);
+
+        // ── BUG-008: PTY Terminal Not Resizing with Window ────────────────────────────────────────────────
+        let mut b008 = BugRecord::new(
+            "BUG-008",
+            "PTY terminal cols/rows stale after window resize — no ResizeObserver",
+            BugCategory::PtyTerminal,
+            BugSeverity::Major,
+        );
+        b008.description = "PTY terminal sessions are created with fixed cols/rows calculated at \
+            creation time. When the window is resized, the PTY dimensions are not updated, causing \
+            wrapping and display artifacts.".to_string();
+        b008.symptom = "Text wraps at wrong column count after resizing terminal window. \
+            Long lines appear truncated or double-wrapped.".to_string();
+        b008.root_cause = "buildPtyTerminal() computes cols/rows once and sends ptyResize only at \
+            creation. No ResizeObserver is attached to the scroll container.".to_string();
+        b008.fix_applied = "Added ResizeObserver on scrollEl after PTY creation. \
+            On resize: cols = Math.floor(scrollEl.offsetWidth / 7.22), rows = Math.floor(scrollEl.offsetHeight / 18). \
+            Sends ptyResize message to host.".to_string();
+        b008.fix_suggestions = vec![
+            "Attach ResizeObserver to PTY container element".to_string(),
+            "Recalculate cols/rows from pixel dimensions on every resize event".to_string(),
+        ];
+        b008.fix_plan = Some(AutoFixPlan::new("BUG-008", 99, RiskLevel::Safe)
+            .with_step(FixAction::OpenFile {
+                path: "vscode-omnisystem/media/desktop-client.js".to_string(),
+                line: None,
+            })
+            .with_step(FixAction::ManualStep {
+                description: "After `c.append(scrollEl, inputRow, statusRow)` add ResizeObserver block".to_string(),
+            })
+            .with_estimate(5));
+        b008.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b008.resolved = true;
+        b008.auto_recoverable = false;
+        b008.tags = vec!["pty".to_string(), "resize".to_string(), "terminal".to_string()];
+        self.register(b008);
+
+        // ── BUG-009: File Manager Delete Lacks Confirmation ───────────────────────────────────────────────
+        let mut b009 = BugRecord::new(
+            "BUG-009",
+            "File Manager delete button has no confirmation dialog — risk of accidental deletion",
+            BugCategory::FileSystem,
+            BugSeverity::Major,
+        );
+        b009.description = "The file manager delete button directly posts the deleteFile command \
+            without asking the user to confirm. VS Code useTrash:true mitigates permanent loss \
+            but the UX is still unsafe.".to_string();
+        b009.symptom = "Clicking Delete immediately removes the file/folder with no confirmation. \
+            User may accidentally delete important files.".to_string();
+        b009.root_cause = "delete button onclick calls post('deleteFile',...) directly. \
+            No confirm() dialog precedes the command.".to_string();
+        b009.fix_applied = "Added: `if(!confirm('Delete '+name+'?'))return;` before deleteFile post.".to_string();
+        b009.fix_suggestions = vec!["Add confirm() before deleteFile".to_string()];
+        b009.fix_plan = Some(AutoFixPlan::new("BUG-009", 95, RiskLevel::Safe)
+            .with_step(FixAction::OpenFile { path: "vscode-omnisystem/media/desktop-client.js".to_string(), line: None })
+            .with_step(FixAction::ManualStep { description: "Wrap deleteFile post() with if(!confirm('Delete?'))return;".to_string() })
+            .with_estimate(3));
+        b009.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b009.resolved = true;
+        b009.auto_recoverable = false;
+        b009.tags = vec!["file-manager".to_string(), "ux".to_string(), "safety".to_string()];
+        self.register(b009);
+
+        // ── BUG-010: Build Progress Uses setTimeout Simulation ────────────────────────────────────────────
+        let mut b010 = BugRecord::new(
+            "BUG-010",
+            "Build phase bar driven by setTimeout not real IPC build/progress events",
+            BugCategory::BuildSystem,
+            BugSeverity::Major,
+        );
+        b010.description = "The build progress phase bar was advanced by arbitrary setTimeout \
+            delays (e.g. 1s per phase) rather than real IPC build/progress notifications from \
+            the omnicc runtime.".to_string();
+        b010.symptom = "Build phases complete at fixed time intervals regardless of actual compilation speed. \
+            Phase bar does not reflect real compilation state.".to_string();
+        b010.root_cause = "handleBuildProgress() was not implemented to parse the phase field \
+            from IPC notifications and advance the phase-step UI accordingly.".to_string();
+        b010.fix_applied = "Implemented handleBuildProgress(msg) to match msg.phase against \
+            buildPhases array using fuzzy match, then advance the phase-step bar element states.".to_string();
+        b010.fix_suggestions = vec![
+            "Map msg.phase string to buildPhases array index via fuzzy match".to_string(),
+            "Set phase-step elements to 'done'/'active' based on current phase index".to_string(),
+        ];
+        b010.fix_plan = Some(AutoFixPlan::new("BUG-010", 92, RiskLevel::Safe)
+            .with_step(FixAction::OpenFile { path: "vscode-omnisystem/media/desktop-client.js".to_string(), line: Some(502) })
+            .with_step(FixAction::ManualStep { description: "Implement handleBuildProgress() with phaseIdx matching logic".to_string() })
+            .with_estimate(10));
+        b010.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b010.resolved = true;
+        b010.auto_recoverable = false;
+        b010.tags = vec!["build".to_string(), "ipc".to_string(), "progress".to_string()];
+        self.register(b010);
+
+        // ── BUG-011: System Monitor Shows Static Placeholder Data ─────────────────────────────────────────
+        let mut b011 = BugRecord::new(
+            "BUG-011",
+            "System Monitor CPU/RAM bars show static placeholder values, not live IPC metrics",
+            BugCategory::UserInterface,
+            BugSeverity::Major,
+        );
+        b011.description = "The System Monitor panel displayed hardcoded values (0% CPU, 0MB RAM) \
+            instead of live data from the IPC system/metrics notifications.".to_string();
+        b011.symptom = "System Monitor always shows 0% CPU, 0MB RAM. Metrics never update.".to_string();
+        b011.root_cause = "handleRuntimeMetrics() was not implemented to update the System Monitor \
+            panel elements (sm-cpu-bar, sm-mem-val2, sm-uptime) with values from msg.".to_string();
+        b011.fix_applied = "Implemented handleRuntimeMetrics() to update all CPU/RAM/uptime UI elements \
+            with live IPC data and push periodic snapshots to the Bug Hunter live feed.".to_string();
+        b011.fix_suggestions = vec![
+            "Implement handleRuntimeMetrics() to bind IPC msg fields to UI elements".to_string(),
+            "Set sm-cpu-bar width to msg.cpu_pct%".to_string(),
+        ];
+        b011.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b011.resolved = true;
+        b011.auto_recoverable = false;
+        b011.tags = vec!["system-monitor".to_string(), "metrics".to_string(), "ipc".to_string()];
+        self.register(b011);
+
+        // ── BUG-012: ANSI Escape Codes Render as Garbage Text ────────────────────────────────────────────
+        let mut b012 = BugRecord::new(
+            "BUG-012",
+            "Terminal output: ANSI escape sequences render as raw ESC[ garbage characters",
+            BugCategory::UserInterface,
+            BugSeverity::Minor,
+        );
+        b012.description = "termLine() set element.textContent directly, which includes raw ANSI \
+            escape sequences as literal characters in the output.".to_string();
+        b012.symptom = "Terminal output shows raw ESC codes (caret-bracket sequences) \
+            instead of colored text.".to_string();
+        b012.root_cause = "textContent assignment does not interpret HTML. ANSI codes require \
+            conversion to CSS color spans before using innerHTML.".to_string();
+        b012.fix_applied = "Added ansiToHtml(raw) function with fg color code map. \
+            termLine() detects ESC bracket sequences and sets innerHTML via ansiToHtml() instead of textContent.".to_string();
+        b012.fix_suggestions = vec![
+            "Add ansiToHtml() function with fgMap color table (codes 30-37, 90-97)".to_string(),
+            "Detect ANSI codes with escape-bracket regex test and branch between textContent and innerHTML".to_string(),
+        ];
+        b012.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b012.resolved = true;
+        b012.auto_recoverable = false;
+        b012.tags = vec!["terminal".to_string(), "ansi".to_string(), "color".to_string()];
+        self.register(b012);
+
+        // ── BUG-013: Window Drag Has No Snap Zones ────────────────────────────────────────────────────────
+        let mut b013 = BugRecord::new(
+            "BUG-013",
+            "Window drag ends with no snap-to-edge behavior — windows can't be snapped",
+            BugCategory::UserInterface,
+            BugSeverity::Minor,
+        );
+        b013.description = "makeDraggable() onUp handler did not check if the window was dragged \
+            near a screen edge. No snap-to-maximize, snap-left, or snap-right behavior existed.".to_string();
+        b013.symptom = "Windows can be dragged to any position but never snap. \
+            Productivity features like half-screen split are unavailable.".to_string();
+        b013.root_cause = "onUp() only stopped dragging. No proximity check against \
+            desktop area edges (top, left, right) was performed.".to_string();
+        b013.fix_applied = "Added 20px snap threshold. Top edge: maximize. Left edge: half-screen left. \
+            Right edge: half-screen right. Stores prevRect for snap/unsnap toggle.".to_string();
+        b013.fix_suggestions = vec![
+            "Check window position vs desktop edges in onUp()".to_string(),
+            "Snap top: maximize; snap left: 0,0,50%,100%; snap right: 50%,0,50%,100%".to_string(),
+        ];
+        b013.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b013.resolved = true;
+        b013.auto_recoverable = false;
+        b013.tags = vec!["window-manager".to_string(), "drag".to_string(), "snap".to_string()];
+        self.register(b013);
+
+        // ── BUG-014: Notifications Have No History Panel ──────────────────────────────────────────────────
+        let mut b014 = BugRecord::new(
+            "BUG-014",
+            "Notifications disappear after 4s with no history — bell icon non-functional",
+            BugCategory::UserInterface,
+            BugSeverity::Minor,
+        );
+        b014.description = "notify() showed a toast for 4 seconds only. After it faded, \
+            the notification was gone. The bell icon in the taskbar did nothing.".to_string();
+        b014.symptom = "Missed notifications are permanently gone. Bell click has no effect. \
+            No unread count badge visible.".to_string();
+        b014.root_cause = "No history array, no notification center panel, no bell click handler.".to_string();
+        b014.fix_applied = "Added notifHistory[], _notifCenter panel, _renderNotifCenter(), \
+            unread badge on bell, click-outside dismiss, persistent history up to 50 entries.".to_string();
+        b014.fix_suggestions = vec![
+            "Add notifHistory[] to push all notifications".to_string(),
+            "Create notification center panel toggled by bell icon click".to_string(),
+            "Show unread badge count on bell icon".to_string(),
+        ];
+        b014.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b014.resolved = true;
+        b014.auto_recoverable = false;
+        b014.tags = vec!["notifications".to_string(), "ux".to_string(), "history".to_string()];
+        self.register(b014);
+
+        // ── BUG-015: File Rename Not Wired in Extension Host ─────────────────────────────────────────────
+        let mut b015 = BugRecord::new(
+            "BUG-015",
+            "renameFile command missing in OmniOSDesktop.ts — vscode.workspace.fs.rename never called",
+            BugCategory::FileSystem,
+            BugSeverity::Minor,
+        );
+        b015.description = "The file manager Rename button posted renameFile to the extension host \
+            but no case handler existed for it. The file was never renamed.".to_string();
+        b015.symptom = "Rename button in file manager triggers no visible action.".to_string();
+        b015.root_cause = "OmniOSDesktop.ts _handleMessage switch had no 'renameFile' case.".to_string();
+        b015.fix_applied = "Added case 'renameFile': handler using vscode.workspace.fs.rename(oldUri, newUri).".to_string();
+        b015.fix_suggestions = vec![
+            "Add case 'renameFile' to _handleMessage switch".to_string(),
+            "Use vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false })".to_string(),
+        ];
+        b015.fix_plan = Some(AutoFixPlan::new("BUG-015", 100, RiskLevel::Safe)
+            .with_step(FixAction::OpenFile {
+                path: "vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string(),
+                line: Some(518),
+            })
+            .with_step(FixAction::ManualStep {
+                description: "Add case 'renameFile' handler with vscode.workspace.fs.rename()".to_string(),
+            })
+            .with_estimate(5));
+        b015.files_affected = vec!["vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string()];
+        b015.resolved = true;
+        b015.auto_recoverable = false;
+        b015.tags = vec!["file-manager".to_string(), "rename".to_string(), "extension-host".to_string()];
+        self.register(b015);
+
+        // ── BUG-016: node-pty Missing from VSIX Bundle ────────────────────────────────────────────────────
+        let mut b016 = BugRecord::new(
+            "BUG-016",
+            "node-pty excluded from VSIX bundle by .vscodeignore — PTY falls back to spawn",
+            BugCategory::PackageManager,
+            BugSeverity::Critical,
+        );
+        b016.description = "The .vscodeignore file excluded node_modules which includes node-pty. \
+            PtyManager.ts gracefully falls back to child_process.spawn but loses PTY features \
+            (color support, raw mode, proper terminal emulation).".to_string();
+        b016.symptom = "PTY sessions use spawn fallback. ANSI color less reliable. \
+            hasPty is false in PTY status message.".to_string();
+        b016.root_cause = "node-pty contains native .node binaries that must be bundled in VSIX. \
+            .vscodeignore glob excluded all of node_modules.".to_string();
+        b016.fix_applied = "PtyManager.ts has spawn fallback as safety net. \
+            For full PTY: whitelist node_modules/node-pty in .vscodeignore or bundle via webpack.".to_string();
+        b016.fix_suggestions = vec![
+            "Add !node_modules/node-pty/** to .vscodeignore".to_string(),
+            "Or use webpack to bundle native addons with node-loader".to_string(),
+        ];
+        b016.recovery_strategy = RecoveryStrategy::DegradedMode(
+            "PtyManager auto-falls back to spawn() — terminal still functional, hasPty=false".to_string()
+        );
+        b016.files_affected = vec![
+            "vscode-omnisystem/.vscodeignore".to_string(),
+            "vscode-omnisystem/src/runtime/PtyManager.ts".to_string(),
+        ];
+        b016.resolved = false;
+        b016.auto_recoverable = true;
+        b016.tags = vec!["node-pty".to_string(), "vsix".to_string(), "bundle".to_string()];
+        self.register(b016);
+
+        // ── BUG-017: acquireVsCodeApi() Safety Analysis ───────────────────────────────────────────────────
+        let mut b017 = BugRecord::new(
+            "BUG-017",
+            "acquireVsCodeApi() timing: confirmed safe in IIFE at load time",
+            BugCategory::Webview,
+            BugSeverity::Major,
+        );
+        b017.description = "Initial concern that acquireVsCodeApi() could be called before DOM ready. \
+            Analysis confirmed the IIFE pattern wraps all webview code, so by the time it runs, \
+            the DOM is fully initialized.".to_string();
+        b017.symptom = "Potential: TypeError acquireVsCodeApi is not a function. \
+            Actual: No issue — IIFE guarantees safe timing.".to_string();
+        b017.root_cause = "Inline script in webview HTML cannot use acquireVsCodeApi() safely. \
+            External script loaded via <script src> fires at correct time.".to_string();
+        b017.fix_applied = "Confirmed: IIFE in desktop-client.js loaded via asWebviewUri() runs \
+            synchronously after DOM parse. acquireVsCodeApi() at top of IIFE is safe.".to_string();
+        b017.fix_suggestions = vec![
+            "Keep all webview code in external media/*.js file".to_string(),
+            "Never use acquireVsCodeApi() in inline <script> blocks".to_string(),
+        ];
+        b017.files_affected = vec!["vscode-omnisystem/media/desktop-client.js".to_string()];
+        b017.resolved = true;
+        b017.auto_recoverable = false;
+        b017.tags = vec!["webview".to_string(), "api".to_string(), "timing".to_string()];
+        self.register(b017);
+
+        // ── BUG-018: omnicc build Hardcodes Source Path ───────────────────────────────────────────────────
+        let mut b018 = BugRecord::new(
+            "BUG-018",
+            "omnicc build expects BUILD.omnisystem at fixed relative path — fails from other CWDs",
+            BugCategory::BuildSystem,
+            BugSeverity::Major,
+        );
+        b018.description = "OmniCC.titan parse_build_config() looks for BUILD.omnisystem at a \
+            fixed relative path from CWD. Running omnicc from parent directory or symlinked \
+            location causes 'build config not found' error.".to_string();
+        b018.symptom = "omnicc build fails with 'cannot open BUILD.omnisystem' when run from \
+            any directory that is not the Omnisystem root.".to_string();
+        b018.root_cause = "No upward directory traversal logic. No OMNISYSTEM_ROOT environment \
+            variable fallback.".to_string();
+        b018.fix_applied = String::new();
+        b018.fix_suggestions = vec![
+            "Traverse upward from CWD until BUILD.omnisystem found".to_string(),
+            "Check OMNISYSTEM_ROOT env variable as override".to_string(),
+        ];
+        b018.fix_plan = Some(AutoFixPlan::new("BUG-018", 78, RiskLevel::Medium)
+            .with_step(FixAction::OpenFile { path: "Omnisystem/src/compiler/OmniCC.titan".to_string(), line: None })
+            .with_step(FixAction::ManualStep {
+                description: "Add upward dir traversal in parse_build_config() with OMNISYSTEM_ROOT env fallback".to_string(),
+            })
+            .with_estimate(15));
+        b018.files_affected = vec!["Omnisystem/src/compiler/OmniCC.titan".to_string()];
+        b018.resolved = false;
+        b018.auto_recoverable = false;
+        b018.tags = vec!["build".to_string(), "path".to_string(), "config".to_string()];
+        self.register(b018);
+
+        // ── BUG-019: Runtime Metrics Missing mem_pct Field ────────────────────────────────────────────────
+        let mut b019 = BugRecord::new(
+            "BUG-019",
+            "IPC system/metrics broadcast sends mem_mb but not mem_pct — monitor shows no percentage",
+            BugCategory::Ipc,
+            BugSeverity::Minor,
+        );
+        b019.description = "The system/metrics IPC broadcast includes cpu_pct and mem_mb but does \
+            not include mem_pct. System Monitor cannot display memory as a percentage without \
+            knowing total memory.".to_string();
+        b019.symptom = "System Monitor RAM percentage shows N/A or 0% while mem_mb is displayed correctly.".to_string();
+        b019.root_cause = "OmnisystemRuntime.titan metrics broadcast does not calculate or include \
+            mem_pct = mem_used / mem_total * 100.".to_string();
+        b019.fix_applied = String::new();
+        b019.fix_suggestions = vec![
+            "Add mem_total_mb to metrics broadcast".to_string(),
+            "Calculate mem_pct in broadcast: (mem_mb / mem_total_mb * 100) as u8".to_string(),
+            "UI fallback: estimate mem_pct from getSystemStats which has real total".to_string(),
+        ];
+        b019.files_affected = vec!["Omnisystem/src/compiler/runtime/OmnisystemRuntime.titan".to_string()];
+        b019.resolved = false;
+        b019.auto_recoverable = false;
+        b019.tags = vec!["metrics".to_string(), "ipc".to_string(), "memory".to_string()];
+        self.register(b019);
+
+        // ── BUG-020: Bug Hunter Had No Desktop Icon or App Entry ──────────────────────────────────────────
+        let mut b020 = BugRecord::new(
+            "BUG-020",
+            "Bug Hunter not in appMeta/buildAppContent — no desktop icon, not openable",
+            BugCategory::UserInterface,
+            BugSeverity::Cosmetic,
+        );
+        b020.description = "The buildBugHunter() function existed in desktop-client.js but \
+            'bug-hunter' was not included in the appMeta registry or buildAppContent() switch. \
+            No desktop icon or start menu entry existed.".to_string();
+        b020.symptom = "Bug Hunter cannot be opened from the desktop or start menu.".to_string();
+        b020.root_cause = "appMeta and buildAppContent() switch were not updated when \
+            buildBugHunter() was added.".to_string();
+        b020.fix_applied = "Added bug-hunter to appMeta, buildAppContent switch, desktop icon, \
+            and start menu entry in OmniOSDesktop.ts HTML template.".to_string();
+        b020.fix_suggestions = vec![
+            "Add 'bug-hunter' entry to appMeta in desktop-client.js".to_string(),
+            "Add case 'bug-hunter': buildBugHunter(container); to buildAppContent()".to_string(),
+            "Add desktop icon and start menu entry in OmniOSDesktop.ts _getHtml()".to_string(),
+        ];
+        b020.files_affected = vec![
+            "vscode-omnisystem/media/desktop-client.js".to_string(),
+            "vscode-omnisystem/src/webviews/OmniOSDesktop.ts".to_string(),
+        ];
+        b020.resolved = true;
+        b020.auto_recoverable = false;
+        b020.tags = vec!["ux".to_string(), "app-registry".to_string(), "bug-hunter".to_string()];
+        self.register(b020);
+    }
+
+    pub fn lookup(&self, bug_id: &str) -> Option<&BugRecord> {
+        self.bugs.get(bug_id)
+    }
+
+    pub fn search_by_pattern(&self, text: &str) -> Vec<&BugRecord> {
+        let mut hits: HashMap<&str, u32> = HashMap::new();
+        let words: Vec<String> = text.split_whitespace()
+            .filter(|w| w.len() > 4)
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        for word in &words {
+            if let Some(ids) = self.pattern_index.get(word.as_str()) {
+                for id in ids {
+                    *hits.entry(id.as_str()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut results: Vec<(&str, u32)> = hits.into_iter().collect();
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.iter()
+            .filter_map(|(id, _)| self.bugs.get(*id))
+            .collect()
+    }
+
+    pub fn all_open(&self) -> Vec<&BugRecord> {
+        let mut open: Vec<&BugRecord> = self.bugs.values()
+            .filter(|b| !b.resolved)
+            .collect();
+        open.sort_by(|a, b| b.severity.cmp(&a.severity));
+        open
+    }
+
+    pub fn all_resolved(&self) -> Vec<&BugRecord> {
+        let mut resolved: Vec<&BugRecord> = self.bugs.values()
+            .filter(|b| b.resolved)
+            .collect();
+        resolved.sort_by(|a, b| b.severity.cmp(&a.severity));
+        resolved
+    }
+
+    pub fn by_category(&self, category: BugCategory) -> Vec<&BugRecord> {
+        self.bugs.values()
+            .filter(|b| b.category == category)
+            .collect()
+    }
+
+    pub fn stats(&self) -> DatabaseStats {
+        let total = self.bugs.len();
+        let resolved = self.bugs.values().filter(|b| b.resolved).count();
+        let auto_recoverable = self.bugs.values().filter(|b| b.auto_recoverable).count();
+        let critical_open = self.bugs.values()
+            .filter(|b| !b.resolved && b.severity >= BugSeverity::Critical)
+            .count();
+        DatabaseStats { total, resolved, open: total - resolved, auto_recoverable, critical_open }
+    }
+}
+
+#[derive(Debug)]
+pub struct DatabaseStats {
+    pub total: usize,
+    pub resolved: usize,
+    pub open: usize,
+    pub auto_recoverable: usize,
+    pub critical_open: usize,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PERSONAL BUG PROFILE — per-developer, learns from their history
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug)]
+pub struct PersonalBugProfile {
+    pub developer_id: String,
+    pub bug_encounter_counts: HashMap<String, u64>, // bug_id → times seen
+    pub category_frequency: HashMap<String, u64>,   // category → times hit
+    pub fix_time_ms: HashMap<String, u64>,           // bug_id → time to fix in ms
+    pub preferred_fix_style: FixStyle,
+    pub total_bugs_encountered: u64,
+    pub total_bugs_fixed: u64,
+    pub session_count: u64,
+    pub last_active_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FixStyle {
+    HandsOn,      // developer likes to fix manually with detailed steps
+    AutoApply,    // developer trusts automated patches
+    Minimal,      // developer wants minimal-diff suggestions only
+}
+
+impl PersonalBugProfile {
+    pub fn new(developer_id: &str) -> Self {
+        PersonalBugProfile {
+            developer_id: developer_id.to_string(),
+            bug_encounter_counts: HashMap::new(),
+            category_frequency: HashMap::new(),
+            fix_time_ms: HashMap::new(),
+            preferred_fix_style: FixStyle::HandsOn,
+            total_bugs_encountered: 0,
+            total_bugs_fixed: 0,
+            session_count: 0,
+            last_active_ms: 0,
+        }
+    }
+
+    pub fn record_encounter(&mut self, bug: &BugRecord) {
+        *self.bug_encounter_counts.entry(bug.id.clone()).or_insert(0) += 1;
+        *self.category_frequency.entry(bug.category.label().to_string()).or_insert(0) += 1;
+        self.total_bugs_encountered += 1;
+    }
+
+    pub fn record_fix(&mut self, bug_id: &str, time_ms: u64) {
+        self.fix_time_ms.insert(bug_id.to_string(), time_ms);
+        self.total_bugs_fixed += 1;
+    }
+
+    pub fn most_common_category(&self) -> Option<(&str, u64)> {
+        self.category_frequency.iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(cat, count)| (cat.as_str(), *count))
+    }
+
+    pub fn chronic_bugs(&self) -> Vec<(&str, u64)> {
+        // bugs seen 3+ times — suggests a systemic issue for this developer
+        let mut chronic: Vec<(&str, u64)> = self.bug_encounter_counts.iter()
+            .filter(|(_, &count)| count >= 3)
+            .map(|(id, &count)| (id.as_str(), count))
+            .collect();
+        chronic.sort_by(|a, b| b.1.cmp(&a.1));
+        chronic
+    }
+
+    pub fn fix_rate(&self) -> f64 {
+        if self.total_bugs_encountered == 0 { return 1.0; }
+        self.total_bugs_fixed as f64 / self.total_bugs_encountered as f64
+    }
+
+    pub fn health_score(&self) -> u32 {
+        // 0–100: higher is healthier (fewer repeated bugs, faster fixes)
+        let rate = (self.fix_rate() * 60.0) as u32;
+        let chronic_penalty = (self.chronic_bugs().len() * 5).min(40) as u32;
+        (rate + 40).saturating_sub(chronic_penalty).min(100)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// LIVE ERROR MONITOR — watches for runtime anomalies
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug)]
+pub struct ErrorEvent {
+    pub timestamp_ms: u64,
+    pub source: String,         // component that emitted the error
+    pub message: String,
+    pub stack_trace: Vec<String>,
+    pub context: HashMap<String, String>,
+    pub severity: BugSeverity,
+    pub matched_bug_ids: Vec<String>,
+}
+
+pub struct LiveErrorMonitor {
+    pub events: Vec<ErrorEvent>,
+    pub event_counter: u64,
+    pub error_rate_per_minute: f64,
+    pub last_error_ms: u64,
+    error_timestamps: Vec<u64>,
+    pattern_matchers: Vec<PatternMatcher>,
+}
+
+#[derive(Clone)]
+struct PatternMatcher {
+    pattern: String,
+    bug_ids: Vec<String>,
+    severity: BugSeverity,
+}
+
+impl LiveErrorMonitor {
+    pub fn new() -> Self {
+        let mut monitor = LiveErrorMonitor {
+            events: Vec::new(),
+            event_counter: 0,
+            error_rate_per_minute: 0.0,
+            last_error_ms: 0,
+            error_timestamps: Vec::new(),
+            pattern_matchers: Vec::new(),
+        };
+        monitor.register_patterns();
+        monitor
+    }
+
+    fn register_patterns(&mut self) {
+        // Patterns derived from known bugs — fast string-match on error messages
+        let patterns: Vec<(&str, Vec<&str>, BugSeverity)> = vec![
+            // CSP / Webview
+            ("content-security-policy",           vec!["BUG-001"], BugSeverity::Fatal),
+            ("inline script blocked",              vec!["BUG-001"], BugSeverity::Fatal),
+            ("unsafe-inline",                     vec!["BUG-001"], BugSeverity::Fatal),
+            ("refused to execute inline script",  vec!["BUG-001"], BugSeverity::Fatal),
+            ("webview disposed",                  vec!["BUG-001"], BugSeverity::Critical),
+            ("acquirevscodeapi",                  vec!["BUG-017"], BugSeverity::Major),
+            // UI / CSS
+            ("pointer-events",                    vec!["BUG-002"], BugSeverity::Critical),
+            ("cannot click",                      vec!["BUG-002"], BugSeverity::Critical),
+            ("00:00:00",                          vec!["BUG-003"], BugSeverity::Major),
+            ("clock not updating",                vec!["BUG-003"], BugSeverity::Major),
+            ("snap zone",                         vec!["BUG-013"], BugSeverity::Minor),
+            ("window drag",                       vec!["BUG-013"], BugSeverity::Minor),
+            ("notification history",              vec!["BUG-014"], BugSeverity::Minor),
+            ("bell icon",                         vec!["BUG-014"], BugSeverity::Minor),
+            ("ansi escape",                       vec!["BUG-012"], BugSeverity::Minor),
+            ("escape sequence",                   vec!["BUG-012"], BugSeverity::Minor),
+            ("garbage character",                 vec!["BUG-012"], BugSeverity::Minor),
+            ("system monitor",                    vec!["BUG-011"], BugSeverity::Major),
+            ("placeholder data",                  vec!["BUG-011"], BugSeverity::Major),
+            ("bug hunter icon",                   vec!["BUG-020"], BugSeverity::Cosmetic),
+            // IPC
+            ("ipc timeout",                       vec!["BUG-004"], BugSeverity::Major),
+            ("runtime/ready",                     vec!["BUG-004"], BugSeverity::Major),
+            ("ready timeout",                     vec!["BUG-004"], BugSeverity::Major),
+            ("mem_pct",                           vec!["BUG-019"], BugSeverity::Minor),
+            ("memory percentage",                 vec!["BUG-019"], BugSeverity::Minor),
+            // Compiler / Build
+            ("omnicc runtime",                    vec!["BUG-005"], BugSeverity::Major),
+            ("unknown command",                   vec!["BUG-005"], BugSeverity::Major),
+            ("process exited with code 1",        vec!["BUG-005"], BugSeverity::Major),
+            ("register allocation",               vec!["BUG-006"], BugSeverity::Major),
+            ("hardcoded rax",                     vec!["BUG-006"], BugSeverity::Major),
+            ("build.omnisystem not found",        vec!["BUG-018"], BugSeverity::Major),
+            ("cannot open build config",          vec!["BUG-018"], BugSeverity::Major),
+            ("build phase bar",                   vec!["BUG-010"], BugSeverity::Major),
+            ("phase simulation",                  vec!["BUG-010"], BugSeverity::Major),
+            // TypeScript / Extension
+            ("ts2352",                            vec!["BUG-007"], BugSeverity::Critical),
+            ("conversion of type",                vec!["BUG-007"], BugSeverity::Critical),
+            ("incompatible cast",                 vec!["BUG-007"], BugSeverity::Critical),
+            // PTY / Terminal
+            ("pty resize",                        vec!["BUG-008"], BugSeverity::Major),
+            ("cols stale",                        vec!["BUG-008"], BugSeverity::Major),
+            ("terminal wrap",                     vec!["BUG-008"], BugSeverity::Major),
+            ("node-pty",                          vec!["BUG-016"], BugSeverity::Critical),
+            ("hapty false",                       vec!["BUG-016"], BugSeverity::Critical),
+            ("pty not available",                 vec!["BUG-016"], BugSeverity::Critical),
+            // File System
+            ("rename not working",                vec!["BUG-015"], BugSeverity::Minor),
+            ("renamefile",                        vec!["BUG-015"], BugSeverity::Minor),
+            ("accidental delete",                 vec!["BUG-009"], BugSeverity::Major),
+            ("no confirmation",                   vec!["BUG-009"], BugSeverity::Major),
+        ];
+
+        for (pat, bug_ids, sev) in patterns {
+            self.pattern_matchers.push(PatternMatcher {
+                pattern: pat.to_string(),
+                bug_ids: bug_ids.iter().map(|s| s.to_string()).collect(),
+                severity: sev,
+            });
+        }
+    }
+
+    pub fn ingest(&mut self, source: &str, message: &str, severity: BugSeverity) -> ErrorEvent {
+        let now_ms = self.event_counter * 16; // simulated 16ms tick
+        self.event_counter += 1;
+        self.last_error_ms = now_ms;
+        self.error_timestamps.push(now_ms);
+
+        // Keep only last 60 seconds (60000ms) of timestamps for rate calculation
+        let cutoff = now_ms.saturating_sub(60000);
+        self.error_timestamps.retain(|&t| t > cutoff);
+        self.error_rate_per_minute = self.error_timestamps.len() as f64;
+
+        // Match against known bug patterns
+        let msg_lower = message.to_lowercase();
+        let mut matched: Vec<String> = Vec::new();
+        for matcher in &self.pattern_matchers {
+            if msg_lower.contains(&matcher.pattern) {
+                for id in &matcher.bug_ids {
+                    if !matched.contains(id) {
+                        matched.push(id.clone());
+                    }
+                }
+            }
+        }
+
+        let event = ErrorEvent {
+            timestamp_ms: now_ms,
+            source: source.to_string(),
+            message: message.to_string(),
+            stack_trace: Vec::new(),
+            context: HashMap::new(),
+            severity,
+            matched_bug_ids: matched,
+        };
+
+        self.events.push(event.clone());
+        event
+    }
+
+    pub fn recent_events(&self, last_n: usize) -> Vec<&ErrorEvent> {
+        self.events.iter().rev().take(last_n).collect()
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.error_rate_per_minute < 10.0 &&
+        self.events.last().map(|e| e.severity < BugSeverity::Critical).unwrap_or(true)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// SURVIVAL ENGINE — auto-recovery, degraded mode, watchdog
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SystemState {
+    Healthy,
+    Degraded(String),  // description of what is degraded
+    Recovering,
+    Crashed(String),   // crash reason
+}
+
+pub struct SurvivalEngine {
+    pub system_state: SystemState,
+    pub component_states: HashMap<String, SystemState>,
+    pub recovery_attempts: HashMap<String, u32>,  // component → attempt count
+    pub max_recovery_attempts: u32,
+    pub watchdog_interval_ms: u64,
+    pub last_watchdog_ms: u64,
+    pub recovery_log: Vec<RecoveryEntry>,
+    pub survival_mode_active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoveryEntry {
+    pub timestamp_ms: u64,
+    pub component: String,
+    pub strategy: String,
+    pub outcome: RecoveryOutcome,
+    pub attempt_number: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryOutcome { Success, Failed, InProgress }
+
+impl SurvivalEngine {
+    pub fn new() -> Self {
+        SurvivalEngine {
+            system_state: SystemState::Healthy,
+            component_states: HashMap::new(),
+            recovery_attempts: HashMap::new(),
+            max_recovery_attempts: 5,
+            watchdog_interval_ms: 5000,
+            last_watchdog_ms: 0,
+            recovery_log: Vec::new(),
+            survival_mode_active: false,
+        }
+    }
+
+    pub fn report_component_failure(&mut self, component: &str, reason: &str) {
+        self.component_states.insert(
+            component.to_string(),
+            SystemState::Crashed(reason.to_string()),
+        );
+        // Escalate system state
+        let critical_count = self.component_states.values()
+            .filter(|s| matches!(s, SystemState::Crashed(_)))
+            .count();
+        if critical_count >= 3 {
+            self.system_state = SystemState::Crashed(format!("{} components failed", critical_count));
+        } else if critical_count >= 1 {
+            self.system_state = SystemState::Degraded(format!("{} component(s) down", critical_count));
+        }
+    }
+
+    pub fn attempt_recovery(&mut self, component: &str, strategy: &RecoveryStrategy, now_ms: u64) -> RecoveryOutcome {
+        let attempt = self.recovery_attempts.entry(component.to_string()).or_insert(0);
+        *attempt += 1;
+        let attempt_number = *attempt;
+
+        let outcome = if attempt_number <= self.max_recovery_attempts {
+            match strategy {
+                RecoveryStrategy::Restart => {
+                    self.component_states.insert(component.to_string(), SystemState::Recovering);
+                    RecoveryOutcome::InProgress
+                }
+                RecoveryStrategy::ReloadWebview => {
+                    self.component_states.insert(component.to_string(), SystemState::Recovering);
+                    RecoveryOutcome::InProgress
+                }
+                RecoveryStrategy::ClearCacheReload => {
+                    self.component_states.insert(component.to_string(), SystemState::Recovering);
+                    RecoveryOutcome::InProgress
+                }
+                RecoveryStrategy::DegradedMode(desc) => {
+                    self.survival_mode_active = true;
+                    self.component_states.insert(
+                        component.to_string(),
+                        SystemState::Degraded(desc.clone()),
+                    );
+                    RecoveryOutcome::Success // degraded counts as success (system stays alive)
+                }
+                RecoveryStrategy::KillAndRespawnProcess => {
+                    self.component_states.insert(component.to_string(), SystemState::Recovering);
+                    RecoveryOutcome::InProgress
+                }
+                RecoveryStrategy::ManualIntervention => {
+                    RecoveryOutcome::Failed // can't auto-recover
+                }
+                _ => RecoveryOutcome::InProgress,
+            }
+        } else {
+            // Exceeded max attempts — enter survival mode
+            self.survival_mode_active = true;
+            self.system_state = SystemState::Degraded(
+                format!("{} failed to recover after {} attempts", component, self.max_recovery_attempts)
+            );
+            RecoveryOutcome::Failed
+        };
+
+        self.recovery_log.push(RecoveryEntry {
+            timestamp_ms: now_ms,
+            component: component.to_string(),
+            strategy: strategy.label(),
+            outcome: outcome.clone(),
+            attempt_number,
+        });
+
+        outcome
+    }
+
+    pub fn mark_recovered(&mut self, component: &str) {
+        self.component_states.insert(component.to_string(), SystemState::Healthy);
+        self.recovery_attempts.remove(component);
+
+        let all_healthy = self.component_states.values()
+            .all(|s| matches!(s, SystemState::Healthy));
+        if all_healthy {
+            self.system_state = SystemState::Healthy;
+            self.survival_mode_active = false;
+        }
+    }
+
+    pub fn watchdog_tick(&mut self, now_ms: u64) -> Vec<String> {
+        let mut alerts = Vec::new();
+
+        if now_ms - self.last_watchdog_ms < self.watchdog_interval_ms {
+            return alerts;
+        }
+        self.last_watchdog_ms = now_ms;
+
+        for (component, state) in &self.component_states {
+            if let SystemState::Crashed(reason) = state {
+                alerts.push(format!(
+                    "WATCHDOG: {} is down ({}). Triggering recovery.",
+                    component, reason
+                ));
+            }
+        }
+
+        if self.survival_mode_active {
+            alerts.push("SURVIVAL MODE ACTIVE — reduced functionality".to_string());
+        }
+
+        alerts
+    }
+
+    pub fn system_health_pct(&self) -> u32 {
+        if self.component_states.is_empty() { return 100; }
+        let healthy = self.component_states.values()
+            .filter(|s| matches!(s, SystemState::Healthy))
+            .count();
+        (healthy * 100 / self.component_states.len()) as u32
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUG PREDICTOR — uses historical patterns to forecast likely next bugs
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct BugPredictor {
+    co_occurrence: HashMap<(String, String), u32>, // (bug_a, bug_b) → co-occurrence count
+    category_sequences: Vec<Vec<BugCategory>>,
+}
+
+impl BugPredictor {
+    pub fn new() -> Self {
+        BugPredictor {
+            co_occurrence: HashMap::new(),
+            category_sequences: Vec::new(),
+        }
+    }
+
+    pub fn record_session_bugs(&mut self, session_bugs: Vec<&BugRecord>) {
+        let categories: Vec<BugCategory> = session_bugs.iter().map(|b| b.category).collect();
+        self.category_sequences.push(categories);
+
+        // Record co-occurrences (order-insensitive pairs)
+        for i in 0..session_bugs.len() {
+            for j in (i + 1)..session_bugs.len() {
+                let a = session_bugs[i].id.clone();
+                let b = session_bugs[j].id.clone();
+                let key = if a < b { (a, b) } else { (b, a) };
+                *self.co_occurrence.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+
+    pub fn predict_next(&self, current_bug_id: &str) -> Vec<(String, u32)> {
+        let mut predictions: Vec<(String, u32)> = self.co_occurrence.iter()
+            .filter_map(|((a, b), &count)| {
+                if a == current_bug_id { Some((b.clone(), count)) }
+                else if b == current_bug_id { Some((a.clone(), count)) }
+                else { None }
+            })
+            .collect();
+        predictions.sort_by(|a, b| b.1.cmp(&a.1));
+        predictions
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BUG HUNTER — top-level system integrating all components
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct BugHunter {
+    pub database: KnownBugDatabase,
+    pub monitor: LiveErrorMonitor,
+    pub survival: SurvivalEngine,
+    pub predictor: BugPredictor,
+    pub profiles: HashMap<String, PersonalBugProfile>,
+    pub active_developer: String,
+    pub session_start_ms: u64,
+    pub session_bugs_seen: Vec<String>,
+}
+
+impl BugHunter {
+    pub fn new(developer_id: &str) -> Self {
+        let mut profiles = HashMap::new();
+        profiles.insert(developer_id.to_string(), PersonalBugProfile::new(developer_id));
+
+        BugHunter {
+            database: KnownBugDatabase::new(),
+            monitor: LiveErrorMonitor::new(),
+            survival: SurvivalEngine::new(),
+            predictor: BugPredictor::new(),
+            profiles,
+            active_developer: developer_id.to_string(),
+            session_start_ms: 0,
+            session_bugs_seen: Vec::new(),
+        }
+    }
+
+    // Main entry point: ingest an error message from any subsystem
+    pub fn report_error(&mut self, source: &str, message: &str, severity: BugSeverity) -> BugReport {
+        let event = self.monitor.ingest(source, message, severity);
+
+        let mut matched_bugs: Vec<BugRecord> = event.matched_bug_ids.iter()
+            .filter_map(|id| self.database.lookup(id).cloned())
+            .collect();
+
+        // Pattern search as fallback
+        if matched_bugs.is_empty() {
+            matched_bugs = self.database.search_by_pattern(message)
+                .into_iter().cloned().collect();
+        }
+
+        // Update personal profile
+        if let Some(profile) = self.profiles.get_mut(&self.active_developer) {
+            for bug in &matched_bugs {
+                profile.record_encounter(bug);
+                if !self.session_bugs_seen.contains(&bug.id) {
+                    self.session_bugs_seen.push(bug.id.clone());
+                }
+            }
+        }
+
+        // Determine auto-recovery strategy
+        let recovery_action = matched_bugs.iter()
+            .find(|b| b.auto_recoverable)
+            .map(|b| b.recovery_strategy.clone());
+
+        if let Some(strategy) = &recovery_action {
+            self.survival.attempt_recovery(source, strategy, self.monitor.event_counter * 16);
+        }
+
+        // Predict next likely bugs
+        let predictions: Vec<String> = matched_bugs.first()
+            .map(|b| self.predictor.predict_next(&b.id)
+                .into_iter()
+                .map(|(id, _)| id)
+                .take(3)
+                .collect())
+            .unwrap_or_default();
+
+        BugReport {
+            source: source.to_string(),
+            message: message.to_string(),
+            severity,
+            matched_bugs: matched_bugs.iter().map(|b| b.id.clone()).collect(),
+            fix_suggestions: matched_bugs.first()
+                .map(|b| b.fix_suggestions.clone())
+                .unwrap_or_default(),
+            auto_recovery: recovery_action.map(|s| s.label()),
+            predicted_next_bugs: predictions,
+            system_health: self.survival.system_health_pct(),
+        }
+    }
+
+    pub fn developer_profile(&self) -> Option<&PersonalBugProfile> {
+        self.profiles.get(&self.active_developer)
+    }
+
+    pub fn print_dashboard(&self) {
+        let stats = self.database.stats();
+        let profile = self.profiles.get(&self.active_developer);
+        let health = self.survival.system_health_pct();
+
+        println!("╔═══════════════════════════════════════════════════════════════════════════╗");
+        println!("║  BUG HUNTER & SURVIVAL SYSTEM — OMNISYSTEM ENTERPRISE FAULT PLATFORM     ║");
+        println!("╠═══════════════════════════════════════════════════════════════════════════╣");
+        println!("║  System Health: {}%   Survival Mode: {}",
+            health,
+            if self.survival.survival_mode_active { "ACTIVE" } else { "Off" }
+        );
+        println!("╠═══════════════════════════════════════════════════════════════════════════╣");
+        println!("║  Known Bugs: {}  |  Open: {}  |  Resolved: {}  |  Auto-Recoverable: {}",
+            stats.total, stats.open, stats.resolved, stats.auto_recoverable
+        );
+        if stats.critical_open > 0 {
+            println!("║  ☣ CRITICAL OPEN BUGS: {}", stats.critical_open);
+        }
+        println!("╠═══════════════════════════════════════════════════════════════════════════╣");
+        if let Some(p) = profile {
+            println!("║  Developer: {}   Fix Rate: {:.0}%   Health Score: {}/100",
+                self.active_developer,
+                p.fix_rate() * 100.0,
+                p.health_score()
+            );
+            if let Some((cat, count)) = p.most_common_category() {
+                println!("║  Most common bug category: {} ({} times)", cat, count);
+            }
+            let chronic = p.chronic_bugs();
+            if !chronic.is_empty() {
+                println!("║  Chronic bugs (3+ hits):");
+                for (id, count) in &chronic {
+                    if let Some(bug) = self.database.lookup(id) {
+                        println!("║    {} {} x{} — {}", bug.severity.emoji(), id, count, &bug.title[..bug.title.len().min(50)]);
+                    }
+                }
+            }
+        }
+        println!("╠═══════════════════════════════════════════════════════════════════════════╣");
+        println!("║  OPEN BUGS:");
+        for bug in self.database.all_open() {
+            println!("║    {} {} [{}] {}",
+                bug.severity.emoji(),
+                bug.id,
+                bug.category.label(),
+                &bug.title[..bug.title.len().min(55)]
+            );
+            if !bug.fix_suggestions.is_empty() {
+                println!("║       Fix: {}", &bug.fix_suggestions[0][..bug.fix_suggestions[0].len().min(60)]);
+            }
+        }
+        println!("╚═══════════════════════════════════════════════════════════════════════════╝");
+    }
+}
+
+#[derive(Debug)]
+pub struct BugReport {
+    pub source: String,
+    pub message: String,
+    pub severity: BugSeverity,
+    pub matched_bugs: Vec<String>,
+    pub fix_suggestions: Vec<String>,
+    pub auto_recovery: Option<String>,
+    pub predicted_next_bugs: Vec<String>,
+    pub system_health: u32,
+}
+
+impl BugReport {
+    pub fn has_match(&self) -> bool {
+        !self.matched_bugs.is_empty()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// ENTRY POINT & TESTS
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn main() {
+    let mut hunter = BugHunter::new("luci");
+
+    hunter.print_dashboard();
+
+    println!("\n── Simulating error events ──────────────────────────────────────────────────");
+
+    let report = hunter.report_error(
+        "webview",
+        "Refused to execute inline script because it violates the content-security-policy directive",
+        BugSeverity::Fatal,
+    );
+    println!("\n[REPORT] Source: {}", report.source);
+    println!("  Matched bugs: {:?}", report.matched_bugs);
+    println!("  Top fix: {}", report.fix_suggestions.first().unwrap_or(&"None".to_string()));
+    println!("  Auto-recovery: {}", report.auto_recovery.as_deref().unwrap_or("None"));
+    println!("  System health: {}%", report.system_health);
+
+    let report2 = hunter.report_error(
+        "desktop",
+        "Icons visible but cannot click on anything — pointer-events blocked",
+        BugSeverity::Critical,
+    );
+    println!("\n[REPORT] Source: {}", report2.source);
+    println!("  Matched bugs: {:?}", report2.matched_bugs);
+    println!("  Top fix: {}", report2.fix_suggestions.first().unwrap_or(&"None".to_string()));
+
+    println!("\n── Final dashboard after error ingestion ────────────────────────────────────");
+    hunter.print_dashboard();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_database_seed() {
+        let db = KnownBugDatabase::new();
+        let stats = db.stats();
+        assert!(stats.total >= 20, "should have 20+ seeded bugs");
+        assert!(stats.resolved >= 12, "should have 12+ resolved bugs");
+    }
+
+    #[test]
+    fn test_pattern_search_csp() {
+        let db = KnownBugDatabase::new();
+        let results = db.search_by_pattern("inline script blocked content-security-policy");
+        assert!(!results.is_empty(), "should match BUG-001");
+        assert_eq!(results[0].id, "BUG-001");
+    }
+
+    #[test]
+    fn test_personal_profile_health_score() {
+        let mut profile = PersonalBugProfile::new("dev");
+        let bug = KnownBugDatabase::new();
+        let b = bug.lookup("BUG-001").unwrap();
+        profile.record_encounter(b);
+        profile.record_fix("BUG-001", 30000);
+        assert!(profile.health_score() > 50);
+        assert_eq!(profile.fix_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_survival_engine_recovery() {
+        let mut engine = SurvivalEngine::new();
+        engine.report_component_failure("ipc-runtime", "process exited code 1");
+        assert!(matches!(engine.system_state, SystemState::Degraded(_)));
+        let outcome = engine.attempt_recovery(
+            "ipc-runtime",
+            &RecoveryStrategy::KillAndRespawnProcess,
+            1000,
+        );
+        assert_eq!(outcome, RecoveryOutcome::InProgress);
+        engine.mark_recovered("ipc-runtime");
+        assert_eq!(engine.system_state, SystemState::Healthy);
+    }
+
+    #[test]
+    fn test_bug_hunter_report() {
+        let mut hunter = BugHunter::new("test-dev");
+        let report = hunter.report_error(
+            "webview",
+            "00:00:00 clock not updating — script not executing",
+            BugSeverity::Major,
+        );
+        assert!(report.has_match(), "should match BUG-003 via clock pattern");
+    }
+
+    #[test]
+    fn test_monitor_error_rate() {
+        let mut monitor = LiveErrorMonitor::new();
+        for _ in 0..5 {
+            monitor.ingest("test", "some error message", BugSeverity::Minor);
+        }
+        assert_eq!(monitor.event_counter, 5);
+        assert!(monitor.events.len() == 5);
+    }
+
+    #[test]
+    fn test_all_open_bugs_sorted() {
+        let db = KnownBugDatabase::new();
+        let open = db.all_open();
+        for i in 1..open.len() {
+            assert!(open[i - 1].severity >= open[i].severity, "should be sorted by severity desc");
+        }
+    }
+}

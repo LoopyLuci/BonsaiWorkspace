@@ -301,7 +301,7 @@ Lifecycle:
 - Integrates with UOSC kernel
 
 ### With Desktop Environment
-- Used by BonsaiEcosystem
+- Used by OmnisystemEcosystem
 - Supports GUI frameworks
 - Works with Tauri for native apps
 - Enables custom desktop shells

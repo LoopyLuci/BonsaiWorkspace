@@ -1,0 +1,12 @@
+pub mod chat_panel;
+pub mod collaboration_panel;
+pub mod compute_panel;
+pub mod credits_panel;
+pub mod estimate_panel;
+pub mod files_panel;
+pub mod health_panel;
+pub mod logs_panel;
+pub mod marketplace_panel;
+pub mod settings_panel;
+pub mod terminal_panel;
+pub mod trainer_panel;

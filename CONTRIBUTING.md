@@ -26,7 +26,7 @@ cd omnisystem
 **3-Layer Structure:**
 - **Layer 1**: 7 Programming Languages (TITAN, SYLVA, AETHER, VERA, HELIX, NEXUS, AXIOM)
 - **Layer 2**: Core Infrastructure (System Module, UOSC, Connectors)
-- **Layer 3**: Applications (BonsaiEcosystem, Web, Mobile, AI, Services)
+- **Layer 3**: Applications (OmnisystemEcosystem, Web, Mobile, AI, Services)
 
 Read: `OMNISYSTEM_ARCHITECTURE_3_LAYER.md`
 
@@ -115,7 +115,7 @@ To add new applications or improve existing ones:
 
 3. **Guidelines**:
    - Follow application structure
-   - Register with BonsaiEcosystem
+   - Register with OmnisystemEcosystem
    - Use system services (Layer 2)
    - Document capabilities
    - Include tests

@@ -145,10 +145,43 @@ pub struct TestRunSummary {
     timestamp: String
 }
 
+extern "Win32"  { fn GetTickCount64_runner() -> u64 }
+extern "POSIX"  { fn clock_gettime_mono_runner(sec: *mut i64, nsec: *mut i64) -> i32 }
+extern "Win32"  { fn GetSystemTimeAsFileTime_runner(out: *mut u64) }
+extern "POSIX"  { fn clock_gettime_real_runner(sec: *mut i64, nsec: *mut i64) -> i32 }
+
 fn get_current_time_ms() -> i64 {
-    0i64  // Placeholder - would use actual timer
+    #[cfg(target_os = "windows")]
+    unsafe { GetTickCount64_runner() as i64 }
+    #[cfg(not(target_os = "windows"))]
+    unsafe { let mut s=0i64; let mut n=0i64; clock_gettime_mono_runner(&mut s, &mut n); s*1000+n/1_000_000 }
 }
 
 fn get_timestamp() -> String {
-    "2026-06-15T12:00:00Z".to_string()  // Placeholder
+    // Format current time as ISO-8601 UTC
+    #[cfg(target_os = "windows")]
+    let secs_since_unix = unsafe {
+        let mut ft=0u64; GetSystemTimeAsFileTime_runner(&mut ft)
+        ((ft.saturating_sub(116444736000000000)) / 10_000_000) as i64
+    }
+    #[cfg(not(target_os = "windows"))]
+    let secs_since_unix = unsafe {
+        let mut s=0i64; let mut n=0i64; clock_gettime_real_runner(&mut s, &mut n); s
+    }
+    // Decompose unix seconds into Y-M-D H:M:S using algorithm from Julian Day Number
+    let s = secs_since_unix.max(0) as u64
+    let (days, rem) = (s / 86400, s % 86400)
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60)
+    // Days since 1970-01-01 → Gregorian (Fliegel–Van Flandern)
+    let z = days + 719468
+    let era = z / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365
+    let year = yoe + era * 400 + 1
+    let doy = doe - (365*yoe + yoe/4 - yoe/100)
+    let mp = (5*doy + 2) / 153
+    let day = doy - (153*mp + 2)/5 + 1
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }
+    let year_adj = if month <= 2 { year + 1 } else { year }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year_adj, month, day, hour, minute, second)
 }

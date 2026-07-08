@@ -1,0 +1,228 @@
+name: Integration — cross-language bridges
+
+# Automates the manual, live, cross-process verification done during the
+# OmniHarness integration pass: boots the real kernel (Rust/gRPC), the real
+# Python orchestrator, and the real Clojure orchestrator together, then
+# asserts the bridges between them actually connect — not just that each
+# piece compiles in isolation.
+#
+# Deliberately does NOT drive the Tauri "Workspace" desktop app here: a real
+# GUI app needs a display + a UI driver (Playwright/tauri-driver), which is a
+# separate, heavier CI investment. workspace<->kernel connectivity is proven
+# by the `rust-omniharness.yml` unit tests plus manual verification; this
+# workflow covers everything that can run headless.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "Omnisystem/OmniHarness/kernel/**"
+      - "Omnisystem/OmniHarness/orchestrator/**"
+      - "Omnisystem/OmniHarness/clj-orchestrator/**"
+      - "Omnisystem/OmniHarness/proto/**"
+      - ".github/workflows/integration.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "Omnisystem/OmniHarness/kernel/**"
+      - "Omnisystem/OmniHarness/orchestrator/**"
+      - "Omnisystem/OmniHarness/clj-orchestrator/**"
+      - "Omnisystem/OmniHarness/proto/**"
+      - ".github/workflows/integration.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, catches drift even with no code changes
+
+jobs:
+  live-bridge-check:
+    name: Boot kernel + orchestrator + clj-orchestrator, assert bridges connect
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Set up Leiningen
+        uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          lein: "2.12.0"
+
+      - name: Set up protoc (25.x — required by clj-orchestrator's Java codegen)
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+
+      - name: Download protoc-gen-grpc-java plugin
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSLf -o "$RUNNER_TEMP/bin/protoc-gen-grpc-java.exe" \
+            https://repo1.maven.org/maven2/io/grpc/protoc-gen-grpc-java/1.68.1/protoc-gen-grpc-java-1.68.1-windows-x86_64.exe
+          file "$RUNNER_TEMP/bin/protoc-gen-grpc-java.exe"
+
+      - name: Download the real lein.bat wrapper
+        # DeLaGuardo/setup-clojure only wires `lein` onto PATH on Linux; on
+        # Windows it just exposes LEIN_JAR/LEIN_HOME and leaves you to invoke
+        # the jar yourself. Calling `java -jar $LEIN_JAR run serve` directly
+        # breaks: `run` needs :eval-in :subprocess, which Leiningen's core
+        # implements by writing the actual command to %TRAMPOLINE_FILE% and
+        # expecting the *wrapper script* to exec it as a second stage — a
+        # bare `java -jar` invocation never sets that up. Fetching the real,
+        # official lein.bat (pinned to the same 2.12.0 the cache already
+        # has) and running that reproduces exactly what a real Windows
+        # developer's `lein run` does, trampoline included.
+        shell: bash
+        run: |
+          curl -sSLf -o "$RUNNER_TEMP/bin/lein.bat" \
+            https://raw.githubusercontent.com/technomancy/leiningen/2.12.0/bin/lein.bat
+
+      - name: Cache cargo (kernel)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Omnisystem/OmniHarness/kernel -> target"
+          shared-key: "kernel"
+
+      - name: Build kernel
+        working-directory: Omnisystem/OmniHarness/kernel
+        run: cargo build
+
+      - name: Regenerate clj-orchestrator gRPC/protobuf Java stubs
+        shell: bash
+        working-directory: Omnisystem/OmniHarness/clj-orchestrator
+        env:
+          # Referenced by absolute path rather than relying on PATH
+          # resolution/propagation across steps.
+          GRPC_JAVA_PLUGIN: ${{ runner.temp }}/bin/protoc-gen-grpc-java.exe
+        run: ./tools/gen-proto.sh
+
+      - name: Install orchestrator dependencies (+ grpcio-tools for codegen)
+        # Installed together in one pip invocation so the resolver picks one
+        # mutually-compatible protobuf version for everything. Installing
+        # grpcio-tools and requirements.txt as two separate `pip install`
+        # calls let each resolve independently, which could land grpcio-tools
+        # on a newer protobuf than requirements.txt settles on afterwards —
+        # generated stub code embeds a gencode-version check that hard-fails
+        # at import time if the runtime protobuf is older than what generated
+        # it, even though both individually looked like valid installs.
+        working-directory: Omnisystem/OmniHarness/orchestrator
+        run: pip install grpcio-tools -r requirements.txt
+
+      - name: Generate Python gRPC stubs for the orchestrator's kernel client
+        working-directory: Omnisystem/OmniHarness/orchestrator
+        run: python -m grpc_tools.protoc -I../proto --python_out=. --grpc_python_out=. ../proto/omniharness.proto
+
+      - name: Start kernel (background)
+        shell: bash
+        working-directory: Omnisystem/OmniHarness/kernel
+        run: |
+          ./target/debug/omniharness-kernel.exe > "$RUNNER_TEMP/kernel.log" 2>&1 &
+          echo "started kernel"
+
+      - name: Wait for kernel gRPC port
+        shell: bash
+        run: |
+          for i in $(seq 1 30); do
+            grep -q "\[GRPC\] Listening" "$RUNNER_TEMP/kernel.log" 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo "::error::kernel never reported its gRPC listener coming up"
+          cat "$RUNNER_TEMP/kernel.log" || true
+          exit 1
+
+      - name: Start clj-orchestrator (background)
+        shell: bash
+        working-directory: Omnisystem/OmniHarness/clj-orchestrator
+        env:
+          CLJ_HTTP_PORT: "8090"
+        run: |
+          "$RUNNER_TEMP/bin/lein.bat" run serve > "$RUNNER_TEMP/clj.log" 2>&1 &
+          echo "started clj-orchestrator"
+
+      - name: Wait for clj-orchestrator HTTP API
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8090/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "::error::clj-orchestrator never became healthy"
+          cat "$RUNNER_TEMP/clj.log" || true
+          exit 1
+
+      - name: Assert clj-orchestrator's planner/policy endpoints work
+        shell: bash
+        run: |
+          set -e
+          plan=$(curl -sf -X POST http://localhost:8090/plan \
+            -H "Content-Type: application/json" \
+            -d '{"task_name":"setup_and_ping","params":{"host":"localhost"}}')
+          echo "plan response: $plan"
+          echo "$plan" | grep -q '"ok":true'
+
+          policy=$(curl -sf -X POST http://localhost:8090/policy/check \
+            -H "Content-Type: application/json" \
+            -d '{"action":"read_file","args":{"path":"/tmp/test"}}')
+          echo "policy response: $policy"
+          echo "$policy" | grep -q '"allowed":true'
+
+      - name: Assert clj-orchestrator can see the real kernel over gRPC
+        shell: bash
+        run: |
+          verify=$(curl -sf http://localhost:8090/kernel/verify)
+          echo "kernel/verify response: $verify"
+          echo "$verify" | grep -q '"ok":true'
+
+      - name: Start Python orchestrator (background)
+        shell: bash
+        working-directory: Omnisystem/OmniHarness/orchestrator
+        run: |
+          python -m uvicorn omniharness.server:app --host 127.0.0.1 --port 8080 > "$RUNNER_TEMP/orchestrator.log" 2>&1 &
+          echo "started orchestrator"
+
+      - name: Wait for orchestrator + assert it sees both bridges
+        shell: bash
+        run: |
+          for i in $(seq 1 30); do
+            health=$(curl -sf http://127.0.0.1:8080/api/health 2>/dev/null) && break
+            sleep 2
+          done
+          if [ -z "${health:-}" ]; then
+            echo "::error::orchestrator never became healthy"
+            cat "$RUNNER_TEMP/orchestrator.log" || true
+            exit 1
+          fi
+          echo "orchestrator health: $health"
+          echo "$health" | grep -q '"kernel":true' || { echo "::error::orchestrator did not see the kernel as healthy"; exit 1; }
+          echo "$health" | grep -q '"clj_orchestrator":true' || { echo "::error::orchestrator did not see clj-orchestrator as healthy"; exit 1; }
+
+      - name: Assert orchestrator's planner proxy reaches clj-orchestrator
+        shell: bash
+        run: |
+          plan=$(curl -sf -X POST http://127.0.0.1:8080/api/planner/plan \
+            -H "Content-Type: application/json" \
+            -d '{"task_name":"setup_and_ping","params":{"host":"localhost"}}')
+          echo "proxied plan response: $plan"
+          echo "$plan" | grep -q '"ok":true'
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: |
+            ${{ runner.temp }}/kernel.log
+            ${{ runner.temp }}/clj.log
+            ${{ runner.temp }}/orchestrator.log
+          retention-days: 7

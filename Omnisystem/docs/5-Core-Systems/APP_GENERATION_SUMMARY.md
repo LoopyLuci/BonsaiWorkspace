@@ -1,4 +1,4 @@
-# Bonsai Android App Suite - Generation Summary
+# Omnisystem Android App Suite - Generation Summary
 
 ## Phase 1: Infrastructure ✅ COMPLETE
 
@@ -16,7 +16,7 @@
 
 ---
 
-## Phase 2: Bonsai Buddy (App) ✅ COMPLETE
+## Phase 2: Omnisystem Buddy (App) ✅ COMPLETE
 Already implemented with full infrastructure.
 
 ---
@@ -47,12 +47,12 @@ Already implemented with full infrastructure.
 - **build.gradle.kts** — Project configuration
 
 **Features:**
-- List models in `/Bonsai/models/`
+- List models in `/Omnisystem/models/`
 - Download models from Hugging Face Hub (native integration)
 - Quantize models (Q4_K_M, Q4_0, Q8_0)
 - Convert model formats
 - Delete models
-- Test in Bonsai Buddy
+- Test in Omnisystem Buddy
 - Progress indicators for all operations
 
 **LOC:** ~800 (UI + ViewModel)
@@ -119,7 +119,7 @@ Already implemented with full infrastructure.
 - **ProjectDashboard.kt** — Active projects, progress bars
 - **FileEditor.kt** — Code editor with syntax highlighting
 - **TrainingMonitor.kt** — Real-time training metrics
-- **ChatPanel.kt** — Integrated mini Bonsai Buddy chat
+- **ChatPanel.kt** — Integrated mini Omnisystem Buddy chat
 - **build.gradle.kts**
 
 **Features:**
@@ -144,14 +144,14 @@ Already implemented with full infrastructure.
 - **SkillTreeScreen.kt** — Skill tree with progress
 - **LessonScreen.kt** — Display lesson content
 - **ExerciseRunner.kt** — WASM sandbox execution
-- **BonsaiTutorChat.kt** — Integrated tutoring chat
+- **OmnisystemTutorChat.kt** — Integrated tutoring chat
 - **build.gradle.kts**
 
 **Features:**
 - Skill tree progression system
 - Interactive lessons with code examples
 - WASM sandboxed exercises
-- AI tutor chat (integrated Bonsai Buddy)
+- AI tutor chat (integrated Omnisystem Buddy)
 - Progress tracking per skill
 - Achievement badges
 
@@ -215,7 +215,7 @@ Already implemented with full infrastructure.
 - **build.gradle.kts**
 
 **Imports & composes:**
-- Bonsai Buddy (Tab 1)
+- Omnisystem Buddy (Tab 1)
 - Academy (Tab 2)
 - Workspace Chat Panel (Tab 3)
 
@@ -255,16 +255,16 @@ Already implemented with full infrastructure.
 ## Integration Points (All Apps)
 
 ### Shared Infrastructure
-1. **BonsaiService (AIDL)** — All apps bind here for inference
-2. **BonsaiDataManager** — Shared models, settings, chat history
+1. **OmnisystemService (AIDL)** — All apps bind here for inference
+2. **OmnisystemDataManager** — Shared models, settings, chat history
 3. **TransferDaemonClient** — P2P networking for streaming/transfer
 4. **ModelRegistry** — Hot-swapping between all apps
 5. **ContentProvider** — Shared file access via URI
 
 ### Data Sharing
-- Models directory: `/Bonsai/models/`
-- Training data: `/Bonsai/tdl/`
-- Knowledge base: `/Bonsai/kdb/`
+- Models directory: `/Omnisystem/models/`
+- Training data: `/Omnisystem/tdl/`
+- Knowledge base: `/Omnisystem/kdb/`
 - Settings: SharedPreferences + ContentProvider
 
 ### Permissions (AndroidManifest.xml)
@@ -346,14 +346,14 @@ Target: >80% code coverage per app
 ### Navigation Graph
 All apps bind to unified navigation namespace:
 ```
-bonsai://buddy — Bonsai Buddy
-bonsai://remote — Remote Desktop
-bonsai://modelmanager — Model Manager
-bonsai://computedonor — Compute Donor
-bonsai://nodecontroller — Node Controller
-bonsai://workspace — Workspace
-bonsai://academy — Academy
-bonsai://extensions — Extensions Browser
+omnisystem://buddy — Omnisystem Buddy
+omnisystem://remote — Remote Desktop
+omnisystem://modelmanager — Model Manager
+omnisystem://computedonor — Compute Donor
+omnisystem://nodecontroller — Node Controller
+omnisystem://workspace — Workspace
+omnisystem://academy — Academy
+omnisystem://extensions — Extensions Browser
 ```
 
 ### Deep Linking
@@ -362,7 +362,7 @@ Each app supports deep links for cross-app navigation:
 intent-filter {
     action: android.intent.action.VIEW
     category: android.intent.category.DEFAULT
-    data: android:scheme=bonsai
+    data: android:scheme=omnisystem
 }
 ```
 
@@ -372,7 +372,7 @@ intent-filter {
 
 ### Build All Apps
 ```bash
-cd /z/Projects/BonsaiEcosystem/android-runtime
+cd /z/Projects/OmnisystemEcosystem/android-runtime
 ./gradlew assembleDebug  # All apps in one build
 ./gradlew test           # Run all tests
 ```
@@ -393,8 +393,8 @@ Output: `app-*/build/outputs/apk/debug/*.apk`
 
 | App | Status | LOC | Files |
 |-----|--------|-----|-------|
-| library-bonsai-shared | ✅ Core infrastructure | 400 | 4 files |
-| app (Bonsai Buddy) | ✅ Complete | 1500+ | Existing |
+| library-omnisystem-shared | ✅ Core infrastructure | 400 | 4 files |
+| app (Omnisystem Buddy) | ✅ Complete | 1500+ | Existing |
 | app-remote | ✅ Complete | 1250+ | Existing |
 | app-modelmanager | ✅ Generated | 800 | 6 files |
 | app-computedonor | 📝 To generate | 600 | TBD |
@@ -429,17 +429,17 @@ Output: `app-*/build/outputs/apk/debug/*.apk`
 ## Architecture Summary
 
 ```
-BonsaiAndroidSuite/
-├── library-bonsai-shared/         # Shared infrastructure (Phase 1)
-│   ├── BonsaiService (AIDL)
-│   ├── BonsaiDataManager
+OmnisystemAndroidSuite/
+├── library-omnisystem-shared/         # Shared infrastructure (Phase 1)
+│   ├── OmnisystemService (AIDL)
+│   ├── OmnisystemDataManager
 │   ├── ModelRegistry ✅
 │   ├── ModelConverter ✅
 │   ├── KdbRetriever ✅
 │   ├── TdlExporter ✅
 │   └── TransferDaemonClient
 │
-├── app/                           # Bonsai Buddy (Phase 2) ✅
+├── app/                           # Omnisystem Buddy (Phase 2) ✅
 │   ├── ChatViewModel
 │   ├── ChatScreen
 │   ├── ToolCallExecutor

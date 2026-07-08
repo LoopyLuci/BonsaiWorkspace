@@ -35,7 +35,7 @@ Write-Host "`n2. Checking Project Structures..." -ForegroundColor Yellow
 $Projects = @(
     @{
         Name = "Desktop Environment"
-        Path = "Omnisystem\applications\bonsai-desktop-environment"
+        Path = "Omnisystem\applications\omnisystem-desktop-environment"
         Files = @("Cargo.toml", "src\launcher\main.rs")
     },
     @{
@@ -44,8 +44,8 @@ $Projects = @(
         Files = @("Cargo.toml", "src\main.rs")
     },
     @{
-        Name = "BonsaiEcosystem Launcher"
-        Path = "Omnisystem\modules\base-modules\applications\bonsai-ecosystem\launcher"
+        Name = "OmnisystemEcosystem Launcher"
+        Path = "Omnisystem\modules\base-modules\applications\omnisystem-ecosystem\launcher"
         Files = @("Cargo.toml", "src-tauri\src\main.rs")
     }
 )
@@ -140,7 +140,7 @@ if ($AllOk) {
     Write-Host "`nBuild Options:" -ForegroundColor Cyan
     Write-Host "  -Target desktop     Build only desktop environment" -ForegroundColor Gray
     Write-Host "  -Target gui         Build only GUI launcher" -ForegroundColor Gray
-    Write-Host "  -Target launcher    Build only BonsaiEcosystem launcher" -ForegroundColor Gray
+    Write-Host "  -Target launcher    Build only OmnisystemEcosystem launcher" -ForegroundColor Gray
     Write-Host "  -Release            Create optimized release build" -ForegroundColor Gray
 
     Write-Host ""

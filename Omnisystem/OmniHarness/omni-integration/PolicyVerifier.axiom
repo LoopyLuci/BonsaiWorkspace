@@ -1,0 +1,263 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS POLICY VERIFIER — Axiom Formal Verification
+// Formally verified capability policies, invariant checking, safe AI behavior
+// 100% AXIOM — Mathematical proof-backed policy engine
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Core Invariants ──────────────────────────────────────────────────────────
+
+theorem NoUnauthorizedDataAccess {
+    preconditions {
+        action:     String,
+        session_id: String,
+        api_key:    String,
+    }
+    postconditions {
+        // If action accesses sensitive data, session must be authenticated
+        if (action.contains("read") || action.contains("query")) &&
+           action.contains("sensitive") {
+            assert api_key != "" && api_key.len() >= 32
+        }
+    }
+    invariants {
+        // API key must always be non-empty for sensitive operations
+        sensitive_ops_require_auth: forall action in SENSITIVE_OPS =>
+            api_key.len() > 0
+    }
+    assertions {
+        assert action.len() > 0
+        assert session_id.len() > 0
+    }
+}
+
+theorem ToolExecutionSafety {
+    preconditions {
+        tool_name:  String,
+        arguments:  String,
+        session_id: String,
+    }
+    postconditions {
+        // Shell commands require explicit user approval
+        if tool_name == "shell" || tool_name == "exec" {
+            assert requires_user_approval(tool_name)
+        }
+        // File writes must have valid paths
+        if tool_name == "write_file" {
+            assert valid_file_path(extract_path(arguments))
+        }
+        // HTTP requests must use HTTPS for external URLs
+        if tool_name == "http_get" || tool_name == "http_post" {
+            let url = extract_url(arguments)
+            assert is_local_url(url) || url.starts_with("https://")
+        }
+    }
+    invariants {
+        shell_requires_approval:
+            forall t in SHELL_TOOLS => requires_user_approval(t)
+        no_path_traversal:
+            forall path in FILE_PATHS => !path.contains("../") && !path.contains("..\\..")
+        https_for_external:
+            forall url in HTTP_URLS =>
+                is_local_url(url) || url.starts_with("https://")
+    }
+    assertions {
+        assert tool_name.len() > 0
+        assert tool_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+    }
+}
+
+theorem ModelUsageBudget {
+    preconditions {
+        model_id:       String,
+        tokens_used:    i64,
+        session_budget: i64,
+    }
+    postconditions {
+        // Token usage must not exceed session budget
+        if session_budget > 0 {
+            assert tokens_used <= session_budget
+        }
+    }
+    invariants {
+        budget_enforced:
+            session_budget <= 0 || tokens_used <= session_budget
+        no_negative_tokens:
+            tokens_used >= 0
+        budget_positive:
+            session_budget >= 0
+    }
+    assertions {
+        assert tokens_used >= 0
+        assert model_id.len() > 0
+    }
+}
+
+theorem MemoryPrivacy {
+    preconditions {
+        collection: String,
+        user_id:    String,
+        caller_id:  String,
+    }
+    postconditions {
+        // User-private collections only accessible by owner
+        if collection.starts_with("user_private_") {
+            assert caller_id == user_id
+        }
+        // Shared collections allow any authenticated caller
+        if collection.starts_with("shared_") {
+            assert caller_id.len() > 0
+        }
+    }
+    invariants {
+        private_collections_isolated:
+            forall c in PRIVATE_COLLECTIONS =>
+                forall caller in CALLERS =>
+                    c.owner == caller || !can_access(caller, c)
+        shared_collections_authenticated:
+            forall c in SHARED_COLLECTIONS =>
+                forall caller in CALLERS =>
+                    is_authenticated(caller) <=> can_access(caller, c)
+    }
+    assertions {
+        assert collection.len() > 0
+        assert user_id.len() > 0
+    }
+}
+
+theorem RateLimitInvariant {
+    preconditions {
+        session_id:      String,
+        requests_this_minute: i32,
+        max_rpm:         i32,
+    }
+    postconditions {
+        assert requests_this_minute <= max_rpm
+    }
+    invariants {
+        rate_limit_enforced:
+            forall session in SESSIONS =>
+                session.requests_this_minute <= session.max_rpm
+        positive_rate_limit:
+            max_rpm > 0
+    }
+    assertions {
+        assert requests_this_minute >= 0
+        assert max_rpm > 0
+        assert requests_this_minute <= max_rpm
+    }
+}
+
+theorem ChainIntegrity {
+    preconditions {
+        event_hash:    String,
+        prev_hash:     String,
+        payload:       String,
+    }
+    postconditions {
+        // Every event must have a valid hash chain
+        let expected = sha256(payload + prev_hash)
+        assert event_hash == expected
+    }
+    invariants {
+        hash_chain_valid:
+            forall event in EVENT_CHAIN =>
+                event.current_hash == sha256(event.payload + event.previous_hash)
+        no_gaps:
+            forall i in 1..EVENT_CHAIN.len() =>
+                EVENT_CHAIN[i].previous_hash == EVENT_CHAIN[i-1].current_hash
+        genesis_fixed:
+            EVENT_CHAIN[0].previous_hash == GENESIS_HASH
+    }
+    assertions {
+        assert event_hash.len() == 64     // SHA-256 hex
+        assert prev_hash.len() == 64
+        assert payload.len() > 0
+    }
+}
+
+theorem SandboxIsolation {
+    preconditions {
+        wasm_module: Vec<u8>,
+        fuel_limit:  u64,
+        memory_limit: u64,
+    }
+    postconditions {
+        // WASM execution must be bounded
+        assert fuel_limit > 0 && fuel_limit <= 1_000_000_000u64
+        assert memory_limit <= 64 * 1024 * 1024u64   // 64 MB max
+    }
+    invariants {
+        bounded_execution:
+            forall exec in SANDBOX_EXECS =>
+                exec.fuel_used <= exec.fuel_limit
+        memory_bounded:
+            forall exec in SANDBOX_EXECS =>
+                exec.peak_memory <= exec.memory_limit
+        no_host_escape:
+            forall exec in SANDBOX_EXECS =>
+                exec.host_calls.subset_of(ALLOWED_WASI_CALLS)
+    }
+    assertions {
+        assert fuel_limit  > 0
+        assert memory_limit > 0
+        assert memory_limit <= 64 * 1024 * 1024u64
+    }
+}
+
+theorem AIOutputSafety {
+    preconditions {
+        model_output: String,
+        session_type: String,   // "personal" | "enterprise" | "api"
+    }
+    postconditions {
+        // AI output must not directly contain API keys or secrets
+        assert !contains_secret_pattern(model_output)
+    }
+    invariants {
+        no_secret_leakage:
+            forall output in AI_OUTPUTS =>
+                !output.contains_pattern(SECRET_PATTERNS)
+        length_bounded:
+            forall output in AI_OUTPUTS =>
+                output.len() <= MAX_OUTPUT_LENGTH
+    }
+    assertions {
+        assert model_output.len() > 0
+        assert model_output.len() <= 1_000_000
+    }
+}
+
+// ── Policy rule set (runtime enforcement) ────────────────────────────────────
+
+theorem HarnessPolicyComplete {
+    preconditions {
+        action:      String,
+        args:        String,
+        session_id:  String,
+        api_key:     String,
+    }
+    postconditions {
+        let decision = policy_evaluate(action, args, session_id, api_key)
+        assert decision == "allow" || decision == "deny" ||
+               decision == "ask_user" || decision == "sandbox"
+    }
+    invariants {
+        policy_total:
+            forall action in ALL_ACTIONS =>
+                policy_evaluate(action) != "undefined"
+        policy_safe_default:
+            // Unknown actions are denied by default
+            forall action in UNKNOWN_ACTIONS =>
+                policy_evaluate(action) == "deny"
+        audit_logged:
+            forall action in ALL_ACTIONS =>
+                after(policy_evaluate(action)) =>
+                    exists entry in AUDIT_LOG where entry.action == action
+    }
+    assertions {
+        assert action.len() > 0
+        // Decision must be one of the four valid values
+        let d = policy_evaluate(action, args, session_id, api_key)
+        assert d == "allow" || d == "deny" || d == "ask_user" || d == "sandbox"
+    }
+}

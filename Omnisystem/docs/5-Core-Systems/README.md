@@ -1,6 +1,6 @@
-# Bonsai Buddy Android
+# Omnisystem Buddy Android
 
-Sprint 1 scaffold for Bonsai Buddy mobile companion.
+Sprint 1 scaffold for Omnisystem Buddy mobile companion.
 
 ## Included in this scaffold
 
@@ -15,12 +15,12 @@ Sprint 1 scaffold for Bonsai Buddy mobile companion.
 
 ## Package layout
 
-- app/src/main/java/ai/bonsai/buddy/data/network: API client and DTOs
-- app/src/main/java/ai/bonsai/buddy/data/storage: secure config/token storage
-- app/src/main/java/ai/bonsai/buddy/data/discovery: mDNS discovery
-- app/src/main/java/ai/bonsai/buddy/data/db: Room entities/DAO/database
-- app/src/main/java/ai/bonsai/buddy/data/repository: chat repository
-- app/src/main/java/ai/bonsai/buddy/ui: adaptive app shell and chat screen
+- app/src/main/java/ai/omnisystem/buddy/data/network: API client and DTOs
+- app/src/main/java/ai/omnisystem/buddy/data/storage: secure config/token storage
+- app/src/main/java/ai/omnisystem/buddy/data/discovery: mDNS discovery
+- app/src/main/java/ai/omnisystem/buddy/data/db: Room entities/DAO/database
+- app/src/main/java/ai/omnisystem/buddy/data/repository: chat repository
+- app/src/main/java/ai/omnisystem/buddy/ui: adaptive app shell and chat screen
 
 ## Run
 

@@ -1,0 +1,1075 @@
+// ============================================================
+// DiagnosticsProvider.titan — Inline diagnostics engine
+// Omnisystem LSP Server · Language-specific error & warning detection
+// Per-document cache, publishDiagnostics notifications.
+// ============================================================
+
+module DiagnosticsProvider
+
+use std::collections::HashMap
+use LspProtocol::{
+    Position, Range, Diagnostic, DiagnosticSeverity,
+    JsonValue, RpcResponse, json_obj, json_arr, json_str, json_num, json_null,
+    offset_to_position,
+}
+use LanguageAnalyzer::{
+    SymbolTable, SymbolInfo, SymbolKindEx, AnalysisResult,
+    Lexer, TokenStream, TokenKind, Token,
+    analyze, detect_language,
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 1  DIAGNOSTIC CACHE
+// ─────────────────────────────────────────────────────────────
+
+pub struct DiagnosticCache {
+    cache: HashMap<String, Vec<Diagnostic>>,
+}
+
+impl DiagnosticCache {
+    pub fn new() -> Self {
+        DiagnosticCache { cache: HashMap::new() }
+    }
+
+    // Returns true if diagnostics changed (new != cached)
+    pub fn update(&mut self, uri: &str, diags: Vec<Diagnostic>) -> bool {
+        let changed = match self.cache.get(uri) {
+            Some(existing) => existing.len() != diags.len() ||
+                existing.iter().zip(diags.iter()).any(|(a, b)| {
+                    a.message != b.message ||
+                    a.range.start.line != b.range.start.line ||
+                    a.range.start.character != b.range.start.character
+                }),
+            None => true,
+        };
+        self.cache.insert(uri.to_string(), diags);
+        changed
+    }
+
+    pub fn get(&self, uri: &str) -> &[Diagnostic] {
+        self.cache.get(uri).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn clear(&mut self, uri: &str) {
+        self.cache.remove(uri);
+    }
+
+    pub fn all_uris(&self) -> Vec<&String> {
+        self.cache.keys().collect()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 2  DIAGNOSTICS PROVIDER STRUCT
+// ─────────────────────────────────────────────────────────────
+
+pub struct DiagnosticsProvider {
+    pub cache: DiagnosticCache,
+}
+
+impl DiagnosticsProvider {
+    pub fn new() -> Self {
+        DiagnosticsProvider { cache: DiagnosticCache::new() }
+    }
+
+    // Compute + cache diagnostics for a document
+    pub fn compute_and_cache(&mut self, uri: &str, source: &str) -> Vec<Diagnostic> {
+        let lang  = detect_language(uri);
+        let result = analyze(uri, source);
+        let mut diags = result.diagnostics.clone();
+        diags.extend(compute_diagnostics(source, lang, &result.symbols));
+        // Deduplicate by (line, message)
+        diags.dedup_by(|a, b| {
+            a.range.start.line == b.range.start.line && a.message == b.message
+        });
+        self.cache.update(uri, diags.clone());
+        diags
+    }
+
+    // Force-clear diagnostics for a URI
+    pub fn clear(&mut self, uri: &str) {
+        self.cache.clear(uri);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 3  PUBLISH DIAGNOSTICS NOTIFICATION
+// ─────────────────────────────────────────────────────────────
+
+pub fn publish_diagnostics(uri: &str, diags: &[Diagnostic]) -> JsonValue {
+    let diag_arr = JsonValue::Array(diags.iter().map(|d| d.to_json()).collect());
+    RpcResponse::notification(
+        "textDocument/publishDiagnostics",
+        json_obj(vec![
+            ("uri",         json_str(uri)),
+            ("diagnostics", diag_arr),
+        ]),
+    )
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 4  MAIN DISPATCH
+// ─────────────────────────────────────────────────────────────
+
+pub fn compute_diagnostics(
+    source:  &str,
+    lang:    &str,
+    symbols: &SymbolTable,
+) -> Vec<Diagnostic> {
+    match lang {
+        "titan"  => compute_titan_diagnostics(source, symbols),
+        "vera"   => compute_vera_diagnostics(source, symbols),
+        "helix"  => compute_helix_diagnostics(source, symbols),
+        "aether" => compute_aether_diagnostics(source, symbols),
+        "sylva"  => compute_sylva_diagnostics(source, symbols),
+        "axiom"  => compute_axiom_diagnostics(source, symbols),
+        "nexus"  => compute_nexus_diagnostics(source, symbols),
+        _        => compute_titan_diagnostics(source, symbols),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 5  TITAN DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_titan_diagnostics(source: &str, symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    // Track per-scope: declared variables and whether they are used
+    struct ScopeTracker {
+        declared: Vec<(String, u32, u32)>,   // (name, line, col)
+        used:     Vec<String>,
+        depth:    usize,
+    }
+    let mut scopes: Vec<ScopeTracker> = vec![ScopeTracker { declared: vec![], used: vec![], depth: 0 }];
+    let mut fn_depth     = 0usize;
+    let mut has_return   = false;
+    let mut fn_ret_type  = String::new();
+    let mut fn_start_ln  = 0u32;
+    let mut fn_name      = String::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "fn" => {
+                        ts.skip_newlines();
+                        fn_name     = ts.peek().kind.clone().ident_name().unwrap_or_default();
+                        fn_start_ln = ts.peek().line;
+                        ts.consume_until_newline();
+                        // Extract return type from line (simplified)
+                        fn_ret_type  = String::new();
+                        has_return   = false;
+                        fn_depth     += 1;
+                        scopes.push(ScopeTracker { declared: vec![], used: vec![], depth: fn_depth });
+                    }
+                    "let" => {
+                        let is_mut = matches!(ts.peek().kind, TokenKind::Keyword(ref k) if k == "mut");
+                        if is_mut { ts.advance(); }
+                        ts.skip_newlines();
+                        if let TokenKind::Ident(name) = ts.peek().kind.clone() {
+                            let ln = ts.peek().line;
+                            let col = ts.peek().column;
+                            if !name.starts_with('_') {
+                                if let Some(scope) = scopes.last_mut() {
+                                    scope.declared.push((name.clone(), ln, col));
+                                }
+                            }
+                            ts.advance();
+                        }
+                        ts.consume_until_newline();
+                    }
+                    "return" => {
+                        has_return = true;
+                        ts.consume_until_newline();
+                    }
+                    _ => {}
+                }
+            }
+            TokenKind::Punct('{') => {
+                ts.advance();
+                fn_depth += 1;
+                scopes.push(ScopeTracker { declared: vec![], used: vec![], depth: fn_depth });
+            }
+            TokenKind::Punct('}') => {
+                ts.advance();
+                fn_depth = fn_depth.saturating_sub(1);
+                if let Some(scope) = scopes.pop() {
+                    // Check unused variables in the leaving scope
+                    let all_used: Vec<String> = scopes.iter()
+                        .flat_map(|s| s.used.iter().cloned())
+                        .chain(scope.used.iter().cloned())
+                        .collect();
+                    for (name, ln, col) in &scope.declared {
+                        if !all_used.contains(name) {
+                            diags.push(Diagnostic::warning(
+                                Range::point(*ln, *col),
+                                &format!("unused variable `{}` — prefix with `_` to suppress", name),
+                                "titan-lsp",
+                            ));
+                        }
+                    }
+                    // Propagate used names to parent scope
+                    if let Some(parent) = scopes.last_mut() {
+                        parent.used.extend(scope.used);
+                    }
+                }
+            }
+            TokenKind::Ident(ref name) => {
+                let name = name.clone();
+                let ln   = ts.peek().line;
+                let col  = ts.peek().column;
+                ts.advance();
+
+                // Track usage
+                if let Some(scope) = scopes.last_mut() {
+                    scope.used.push(name.clone());
+                }
+
+                // Check if identifier is defined — only for non-built-in names
+                if !is_builtin_type(&name) && !is_stdlib_item(&name) {
+                    if symbols.lookup(&name).is_none() {
+                        // Check if it appears to be used as a type or value
+                        // Only flag if it is followed by '(' or '!' (function call / macro)
+                        let next = ts.peek().kind.clone();
+                        if matches!(next, TokenKind::Punct('(')) {
+                            // It's a function call — check if defined
+                            if symbols.lookup(&name).is_none() {
+                                // Only warn for likely user-defined names (start uppercase or >3 chars)
+                                if name.chars().next().map_or(false, |c| c.is_uppercase()) ||
+                                   name.len() > 3 {
+                                    // Could be external; just hint
+                                    diags.push(Diagnostic {
+                                        range: Range::point(ln, col),
+                                        severity: DiagnosticSeverity::Hint,
+                                        message: format!("`{}` is not defined in this file", name),
+                                        source: "titan-lsp".to_string(),
+                                        code: Some("E001".to_string()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    diags
+}
+
+fn is_builtin_type(name: &str) -> bool {
+    matches!(name,
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
+        "f32" | "f64" | "bool" | "char" | "str" |
+        "String" | "Vec" | "HashMap" | "HashSet" | "Option" |
+        "Result" | "Box" | "Arc" | "Rc" | "Some" | "None" |
+        "Ok" | "Err" | "true" | "false" | "Self" |
+        "BTreeMap" | "BTreeSet" | "VecDeque" | "LinkedList" |
+        "println" | "eprintln" | "print" | "eprint" | "format" |
+        "panic" | "assert" | "assert_eq" | "assert_ne" | "todo" |
+        "unreachable" | "unimplemented" | "dbg" | "write" | "writeln"
+    )
+}
+
+fn is_stdlib_item(name: &str) -> bool {
+    name.starts_with("std") ||
+    name.starts_with("core") ||
+    name.len() <= 2 || // likely a short variable
+    name.chars().all(|c| c.is_lowercase() || c == '_') // likely variable
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 6  VERA DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_vera_diagnostics(source: &str, symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    // Track declared props and which are referenced in render
+    let mut declared_props:  Vec<(String, u32, u32)> = Vec::new();
+    let mut used_in_render:  Vec<String>              = Vec::new();
+    let mut in_render        = false;
+    let mut render_depth     = 0;
+
+    // Known valid event handlers
+    let valid_handlers = vec![
+        "on_click", "on_change", "on_submit", "on_focus", "on_blur",
+        "on_mouse_enter", "on_mouse_leave", "on_key_down", "on_key_up",
+        "use_effect", "use_state", "use_ref", "use_memo", "use_callback",
+    ];
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "props" => {
+                        ts.skip_newlines();
+                        if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                            ts.advance();
+                            loop {
+                                ts.skip_newlines();
+                                match ts.peek().kind.clone() {
+                                    TokenKind::Punct('}') | TokenKind::EOF => { ts.advance(); break; }
+                                    TokenKind::Ident(pname) => {
+                                        let ln  = ts.peek().line;
+                                        let col = ts.peek().column;
+                                        declared_props.push((pname, ln, col));
+                                        ts.consume_until_newline();
+                                    }
+                                    _ => { ts.advance(); }
+                                }
+                            }
+                        }
+                    }
+                    "render" => {
+                        in_render    = true;
+                        render_depth = 0;
+                    }
+                    _ => {}
+                }
+            }
+            TokenKind::Punct('{') if in_render => {
+                render_depth += 1;
+                ts.advance();
+            }
+            TokenKind::Punct('}') if in_render => {
+                render_depth -= 1;
+                ts.advance();
+                if render_depth == 0 { in_render = false; }
+            }
+            TokenKind::Ident(ref name) => {
+                let name = name.clone();
+                let ln   = ts.peek().line;
+                let col  = ts.peek().column;
+                ts.advance();
+                if in_render {
+                    used_in_render.push(name.clone());
+                }
+                // Check for unknown event handler patterns
+                if name.starts_with("on_") && !valid_handlers.contains(&name.as_str()) {
+                    diags.push(Diagnostic::warning(
+                        Range::point(ln, col),
+                        &format!("unknown event handler `{}` — did you mean one of: on_click, on_change, on_submit?", name),
+                        "vera-lsp",
+                    ));
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Props used in render — check for missing required props (those without a default)
+    for (prop_name, ln, col) in &declared_props {
+        if !used_in_render.contains(prop_name) {
+            diags.push(Diagnostic::hint(
+                Range::point(*ln, *col),
+                &format!("prop `{}` is declared but not referenced in render block", prop_name),
+                "vera-lsp",
+            ));
+        }
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 7  HELIX DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_helix_diagnostics(source: &str, symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    // Track declared uniforms and all uniform-references in shaders
+    let mut declared_uniforms: Vec<String>         = Vec::new();
+    let mut referenced_uniforms: Vec<(String, u32, u32)> = Vec::new();
+    let mut vertex_outputs:  Vec<String>           = Vec::new();
+    let mut fragment_inputs: Vec<String>           = Vec::new();
+    let mut in_vertex   = false;
+    let mut in_fragment = false;
+    let mut brace_depth = 0;
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "uniform" => {
+                        ts.skip_newlines();
+                        if let TokenKind::Ident(uname) = ts.peek().kind.clone() {
+                            declared_uniforms.push(uname);
+                            ts.consume_until_newline();
+                        } else {
+                            ts.consume_until_newline();
+                        }
+                    }
+                    "vertex" => {
+                        in_vertex   = true;
+                        in_fragment = false;
+                        brace_depth = 0;
+                    }
+                    "fragment" => {
+                        in_fragment = true;
+                        in_vertex   = false;
+                        brace_depth = 0;
+                    }
+                    _ => {}
+                }
+            }
+            TokenKind::Punct('{') => {
+                brace_depth += 1;
+                ts.advance();
+            }
+            TokenKind::Punct('}') => {
+                brace_depth -= 1;
+                ts.advance();
+                if brace_depth == 0 {
+                    in_vertex   = false;
+                    in_fragment = false;
+                }
+            }
+            TokenKind::Ident(ref name) => {
+                let name = name.clone();
+                let ln   = ts.peek().line;
+                let col  = ts.peek().column;
+                ts.advance();
+                // Check if this is a uniform reference inside a shader
+                if (in_vertex || in_fragment) && declared_uniforms.is_empty() {
+                    // Could be a uniform usage before declaration
+                    if name.contains("transform") || name.contains("uniform") {
+                        referenced_uniforms.push((name, ln, col));
+                    }
+                }
+                // Track vertex output struct field names in vertex stage
+                if in_vertex && matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                    vertex_outputs.push(name.clone());
+                }
+                // Track fragment input struct field names in fragment stage
+                if in_fragment && matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                    fragment_inputs.push(name.clone());
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Check: vertex outputs must match fragment inputs
+    for frag_input in &fragment_inputs {
+        if !vertex_outputs.contains(frag_input) && !frag_input.is_empty() {
+            diags.push(Diagnostic::error(
+                Range::point(0, 0),
+                &format!(
+                    "fragment input `{}` is not provided by any vertex output — vertex/fragment interface mismatch",
+                    frag_input
+                ),
+                "helix-lsp",
+            ));
+        }
+    }
+
+    // Check: referenced uniforms not declared
+    for (uref, ln, col) in &referenced_uniforms {
+        if !declared_uniforms.contains(uref) {
+            diags.push(Diagnostic::error(
+                Range::point(*ln, *col),
+                &format!("uniform `{}` is used in shader but never declared in pipeline block", uref),
+                "helix-lsp",
+            ));
+        }
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 8  AETHER DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_aether_diagnostics(source: &str, symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    let mut declared_messages: Vec<String>          = Vec::new();
+    let mut handler_names: Vec<(String, u32, u32)>  = Vec::new();
+    // (recipient_actor, message_type, line, col) for send() calls
+    let mut send_calls: Vec<(String, u32, u32)>     = Vec::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "message" => {
+                        ts.skip_newlines();
+                        if let TokenKind::Ident(mname) = ts.peek().kind.clone() {
+                            declared_messages.push(mname);
+                            ts.consume_until_newline();
+                        } else {
+                            ts.consume_until_newline();
+                        }
+                    }
+                    "handler" => {
+                        ts.skip_newlines();
+                        if let TokenKind::Ident(hname) = ts.peek().kind.clone() {
+                            let ln  = ts.peek().line;
+                            let col = ts.peek().column;
+                            handler_names.push((hname, ln, col));
+                            ts.consume_until_newline();
+                        } else {
+                            ts.consume_until_newline();
+                        }
+                    }
+                    "send" => {
+                        // send(actor_ref, MessageType { ... })
+                        ts.skip_newlines();
+                        if matches!(ts.peek().kind, TokenKind::Punct('(')) {
+                            ts.advance();
+                            ts.skip_newlines();
+                            // skip actor ref
+                            ts.advance();
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct(',')) {
+                                ts.advance(); ts.skip_newlines();
+                                if let TokenKind::Ident(msg_type) = ts.peek().kind.clone() {
+                                    let ln  = ts.peek().line;
+                                    let col = ts.peek().column;
+                                    send_calls.push((msg_type, ln, col));
+                                }
+                            }
+                            ts.consume_until_punct(')');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Handlers declared without corresponding message type
+    for (hname, ln, col) in &handler_names {
+        if !declared_messages.contains(hname) {
+            diags.push(Diagnostic::error(
+                Range::point(*ln, *col),
+                &format!(
+                    "handler `{}` has no corresponding `message {}` declaration",
+                    hname, hname
+                ),
+                "aether-lsp",
+            ));
+        }
+    }
+
+    // send() calls with unknown message type
+    for (msg_type, ln, col) in &send_calls {
+        if !declared_messages.contains(msg_type) && symbols.lookup(msg_type).is_none() {
+            diags.push(Diagnostic::error(
+                Range::point(*ln, *col),
+                &format!(
+                    "sending unknown message type `{}` — declare it with `message {} {{ ... }}`",
+                    msg_type, msg_type
+                ),
+                "aether-lsp",
+            ));
+        }
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 9  SYLVA DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_sylva_diagnostics(source: &str, _symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    // (name, layer_type, in_dim, out_dim, line, col)
+    let mut layers: Vec<(String, String, Option<i64>, Option<i64>, u32, u32)> = Vec::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "dense" | "conv2d" | "layer" => {
+                        ts.skip_newlines();
+                        let (ln, col) = (ts.peek().line, ts.peek().column);
+                        let name = if let TokenKind::Ident(n) = ts.peek().kind.clone() {
+                            ts.advance(); n
+                        } else { format!("layer_{}", layers.len()) };
+
+                        let mut in_dim: Option<i64>  = None;
+                        let mut out_dim: Option<i64> = None;
+
+                        ts.skip_newlines();
+                        if matches!(ts.peek().kind, TokenKind::Punct('(')) {
+                            ts.advance(); ts.skip_newlines();
+                            if let TokenKind::Number(ref n) = ts.peek().kind.clone() {
+                                in_dim = n.parse().ok().map(|f: f64| f as i64);
+                                ts.advance();
+                            }
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct(',')) {
+                                ts.advance(); ts.skip_newlines();
+                                if let TokenKind::Number(ref n) = ts.peek().kind.clone() {
+                                    out_dim = n.parse().ok().map(|f: f64| f as i64);
+                                    ts.advance();
+                                }
+                            }
+                            ts.consume_until_punct(')');
+                        }
+                        layers.push((name, kw.clone(), in_dim, out_dim, ln, col));
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Check consecutive layer dimension compatibility
+    for i in 1..layers.len() {
+        let (prev_name, _, _, prev_out, _, _) = &layers[i - 1];
+        let (curr_name, curr_type, curr_in, _, curr_ln, curr_col) = &layers[i];
+        if let (Some(out), Some(inp)) = (prev_out, curr_in) {
+            if out != inp {
+                diags.push(Diagnostic::error(
+                    Range::point(*curr_ln, *curr_col),
+                    &format!(
+                        "layer dimension mismatch: '{}' outputs {} units but '{}' ({}) expects {} inputs",
+                        prev_name, out, curr_name, curr_type, inp
+                    ),
+                    "sylva-lsp",
+                ));
+            }
+        }
+    }
+
+    // Warn on model with only one layer
+    if layers.len() == 1 {
+        let (_, _, _, _, ln, col) = &layers[0];
+        diags.push(Diagnostic::hint(
+            Range::point(*ln, *col),
+            "model has only one layer — consider adding more layers for non-trivial tasks",
+            "sylva-lsp",
+        ));
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 10  AXIOM DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_axiom_diagnostics(source: &str, _symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    // Track theorems and their preconditions/postconditions
+    struct TheoremInfo {
+        name:       String,
+        line:       u32,
+        col:        u32,
+        precond:    Vec<String>,
+        postcond:   Vec<String>,
+        has_prove:  bool,
+    }
+    let mut theorems: Vec<TheoremInfo>    = Vec::new();
+    let mut in_theorem  = false;
+    let mut thm_depth   = 0;
+    let mut curr_pre:   Vec<String>       = Vec::new();
+    let mut curr_post:  Vec<String>       = Vec::new();
+    let mut curr_has_prove = false;
+    let mut curr_name   = String::new();
+    let mut curr_ln     = 0u32;
+    let mut curr_col    = 0u32;
+    let mut in_precond  = false;
+    let mut in_postcond = false;
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "theorem" => {
+                        ts.skip_newlines();
+                        curr_ln = ts.peek().line;
+                        curr_col = ts.peek().column;
+                        if let TokenKind::Ident(n) = ts.peek().kind.clone() {
+                            curr_name = n;
+                            ts.advance();
+                        }
+                        in_theorem = true;
+                        thm_depth  = 0;
+                        curr_pre.clear();
+                        curr_post.clear();
+                        curr_has_prove = false;
+                        in_precond  = false;
+                        in_postcond = false;
+                    }
+                    "precondition" if in_theorem => {
+                        in_precond  = true;
+                        in_postcond = false;
+                    }
+                    "postcondition" if in_theorem => {
+                        in_postcond = true;
+                        in_precond  = false;
+                    }
+                    "prove" if in_theorem => {
+                        curr_has_prove = true;
+                        in_precond  = false;
+                        in_postcond = false;
+                    }
+                    "for_all" | "there_exists" => {
+                        // Collect quantifier expression as precondition
+                        if in_precond {
+                            curr_pre.push(kw.clone());
+                        } else if in_postcond {
+                            curr_post.push(kw.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            TokenKind::Punct('{') if in_theorem => {
+                thm_depth += 1;
+                ts.advance();
+            }
+            TokenKind::Punct('}') if in_theorem => {
+                thm_depth -= 1;
+                ts.advance();
+                if thm_depth == 0 {
+                    theorems.push(TheoremInfo {
+                        name:      curr_name.clone(),
+                        line:      curr_ln,
+                        col:       curr_col,
+                        precond:   curr_pre.clone(),
+                        postcond:  curr_post.clone(),
+                        has_prove: curr_has_prove,
+                    });
+                    in_theorem  = false;
+                    in_precond  = false;
+                    in_postcond = false;
+                }
+            }
+            TokenKind::Ident(ref name) if in_theorem => {
+                let name = name.clone();
+                if in_precond  { curr_pre.push(name); }
+                if in_postcond { curr_post.push(name); }
+                ts.advance();
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Emit diagnostics for each theorem
+    for thm in &theorems {
+        // No postconditions — theorem is unproven
+        if thm.postcond.is_empty() {
+            diags.push(Diagnostic::warning(
+                Range::point(thm.line, thm.col),
+                &format!(
+                    "theorem `{}` has no postconditions — it makes no guarantees and is formally unproven",
+                    thm.name
+                ),
+                "axiom-lsp",
+            ));
+        }
+
+        // Has postconditions but no prove block
+        if !thm.postcond.is_empty() && !thm.has_prove {
+            diags.push(Diagnostic::warning(
+                Range::point(thm.line, thm.col),
+                &format!(
+                    "theorem `{}` has postconditions but no `prove` block — add a proof or mark as `axiom`",
+                    thm.name
+                ),
+                "axiom-lsp",
+            ));
+        }
+
+        // Circular precondition dependency detection (simplified: if a precond var
+        // appears in another precond that references itself, that's circular)
+        let pre_set: std::collections::HashSet<&String> = thm.precond.iter().collect();
+        for p in &thm.precond {
+            if thm.postcond.contains(p) {
+                // A precondition name appears in postcondition — likely circular reference
+                diags.push(Diagnostic::warning(
+                    Range::point(thm.line, thm.col),
+                    &format!(
+                        "theorem `{}`: variable `{}` appears in both precondition and postcondition — possible circular dependency",
+                        thm.name, p
+                    ),
+                    "axiom-lsp",
+                ));
+            }
+        }
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 11  NEXUS DIAGNOSTICS
+// ─────────────────────────────────────────────────────────────
+
+fn compute_nexus_diagnostics(source: &str, _symbols: &SymbolTable) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let mut lexer = Lexer::new(source);
+    let tokens    = lexer.tokenize();
+    let mut ts    = TokenStream::new(tokens);
+
+    let valid_flex_props = vec![
+        "align", "justify", "gap", "padding", "margin",
+        "flex_direction", "flex_wrap", "flex_grow", "flex_shrink",
+        "min_width", "max_width", "min_height", "max_height",
+        "width", "height", "overflow",
+    ];
+    let valid_grid_props = vec![
+        "cols", "rows", "gap", "column_gap", "row_gap",
+        "padding", "margin", "align", "justify",
+        "template_columns", "template_rows", "auto_flow",
+    ];
+
+    let mut in_flex    = false;
+    let mut in_grid    = false;
+    let mut brace_depth = 0;
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "flex" => {
+                        in_flex = true; in_grid = false; brace_depth = 0;
+                    }
+                    "grid" => {
+                        in_grid = true; in_flex = false; brace_depth = 0;
+                    }
+                    _ => {}
+                }
+            }
+            TokenKind::Punct('{') => {
+                brace_depth += 1;
+                ts.advance();
+            }
+            TokenKind::Punct('}') => {
+                brace_depth -= 1;
+                ts.advance();
+                if brace_depth == 0 {
+                    in_flex = false;
+                    in_grid = false;
+                }
+            }
+            TokenKind::Ident(ref name) => {
+                let name = name.clone();
+                let ln   = ts.peek().line;
+                let col  = ts.peek().column;
+                ts.advance();
+                // Check for invalid flex/grid properties
+                if in_flex && matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                    if !valid_flex_props.contains(&name.as_str()) {
+                        diags.push(Diagnostic::warning(
+                            Range::point(ln, col),
+                            &format!(
+                                "unknown flex property `{}` — valid properties: {}",
+                                name,
+                                valid_flex_props.join(", ")
+                            ),
+                            "nexus-lsp",
+                        ));
+                    }
+                }
+                if in_grid && matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                    if !valid_grid_props.contains(&name.as_str()) {
+                        diags.push(Diagnostic::warning(
+                            Range::point(ln, col),
+                            &format!(
+                                "unknown grid property `{}` — valid properties: {}",
+                                name,
+                                valid_grid_props.join(", ")
+                            ),
+                            "nexus-lsp",
+                        ));
+                    }
+                }
+            }
+            _ => { ts.advance(); }
+        }
+    }
+
+    diags
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 12  TOKEN KIND EXTENSION
+// ─────────────────────────────────────────────────────────────
+
+// Extension method on TokenKind for convenience
+trait TokenKindExt {
+    fn ident_name(&self) -> Option<String>;
+}
+
+impl TokenKindExt for TokenKind {
+    fn ident_name(&self) -> Option<String> {
+        match self {
+            TokenKind::Ident(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+}
+
+// Additional helper: consume until a specific punct char
+impl TokenStream {
+    pub fn consume_until_punct(&mut self, p: char) {
+        loop {
+            match &self.peek().kind {
+                TokenKind::Punct(c) if *c == p => { self.advance(); break; }
+                TokenKind::EOF => break,
+                _ => { self.advance(); }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 13  UNIT TESTS
+// ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use LanguageAnalyzer::SymbolTable;
+
+    fn empty_table() -> SymbolTable { SymbolTable::new() }
+
+    #[test]
+    fn test_diagnostic_cache_update() {
+        let mut cache = DiagnosticCache::new();
+        let diags = vec![
+            Diagnostic::error(Range::point(0, 0), "test error", "test"),
+        ];
+        let changed = cache.update("file:///a.titan", diags.clone());
+        assert!(changed);
+        // No change second time
+        let changed2 = cache.update("file:///a.titan", diags.clone());
+        assert!(!changed2);
+    }
+
+    #[test]
+    fn test_diagnostic_cache_clear() {
+        let mut cache = DiagnosticCache::new();
+        cache.update("file:///a.titan", vec![
+            Diagnostic::error(Range::point(0, 0), "test", "test"),
+        ]);
+        cache.clear("file:///a.titan");
+        assert_eq!(cache.get("file:///a.titan").len(), 0);
+    }
+
+    #[test]
+    fn test_publish_diagnostics_format() {
+        let diags = vec![
+            Diagnostic::error(Range::point(1, 5), "undefined variable", "titan-lsp"),
+        ];
+        let notif = publish_diagnostics("file:///test.titan", &diags);
+        let body  = LspProtocol::json_serialize(&notif);
+        assert!(body.contains("publishDiagnostics"));
+        assert!(body.contains("undefined variable"));
+        assert!(body.contains("file:///test.titan"));
+    }
+
+    #[test]
+    fn test_titan_unused_variable_warning() {
+        let src = "fn foo() {\n    let unused_var: i32 = 42;\n}\n";
+        let table = empty_table();
+        let diags = compute_titan_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("unused")));
+    }
+
+    #[test]
+    fn test_sylva_dimension_mismatch_diagnostic() {
+        let src = "dense input(784, 256)\ndense hidden(128, 64)\n";
+        let table = empty_table();
+        let diags = compute_sylva_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("mismatch")));
+    }
+
+    #[test]
+    fn test_sylva_single_layer_hint() {
+        let src = "dense only(10, 5)\n";
+        let table = empty_table();
+        let diags = compute_sylva_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| matches!(d.severity, DiagnosticSeverity::Hint)));
+    }
+
+    #[test]
+    fn test_axiom_no_postcondition() {
+        let src = "theorem safety {\n    precondition { x > 0 }\n}\n";
+        let table = empty_table();
+        let diags = compute_axiom_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("unproven")));
+    }
+
+    #[test]
+    fn test_axiom_no_prove_block() {
+        let src = "theorem safety {\n    precondition { x > 0 }\n    postcondition { result >= 0 }\n}\n";
+        let table = empty_table();
+        let diags = compute_axiom_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("prove")));
+    }
+
+    #[test]
+    fn test_aether_missing_message_declaration() {
+        let src = "actor Worker {\n    handler DoWork {\n    }\n}\n";
+        let table = empty_table();
+        let diags = compute_aether_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("DoWork")));
+    }
+
+    #[test]
+    fn test_vera_unknown_event_handler() {
+        let src = "component Btn {\n    render {\n        on_hover(|e| {})\n    }\n}\n";
+        let table = empty_table();
+        let diags = compute_vera_diagnostics(src, &table);
+        assert!(diags.iter().any(|d| d.message.contains("on_hover")));
+    }
+
+    #[test]
+    fn test_compute_diagnostics_dispatch() {
+        let table = empty_table();
+        // Should not panic for any language
+        for lang in &["titan", "vera", "helix", "aether", "sylva", "axiom", "nexus"] {
+            let diags = compute_diagnostics("", lang, &table);
+            let _ = diags; // just verify it runs
+        }
+    }
+}

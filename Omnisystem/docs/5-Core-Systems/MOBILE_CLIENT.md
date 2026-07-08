@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Bonsai Buddy Android app now features a complete, production-grade Kotlin implementation of the BRDF Mobile Client for remote desktop streaming. This client enables users to:
+The Omnisystem Buddy Android app now features a complete, production-grade Kotlin implementation of the BRDF Mobile Client for remote desktop streaming. This client enables users to:
 
 - Stream video from a remote desktop in real-time
 - Control the remote desktop via touch and keyboard input
@@ -146,11 +146,11 @@ Complete model definitions for:
 - `ConnectionState` — Session state enum
 - `ConnectionError` — Error details
 
-## Integration with Bonsai Buddy
+## Integration with Omnisystem Buddy
 
 ### Navigation
 
-The remote desktop screen is integrated into the Bonsai Buddy navigation graph:
+The remote desktop screen is integrated into the Omnisystem Buddy navigation graph:
 
 ```kotlin
 // Define the route

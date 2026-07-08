@@ -96,7 +96,7 @@ This directory contains comprehensive documentation for the entire build system.
 **Understanding the three projects being built**
 
 **Projects Covered:**
-1. **BonsaiEcosystem Desktop Environment** (✅ Ready)
+1. **OmnisystemEcosystem Desktop Environment** (✅ Ready)
    - Rust console app
    - 9-stage boot sequence
    - 7 integrated languages
@@ -107,7 +107,7 @@ This directory contains comprehensive documentation for the entire build system.
    - Graphical interface
    - Web UI + Rust backend
 
-3. **BonsaiEcosystem Launcher** (🔄 Building)
+3. **OmnisystemEcosystem Launcher** (🔄 Building)
    - Tauri application
    - Control center
    - App management
@@ -231,7 +231,7 @@ User Interface Layer
 |---------|--------|--------|------|
 | Desktop Environment | ✅ Ready | Omnisystem.exe | 146 KB |
 | GUI Launcher | 🔄 Building | OmnisystemGUI.exe | TBD |
-| App Launcher | 🔄 Building | BonsaiLauncher.exe | TBD |
+| App Launcher | 🔄 Building | OmnisystemLauncher.exe | TBD |
 
 ### Output Directory
 
@@ -239,7 +239,7 @@ User Interface Layer
 .\build\output\
 ├── Omnisystem.exe           (146 KB, working)
 ├── OmnisystemGUI.exe        (pending)
-└── BonsaiLauncher.exe       (pending)
+└── OmnisystemLauncher.exe       (pending)
 ```
 
 ---
@@ -340,9 +340,9 @@ User Interface Layer
 - `Z:\Projects\Omnisystem\Verify-Build-Setup.ps1` - Validation
 
 ### Projects
-- `Omnisystem\applications\bonsai-desktop-environment\` - Desktop env
+- `Omnisystem\applications\omnisystem-desktop-environment\` - Desktop env
 - `Omnisystem\src\crates\omnisystem-launcher-gui\src-tauri\` - GUI launcher
-- `Omnisystem\modules\base-modules\applications\bonsai-ecosystem\launcher\` - App launcher
+- `Omnisystem\modules\base-modules\applications\omnisystem-ecosystem\launcher\` - App launcher
 
 ### Documentation (Root)
 - `BUILD_GUIDE.md` - Build usage guide

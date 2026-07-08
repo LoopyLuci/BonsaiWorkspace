@@ -85,7 +85,7 @@ The Omnisystem provides enterprise-grade asset management across multiple framew
 
 ### Primary Asset Manager
 
-**File**: `Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\src\assets\AssetManager.vera`
+**File**: `Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\src\assets\AssetManager.vera`
 
 #### Asset Manager Structure
 
@@ -773,7 +773,7 @@ pub fn batch_encode_audio(assets: Vec<Asset>, formats: Vec<Format>) -> Result {
 ### File System Storage
 
 ```
-Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\assets\
+Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\assets\
 ├── icons/
 │   ├── app/               # Application icons
 │   ├── system/            # System UI icons

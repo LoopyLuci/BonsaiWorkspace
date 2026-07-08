@@ -96,7 +96,7 @@
 
   {#if step === 'welcome'}
     <section>
-      <h1>Bonsai Root</h1>
+      <h1>Omnisystem Root</h1>
       <p>Primary flow preserved: Simple and Advanced install.</p>
       <button on:click={simpleInstall} disabled={simpleInstalling}>
         {simpleInstalling ? 'Installing...' : 'Simple Install'}
@@ -107,7 +107,7 @@
     <AdvancedInstall {manifest} onDone={onInstallDone} />
   {:else if step === 'menu'}
     <section>
-      <h2>Bonsai Ecosystem Applications</h2>
+      <h2>Omnisystem Ecosystem Applications</h2>
       {#if installReport}
         <p>Last operation: {installReport.operation_id}</p>
       {/if}

@@ -1,0 +1,581 @@
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// OMNISYSTEM PACKAGE MANAGER (OmniPM)
+// Complete Ecosystem Package Management System
+// Language: TITAN - Package Management Infrastructure
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// CORE PACKAGE TYPES
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Debug)]
+pub struct Version {
+    pub major: i32,
+    pub minor: i32,
+    pub patch: i32,
+}
+
+impl Version {
+    pub fn new(major: i32, minor: i32, patch: i32) -> Self {
+        Version { major, minor, patch }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("{}.{}.{}", self.major, self.minor, self.patch)
+    }
+
+    pub fn from_string(s: String) -> Result<Self, String> {
+        let parts: Vec<&str> = s.split('.').collect()
+        if parts.len() != 3 {
+            return Err("Invalid version format".to_string())
+        }
+
+        let major = parts[0].parse::<i32>().map_err(|_| "Invalid major")?
+        let minor = parts[1].parse::<i32>().map_err(|_| "Invalid minor")?
+        let patch = parts[2].parse::<i32>().map_err(|_| "Invalid patch")?
+
+        Ok(Version::new(major, minor, patch))
+    }
+
+    pub fn is_compatible(&self, other: &Version) -> bool {
+        // Semantic versioning: same major version means compatible
+        self.major == other.major
+    }
+
+    pub fn is_greater_than(&self, other: &Version) -> bool {
+        if self.major != other.major {
+            return self.major > other.major
+        }
+        if self.minor != other.minor {
+            return self.minor > other.minor
+        }
+        self.patch > other.patch
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Dependency {
+    pub name: String,
+    pub version: String,  // Can be exact (1.0.0) or range (^1.0 or ~1.0)
+}
+
+impl Dependency {
+    pub fn new(name: String, version: String) -> Self {
+        Dependency { name, version }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageManifest {
+    pub name: String,
+    pub version: Version,
+    pub description: String,
+    pub author: String,
+    pub license: String,
+    pub language: String,  // TITAN, VERA, HELIX, AETHER, AXIOM, SYLVA, NEXUS
+    pub main: String,  // Entry point file
+    pub dependencies: HashMap<String, String>,  // name -> version
+    pub keywords: Vec<String>,
+    pub repository: String,
+    pub homepage: String,
+    pub published_at: i64,
+    pub checksum: String,
+}
+
+impl PackageManifest {
+    pub fn new(name: String, version: Version, language: String) -> Self {
+        PackageManifest {
+            name,
+            version,
+            description: String::new(),
+            author: String::new(),
+            license: "MIT".to_string(),
+            language,
+            main: "src/main.titan".to_string(),
+            dependencies: HashMap::new(),
+            keywords: Vec::new(),
+            repository: String::new(),
+            homepage: String::new(),
+            published_at: 0,
+            checksum: String::new(),
+        }
+    }
+
+    pub fn add_dependency(&mut self, name: String, version: String) {
+        self.dependencies.insert(name, version)
+    }
+
+    pub fn to_toml(&self) -> String {
+        let mut toml = format!(
+            "[package]\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nauthor = \"{}\"\nlicense = \"{}\"\nlanguage = \"{}\"\nmain = \"{}\"\n",
+            self.name, self.version.to_string(), self.description, self.author, self.license, self.language, self.main
+        )
+
+        if !self.dependencies.is_empty() {
+            toml.push_str("\n[dependencies]\n")
+            for (name, version) in &self.dependencies {
+                toml.push_str(&format!("{} = \"{}\"\n", name, version))
+            }
+        }
+
+        toml
+    }
+
+    pub fn from_toml(toml: String) -> Result<Self, String> {
+        let mut manifest = PackageManifest::new(
+            "unknown".to_string(),
+            Version::new(0, 0, 0),
+            "TITAN".to_string(),
+        )
+
+        for line in toml.lines() {
+            if line.starts_with("name = ") {
+                manifest.name = line.replace("name = \"", "").replace("\"", "")
+            } else if line.starts_with("version = ") {
+                let ver_str = line.replace("version = \"", "").replace("\"", "")
+                manifest.version = Version::from_string(ver_str)?
+            } else if line.starts_with("description = ") {
+                manifest.description = line.replace("description = \"", "").replace("\"", "")
+            } else if line.starts_with("language = ") {
+                manifest.language = line.replace("language = \"", "").replace("\"", "")
+            }
+        }
+
+        Ok(manifest)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PACKAGE REGISTRY & CACHE
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct PackageRegistry {
+    packages: HashMap<String, Vec<PackageManifest>>,  // name -> [versions]
+    registry_url: String,
+}
+
+impl PackageRegistry {
+    pub fn new(registry_url: String) -> Self {
+        PackageRegistry {
+            packages: HashMap::new(),
+            registry_url,
+        }
+    }
+
+    pub fn register_package(&mut self, manifest: PackageManifest) {
+        let entry = self.packages.entry(manifest.name.clone()).or_insert_with(Vec::new)
+        entry.push(manifest)
+    }
+
+    pub fn search(&self, query: &str) -> Vec<PackageManifest> {
+        let mut results = Vec::new()
+
+        for (name, versions) in &self.packages {
+            if name.contains(query) || query == "*" {
+                if let Some(latest) = versions.last() {
+                    results.push(latest.clone())
+                }
+            }
+        }
+
+        results
+    }
+
+    pub fn get_package(&self, name: &str, version: &str) -> Result<PackageManifest, String> {
+        if let Some(versions) = self.packages.get(name) {
+            for v in versions {
+                if v.version.to_string() == version {
+                    return Ok(v.clone())
+                }
+            }
+            Err(format!("Version {} not found for {}", version, name))
+        } else {
+            Err(format!("Package {} not found", name))
+        }
+    }
+
+    pub fn get_latest(&self, name: &str) -> Result<PackageManifest, String> {
+        if let Some(versions) = self.packages.get(name) {
+            if let Some(latest) = versions.last() {
+                return Ok(latest.clone())
+            }
+        }
+        Err(format!("Package {} not found", name))
+    }
+
+    pub fn list_all(&self) -> Vec<String> {
+        self.packages.keys().cloned().collect()
+    }
+}
+
+pub struct LocalCache {
+    cache_dir: PathBuf,
+    installed_packages: HashMap<String, Version>,
+}
+
+impl LocalCache {
+    pub fn new(cache_dir: PathBuf) -> Self {
+        LocalCache {
+            cache_dir,
+            installed_packages: HashMap::new(),
+        }
+    }
+
+    pub fn install_package(&mut self, name: String, version: Version) -> Result<(), String> {
+        let package_dir = self.cache_dir.join(&name).join(version.to_string())
+        fs::create_dir_all(&package_dir).map_err(|e| e.to_string())?
+
+        self.installed_packages.insert(name, version)
+        Ok(())
+    }
+
+    pub fn get_installed(&self, name: &str) -> Option<Version> {
+        self.installed_packages.get(name).cloned()
+    }
+
+    pub fn is_installed(&self, name: &str) -> bool {
+        self.installed_packages.contains_key(name)
+    }
+
+    pub fn list_installed(&self) -> Vec<(String, Version)> {
+        self.installed_packages.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    pub fn remove_package(&mut self, name: &str) -> Result<(), String> {
+        if let Some(version) = self.installed_packages.remove(name) {
+            let package_dir = self.cache_dir.join(name).join(version.to_string())
+            fs::remove_dir_all(&package_dir).map_err(|e| e.to_string())?
+            Ok(())
+        } else {
+            Err(format!("Package {} not installed", name))
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// DEPENDENCY RESOLVER
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct DependencyResolver {
+    registry: PackageRegistry,
+}
+
+impl DependencyResolver {
+    pub fn new(registry: PackageRegistry) -> Self {
+        DependencyResolver { registry }
+    }
+
+    pub fn resolve(&self, package: &PackageManifest) -> Result<Vec<PackageManifest>, String> {
+        let mut resolved = Vec::new()
+        let mut visited = std::collections::HashSet::new()
+
+        self.resolve_recursive(package, &mut resolved, &mut visited)?
+        Ok(resolved)
+    }
+
+    fn resolve_recursive(
+        &self,
+        package: &PackageManifest,
+        resolved: &mut Vec<PackageManifest>,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        if visited.contains(&package.name) {
+            return Ok(())
+        }
+
+        visited.insert(package.name.clone())
+
+        for (dep_name, dep_version) in &package.dependencies {
+            let dep_manifest = self.registry.get_package(dep_name, dep_version)?
+            self.resolve_recursive(&dep_manifest, resolved, visited)?
+            resolved.push(dep_manifest)
+        }
+
+        Ok(())
+    }
+
+    pub fn detect_conflicts(&self, dependencies: &[PackageManifest]) -> Vec<String> {
+        let mut conflicts = Vec::new()
+        let mut seen_packages = HashMap::new()
+
+        for pkg in dependencies {
+            if let Some(existing_version) = seen_packages.get(&pkg.name) {
+                if existing_version != &pkg.version {
+                    conflicts.push(format!(
+                        "Version conflict for {}: {} vs {}",
+                        pkg.name, existing_version.to_string(), pkg.version.to_string()
+                    ))
+                }
+            } else {
+                seen_packages.insert(pkg.name.clone(), pkg.version.clone())
+            }
+        }
+
+        conflicts
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// PACKAGE MANAGER CLI
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub enum PackageCommand {
+    Install(String, Option<String>),  // name, version (optional)
+    Uninstall(String),
+    Update(String),
+    Search(String),
+    List,
+    Info(String),
+    Publish(String),
+    Init,
+}
+
+pub struct PackageManager {
+    registry: PackageRegistry,
+    cache: LocalCache,
+    resolver: DependencyResolver,
+}
+
+impl PackageManager {
+    pub fn new(registry_url: String, cache_dir: PathBuf) -> Self {
+        let registry = PackageRegistry::new(registry_url)
+        let cache = LocalCache::new(cache_dir)
+        let resolver = DependencyResolver::new(registry.clone())
+
+        PackageManager {
+            registry,
+            cache,
+            resolver,
+        }
+    }
+
+    pub fn install(&mut self, name: &str, version: Option<&str>) -> Result<(), String> {
+        let version_str = version.unwrap_or("*")
+
+        let package = if version_str == "*" {
+            self.registry.get_latest(name)?
+        } else {
+            self.registry.get_package(name, version_str)?
+        }
+
+        println!("Installing {}@{}", package.name, package.version.to_string())
+
+        // Resolve dependencies
+        let dependencies = self.resolver.resolve(&package)?
+
+        // Check for conflicts
+        let conflicts = self.resolver.detect_conflicts(&dependencies)
+        if !conflicts.is_empty() {
+            println!("⚠ Dependency conflicts detected:")
+            for conflict in conflicts {
+                println!("  - {}", conflict)
+            }
+        }
+
+        // Install dependencies first
+        for dep in &dependencies {
+            self.cache.install_package(dep.name.clone(), dep.version.clone())?
+            println!("  + {}", dep.name)
+        }
+
+        // Install main package
+        self.cache.install_package(package.name.clone(), package.version.clone())?
+
+        println!("✓ Successfully installed {}@{}", package.name, package.version.to_string())
+        Ok(())
+    }
+
+    pub fn uninstall(&mut self, name: &str) -> Result<(), String> {
+        self.cache.remove_package(name)?
+        println!("✓ Successfully uninstalled {}", name)
+        Ok(())
+    }
+
+    pub fn search(&self, query: &str) -> Result<(), String> {
+        let results = self.registry.search(query)
+
+        if results.is_empty() {
+            println!("No packages found matching '{}'", query)
+            return Ok(())
+        }
+
+        println!("Search results for '{}':", query)
+        println!("╔════════════════════════════════════════════════════╗")
+        for pkg in results {
+            println!("║ {} ({})", pkg.name, pkg.version.to_string())
+            println!("║   {}", pkg.description)
+            println!("║   Author: {} | License: {}", pkg.author, pkg.license)
+        }
+        println!("╚════════════════════════════════════════════════════╝")
+
+        Ok(())
+    }
+
+    pub fn list_installed(&self) -> Result<(), String> {
+        let installed = self.cache.list_installed()
+
+        if installed.is_empty() {
+            println!("No packages installed")
+            return Ok(())
+        }
+
+        println!("╔═══════════════════════════════════════════════════╗")
+        println!("║ Installed Packages                                ║")
+        println!("╠═══════════════════════════════════════════════════╣")
+        for (name, version) in installed {
+            println!("║ {} @ {}", name, version.to_string())
+        }
+        println!("╚═══════════════════════════════════════════════════╝")
+
+        Ok(())
+    }
+
+    pub fn info(&self, name: &str) -> Result<(), String> {
+        let package = self.registry.get_latest(name)?
+
+        println!("╔═══════════════════════════════════════════════════╗")
+        println!("║ Package Information                               ║")
+        println!("╠═══════════════════════════════════════════════════╣")
+        println!("║ Name:        {}", package.name)
+        println!("║ Version:     {}", package.version.to_string())
+        println!("║ Language:    {}", package.language)
+        println!("║ Author:      {}", package.author)
+        println!("║ License:     {}", package.license)
+        println!("║ Description: {}", package.description)
+        println!("║ Main:        {}", package.main)
+        if !package.dependencies.is_empty() {
+            println!("║ Dependencies:")
+            for (dep, ver) in &package.dependencies {
+                println!("║   - {} @ {}", dep, ver)
+            }
+        }
+        println!("╚═══════════════════════════════════════════════════╝")
+
+        Ok(())
+    }
+
+    pub fn create_init_manifest(&self) -> PackageManifest {
+        PackageManifest::new(
+            "my-package".to_string(),
+            Version::new(0, 1, 0),
+            "TITAN".to_string(),
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// MAIN & DEMO
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("╔════════════════════════════════════════════════════════════════════════════════╗");
+    println!("║  OMNISYSTEM PACKAGE MANAGER (OmniPM) v1.0                                    ║");
+    println!("║  Complete Package Management System for Omnisystem Languages                 ║");
+    println!("╚════════════════════════════════════════════════════════════════════════════════╝");
+    println!("");
+
+    // Create package manager
+    let mut pm = PackageManager::new(
+        "https://registry.omnisystem.dev".to_string(),
+        PathBuf::from(".omnisystem/packages"),
+    )
+
+    // Create and register sample packages
+    let mut pkg_http = PackageManifest::new("http-server".to_string(), Version::new(1, 0, 0), "TITAN".to_string())
+    pkg_http.description = "Production HTTP server library".to_string()
+    pkg_http.author = "Omnisystem Team".to_string()
+    pkg_http.main = "src/http.titan".to_string()
+
+    let mut pkg_graphics = PackageManifest::new("graphics-engine".to_string(), Version::new(2, 1, 0), "HELIX".to_string())
+    pkg_graphics.description = "3D graphics rendering engine".to_string()
+    pkg_graphics.author = "Omnisystem Team".to_string()
+    pkg_graphics.add_dependency("math-lib".to_string(), "1.0.0".to_string())
+
+    let mut pkg_math = PackageManifest::new("math-lib".to_string(), Version::new(1, 0, 0), "TITAN".to_string())
+    pkg_math.description = "Advanced mathematics library".to_string()
+    pkg_math.author = "Omnisystem Team".to_string()
+
+    let mut pkg_ml = PackageManifest::new("ml-framework".to_string(), Version::new(1, 5, 0), "SYLVA".to_string())
+    pkg_ml.description = "Machine learning framework".to_string()
+    pkg_ml.author = "Omnisystem Team".to_string()
+
+    let mut pkg_async = PackageManifest::new("async-runtime".to_string(), Version::new(3, 0, 0), "AETHER".to_string())
+    pkg_async.description = "High-performance async runtime".to_string()
+    pkg_async.author = "Omnisystem Team".to_string()
+
+    pm.registry.register_package(pkg_http.clone())
+    pm.registry.register_package(pkg_graphics.clone())
+    pm.registry.register_package(pkg_math.clone())
+    pm.registry.register_package(pkg_ml.clone())
+    pm.registry.register_package(pkg_async.clone())
+
+    println!("✓ Package Manager initialized with {} packages", pm.registry.list_all().len())
+    println!("");
+
+    // Demo: Search
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("DEMO: Search for packages");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    pm.search("http")?
+    println!("");
+
+    // Demo: Info
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("DEMO: Package information");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    pm.info("graphics-engine")?
+    println!("");
+
+    // Demo: Install with dependency resolution
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("DEMO: Install graphics-engine (with dependencies)");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    pm.install("graphics-engine", None)?
+    println!("");
+
+    // Demo: List installed
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("DEMO: List installed packages");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    pm.list_installed()?
+    println!("");
+
+    println!("✓ OmniPM Demo Complete");
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_parsing() {
+        let v = Version::from_string("1.2.3".to_string()).unwrap()
+        assert_eq!(v.major, 1)
+        assert_eq!(v.minor, 2)
+        assert_eq!(v.patch, 3)
+    }
+
+    #[test]
+    fn test_version_comparison() {
+        let v1 = Version::new(1, 0, 0)
+        let v2 = Version::new(1, 1, 0)
+        assert!(v2.is_greater_than(&v1))
+    }
+
+    #[test]
+    fn test_package_manifest() {
+        let mut manifest = PackageManifest::new("test".to_string(), Version::new(1, 0, 0), "TITAN".to_string())
+        manifest.add_dependency("dep".to_string(), "1.0.0".to_string())
+        assert_eq!(manifest.dependencies.len(), 1)
+    }
+}

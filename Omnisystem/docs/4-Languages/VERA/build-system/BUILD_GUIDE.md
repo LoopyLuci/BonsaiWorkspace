@@ -1,13 +1,13 @@
-# Build Guide - Bonsai Mobile FFI
+# Build Guide - Omnisystem Mobile FFI
 
 Complete step-by-step guide to building the Android hardware-accelerated video decoder from source.
 
 ## Overview
 
-This crate compiles to `libbonsai_mobile_ffi.so`, a native Android library providing JNI bindings to hardware-accelerated H.264/H.265 video decoding via MediaCodec.
+This crate compiles to `libomnisystem_mobile_ffi.so`, a native Android library providing JNI bindings to hardware-accelerated H.264/H.265 video decoding via MediaCodec.
 
 **Build Target:** aarch64-linux-android (ARM64)
-**Output:** `libbonsai_mobile_ffi.so` (~2-4MB)
+**Output:** `libomnisystem_mobile_ffi.so` (~2-4MB)
 **Compilation Time:** ~5-15 minutes (first build), ~30-60 seconds (incremental)
 
 ## System Requirements
@@ -132,7 +132,7 @@ ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/*/bin/clang
 ### Build for Android ARM64 (Primary Target)
 
 ```bash
-cd crates/bonsai-mobile-ffi
+cd crates/omnisystem-mobile-ffi
 
 # Option 1: Using environment variable
 cargo ndk -t arm64-v8a build --release
@@ -141,24 +141,24 @@ cargo ndk -t arm64-v8a build --release
 cargo ndk -t arm64-v8a --ndk $ANDROID_NDK_HOME build --release
 
 # Option 3: From workspace root
-cargo ndk -p bonsai-mobile-ffi -t arm64-v8a build --release
+cargo ndk -p omnisystem-mobile-ffi -t arm64-v8a build --release
 ```
 
-**Output:** `target/aarch64-linux-android/release/libbonsai_mobile_ffi.so`
+**Output:** `target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so`
 
 ### Verify Build Output
 
 ```bash
 # Check file size
-ls -lh target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+ls -lh target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # Expected: 2-4 MB
 
 # Check architecture
-file target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+file target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # Expected: ELF 64-bit LSB shared object, ARM aarch64
 
 # Check symbols (optional, requires aarch64-linux-android-nm)
-aarch64-linux-android-nm target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+aarch64-linux-android-nm target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 ```
 
 ### Optional: Build for Multiple Architectures
@@ -178,7 +178,7 @@ cargo ndk -t x86_64 build --release       # x86_64 (emulator, some tablets)
 ### Unit Tests
 
 ```bash
-cd crates/bonsai-mobile-ffi
+cd crates/omnisystem-mobile-ffi
 
 # Run all tests
 cargo test
@@ -259,7 +259,7 @@ After building, integrate into your Android app:
 ```bash
 mkdir -p app/src/main/jniLibs/arm64-v8a
 
-cp crates/bonsai-mobile-ffi/target/aarch64-linux-android/release/libbonsai_mobile_ffi.so \
+cp crates/omnisystem-mobile-ffi/target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so \
    app/src/main/jniLibs/arm64-v8a/
 ```
 
@@ -268,11 +268,11 @@ cp crates/bonsai-mobile-ffi/target/aarch64-linux-android/release/libbonsai_mobil
 ```bash
 mkdir -p app/src/main/java/com/yourcompany/decoder
 
-cp crates/bonsai-mobile-ffi/BrdfNativeBridge.kt \
+cp crates/omnisystem-mobile-ffi/BrdfNativeBridge.kt \
    app/src/main/java/com/yourcompany/decoder/
 
 # Update package name in the file
-sed -i 's/com\.bonsai\.mobile\.decoder/com.yourcompany.decoder/' \
+sed -i 's/com\.omnisystem\.mobile\.decoder/com.yourcompany.decoder/' \
    app/src/main/java/com/yourcompany/decoder/BrdfNativeBridge.kt
 ```
 
@@ -286,7 +286,7 @@ See INTEGRATION.md for detailed Gradle setup.
 
 ```bash
 cargo ndk -t arm64-v8a build  # No --release flag
-# Output: target/aarch64-linux-android/debug/libbonsai_mobile_ffi.so
+# Output: target/aarch64-linux-android/debug/libomnisystem_mobile_ffi.so
 # Size: ~20-40 MB (includes debug symbols)
 # Compile time: 1-3 minutes
 ```
@@ -295,7 +295,7 @@ cargo ndk -t arm64-v8a build  # No --release flag
 
 ```bash
 cargo ndk -t arm64-v8a build --release
-# Output: target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+# Output: target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # Size: ~2-4 MB (no debug symbols)
 # Compile time: 5-15 minutes
 # Performance: Optimized, ~20% faster than debug
@@ -317,11 +317,11 @@ cargo ndk -t arm64-v8a build --release
 ```
 target/aarch64-linux-android/
 ├── release/
-│   ├── libbonsai_mobile_ffi.so         ← Production library
+│   ├── libomnisystem_mobile_ffi.so         ← Production library
 │   ├── deps/                           ← Dependencies
 │   └── ...
 └── debug/
-    ├── libbonsai_mobile_ffi.so         ← Debug library with symbols
+    ├── libomnisystem_mobile_ffi.so         ← Debug library with symbols
     └── ...
 ```
 
@@ -338,11 +338,11 @@ The compiled `.so` includes:
 
 ```bash
 # Unoptimized release build
-ls -lh target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+ls -lh target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # ~3-4 MB
 
 # Further strip symbols (if needed for distribution)
-aarch64-linux-android-strip target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+aarch64-linux-android-strip target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # ~1.5-2 MB (more compact)
 ```
 
@@ -351,7 +351,7 @@ aarch64-linux-android-strip target/aarch64-linux-android/release/libbonsai_mobil
 ### GitHub Actions Example
 
 ```yaml
-name: Build Bonsai Mobile FFI
+name: Build Omnisystem Mobile FFI
 
 on: [push, pull_request]
 
@@ -384,8 +384,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: libbonsai_mobile_ffi.so
-          path: target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+          name: libomnisystem_mobile_ffi.so
+          path: target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 ```
 
 ## Clean Rebuild
@@ -393,7 +393,7 @@ jobs:
 If something goes wrong, do a clean rebuild:
 
 ```bash
-cd crates/bonsai-mobile-ffi
+cd crates/omnisystem-mobile-ffi
 
 # Remove all build artifacts
 cargo clean
@@ -402,8 +402,8 @@ cargo clean
 cargo ndk -t arm64-v8a build --release
 
 # Verify output
-ls -lh target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
-file target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+ls -lh target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
+file target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 ```
 
 ## Performance Expectations

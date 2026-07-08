@@ -18,7 +18,7 @@ Layer 3 is the **Applications & User Experience** layer of Omnisystem. It sits o
 ┌──────────────────────────────────────────────────────┐
 │ LAYER 3: APPLICATIONS & USER EXPERIENCE              │
 │ ┌────────────────────────────────────────────────┐   │
-│ │ BonsaiEcosystem (Primary Framework)            │   │
+│ │ OmnisystemEcosystem (Primary Framework)            │   │
 │ │ ├── Desktop Launcher & App Registry            │   │
 │ │ ├── Control Panel & Settings                   │   │
 │ │ ├── Workspace Management                       │   │
@@ -71,7 +71,7 @@ applications/
 ├── LAYER3_INTEGRATION_GUIDE.md           # Integration documentation
 ├── README.md                             # User-facing documentation
 │
-├── bonsai-ecosystem/                    # Primary Application Framework
+├── omnisystem-ecosystem/                    # Primary Application Framework
 │   ├── launcher/                        # Desktop launcher & app discovery
 │   ├── control-panel/                   # System management interface
 │   ├── installer/                       # Installation infrastructure
@@ -82,7 +82,7 @@ applications/
 │   ├── theme-system/                    # UI theming
 │   ├── workspace/                       # Workspace management
 │   ├── shared-ui/                       # Reusable UI components
-│   └── README.md                        # BonsaiEcosystem documentation
+│   └── README.md                        # OmnisystemEcosystem documentation
 │
 ├── core/                                # Core Application
 │   ├── system_utilities/                # System tools
@@ -118,7 +118,7 @@ applications/
 
 ## Core Components
 
-### 1. BonsaiEcosystem (Primary Framework)
+### 1. OmnisystemEcosystem (Primary Framework)
 
 **Purpose**: Central application framework and user interface orchestrator
 
@@ -265,7 +265,7 @@ Applications communicate via:
 
 ### Desktop Integration
 
-**BonsaiEcosystem** provides seamless OS integration:
+**OmnisystemEcosystem** provides seamless OS integration:
 - ✅ Application launcher in desktop menu
 - ✅ File type associations (double-click to open)
 - ✅ System tray presence with quick menu
@@ -284,7 +284,7 @@ Layer 3 initializes in this order:
    - UOSC kernel operational
    - Connectors functioning
 
-2. **Initialize BonsaiEcosystem** - Primary framework startup
+2. **Initialize OmnisystemEcosystem** - Primary framework startup
    - Launcher service starts
    - Application registry loads
    - Theme system initializes
@@ -364,9 +364,9 @@ applications/your-app/
 
 ---
 
-## Migration Path from BonsaiEcosystem
+## Migration Path from OmnisystemEcosystem
 
-For existing BonsaiEcosystem users:
+For existing OmnisystemEcosystem users:
 
 1. **No breaking changes** - Old code continues to work
 2. **Gradual migration** - Update apps to use new structure
@@ -453,7 +453,7 @@ pub struct ApplicationRegistry {
 ### ✅ Current (2026-06-16)
 - [x] Layer 3 architecture defined
 - [x] Master initialization created
-- [x] BonsaiEcosystem positioned as primary framework
+- [x] OmnisystemEcosystem positioned as primary framework
 - [x] Application registry established
 - [x] Desktop integration infrastructure
 
@@ -470,7 +470,7 @@ pub struct ApplicationRegistry {
 
 - [Layer 2: Core Infrastructure](../system/README.md)
 - [Layer 1: Languages](../languages/README.md)
-- [BonsaiEcosystem](./bonsai-ecosystem/README.md)
+- [OmnisystemEcosystem](./omnisystem-ecosystem/README.md)
 - [Application Development Guide](./LAYER3_INTEGRATION_GUIDE.md)
 - [System Module Reference](../system/README.md)
 - [UOSC Specification](../UOSC/README.md)

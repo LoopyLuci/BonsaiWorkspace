@@ -1,10 +1,10 @@
-# BUEB: Bonsai Universal Execution Backend
+# BUEB: Omnisystem Universal Execution Backend
 
-A hardware-agnostic execution layer that automatically detects available compute resources and allocates optimal device configurations for any Bonsai workload.
+A hardware-agnostic execution layer that automatically detects available compute resources and allocates optimal device configurations for any Omnisystem workload.
 
 ## Overview
 
-BUEB ensures **100% compatibility** across CPU-only, single-GPU, and multi-GPU systems with **zero configuration changes**. The entire Bonsai Ecosystem runs flawlessly on:
+BUEB ensures **100% compatibility** across CPU-only, single-GPU, and multi-GPU systems with **zero configuration changes**. The entire Omnisystem Ecosystem runs flawlessly on:
 
 - **CPU-Only Systems**: Any laptop, server, or embedded system with no GPU
 - **Single-GPU Systems**: NVIDIA (CUDA), AMD (ROCm), Apple (Metal), Intel (DirectML)
@@ -68,7 +68,7 @@ Provides CPU-optimized operations:
 ### Basic Initialization
 
 ```rust
-use bonsai_backend::*;
+use omnisystem_backend::*;
 
 fn main() -> anyhow::Result<()> {
     // Initialize BUEB (detects all hardware)
@@ -179,12 +179,12 @@ pub fn mean(a: &Array1<f32>) -> f32
 pub fn softmax(a: &Array1<f32>) -> Array1<f32>
 ```
 
-## Integration with Bonsai Components
+## Integration with Omnisystem Components
 
 ### Octopus AI
 ```rust
 // Initialize BUEB
-bonsai_backend::initialize()?;
+omnisystem_backend::initialize()?;
 
 // Allocate for inference
 let task = TaskRequirements {
@@ -194,11 +194,11 @@ let task = TaskRequirements {
     allow_fallback: true,
 };
 
-let allocation = bonsai_backend::allocate(&task);
+let allocation = omnisystem_backend::allocate(&task);
 // Use allocation to configure model loading and inference
 ```
 
-### BMF (Bonsai Messaging Fabric)
+### BMF (Omnisystem Messaging Fabric)
 ```rust
 // BUEB helps BMF scale encoding across devices
 let embedding_task = TaskRequirements {
@@ -208,7 +208,7 @@ let embedding_task = TaskRequirements {
     allow_fallback: true,
 };
 
-let allocation = bonsai_backend::allocate(&embedding_task);
+let allocation = omnisystem_backend::allocate(&embedding_task);
 // Distribute encoding work across allocated devices
 ```
 
@@ -222,7 +222,7 @@ let indexing_task = TaskRequirements {
     allow_fallback: true,
 };
 
-let allocation = bonsai_backend::allocate(&indexing_task);
+let allocation = omnisystem_backend::allocate(&indexing_task);
 // Scale indexing to available hardware
 ```
 
@@ -247,14 +247,14 @@ Enable optional GPU support:
 
 ```toml
 [dependencies]
-bonsai-backend = { version = "0.1", features = ["cuda", "rocm"] }
+omnisystem-backend = { version = "0.1", features = ["cuda", "rocm"] }
 ```
 
 Or use all backends:
 
 ```toml
 [dependencies]
-bonsai-backend = { version = "0.1", features = ["all-backends"] }
+omnisystem-backend = { version = "0.1", features = ["all-backends"] }
 ```
 
 ## Future Enhancements
@@ -316,7 +316,7 @@ TaskRequirements {
 
 ```bash
 # Run all tests
-cargo test --package bonsai-backend
+cargo test --package omnisystem-backend
 
 # Run with output
 cargo test -- --nocapture

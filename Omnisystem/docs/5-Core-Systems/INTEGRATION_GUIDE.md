@@ -1,6 +1,6 @@
-# Integration Guide: Adding Remote Desktop to Bonsai Buddy
+# Integration Guide: Adding Remote Desktop to Omnisystem Buddy
 
-This guide explains how to integrate the BRDF Mobile Client into the existing Bonsai Buddy application.
+This guide explains how to integrate the BRDF Mobile Client into the existing Omnisystem Buddy application.
 
 ## Overview
 
@@ -11,7 +11,7 @@ The remote desktop functionality is a new top-level feature alongside Chat, Tool
 ```
 android-runtime/
 ├── app/build.gradle.kts (updated with dependencies)
-├── app/src/main/java/ai/bonsai/buddy/
+├── app/src/main/java/ai/omnisystem/buddy/
 │   ├── data/remote_desktop/
 │   │   ├── RemoteDesktopModels.kt (data classes)
 │   │   ├── BrdfMobileClient.kt (core client)
@@ -25,7 +25,7 @@ android-runtime/
 │   │   └── RemoteDesktopNavigation.kt (routing)
 │   └── di/
 │       └── AppModule.kt (updated with new providers)
-├── app/src/test/java/ai/bonsai/buddy/
+├── app/src/test/java/ai/omnisystem/buddy/
 │   ├── data/remote_desktop/
 │   │   ├── InputMapperTest.kt
 │   │   ├── MediaCodecDecoderTest.kt
@@ -62,10 +62,10 @@ No additional dependencies needed — uses existing libraries.
 Add remote desktop providers to `AppModule.kt`:
 
 ```kotlin
-package ai.bonsai.buddy.di
+package ai.omnisystem.buddy.di
 
 import android.content.Context
-import ai.bonsai.buddy.data.remote_desktop.ConnectionManager
+import ai.omnisystem.buddy.data.remote_desktop.ConnectionManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -89,7 +89,7 @@ object RemoteDesktopModule {
 Update the navigation setup to include the remote desktop route. In the main navigation composable (or NavHost):
 
 ```kotlin
-// In your NavHost setup (typically in BonsaiBuddyApp or MainActivity)
+// In your NavHost setup (typically in OmnisystemBuddyApp or MainActivity)
 NavHost(
     navController = navController,
     startDestination = "home"
@@ -133,7 +133,7 @@ fun NavGraphBuilder.remoteDesktopRoute() {
 Update the app's main navigation menu to include "Remote Desktop":
 
 ```kotlin
-// In BonsaiBuddyApp.kt or your main navigation composable
+// In OmnisystemBuddyApp.kt or your main navigation composable
 private enum class AppTab(val label: String) {
     Chat("Chat"),
     Tools("Tools"),
@@ -143,10 +143,10 @@ private enum class AppTab(val label: String) {
 }
 
 @Composable
-fun BonsaiBuddyApp(
+fun OmnisystemBuddyApp(
     windowSizeClass: WindowSizeClass,
     configStore: SecureConfigStore,
-    logger: BonsaiLogger
+    logger: OmnisystemLogger
 ) {
     var selectedTab by remember { mutableStateOf(AppTab.Chat) }
     
@@ -323,7 +323,7 @@ Verify all components work correctly:
 ./gradlew installDebug
 
 # Run app
-adb shell am start -n ai.bonsai.buddy/.MainActivity
+adb shell am start -n ai.omnisystem.buddy/.MainActivity
 ```
 
 ## Quick Start: Programmatic Navigation
@@ -342,9 +342,9 @@ navController.navigateToRemoteDesktop(peerId, tokenBase64)
 
 ## Architecture Integration Points
 
-### With Existing Bonsai Buddy Components
+### With Existing Omnisystem Buddy Components
 
-**BonsaiApiClient:** Optional future integration
+**OmnisystemApiClient:** Optional future integration
 - Could fetch device list from API
 - Currently uses local mDNS discovery
 
@@ -356,13 +356,13 @@ navController.navigateToRemoteDesktop(peerId, tokenBase64)
 - Device pairing persists in SharedPreferences
 - Token caching (future)
 
-**BonsaiLogger:** Logging already used
+**OmnisystemLogger:** Logging already used
 - Remote desktop logs to same logger
 - Performance metrics could be logged
 
 ## Performance Impact
 
-Adding remote desktop to Bonsai Buddy:
+Adding remote desktop to Omnisystem Buddy:
 
 - **APK Size:** +500 KB
 - **Memory Overhead:** ~80-100 MB per active session
@@ -493,7 +493,7 @@ Expected coverage:
 
 ## Summary
 
-The BRDF Mobile Client is fully integrated into Bonsai Buddy with:
+The BRDF Mobile Client is fully integrated into Omnisystem Buddy with:
 
 ✅ Complete Kotlin implementation (1000+ LOC)
 ✅ Hardware-accelerated video decoding

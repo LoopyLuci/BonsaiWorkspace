@@ -5,7 +5,6 @@
 // ════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════════════
 // TOKEN TYPES & LEXER
@@ -23,7 +22,7 @@ pub enum TokenType {
     Let, Mut, Fn, Struct, Enum, Module, Use, Pub, Actor, Message, State, Init,
     Async, Await, If, Else, For, While, Loop, Break, Continue, Return, Match, In,
     Unsafe, Static, Const, Type, Trait, Impl, Where, As, Is, Self_, Ref,
-    True, False, Nil_Keyword,
+    True, False, Nil_Keyword, Extern,
     // Operators (50+)
     Plus, Minus, Star, Slash, Percent, Caret, Ampersand, Pipe,
     Equal, PlusEqual, MinusEqual, StarEqual, SlashEqual,
@@ -32,7 +31,7 @@ pub enum TokenType {
     Arrow, FatArrow, Question, Dot, DotDot, DotDotEqual,
     // Delimiters
     LeftParen, RightParen, LeftBrace, RightBrace, LeftBracket, RightBracket,
-    Comma, Semicolon, Colon, At,
+    Comma, Semicolon, Colon, At, Hash,
     // Special
     Identifier, Eof,
 }
@@ -197,6 +196,11 @@ impl Lexer {
         result
     }
 
+    fn tok_int_val(token: &Token) -> Result<i64, String> {
+        token.value.parse::<i64>()
+            .map_err(|_| format!("Invalid integer value: {}", token.value))
+    }
+
     fn match_keyword(&self, word: &str) -> Option<TokenType> {
         match word {
             "let" => Some(TokenType::Let),
@@ -237,6 +241,7 @@ impl Lexer {
             "true" => Some(TokenType::True),
             "false" => Some(TokenType::False),
             "nil" => Some(TokenType::Nil_Keyword),
+            "extern" => Some(TokenType::Extern),
             _ => None,
         }
     }
@@ -425,6 +430,10 @@ impl Lexer {
                     self.advance();
                     TokenType::At
                 }
+                '#' => {
+                    self.advance();
+                    TokenType::Hash
+                }
                 '"' => {
                     let value = self.read_string('"');
                     let token = Token::with_value(TokenType::String, value.clone(), value, line, column);
@@ -498,6 +507,10 @@ pub enum ASTNodeType {
     Continue,
     Use,
     Type,
+    // FFI/extern layer (Phase A): `extern "ABI" { fn foo(...); }` blocks and
+    // their contained function declarations, plus optional `#[link(...)]`.
+    ExternBlock,
+    ExternFunction,
 }
 
 #[derive(Clone, Debug)]
@@ -599,6 +612,25 @@ impl Parser {
                 TokenType::Let | TokenType::Mut => {
                     module.children.push(self.parse_let()?);
                 }
+                TokenType::Const => {
+                    module.children.push(self.parse_const()?);
+                }
+                TokenType::Module => {
+                    module.children.push(self.parse_submodule()?);
+                }
+                TokenType::Hash => {
+                    let (link_name, link_kind, abi_version) = self.parse_link_attribute()?;
+                    if !self.match_token(TokenType::Extern) {
+                        return Err(format!(
+                            "Expected `extern` block after #[link(...)] attribute at line {}",
+                            self.current().line
+                        ));
+                    }
+                    module.children.push(self.parse_extern_block(link_name, link_kind, abi_version)?);
+                }
+                TokenType::Extern => {
+                    module.children.push(self.parse_extern_block(None, "dynamic".to_string(), None)?);
+                }
                 _ => {
                     self.advance();
                 }
@@ -606,6 +638,64 @@ impl Parser {
         }
 
         Ok(module)
+    }
+
+    fn parse_const(&mut self) -> Result<ASTNode, String> {
+        self.expect(TokenType::Const)?;
+        let name_token = self.expect(TokenType::Identifier)?;
+        let mut const_node = ASTNode::new(ASTNodeType::Let, name_token.lexeme.clone());
+        const_node.attributes.insert("const".to_string(), "true".to_string());
+
+        if self.match_token(TokenType::Colon) {
+            self.advance();
+            const_node.inferred_type = self.parse_type()?;
+        }
+
+        self.expect(TokenType::Equal)?;
+        const_node.children.push(self.parse_expression()?);
+        self.expect(TokenType::Semicolon)?;
+
+        self.symbol_table.insert(name_token.lexeme, const_node.inferred_type.clone());
+        Ok(const_node)
+    }
+
+    fn parse_submodule(&mut self) -> Result<ASTNode, String> {
+        self.expect(TokenType::Module)?;
+        let name_token = self.expect(TokenType::Identifier)?;
+        let mut submodule = ASTNode::new(ASTNodeType::Module, name_token.lexeme);
+
+        self.expect(TokenType::LeftBrace)?;
+        while !self.match_token(TokenType::RightBrace) && !self.match_token(TokenType::Eof) {
+            match self.current().token_type {
+                TokenType::Use => submodule.children.push(self.parse_use()?),
+                TokenType::Pub | TokenType::Fn => submodule.children.push(self.parse_function()?),
+                TokenType::Struct => submodule.children.push(self.parse_struct()?),
+                TokenType::Enum => submodule.children.push(self.parse_enum()?),
+                TokenType::Actor => submodule.children.push(self.parse_actor()?),
+                TokenType::Trait => submodule.children.push(self.parse_trait()?),
+                TokenType::Impl => submodule.children.push(self.parse_impl()?),
+                TokenType::Let | TokenType::Mut => submodule.children.push(self.parse_let()?),
+                TokenType::Const => submodule.children.push(self.parse_const()?),
+                TokenType::Module => submodule.children.push(self.parse_submodule()?),
+                TokenType::Hash => {
+                    let (link_name, link_kind, abi_version) = self.parse_link_attribute()?;
+                    if !self.match_token(TokenType::Extern) {
+                        return Err(format!(
+                            "Expected `extern` block after #[link(...)] attribute at line {}",
+                            self.current().line
+                        ));
+                    }
+                    submodule.children.push(self.parse_extern_block(link_name, link_kind, abi_version)?);
+                }
+                TokenType::Extern => {
+                    submodule.children.push(self.parse_extern_block(None, "dynamic".to_string(), None)?);
+                }
+                _ => self.advance(),
+            }
+        }
+        self.expect(TokenType::RightBrace)?;
+
+        Ok(submodule)
     }
 
     fn parse_use(&mut self) -> Result<ASTNode, String> {
@@ -625,14 +715,7 @@ impl Parser {
         Ok(use_node)
     }
 
-    fn parse_function(&mut self) -> Result<ASTNode, String> {
-        if self.match_token(TokenType::Pub) {
-            self.advance();
-        }
-        self.expect(TokenType::Fn)?;
-        let name_token = self.expect(TokenType::Identifier)?;
-        let mut func = ASTNode::new(ASTNodeType::Function, name_token.lexeme.clone());
-
+    fn parse_param_list(&mut self, func: &mut ASTNode) -> Result<(), String> {
         self.expect(TokenType::LeftParen)?;
         while !self.match_token(TokenType::RightParen) {
             let param_name = self.expect(TokenType::Identifier)?;
@@ -644,17 +727,201 @@ impl Parser {
             }
         }
         self.expect(TokenType::RightParen)?;
+        Ok(())
+    }
+
+    // Parses `#[link(name = "libname", kind = "dynamic", abi_version = "1.0")]`.
+    // Titan has no other attribute forms yet, so unlike a generic
+    // `skip_attributes` this captures the key/value pairs into real data
+    // rather than discarding them, since the backend/linker (Phase B) needs
+    // this information to resolve the external symbol at link time.
+    // `kind` defaults to "dynamic" when omitted; `name` and `abi_version` are
+    // optional.
+    fn parse_link_attribute(&mut self) -> Result<(Option<String>, String, Option<String>), String> {
+        self.expect(TokenType::Hash)?;
+        self.expect(TokenType::LeftBracket)?;
+        let attr_name = self.expect(TokenType::Identifier)?;
+        if attr_name.lexeme != "link" {
+            return Err(format!(
+                "Unsupported attribute `#[{}(...)]` before extern block at line {}; only `#[link(...)]` is supported",
+                attr_name.lexeme, attr_name.line
+            ));
+        }
+        self.expect(TokenType::LeftParen)?;
+
+        let mut link_name: Option<String> = None;
+        let mut link_kind = "dynamic".to_string();
+        let mut abi_version: Option<String> = None;
+
+        while !self.match_token(TokenType::RightParen) {
+            let key = self.expect(TokenType::Identifier)?;
+            self.expect(TokenType::Equal)?;
+            let value = self.expect(TokenType::String)?;
+            match key.lexeme.as_str() {
+                "name" => link_name = Some(value.value),
+                "kind" => {
+                    if value.value != "dynamic" && value.value != "static" {
+                        return Err(format!(
+                            "Invalid link kind \"{}\" at line {}; expected \"dynamic\" or \"static\"",
+                            value.value, key.line
+                        ));
+                    }
+                    link_kind = value.value;
+                }
+                "abi_version" => abi_version = Some(value.value),
+                other => {
+                    return Err(format!(
+                        "Unknown key `{}` in #[link(...)] attribute at line {}",
+                        other, key.line
+                    ));
+                }
+            }
+            if self.match_token(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenType::RightParen)?;
+        self.expect(TokenType::RightBracket)?;
+
+        Ok((link_name, link_kind, abi_version))
+    }
+
+    // Same shape as `parse_param_list`, extended to recognize a trailing
+    // `...` marking the extern function variadic (C's printf-style). The
+    // lexer has no dedicated ellipsis token, so `...` is recognized as the
+    // `DotDot` + `Dot` token pair. Returns whether the function is variadic.
+    fn parse_extern_param_list(&mut self, func: &mut ASTNode) -> Result<bool, String> {
+        self.expect(TokenType::LeftParen)?;
+        let mut variadic = false;
+        while !self.match_token(TokenType::RightParen) {
+            if self.match_token(TokenType::DotDot) && self.peek(1).token_type == TokenType::Dot {
+                self.advance();
+                self.advance();
+                variadic = true;
+                if self.match_token(TokenType::Comma) {
+                    self.advance();
+                }
+                break;
+            }
+            let param_name = self.expect(TokenType::Identifier)?;
+            self.expect(TokenType::Colon)?;
+            let param_type = self.parse_type()?;
+            func.attributes.insert(param_name.lexeme, param_type);
+            if self.match_token(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenType::RightParen)?;
+        Ok(variadic)
+    }
+
+    // Parses `extern "ABI" { fn name(params) -> RetType; ... }`.
+    //
+    // The ABI string is OPTIONAL (defaults to "C") rather than mandatory:
+    // every other block-like construct in this grammar (struct/enum/actor/
+    // impl/trait) opens straight into a brace with no required leading literal,
+    // so making the ABI a required token would be the only place in the
+    // parser demanding a bare string before a brace. Making it optional
+    // keeps `extern { ... }` consistent with that pattern while still
+    // allowing an explicit ABI when cross-ABI interop matters.
+    //
+    // Function signatures reuse `parse_extern_param_list` (itself built on
+    // the same param/type grammar as `parse_param_list`) and `parse_type`,
+    // so extern signatures can never drift from ordinary `fn` signatures.
+    fn parse_extern_block(
+        &mut self,
+        link_name: Option<String>,
+        link_kind: String,
+        abi_version: Option<String>,
+    ) -> Result<ASTNode, String> {
+        let extern_token = self.expect(TokenType::Extern)?;
+
+        let abi = if self.match_token(TokenType::String) {
+            let tok = self.current().clone();
+            self.advance();
+            match tok.value.as_str() {
+                "C" | "system" | "sysv64" | "win64" | "aapcs64" => {}
+                other => {
+                    return Err(format!(
+                        "Unsupported extern ABI \"{}\" at line {}; expected one of \"C\", \"system\", \"sysv64\", \"win64\", \"aapcs64\"",
+                        other, tok.line
+                    ));
+                }
+            }
+            tok.value
+        } else {
+            "C".to_string()
+        };
+
+        let mut extern_node = ASTNode::new(ASTNodeType::ExternBlock, abi.clone());
+        extern_node.attributes.insert("abi".to_string(), abi);
+        if let Some(name) = &link_name {
+            extern_node.attributes.insert("link_name".to_string(), name.clone());
+        }
+        extern_node.attributes.insert("link_kind".to_string(), link_kind);
+        if let Some(v) = &abi_version {
+            extern_node.attributes.insert("abi_version".to_string(), v.clone());
+        }
+        extern_node.attributes.insert("line".to_string(), extern_token.line.to_string());
+        extern_node.attributes.insert("column".to_string(), extern_token.column.to_string());
+
+        self.expect(TokenType::LeftBrace)?;
+        while !self.match_token(TokenType::RightBrace) && !self.match_token(TokenType::Eof) {
+            self.expect(TokenType::Fn)?;
+            let name_token = self.expect(TokenType::Identifier)?;
+            let mut fn_node = ASTNode::new(ASTNodeType::ExternFunction, name_token.lexeme.clone());
+
+            let variadic = self.parse_extern_param_list(&mut fn_node)?;
+            fn_node.attributes.insert("variadic".to_string(), variadic.to_string());
+            fn_node.attributes.insert("is_extern".to_string(), "true".to_string());
+            fn_node.attributes.insert("line".to_string(), name_token.line.to_string());
+            fn_node.attributes.insert("column".to_string(), name_token.column.to_string());
+
+            if self.match_token(TokenType::Arrow) {
+                self.advance();
+                fn_node.inferred_type = self.parse_type()?;
+            } else {
+                fn_node.inferred_type = "()".to_string();
+            }
+            self.expect(TokenType::Semicolon)?;
+
+            // Register the extern function in the same symbol table used by
+            // ordinary `fn` declarations, so a `Call` node anywhere else in
+            // this module resolves its return type through the existing
+            // AST_CALL inference path in `parse_postfix` without any
+            // extern-specific special-casing there.
+            self.symbol_table.insert(name_token.lexeme.clone(), fn_node.inferred_type.clone());
+
+            extern_node.children.push(fn_node);
+        }
+        self.expect(TokenType::RightBrace)?;
+
+        Ok(extern_node)
+    }
+
+    fn parse_function(&mut self) -> Result<ASTNode, String> {
+        if self.match_token(TokenType::Pub) {
+            self.advance();
+        }
+        self.expect(TokenType::Fn)?;
+        let name_token = self.expect(TokenType::Identifier)?;
+        let mut func = ASTNode::new(ASTNodeType::Function, name_token.lexeme.clone());
+
+        self.parse_param_list(&mut func)?;
 
         if self.match_token(TokenType::Arrow) {
             self.advance();
             func.inferred_type = self.parse_type()?;
+            self.symbol_table.insert(name_token.lexeme.clone(), func.inferred_type.clone());
         }
 
         if self.match_token(TokenType::LeftBrace) {
             func.children.push(self.parse_block()?);
         }
 
-        self.symbol_table.insert(name_token.lexeme, "function".to_string());
+        if func.inferred_type == "unknown" {
+            self.symbol_table.insert(name_token.lexeme, "function".to_string());
+        }
         Ok(func)
     }
 
@@ -715,7 +982,10 @@ impl Parser {
                     self.advance();
                     let _init = self.parse_expression()?;
                 }
-                self.expect(TokenType::Semicolon)?;
+                // Titan omits statement semicolons; consume one if present.
+                if self.match_token(TokenType::Semicolon) {
+                    self.advance();
+                }
             } else if self.match_token(TokenType::Message) {
                 actor_node.children.push(self.parse_message()?);
             } else {
@@ -989,7 +1259,22 @@ impl Parser {
 
     fn parse_unary(&mut self) -> Result<ASTNode, String> {
         match self.current().token_type {
-            TokenType::Not | TokenType::Minus | TokenType::Ampersand | TokenType::Star => {
+            TokenType::Ampersand => {
+                self.advance();
+                // Distinguish `&mut expr` (mutable borrow) from `&expr` (immutable borrow)
+                // so the borrow checker can tell the two apart.
+                let op_name = if self.match_token(TokenType::Mut) {
+                    self.advance();
+                    "&mut".to_string()
+                } else {
+                    "&".to_string()
+                };
+                let operand = self.parse_unary()?;
+                let mut unary = ASTNode::new(ASTNodeType::UnaryOp, op_name);
+                unary.children.push(operand);
+                Ok(unary)
+            }
+            TokenType::Not | TokenType::Minus | TokenType::Star => {
                 let op = self.current().clone();
                 self.advance();
                 let operand = self.parse_unary()?;
@@ -1009,7 +1294,12 @@ impl Parser {
                 TokenType::LeftParen => {
                     self.advance();
                     let mut call = ASTNode::new(ASTNodeType::Call, node.name.clone());
-                    call.inferred_type = node.inferred_type.clone();
+
+                    if let Some(func_ret_type) = self.symbol_table.get(&node.name) {
+                        call.inferred_type = func_ret_type.clone();
+                    } else {
+                        call.inferred_type = node.inferred_type.clone();
+                    }
 
                     while !self.match_token(TokenType::RightParen) {
                         call.children.push(self.parse_expression()?);
@@ -1081,6 +1371,28 @@ impl Parser {
                 let token = self.current().clone();
                 self.advance();
 
+                // Struct literal: TypeName { field: expr, .. }. Only for
+                // uppercase-initial identifiers so `if cond {` stays a block.
+                let is_type_name = token.lexeme.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                if is_type_name && self.match_token(TokenType::LeftBrace) {
+                    self.advance();
+                    let mut lit = ASTNode::new(ASTNodeType::Struct, token.lexeme.clone());
+                    lit.inferred_type = token.lexeme.clone();
+                    while !self.match_token(TokenType::RightBrace) {
+                        let fname = self.expect(TokenType::Identifier)?;
+                        self.expect(TokenType::Colon)?;
+                        let fval = self.parse_expression()?;
+                        let mut field_node = ASTNode::new(ASTNodeType::Identifier, fname.lexeme);
+                        field_node.children.push(fval);
+                        lit.children.push(field_node);
+                        if self.match_token(TokenType::Comma) {
+                            self.advance();
+                        }
+                    }
+                    self.expect(TokenType::RightBrace)?;
+                    return Ok(lit)
+                }
+
                 let mut node = ASTNode::new(ASTNodeType::Identifier, token.lexeme.clone());
                 if let Some(var_type) = self.symbol_table.get(&token.lexeme) {
                     node.inferred_type = var_type.clone();
@@ -1089,6 +1401,13 @@ impl Parser {
             }
             TokenType::LeftParen => {
                 self.advance();
+                // unit literal ()
+                if self.match_token(TokenType::RightParen) {
+                    self.advance();
+                    let mut node = ASTNode::new(ASTNodeType::Literal, "unit".to_string());
+                    node.inferred_type = "()".to_string();
+                    return Ok(node)
+                }
                 let expr = self.parse_expression()?;
                 self.expect(TokenType::RightParen)?;
                 Ok(expr)
@@ -1112,7 +1431,19 @@ impl Parser {
             if self.match_token(TokenType::Less) {
                 type_str.push('<');
                 self.advance();
-                while !self.match_token(TokenType::Greater) {
+                // Track nesting so HashMap<String, Vec<Function>> consumes the
+                // inner generic's closer instead of stopping at the first '>'.
+                let mut depth = 1;
+                while depth > 0 {
+                    if self.match_token(TokenType::Less) {
+                        depth += 1;
+                    }
+                    if self.match_token(TokenType::Greater) {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
                     type_str.push_str(&self.current().lexeme);
                     self.advance();
                 }
@@ -1163,12 +1494,107 @@ impl TitanCompiler {
         TitanCompiler { source }
     }
 
+    // Minimal-but-real borrow checker: walks the AST tracking, per lexical scope,
+    // which variables are currently borrowed immutably (`&x`) vs mutably (`&mut x`),
+    // and (across the whole function, since a move is not scope-limited) which
+    // variables have been moved out of. Flags:
+    //   - a mutable borrow while an immutable (or another mutable) borrow is live
+    //   - an immutable borrow while a mutable borrow is live
+    //   - any use of an identifier after it has been moved (`let y = x;` moves `x`
+    //     when `x` is a bare identifier, since Titan has move semantics by default
+    //     for non-Copy bindings)
+    // Borrows are scoped to `Block` nodes: entering a block clones the live-borrow
+    // sets so borrows taken inside a block do not leak into sibling statements
+    // after the block ends. Moves persist past block exit, matching real move
+    // semantics.
+    fn borrow_check_ast(
+        node: &ASTNode,
+        imm_borrowed: &mut HashSet<String>,
+        mut_borrowed: &mut HashSet<String>,
+        moved: &mut HashSet<String>,
+    ) -> Result<(), String> {
+        match node.node_type {
+            ASTNodeType::UnaryOp => {
+                if let Some(child) = node.children.first() {
+                    if let ASTNodeType::Identifier = child.node_type {
+                        if node.name == "&mut" {
+                            if imm_borrowed.contains(&child.name) || mut_borrowed.contains(&child.name) {
+                                return Err(format!(
+                                    "Cannot borrow `{}` as mutable because it is already borrowed",
+                                    child.name
+                                ));
+                            }
+                            if moved.contains(&child.name) {
+                                return Err(format!("Use of moved value: {}", child.name));
+                            }
+                            mut_borrowed.insert(child.name.clone());
+                        } else if node.name == "&" {
+                            if mut_borrowed.contains(&child.name) {
+                                return Err(format!(
+                                    "Cannot borrow `{}` as immutable because it is also borrowed as mutable",
+                                    child.name
+                                ));
+                            }
+                            if moved.contains(&child.name) {
+                                return Err(format!("Use of moved value: {}", child.name));
+                            }
+                            imm_borrowed.insert(child.name.clone());
+                        }
+                        return Ok(());
+                    }
+                }
+                for child in &node.children {
+                    Self::borrow_check_ast(child, imm_borrowed, mut_borrowed, moved)?;
+                }
+            }
+            ASTNodeType::Identifier => {
+                if moved.contains(&node.name) {
+                    return Err(format!("Use of moved value: {}", node.name));
+                }
+            }
+            ASTNodeType::Let => {
+                if let Some(rhs) = node.children.first() {
+                    if let ASTNodeType::Identifier = rhs.node_type {
+                        // A bare-identifier initializer moves the source binding.
+                        if moved.contains(&rhs.name) {
+                            return Err(format!("Use of moved value: {}", rhs.name));
+                        }
+                        moved.insert(rhs.name.clone());
+                    } else {
+                        Self::borrow_check_ast(rhs, imm_borrowed, mut_borrowed, moved)?;
+                    }
+                }
+            }
+            ASTNodeType::Block => {
+                // Borrows taken inside the block end when the block scope ends.
+                let mut local_imm = imm_borrowed.clone();
+                let mut local_mut = mut_borrowed.clone();
+                for child in &node.children {
+                    Self::borrow_check_ast(child, &mut local_imm, &mut local_mut, moved)?;
+                }
+            }
+            _ => {
+                for child in &node.children {
+                    Self::borrow_check_ast(child, imm_borrowed, mut_borrowed, moved)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn compile(&self) -> Result<ASTNode, String> {
         let mut lexer = Lexer::new(&self.source);
         let tokens = lexer.tokenize()?;
 
         let mut parser = Parser::new(tokens);
-        parser.parse()
+        let ast = parser.parse()?;
+
+        let mut imm_borrowed = HashSet::new();
+        let mut mut_borrowed = HashSet::new();
+        let mut moved = HashSet::new();
+        Self::borrow_check_ast(&ast, &mut imm_borrowed, &mut mut_borrowed, &mut moved)?;
+
+        Ok(ast)
     }
 }
 
@@ -1203,6 +1629,67 @@ mod tests {
         let compiler = TitanCompiler::new(source.to_string());
         let result = compiler.compile();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extern_block_with_link_attribute() {
+        let source = r#"
+            #[link(name = "m", kind = "dynamic", abi_version = "1.0")]
+            extern "C" {
+                fn sqrt(x: f64) -> f64;
+                fn printf(fmt: String, ...) -> i32;
+            }
+
+            fn main() {
+                let r = sqrt(4.0);
+            }
+        "#;
+        let compiler = TitanCompiler::new(source.to_string());
+        let ast = compiler.compile().expect("extern block should parse and borrow-check");
+
+        let extern_block = ast.children.iter()
+            .find(|c| c.node_type == ASTNodeType::ExternBlock)
+            .expect("module should contain an ExternBlock item");
+        assert_eq!(extern_block.attributes.get("abi"), Some(&"C".to_string()));
+        assert_eq!(extern_block.attributes.get("link_name"), Some(&"m".to_string()));
+        assert_eq!(extern_block.attributes.get("link_kind"), Some(&"dynamic".to_string()));
+        assert_eq!(extern_block.attributes.get("abi_version"), Some(&"1.0".to_string()));
+        assert_eq!(extern_block.children.len(), 2);
+
+        let sqrt_fn = extern_block.children.iter().find(|f| f.name == "sqrt").unwrap();
+        assert_eq!(sqrt_fn.node_type, ASTNodeType::ExternFunction);
+        assert_eq!(sqrt_fn.attributes.get("is_extern"), Some(&"true".to_string()));
+        assert_eq!(sqrt_fn.attributes.get("variadic"), Some(&"false".to_string()));
+        assert_eq!(sqrt_fn.inferred_type, "f64");
+
+        let printf_fn = extern_block.children.iter().find(|f| f.name == "printf").unwrap();
+        assert_eq!(printf_fn.attributes.get("variadic"), Some(&"true".to_string()));
+
+        // The ordinary call-site to the extern function resolves its return
+        // type through the same AST_CALL path used for regular `fn` calls.
+        let main_fn = ast.children.iter().find(|c| c.name == "main").unwrap();
+        let block = &main_fn.children[0];
+        let let_r = &block.children[0];
+        let call = &let_r.children[0];
+        assert_eq!(call.node_type, ASTNodeType::Call);
+        assert_eq!(call.inferred_type, "f64");
+    }
+
+    #[test]
+    fn test_extern_block_without_attribute_defaults() {
+        let source = r#"
+            extern {
+                fn getpid() -> i32;
+            }
+        "#;
+        let compiler = TitanCompiler::new(source.to_string());
+        let ast = compiler.compile().expect("bare extern block should default ABI to C");
+        let extern_block = ast.children.iter()
+            .find(|c| c.node_type == ASTNodeType::ExternBlock)
+            .unwrap();
+        assert_eq!(extern_block.attributes.get("abi"), Some(&"C".to_string()));
+        assert_eq!(extern_block.attributes.get("link_kind"), Some(&"dynamic".to_string()));
+        assert!(extern_block.attributes.get("link_name").is_none());
     }
 }
 

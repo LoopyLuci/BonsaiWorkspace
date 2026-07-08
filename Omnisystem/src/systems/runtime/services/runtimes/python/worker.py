@@ -15,7 +15,7 @@ DEFAULT_MAX_MEMORY_MB = 512
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Bonsai Python worker")
+    parser = argparse.ArgumentParser(description="Omnisystem Python worker")
     parser.add_argument("port", nargs="?", type=int, default=8000)
     parser.add_argument("--max-cpu-seconds", type=int, default=DEFAULT_MAX_CPU_SECONDS)
     parser.add_argument("--max-memory-mb", type=int, default=DEFAULT_MAX_MEMORY_MB)
@@ -54,7 +54,7 @@ def apply_resource_limits(max_cpu_seconds: int, max_memory_mb: int) -> None:
     else:
         # On Windows, resource.setrlimit is a no-op.
         # Hard CPU and memory limits are enforced by the Windows Job Object
-        # applied by the Rust launcher (bonsai_runtime::RuntimeManager::start_python_worker).
+        # applied by the Rust launcher (omnisystem_runtime::RuntimeManager::start_python_worker).
         # The Python-level watchdog thread below provides a secondary, best-effort guard.
 
     def watchdog() -> None:
@@ -70,7 +70,7 @@ def apply_resource_limits(max_cpu_seconds: int, max_memory_mb: int) -> None:
             if peak > memory_limit or current > memory_limit:
                 _terminate_worker(f"memory>{max_memory_mb}MB")
 
-    threading.Thread(target=watchdog, name="bonsai-worker-watchdog", daemon=True).start()
+    threading.Thread(target=watchdog, name="omnisystem-worker-watchdog", daemon=True).start()
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):

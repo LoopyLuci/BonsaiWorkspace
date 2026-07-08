@@ -55,7 +55,7 @@
 ## Desktop Components (VERA)
 
 ### Location
-`Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\src\`
+`Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\src\`
 
 ### Core Widget Components (18+)
 

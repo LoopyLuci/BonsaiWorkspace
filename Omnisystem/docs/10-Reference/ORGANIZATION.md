@@ -152,7 +152,7 @@ D:\Models\Custom\
 Models in this directory work seamlessly with BUEB hardware allocation:
 
 ```python
-from bonsai_backend import *
+from omnisystem_backend import *
 
 # Initialize hardware detection
 initialize()
@@ -192,7 +192,7 @@ Expected additions:
 
 ## References
 
-- **BUEB Integration**: `crates/bonsai-backend/BUEB.md`
+- **BUEB Integration**: `crates/omnisystem-backend/BUEB.md`
 - **Private Models**: `LOCAL_REFERENCE_DOCS/PRIVATE_MODELS_REFERENCE.md`
 - **Main Models README**: `models/README.md`
 

@@ -1,4 +1,4 @@
--- Bonsai Training Data Library (TDL) Schema
+-- Omnisystem Training Data Library (TDL) Schema
 -- Version: 1.0
 -- SQLite database schema for versioned training dataset management
 

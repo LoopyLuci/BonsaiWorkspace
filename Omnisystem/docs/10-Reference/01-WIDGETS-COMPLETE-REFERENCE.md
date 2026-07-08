@@ -56,7 +56,7 @@ The Omnisystem provides multiple widget frameworks designed for different use ca
 VERA is the primary UI framework for the Omnisystem desktop environment, built on HELIX graphics engine with NEXUS responsiveness.
 
 ### Location
-`Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\src\`
+`Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\src\`
 
 ### Widget Categories
 
@@ -141,7 +141,7 @@ VERA is the primary UI framework for the Omnisystem desktop environment, built o
 ### VERA Widget Organization Structure
 
 ```
-Z:\Projects\Omnisystem\Omnisystem\applications\bonsai-desktop-environment\src\
+Z:\Projects\Omnisystem\Omnisystem\applications\omnisystem-desktop-environment\src\
 ├── widgets/
 │   ├── WidgetSystem.vera              # Core widget definitions (15+ widgets)
 │   └── AdvancedWidgets.vera           # Enterprise widgets (20+ widgets)

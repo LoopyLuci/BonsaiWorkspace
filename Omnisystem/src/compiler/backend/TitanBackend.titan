@@ -17,13 +17,15 @@ pub enum IrOpcode {
     // Bitwise
     And, Or, Xor, Shl, Shr, Not,
     // Memory
-    Mov, Load, Store, Lea,
+    Mov, Load, Store, Lea, Push, Pop,
     // Control Flow
     Call, Return, Jump, JumpIf, JumpIfNot,
     // Comparison
     Compare, Test,
     // SSA
     Phi, Alloca,
+    // FFI / extern calls (ABI-aware; see CallingConvention/ParamLocation below)
+    CallExtern,
 }
 
 impl IrOpcode {
@@ -46,6 +48,8 @@ impl IrOpcode {
             IrOpcode::Load => "load",
             IrOpcode::Store => "store",
             IrOpcode::Lea => "lea",
+            IrOpcode::Push => "push",
+            IrOpcode::Pop => "pop",
             IrOpcode::Call => "call",
             IrOpcode::Return => "return",
             IrOpcode::Jump => "jump",
@@ -55,6 +59,7 @@ impl IrOpcode {
             IrOpcode::Test => "test",
             IrOpcode::Phi => "phi",
             IrOpcode::Alloca => "alloca",
+            IrOpcode::CallExtern => "call_extern",
         }
     }
 }
@@ -73,6 +78,16 @@ pub struct IrInstruction {
     pub immediate: Option<i64>,
     pub block: String,
     pub line: u32,
+    // ── CallExtern-only fields (populated when opcode == IrOpcode::CallExtern) ──
+    // `operands` carries the extern call's argument IrValues (in source order);
+    // these companion fields carry everything else the frontend's extern-decl AST
+    // node (ExternBlock/ExternFnDecl, ABI TBD by the frontend agent) needs to hand
+    // codegen. Kept as plain Option<String>/&str-shaped data (not a dependency on
+    // the frontend's AST type) so wiring it up later is a one-line mapping.
+    pub extern_name: Option<String>,       // symbol to call (mangled/link_name if provided, else source name)
+    pub extern_abi: Option<String>,        // "C" | "system" | "sysv64" | "win64" | "aapcs64"
+    pub extern_link_name: Option<String>,  // explicit #[link_name = "..."] override, if any
+    pub extern_variadic: bool,             // true for C variadic externs (e.g. printf)
 }
 
 impl IrInstruction {
@@ -84,6 +99,10 @@ impl IrInstruction {
             immediate: None,
             block: String::new(),
             line: 0,
+            extern_name: None,
+            extern_abi: None,
+            extern_link_name: None,
+            extern_variadic: false,
         }
     }
 }
@@ -265,6 +284,124 @@ impl X86_64Encoder {
         self.emit_byte(0x58 + (reg.encoding() & 0x7));
     }
 
+    // Encode: CMP reg64, reg64  (39 /r)
+    pub fn encode_cmp_reg_reg(&mut self, src1: X86_64Reg, src2: X86_64Reg) {
+        let r = src1.needs_rex();
+        let b = src2.needs_rex();
+        if r || b { self.rex(true, r, false, b); }
+        self.emit_byte(0x39);
+        self.modrm(3, src2.encoding() & 0x7, src1.encoding() & 0x7);
+    }
+
+    // Encode: JMP rel32  (E9 cd)
+    pub fn encode_jmp_rel32(&mut self, offset: i32) {
+        self.emit_byte(0xE9);
+        self.emit_bytes(&offset.to_le_bytes());
+    }
+
+    // Encode: JE/JZ rel32  (0F 84 cd)
+    pub fn encode_je_rel32(&mut self, offset: i32) {
+        self.emit_byte(0x0F);
+        self.emit_byte(0x84);
+        self.emit_bytes(&offset.to_le_bytes());
+    }
+
+    // Encode: JNE/JNZ rel32  (0F 85 cd)
+    pub fn encode_jne_rel32(&mut self, offset: i32) {
+        self.emit_byte(0x0F);
+        self.emit_byte(0x85);
+        self.emit_bytes(&offset.to_le_bytes());
+    }
+
+    // Encode: IDIV reg64  (F7 /7)
+    pub fn encode_idiv_reg(&mut self, divisor: X86_64Reg) {
+        if divisor.needs_rex() { self.rex(true, false, false, true); }
+        self.emit_byte(0xF7);
+        self.modrm(3, 7, divisor.encoding() & 0x7);
+    }
+
+    // Encode: LEA reg64, [reg64 + disp]  (8D /r)
+    pub fn encode_lea_reg_addr(&mut self, dest: X86_64Reg, base: X86_64Reg, disp: i32) {
+        let r = dest.needs_rex();
+        let b = base.needs_rex();
+        if r || b { self.rex(true, r, false, b); }
+        self.emit_byte(0x8D);
+        self.modrm(2, dest.encoding() & 0x7, base.encoding() & 0x7);
+        if disp != 0 {
+            self.emit_bytes(&disp.to_le_bytes());
+        }
+    }
+
+    // Encode: CALL rel32  (E8 cd)
+    pub fn encode_call_rel32(&mut self, offset: i32) {
+        self.emit_byte(0xE8);
+        self.emit_bytes(&offset.to_le_bytes());
+    }
+
+    // Encode: CALL reg64  (FF /2)
+    pub fn encode_call_reg(&mut self, reg: X86_64Reg) {
+        if reg.needs_rex() { self.rex(false, false, false, true); }
+        self.emit_byte(0xFF);
+        self.modrm(3, 2, reg.encoding() & 0x7);
+    }
+
+    // Encode: MOV reg64, [rbp+disp32]  (8B /r, mod=10, rm=Rbp encoding)  -- used to reload spilled values
+    pub fn encode_mov_reg_mem_rbp(&mut self, dest: X86_64Reg, disp: i32) {
+        let r = dest.needs_rex();
+        if r { self.rex(true, r, false, false); } else { self.rex(true, false, false, false); }
+        self.emit_byte(0x8B);
+        self.modrm(2, dest.encoding() & 0x7, X86_64Reg::Rbp.encoding() & 0x7);
+        self.emit_bytes(&disp.to_le_bytes());
+    }
+
+    // Encode: MOV [rbp+disp32], reg64  (89 /r, mod=10, rm=Rbp encoding) -- used to spill values to stack
+    pub fn encode_mov_mem_rbp_reg(&mut self, disp: i32, src: X86_64Reg) {
+        let r = src.needs_rex();
+        if r { self.rex(true, r, false, false); } else { self.rex(true, false, false, false); }
+        self.emit_byte(0x89);
+        self.modrm(2, src.encoding() & 0x7, X86_64Reg::Rbp.encoding() & 0x7);
+        self.emit_bytes(&disp.to_le_bytes());
+    }
+
+    // Encode: MOV reg64, [reg64]  (8B /r, mod=00) -- indirect load, e.g. dereferencing a GOT slot.
+    // NOTE: only valid when `base`'s low 3 encoding bits != 5 (rbp/r13), since mod=00 rm=101 is the
+    // RIP-relative special case in x86-64; callers here only ever pass R11 (encoding 11, low bits 3).
+    pub fn encode_mov_reg_mem_indirect(&mut self, dest: X86_64Reg, base: X86_64Reg) {
+        let r = dest.needs_rex();
+        let b = base.needs_rex();
+        self.rex(true, r, false, b);
+        self.emit_byte(0x8B);
+        self.modrm(0, dest.encoding() & 0x7, base.encoding() & 0x7);
+    }
+
+    // Encode: SUB rsp, imm32  (48 81 /5 id) -- used for shadow space / stack alignment before extern calls.
+    pub fn encode_sub_rsp_imm32(&mut self, imm: u32) {
+        self.rex(true, false, false, false);
+        self.emit_byte(0x81);
+        self.modrm(3, 5, X86_64Reg::Rsp.encoding() & 0x7);
+        self.emit_dword(imm);
+    }
+
+    // Encode: ADD rsp, imm32  (48 81 /0 id) -- caller-side stack cleanup after extern calls.
+    pub fn encode_add_rsp_imm32(&mut self, imm: u32) {
+        self.rex(true, false, false, false);
+        self.emit_byte(0x81);
+        self.modrm(3, 0, X86_64Reg::Rsp.encoding() & 0x7);
+        self.emit_dword(imm);
+    }
+
+    // Encode: MOVQ xmm, r64  (66 REX.W 0F 6E /r) -- move a general-purpose register's bits into an
+    // XMM register, used to place float/double extern-call arguments per SysV64/Win64 classification.
+    pub fn encode_movq_xmm_from_gpr(&mut self, dest_xmm: u8, src: X86_64Reg) {
+        self.emit_byte(0x66);
+        let r = (dest_xmm & 0x8) != 0;
+        let b = src.needs_rex();
+        self.rex(true, r, false, b);
+        self.emit_byte(0x0F);
+        self.emit_byte(0x6E);
+        self.modrm(3, dest_xmm & 0x7, src.encoding() & 0x7);
+    }
+
     pub fn get_code(&self) -> Vec<u8> {
         self.code.clone()
     }
@@ -283,7 +420,14 @@ pub enum ARM64Reg {
 impl ARM64Reg {
     pub fn encoding(&self) -> u8 {
         match self {
-            ARM64Reg::X0..=ARM64Reg::X30 => *self as u8,
+            ARM64Reg::X0 | ARM64Reg::X1 | ARM64Reg::X2 | ARM64Reg::X3 |
+            ARM64Reg::X4 | ARM64Reg::X5 | ARM64Reg::X6 | ARM64Reg::X7 |
+            ARM64Reg::X8 | ARM64Reg::X9 | ARM64Reg::X10 | ARM64Reg::X11 |
+            ARM64Reg::X12 | ARM64Reg::X13 | ARM64Reg::X14 | ARM64Reg::X15 |
+            ARM64Reg::X16 | ARM64Reg::X17 | ARM64Reg::X18 | ARM64Reg::X19 |
+            ARM64Reg::X20 | ARM64Reg::X21 | ARM64Reg::X22 | ARM64Reg::X23 |
+            ARM64Reg::X24 | ARM64Reg::X25 | ARM64Reg::X26 | ARM64Reg::X27 |
+            ARM64Reg::X28 | ARM64Reg::X29 | ARM64Reg::X30 => *self as u8,
             ARM64Reg::Xsp => 31,
         }
     }
@@ -353,6 +497,131 @@ impl ARM64Encoder {
         self.emit_instruction(0xD65F03C0);
     }
 
+    // SDIV Xd, Xn, Xm (signed divide)
+    pub fn encode_sdiv_reg_reg(&mut self, dest: ARM64Reg, operand1: ARM64Reg, operand2: ARM64Reg) {
+        let instr = 0x9AC00C00u32 | ((operand2.encoding() as u32) << 16) |
+                   ((operand1.encoding() as u32) << 5) | (dest.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // CMP Xn, Xm (compare, encodes as SUBS ZR, Xn, Xm)
+    pub fn encode_cmp_reg_reg(&mut self, operand1: ARM64Reg, operand2: ARM64Reg) {
+        let instr = 0xEB000000u32 | ((operand2.encoding() as u32) << 16) |
+                   ((operand1.encoding() as u32) << 5);
+        self.emit_instruction(instr);
+    }
+
+    // B label (unconditional branch, rel26)
+    pub fn encode_b_rel26(&mut self, offset: i32) {
+        let imm26 = (offset >> 2) & 0x3FFFFFF;
+        let instr = 0x14000000u32 | (imm26 as u32);
+        self.emit_instruction(instr);
+    }
+
+    // B.EQ label (branch if equal)
+    pub fn encode_b_eq(&mut self, offset: i32) {
+        let imm19 = (offset >> 2) & 0x7FFFF;
+        let instr = 0x54000000u32 | ((imm19 as u32) << 5) | 0;
+        self.emit_instruction(instr);
+    }
+
+    // B.NE label (branch if not equal)
+    pub fn encode_b_ne(&mut self, offset: i32) {
+        let imm19 = (offset >> 2) & 0x7FFFF;
+        let instr = 0x54000000u32 | ((imm19 as u32) << 5) | 1;
+        self.emit_instruction(instr);
+    }
+
+    // BL label (branch with link, call subroutine)
+    pub fn encode_bl_rel26(&mut self, offset: i32) {
+        let imm26 = (offset >> 2) & 0x3FFFFFF;
+        let instr = 0x94000000u32 | (imm26 as u32);
+        self.emit_instruction(instr);
+    }
+
+    // LDR Xt, [Xn] (load 64-bit register from memory)
+    pub fn encode_ldr_reg_addr(&mut self, dest: ARM64Reg, base: ARM64Reg) {
+        let instr = 0xF8400000u32 | ((base.encoding() as u32) << 5) | (dest.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // STR Xt, [Xn] (store 64-bit register to memory)
+    pub fn encode_str_reg_addr(&mut self, src: ARM64Reg, base: ARM64Reg) {
+        let instr = 0xF8000000u32 | ((base.encoding() as u32) << 5) | (src.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // LDR Xt, [Xn, #imm] (unsigned scaled 12-bit immediate offset, imm must be a multiple of 8)
+    // used to reload spilled values from the stack frame
+    pub fn encode_ldr_reg_imm(&mut self, dest: ARM64Reg, base: ARM64Reg, imm: i32) {
+        let scaled = ((imm / 8) & 0xFFF) as u32;
+        let instr = 0xF9400000u32 | (scaled << 10) | ((base.encoding() as u32) << 5) | (dest.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // STR Xt, [Xn, #imm] (unsigned scaled 12-bit immediate offset, imm must be a multiple of 8)
+    // used to spill values to the stack frame
+    pub fn encode_str_reg_imm(&mut self, src: ARM64Reg, base: ARM64Reg, imm: i32) {
+        let scaled = ((imm / 8) & 0xFFF) as u32;
+        let instr = 0xF9000000u32 | (scaled << 10) | ((base.encoding() as u32) << 5) | (src.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // CBZ Xt, label (compare and branch if zero)
+    pub fn encode_cbz_rel19(&mut self, reg: ARM64Reg, offset: i32) {
+        let imm19 = (offset >> 2) & 0x7FFFF;
+        let instr = 0x34000000u32 | ((imm19 as u32) << 5) | (reg.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // CBNZ Xt, label (compare and branch if non-zero)
+    pub fn encode_cbnz_rel19(&mut self, reg: ARM64Reg, offset: i32) {
+        let imm19 = (offset >> 2) & 0x7FFFF;
+        let instr = 0x35000000u32 | ((imm19 as u32) << 5) | (reg.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // MOVZ Xd, #imm16, LSL #shift (shift in {0,16,32,48}) -- first instruction of a 4-instruction
+    // sequence that materializes an arbitrary 64-bit immediate (e.g. a GOT slot address).
+    pub fn encode_movz(&mut self, dest: ARM64Reg, imm16: u16, shift: u8) {
+        let hw = ((shift / 16) as u32) & 0x3;
+        let instr = 0xD2800000u32 | (hw << 21) | ((imm16 as u32) << 5) | (dest.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // MOVK Xd, #imm16, LSL #shift -- subsequent instructions of the 64-bit-immediate sequence;
+    // keeps the other 48 bits of Xd untouched.
+    pub fn encode_movk(&mut self, dest: ARM64Reg, imm16: u16, shift: u8) {
+        let hw = ((shift / 16) as u32) & 0x3;
+        let instr = 0xF2800000u32 | (hw << 21) | ((imm16 as u32) << 5) | (dest.encoding() as u32);
+        self.emit_instruction(instr);
+    }
+
+    // BLR Xn (branch with link to register) -- indirect call, used for GOT-slot extern calls.
+    pub fn encode_blr(&mut self, reg: ARM64Reg) {
+        let instr = 0xD63F0000u32 | ((reg.encoding() as u32) << 5);
+        self.emit_instruction(instr);
+    }
+
+    // SUB sp, sp, #imm12 (64-bit immediate subtract) -- reserve stack space for overflow args.
+    pub fn encode_sub_sp_imm(&mut self, imm: u32) {
+        let instr = 0xD1000000u32 | ((imm & 0xFFF) << 10) | (31u32 << 5) | 31u32;
+        self.emit_instruction(instr);
+    }
+
+    // ADD sp, sp, #imm12 -- caller-side stack cleanup after AAPCS64 extern calls.
+    pub fn encode_add_sp_imm(&mut self, imm: u32) {
+        let instr = 0x91000000u32 | ((imm & 0xFFF) << 10) | (31u32 << 5) | 31u32;
+        self.emit_instruction(instr);
+    }
+
+    // FMOV Dd, Xn (general-form float move from a GP register) -- places a float/double extern-call
+    // argument into vector register slot `dest_v` (v0..v7) per AAPCS64 classification.
+    pub fn encode_fmov_d_from_gpr(&mut self, dest_v: u8, src: ARM64Reg) {
+        let instr = 0x9E670000u32 | ((src.encoding() as u32) << 5) | ((dest_v as u32) & 0x1F);
+        self.emit_instruction(instr);
+    }
+
     pub fn get_code(&self) -> Vec<u8> {
         self.code.clone()
     }
@@ -365,6 +634,13 @@ impl ARM64Encoder {
 pub struct RegisterAllocator {
     free_regs: Vec<X86_64Reg>,
     allocated: HashMap<String, X86_64Reg>,
+    arm_free_regs: Vec<ARM64Reg>,
+    arm_allocated: HashMap<String, ARM64Reg>,
+    // Spill tracking: shared stack-slot namespace for both x86-64 and ARM64 lowering
+    // (each lowering pass gets a freshly-constructed RegisterAllocator per function,
+    // so slot numbering restarts per function frame).
+    spill_slots: HashMap<String, i32>,
+    next_spill_offset: i32,
 }
 
 impl RegisterAllocator {
@@ -374,9 +650,21 @@ impl RegisterAllocator {
             X86_64Reg::Rdi, X86_64Reg::R8, X86_64Reg::R9, X86_64Reg::R10,
             X86_64Reg::R11,
         ];
+        // X9-X15 are caller-saved scratch registers per AAPCS64; reserve X0/X1 for
+        // args/return and X16/X17 (IP0/IP1) as fixed scratch for spill reload/store.
+        let arm_free_regs = vec![
+            ARM64Reg::X15, ARM64Reg::X14, ARM64Reg::X13, ARM64Reg::X12,
+            ARM64Reg::X11, ARM64Reg::X10, ARM64Reg::X9, ARM64Reg::X8,
+            ARM64Reg::X7, ARM64Reg::X6, ARM64Reg::X5, ARM64Reg::X4,
+            ARM64Reg::X3, ARM64Reg::X2, ARM64Reg::X1, ARM64Reg::X0,
+        ];
         RegisterAllocator {
             free_regs,
             allocated: HashMap::new(),
+            arm_free_regs,
+            arm_allocated: HashMap::new(),
+            spill_slots: HashMap::new(),
+            next_spill_offset: -8, // grows downward from rbp/frame-base, 8-byte aligned slots
         }
     }
 
@@ -401,16 +689,225 @@ impl RegisterAllocator {
     pub fn get_reg(&self, var: &str) -> Option<X86_64Reg> {
         self.allocated.get(var).copied()
     }
+
+    pub fn allocate_arm(&mut self, var: String) -> Option<ARM64Reg> {
+        if let Some(reg) = self.arm_free_regs.pop() {
+            self.arm_allocated.insert(var, reg);
+            Some(reg)
+        } else {
+            None
+        }
+    }
+
+    pub fn deallocate_arm(&mut self, var: &str) -> Option<ARM64Reg> {
+        if let Some(reg) = self.arm_allocated.remove(var) {
+            self.arm_free_regs.push(reg);
+            Some(reg)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_arm_reg(&self, var: &str) -> Option<ARM64Reg> {
+        self.arm_allocated.get(var).copied()
+    }
+
+    // Assign (or fetch existing) stack slot offset for a spilled variable.
+    pub fn spill(&mut self, var: String) -> i32 {
+        if let Some(&off) = self.spill_slots.get(&var) {
+            return off;
+        }
+        let off = self.next_spill_offset;
+        self.next_spill_offset -= 8;
+        self.spill_slots.insert(var, off);
+        off
+    }
+
+    pub fn get_spill(&self, var: &str) -> Option<i32> {
+        self.spill_slots.get(var).copied()
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════════════
-// BACKEND CODE GENERATOR
+// BRANCH PATCH LIST - for backpatching forward branch targets
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+pub struct BranchPatch {
+    pub patch_offset: usize,   // byte offset in code where the rel32 lives
+    pub target_label: String,  // label name to resolve
+    pub is_arm64: bool,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// FFI / EXTERN CALL ABI CLASSIFICATION
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// Where a classified extern-call argument lives. Slot indices are *logical* (per-ABI) register
+// positions, not concrete X86_64Reg/ARM64Reg values — CallingConvention::int_reg_x86/int_reg_arm
+// map a slot back to the concrete architectural register once the target encoder is known. This
+// indirection is what lets Win64's "position determines the register pair" rule (arg N always maps
+// to the Nth int-or-float pair, never shifted by other args' types) share the same enum shape as
+// SysV64/AAPCS64's "separate int/float counters" rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamLocation {
+    IntReg(u8),    // logical integer/pointer argument-register slot
+    FloatReg(u8),  // logical float/double argument-register slot (xmm/v index)
+    Stack(u32),    // byte offset among the overflow (stack-passed) arguments, 0-based
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallingConvention {
+    SysV64,   // Linux/macOS x86-64
+    Win64,    // Windows x86-64
+    Aapcs64,  // ARM64
+}
+
+impl CallingConvention {
+    // Maps an extern block's declared ABI string to a concrete calling convention.
+    // "C" and "system" resolve to the platform default; since this backend's x86-64 lowering
+    // targets ELF64 (see write_elf64/lower_ir_to_x86_64 usage), that default is SysV64. A
+    // Windows-hosted build would map "system"/"C" to Win64 instead — left as a target-triple
+    // decision for the wiring phase, not something this ABI classifier can infer on its own.
+    pub fn from_abi(abi: &str) -> Self {
+        match abi {
+            "win64" => CallingConvention::Win64,
+            "aapcs64" => CallingConvention::Aapcs64,
+            _ => CallingConvention::SysV64,
+        }
+    }
+
+    fn is_float_type(ty: &str) -> bool {
+        matches!(ty, "f32" | "f64" | "float" | "double")
+    }
+
+    // Real per-ABI argument classification. See module-level ABI rules documented on
+    // TitanBackend::lower_extern_call_x86_64 / lower_extern_call_arm64.
+    pub fn classify_params(&self, param_types: &[&str]) -> Vec<ParamLocation> {
+        let mut locations = Vec::with_capacity(param_types.len());
+        match self {
+            CallingConvention::SysV64 => {
+                let mut int_used: u8 = 0;
+                let mut float_used: u8 = 0;
+                let mut stack_offset: u32 = 0;
+                for ty in param_types {
+                    if Self::is_float_type(ty) {
+                        if float_used < 8 {
+                            locations.push(ParamLocation::FloatReg(float_used));
+                            float_used += 1;
+                        } else {
+                            locations.push(ParamLocation::Stack(stack_offset));
+                            stack_offset += 8;
+                        }
+                    } else if int_used < 6 {
+                        locations.push(ParamLocation::IntReg(int_used));
+                        int_used += 1;
+                    } else {
+                        locations.push(ParamLocation::Stack(stack_offset));
+                        stack_offset += 8;
+                    }
+                }
+            }
+            CallingConvention::Win64 => {
+                // Position determines the register pair regardless of type: arg index 2 is always
+                // r8-or-xmm2, never shifted by earlier args' types.
+                let mut stack_offset: u32 = 0;
+                for (pos, ty) in param_types.iter().enumerate() {
+                    if pos < 4 {
+                        if Self::is_float_type(ty) {
+                            locations.push(ParamLocation::FloatReg(pos as u8));
+                        } else {
+                            locations.push(ParamLocation::IntReg(pos as u8));
+                        }
+                    } else {
+                        locations.push(ParamLocation::Stack(stack_offset));
+                        stack_offset += 8;
+                    }
+                }
+            }
+            CallingConvention::Aapcs64 => {
+                let mut int_used: u8 = 0;
+                let mut float_used: u8 = 0;
+                let mut stack_offset: u32 = 0;
+                for ty in param_types {
+                    if Self::is_float_type(ty) {
+                        if float_used < 8 {
+                            locations.push(ParamLocation::FloatReg(float_used));
+                            float_used += 1;
+                        } else {
+                            locations.push(ParamLocation::Stack(stack_offset));
+                            stack_offset += 8;
+                        }
+                    } else if int_used < 8 {
+                        locations.push(ParamLocation::IntReg(int_used));
+                        int_used += 1;
+                    } else {
+                        locations.push(ParamLocation::Stack(stack_offset));
+                        stack_offset += 8;
+                    }
+                }
+            }
+        }
+        locations
+    }
+
+    // Maps a logical integer-argument slot to the concrete x86-64 register for this convention.
+    pub fn int_reg_x86(&self, slot: u8) -> X86_64Reg {
+        match self {
+            CallingConvention::SysV64 => {
+                const REGS: [X86_64Reg; 6] = [
+                    X86_64Reg::Rdi, X86_64Reg::Rsi, X86_64Reg::Rdx,
+                    X86_64Reg::Rcx, X86_64Reg::R8, X86_64Reg::R9,
+                ];
+                REGS[slot as usize]
+            }
+            CallingConvention::Win64 => {
+                const REGS: [X86_64Reg; 4] = [X86_64Reg::Rcx, X86_64Reg::Rdx, X86_64Reg::R8, X86_64Reg::R9];
+                REGS[slot as usize]
+            }
+            CallingConvention::Aapcs64 => unreachable!("int_reg_x86 is not defined for Aapcs64"),
+        }
+    }
+
+    // Maps a logical integer-argument slot to the concrete ARM64 register (AAPCS64 only).
+    pub fn int_reg_arm(&self, slot: u8) -> ARM64Reg {
+        match self {
+            CallingConvention::Aapcs64 => {
+                const REGS: [ARM64Reg; 8] = [
+                    ARM64Reg::X0, ARM64Reg::X1, ARM64Reg::X2, ARM64Reg::X3,
+                    ARM64Reg::X4, ARM64Reg::X5, ARM64Reg::X6, ARM64Reg::X7,
+                ];
+                REGS[slot as usize]
+            }
+            _ => unreachable!("int_reg_arm is only defined for Aapcs64"),
+        }
+    }
+}
+
+// A not-yet-resolved GOT (Global Offset Table) reference produced while lowering a CallExtern
+// instruction. `patch_offset` is the byte offset (within the x86-64 or ARM64 code buffer, per
+// `is_arm64`) where the GOT slot's address must be written once the linker has assigned one.
+// Phase D wiring turns these into real Linker.titan `Relocation`s once an ObjectFile is being
+// assembled: RelocationType::Got64 for x86-64 (single 8-byte absolute patch at patch_offset),
+// RelocationType::ArmGotMovz64 for ARM64 (four 4-byte MOVZ/MOVK immediate-chunk patches starting
+// at patch_offset) — see Linker.titan for both.
+#[derive(Clone, Debug)]
+pub struct GotRelocation {
+    pub patch_offset: usize,
+    pub symbol_name: String,
+    pub is_arm64: bool,
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// BACKEND CODE GENERATOR - with register allocation + branch backpatching + binary output
 // ════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 pub struct TitanBackend {
     x86_encoder: X86_64Encoder,
     arm_encoder: ARM64Encoder,
     reg_alloc: RegisterAllocator,
+    branch_patches: Vec<BranchPatch>,
+    block_offsets: HashMap<String, usize>,  // label -> byte offset where block starts
+    got_relocations: Vec<GotRelocation>,    // unresolved GOT references from CallExtern lowering
 }
 
 impl TitanBackend {
@@ -419,84 +916,932 @@ impl TitanBackend {
             x86_encoder: X86_64Encoder::new(),
             arm_encoder: ARM64Encoder::new(),
             reg_alloc: RegisterAllocator::new(),
+            branch_patches: Vec::new(),
+            block_offsets: HashMap::new(),
+            got_relocations: Vec::new(),
+        }
+    }
+
+    // Unresolved GOT references accumulated across every CallExtern lowered so far
+    // (both x86-64 and ARM64). Phase D reads this to build Linker.titan Relocations
+    // once it has assembled the surrounding ObjectFile.
+    pub fn get_got_relocations(&self) -> &[GotRelocation] {
+        &self.got_relocations
+    }
+
+    // Resolve an IrValue to a physical register, allocating if needed.
+    // If the free-register pool is exhausted, the value is spilled to a stack slot
+    // (rbp-relative) and reloaded into the fixed scratch register R11 on each use;
+    // store_x86_result() below writes the value back out to that slot after it is
+    // produced so subsequent reloads observe the correct value.
+    fn resolve_x86_reg(&mut self, val: &IrValue) -> X86_64Reg {
+        if let Some(reg) = self.reg_alloc.get_reg(&val.id) {
+            return reg;
+        }
+        if let Some(reg) = self.reg_alloc.allocate(val.id.clone()) {
+            if let Some(off) = self.reg_alloc.get_spill(&val.id) {
+                // Was previously spilled (e.g. re-allocated after a deallocate cycle); reload it.
+                self.x86_encoder.encode_mov_reg_mem_rbp(reg, off);
+            }
+            return reg;
+        }
+        // No physical register available: spill this value to a stack slot and
+        // reload it into the dedicated scratch register R11 for this use.
+        let off = self.reg_alloc.spill(val.id.clone());
+        self.x86_encoder.encode_mov_reg_mem_rbp(X86_64Reg::R11, off);
+        X86_64Reg::R11
+    }
+
+    // After a value is computed into `reg` for variable `val`, write it back to its
+    // spill slot (if it has one) so future resolve_x86_reg() reloads see the fresh value.
+    fn store_x86_result(&mut self, val: &IrValue, reg: X86_64Reg) {
+        if let Some(off) = self.reg_alloc.get_spill(&val.id) {
+            self.x86_encoder.encode_mov_mem_rbp_reg(off, reg);
+        }
+    }
+
+    // ARM64 equivalent of resolve_x86_reg: allocate an X-register per SSA value,
+    // spilling to a stack slot (reloaded via the fixed scratch register X16) when the
+    // allocator's free pool is exhausted.
+    fn resolve_arm_reg(&mut self, val: &IrValue) -> ARM64Reg {
+        if let Some(reg) = self.reg_alloc.get_arm_reg(&val.id) {
+            return reg;
+        }
+        if let Some(reg) = self.reg_alloc.allocate_arm(val.id.clone()) {
+            if let Some(off) = self.reg_alloc.get_spill(&val.id) {
+                self.arm_encoder.encode_ldr_reg_imm(reg, ARM64Reg::Xsp, off.abs());
+            }
+            return reg;
+        }
+        let off = self.reg_alloc.spill(val.id.clone());
+        self.arm_encoder.encode_ldr_reg_imm(ARM64Reg::X16, ARM64Reg::Xsp, off.abs());
+        ARM64Reg::X16
+    }
+
+    // After a value is computed into `reg` for variable `val`, write it back to its
+    // spill slot (if it has one) so future resolve_arm_reg() reloads see the fresh value.
+    fn store_arm_result(&mut self, val: &IrValue, reg: ARM64Reg) {
+        if let Some(off) = self.reg_alloc.get_spill(&val.id) {
+            self.arm_encoder.encode_str_reg_imm(reg, ARM64Reg::Xsp, off.abs());
         }
     }
 
     pub fn lower_ir_to_x86_64(&mut self, ir: &IrModule) -> Result<Vec<u8>, String> {
         for (_name, func) in &ir.functions {
+            // Reset allocator per function
+            self.reg_alloc = RegisterAllocator::new();
+            // Allocate param registers (System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9)
+            let param_regs = [
+                X86_64Reg::Rdi, X86_64Reg::Rsi, X86_64Reg::Rdx,
+                X86_64Reg::Rcx, X86_64Reg::R8, X86_64Reg::R9,
+            ];
+            for (i, param) in func.params.iter().enumerate() {
+                if i < param_regs.len() {
+                    self.reg_alloc.allocated.insert(param.id.clone(), param_regs[i]);
+                }
+            }
+
             for block in &func.blocks {
+                // Record block start offset for branch backpatching. Labels are namespaced by
+                // function name so that identically-named blocks (e.g. every function's "entry")
+                // in different functions don't collide in the single global offset map.
+                let qualified = format!("{}::{}", func.name, block.label);
+                self.block_offsets.insert(qualified, self.x86_encoder.code.len());
                 for instr in &block.instructions {
-                    self.encode_x86_64_instruction(instr)?;
+                    self.encode_x86_64_instruction(instr, &func.name)?;
                 }
             }
         }
+
+        // Backpatch all branch targets
+        let code = &mut self.x86_encoder.code;
+        for patch in &self.branch_patches {
+            if patch.is_arm64 { continue; }
+            if let Some(&target_offset) = self.block_offsets.get(&patch.target_label) {
+                let rel32 = (target_offset as i64 - (patch.patch_offset as i64 + 4)) as i32;
+                let bytes = rel32.to_le_bytes();
+                for (i, b) in bytes.iter().enumerate() {
+                    code[patch.patch_offset + i] = *b;
+                }
+            }
+        }
+
         Ok(self.x86_encoder.get_code())
     }
 
     pub fn lower_ir_to_arm64(&mut self, ir: &IrModule) -> Result<Vec<u8>, String> {
         for (_name, func) in &ir.functions {
+            // Reset allocator per function, same as x86-64 lowering
+            self.reg_alloc = RegisterAllocator::new();
+            // AAPCS64 argument registers: X0-X7
+            let param_regs = [
+                ARM64Reg::X0, ARM64Reg::X1, ARM64Reg::X2, ARM64Reg::X3,
+                ARM64Reg::X4, ARM64Reg::X5, ARM64Reg::X6, ARM64Reg::X7,
+            ];
+            for (i, param) in func.params.iter().enumerate() {
+                if i < param_regs.len() {
+                    self.reg_alloc.arm_allocated.insert(param.id.clone(), param_regs[i]);
+                }
+            }
+
             for block in &func.blocks {
+                // Namespace the block label by function name so identically-named blocks
+                // (e.g. every function's "entry") in different functions don't collide
+                // when branch targets are resolved against the single global offset map.
+                let qualified = format!("{}::{}", func.name, block.label);
+                self.block_offsets.insert(qualified, self.arm_encoder.code.len());
                 for instr in &block.instructions {
-                    self.encode_arm64_instruction(instr)?;
+                    self.encode_arm64_instruction(instr, &func.name)?;
                 }
             }
         }
+
+        // Backpatch ARM64 branches
+        let code = &mut self.arm_encoder.code;
+        for patch in &self.branch_patches {
+            if !patch.is_arm64 { continue; }
+            if let Some(&target_offset) = self.block_offsets.get(&patch.target_label) {
+                let rel = (target_offset as i64 - patch.patch_offset as i64) as i32;
+                let imm26 = ((rel >> 2) & 0x3FFFFFF) as u32;
+                let instr_bytes = (0x14000000u32 | imm26).to_le_bytes();
+                for (i, b) in instr_bytes.iter().enumerate() {
+                    code[patch.patch_offset + i] = *b;
+                }
+            }
+        }
+
         Ok(self.arm_encoder.get_code())
     }
 
-    fn encode_x86_64_instruction(&mut self, instr: &IrInstruction) -> Result<(), String> {
+    fn encode_x86_64_instruction(&mut self, instr: &IrInstruction, func_name: &str) -> Result<(), String> {
         match instr.opcode {
+            IrOpcode::Mov => {
+                if let Some(imm) = instr.immediate {
+                    let dest = if let Some(r) = &instr.result {
+                        self.resolve_x86_reg(r)
+                    } else { X86_64Reg::Rax };
+                    self.x86_encoder.encode_mov_reg_imm64(dest, imm);
+                    if let Some(r) = &instr.result { self.store_x86_result(r, dest); }
+                } else if instr.operands.len() >= 1 {
+                    let src = self.resolve_x86_reg(&instr.operands[0]);
+                    let dest = if let Some(r) = &instr.result {
+                        self.resolve_x86_reg(r)
+                    } else { X86_64Reg::Rax };
+                    self.x86_encoder.encode_mov_reg_reg(dest, src);
+                    if let Some(r) = &instr.result { self.store_x86_result(r, dest); }
+                }
+            }
             IrOpcode::Add => {
                 if instr.operands.len() >= 2 {
-                    self.x86_encoder.encode_add_reg_reg(X86_64Reg::Rax, X86_64Reg::Rcx);
+                    let lhs = self.resolve_x86_reg(&instr.operands[0]);
+                    let rhs = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_add_reg_reg(lhs, rhs);
+                    if let Some(r) = &instr.result {
+                        let dest = self.resolve_x86_reg(r);
+                        if dest != lhs {
+                            self.x86_encoder.encode_mov_reg_reg(dest, lhs);
+                        }
+                        self.store_x86_result(r, dest);
+                    }
                 }
             }
             IrOpcode::Sub => {
                 if instr.operands.len() >= 2 {
-                    self.x86_encoder.encode_sub_reg_reg(X86_64Reg::Rax, X86_64Reg::Rcx);
+                    let lhs = self.resolve_x86_reg(&instr.operands[0]);
+                    let rhs = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_sub_reg_reg(lhs, rhs);
+                    if let Some(r) = &instr.result {
+                        let dest = self.resolve_x86_reg(r);
+                        if dest != lhs {
+                            self.x86_encoder.encode_mov_reg_reg(dest, lhs);
+                        }
+                        self.store_x86_result(r, dest);
+                    }
                 }
             }
             IrOpcode::Mul => {
                 if instr.operands.len() >= 2 {
-                    self.x86_encoder.encode_imul_reg_reg(X86_64Reg::Rax, X86_64Reg::Rcx);
+                    let lhs = self.resolve_x86_reg(&instr.operands[0]);
+                    let rhs = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_imul_reg_reg(lhs, rhs);
                 }
+            }
+            IrOpcode::Div => {
+                if instr.operands.len() >= 2 {
+                    let divisor = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_idiv_reg(divisor);
+                }
+            }
+            IrOpcode::Xor => {
+                if instr.operands.len() >= 2 {
+                    let lhs = self.resolve_x86_reg(&instr.operands[0]);
+                    let rhs = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_xor_reg_reg(lhs, rhs);
+                }
+            }
+            IrOpcode::Compare => {
+                if instr.operands.len() >= 2 {
+                    let lhs = self.resolve_x86_reg(&instr.operands[0]);
+                    let rhs = self.resolve_x86_reg(&instr.operands[1]);
+                    self.x86_encoder.encode_cmp_reg_reg(lhs, rhs);
+                }
+            }
+            IrOpcode::Jump => {
+                // Emit rel32=0 for now; record in branch_patches for backpatching after all blocks are encoded
+                let patch_offset = self.x86_encoder.code.len() + 1; // after E9 opcode
+                let target = format!("{}::{}", func_name, instr.block);
+                self.x86_encoder.encode_jmp_rel32(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: false });
+            }
+            IrOpcode::JumpIf => {
+                let patch_offset = self.x86_encoder.code.len() + 2; // after 0F 84
+                let target = format!("{}::{}", func_name, instr.block);
+                self.x86_encoder.encode_je_rel32(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: false });
+            }
+            IrOpcode::JumpIfNot => {
+                let patch_offset = self.x86_encoder.code.len() + 2;
+                let target = format!("{}::{}", func_name, instr.block);
+                self.x86_encoder.encode_jne_rel32(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: false });
+            }
+            IrOpcode::Call => {
+                // Call targets are function symbols; resolved against the callee's "entry" block.
+                let patch_offset = self.x86_encoder.code.len() + 1;
+                let target = format!("{}::entry", instr.block);
+                self.x86_encoder.encode_call_rel32(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: false });
             }
             IrOpcode::Return => {
                 self.x86_encoder.encode_ret();
+            }
+            IrOpcode::Push => {
+                let reg = if let Some(op) = instr.operands.first() {
+                    self.resolve_x86_reg(op)
+                } else { X86_64Reg::Rax };
+                self.x86_encoder.encode_push_reg(reg);
+            }
+            IrOpcode::Pop => {
+                let reg = if let Some(r) = &instr.result {
+                    self.resolve_x86_reg(r)
+                } else { X86_64Reg::Rax };
+                self.x86_encoder.encode_pop_reg(reg);
+            }
+            IrOpcode::CallExtern => {
+                self.lower_extern_call_x86_64(instr)?;
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn encode_arm64_instruction(&mut self, instr: &IrInstruction) -> Result<(), String> {
+    // Lowers a CallExtern instruction under x86-64 SysV64/Win64 rules:
+    //   1. classify each argument via CallingConvention::classify_params
+    //   2. move register-classified args into place, push stack-overflow args right-to-left
+    //   3. reserve Win64's 32-byte shadow space, then pad for 16-byte alignment if needed
+    //   4. (SysV64 variadic only) set AL = number of vector registers used
+    //   5. indirect-call through a GOT slot (address patched by the linker; see GotRelocation)
+    //   6. caller-cleanup: `add rsp, N` for every byte pushed/reserved above
+    fn lower_extern_call_x86_64(&mut self, instr: &IrInstruction) -> Result<(), String> {
+        let extern_name = instr.extern_link_name.clone()
+            .or_else(|| instr.extern_name.clone())
+            .unwrap_or_default();
+        let abi = instr.extern_abi.clone().unwrap_or_else(|| "C".to_string());
+        let cc = CallingConvention::from_abi(&abi);
+
+        let param_types: Vec<&str> = instr.operands.iter().map(|v| v.vtype.as_str()).collect();
+        let locations = cc.classify_params(&param_types);
+
+        let mut stack_args: Vec<IrValue> = Vec::new();
+        let mut float_regs_used: u8 = 0;
+        for (val, loc) in instr.operands.iter().zip(locations.iter()) {
+            match *loc {
+                ParamLocation::IntReg(slot) => {
+                    let src = self.resolve_x86_reg(val);
+                    let dest = cc.int_reg_x86(slot);
+                    if src != dest {
+                        self.x86_encoder.encode_mov_reg_reg(dest, src);
+                    }
+                }
+                ParamLocation::FloatReg(slot) => {
+                    let src = self.resolve_x86_reg(val);
+                    self.x86_encoder.encode_movq_xmm_from_gpr(slot, src);
+                    float_regs_used += 1;
+                }
+                ParamLocation::Stack(_) => {
+                    stack_args.push(val.clone());
+                }
+            }
+        }
+
+        // Push stack-overflow args right-to-left (SysV64 and Win64 both push in this order).
+        for val in stack_args.iter().rev() {
+            let reg = self.resolve_x86_reg(val);
+            self.x86_encoder.encode_push_reg(reg);
+        }
+        let stack_bytes_pushed: u32 = (stack_args.len() as u32) * 8;
+
+        // Win64: 32 bytes of shadow space must be reserved before every call.
+        let shadow_space: u32 = if matches!(cc, CallingConvention::Win64) { 32 } else { 0 };
+        if shadow_space > 0 {
+            self.x86_encoder.encode_sub_rsp_imm32(shadow_space);
+        }
+
+        // 16-byte stack alignment immediately before `call`. A full implementation tracks
+        // cumulative call-site alignment across the function's whole prologue; this per-call
+        // padding is a scoped, self-contained approximation that keeps each CallExtern site
+        // independently correct without requiring whole-function alignment bookkeeping.
+        let pre_call_bytes = stack_bytes_pushed + shadow_space;
+        let align_pad: u32 = if pre_call_bytes % 16 != 0 { 8 } else { 0 };
+        if align_pad > 0 {
+            self.x86_encoder.encode_sub_rsp_imm32(align_pad);
+        }
+
+        // SysV64 variadic calls require AL = number of vector (xmm) registers used.
+        if instr.extern_variadic && matches!(cc, CallingConvention::SysV64) {
+            self.x86_encoder.encode_mov_reg_imm64(X86_64Reg::Rax, float_regs_used as i64);
+        }
+
+        // Indirect call through a GOT slot: R11 first holds the GOT slot's own address
+        // (patched in by the linker via a Got64 relocation at this imm64), then is
+        // dereferenced to fetch the real external function pointer (written into the
+        // slot by the OS loader at process start — see Linker.titan write_elf64), and
+        // finally called through.
+        let got_addr_offset = self.x86_encoder.code.len() + 2; // past REX prefix + B8+reg opcode byte
+        self.x86_encoder.encode_mov_reg_imm64(X86_64Reg::R11, 0);
+        self.got_relocations.push(GotRelocation {
+            patch_offset: got_addr_offset,
+            symbol_name: extern_name,
+            is_arm64: false,
+        });
+        self.x86_encoder.encode_mov_reg_mem_indirect(X86_64Reg::R11, X86_64Reg::R11);
+        self.x86_encoder.encode_call_reg(X86_64Reg::R11);
+
+        // Caller-cleanup: stack-overflow bytes + shadow space + alignment padding.
+        let cleanup = stack_bytes_pushed + shadow_space + align_pad;
+        if cleanup > 0 {
+            self.x86_encoder.encode_add_rsp_imm32(cleanup);
+        }
+
+        Ok(())
+    }
+
+    fn encode_arm64_instruction(&mut self, instr: &IrInstruction, func_name: &str) -> Result<(), String> {
         match instr.opcode {
+            IrOpcode::Mov => {
+                if let Some(imm) = instr.immediate {
+                    let dest = if let Some(r) = &instr.result {
+                        self.resolve_arm_reg(r)
+                    } else { ARM64Reg::X0 };
+                    self.arm_encoder.encode_mov_reg_imm(dest, imm as u16);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
+                } else if instr.operands.len() >= 1 {
+                    let src = self.resolve_arm_reg(&instr.operands[0]);
+                    let dest = if let Some(r) = &instr.result {
+                        self.resolve_arm_reg(r)
+                    } else { ARM64Reg::X0 };
+                    self.arm_encoder.encode_mov_reg_reg(dest, src);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
+                }
+            }
             IrOpcode::Add => {
                 if instr.operands.len() >= 2 {
-                    self.arm_encoder.encode_add_reg_reg(ARM64Reg::X0, ARM64Reg::X0, ARM64Reg::X1);
+                    let lhs = self.resolve_arm_reg(&instr.operands[0]);
+                    let rhs = self.resolve_arm_reg(&instr.operands[1]);
+                    let dest = if let Some(r) = &instr.result { self.resolve_arm_reg(r) } else { lhs };
+                    self.arm_encoder.encode_add_reg_reg(dest, lhs, rhs);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
                 }
             }
             IrOpcode::Sub => {
                 if instr.operands.len() >= 2 {
-                    self.arm_encoder.encode_sub_reg_reg(ARM64Reg::X0, ARM64Reg::X0, ARM64Reg::X1);
+                    let lhs = self.resolve_arm_reg(&instr.operands[0]);
+                    let rhs = self.resolve_arm_reg(&instr.operands[1]);
+                    let dest = if let Some(r) = &instr.result { self.resolve_arm_reg(r) } else { lhs };
+                    self.arm_encoder.encode_sub_reg_reg(dest, lhs, rhs);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
                 }
             }
             IrOpcode::Mul => {
                 if instr.operands.len() >= 2 {
-                    self.arm_encoder.encode_mul_reg_reg(ARM64Reg::X0, ARM64Reg::X0, ARM64Reg::X1);
+                    let lhs = self.resolve_arm_reg(&instr.operands[0]);
+                    let rhs = self.resolve_arm_reg(&instr.operands[1]);
+                    let dest = if let Some(r) = &instr.result { self.resolve_arm_reg(r) } else { lhs };
+                    self.arm_encoder.encode_mul_reg_reg(dest, lhs, rhs);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
+                }
+            }
+            IrOpcode::Div => {
+                if instr.operands.len() >= 2 {
+                    let lhs = self.resolve_arm_reg(&instr.operands[0]);
+                    let rhs = self.resolve_arm_reg(&instr.operands[1]);
+                    let dest = if let Some(r) = &instr.result { self.resolve_arm_reg(r) } else { lhs };
+                    self.arm_encoder.encode_sdiv_reg_reg(dest, lhs, rhs);
+                    if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
+                }
+            }
+            IrOpcode::Compare => {
+                if instr.operands.len() >= 2 {
+                    let lhs = self.resolve_arm_reg(&instr.operands[0]);
+                    let rhs = self.resolve_arm_reg(&instr.operands[1]);
+                    self.arm_encoder.encode_cmp_reg_reg(lhs, rhs);
+                }
+            }
+            IrOpcode::Jump => {
+                let patch_offset = self.arm_encoder.code.len();
+                let target = format!("{}::{}", func_name, instr.block);
+                self.arm_encoder.encode_b_rel26(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: true });
+            }
+            IrOpcode::JumpIf => {
+                let patch_offset = self.arm_encoder.code.len();
+                let target = format!("{}::{}", func_name, instr.block);
+                self.arm_encoder.encode_b_eq(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: true });
+            }
+            IrOpcode::JumpIfNot => {
+                let patch_offset = self.arm_encoder.code.len();
+                let target = format!("{}::{}", func_name, instr.block);
+                self.arm_encoder.encode_b_ne(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: true });
+            }
+            IrOpcode::Call => {
+                let patch_offset = self.arm_encoder.code.len();
+                // Call targets are function symbols, not block labels within this function;
+                // resolved the same way against block_offsets (functions register an "entry" block).
+                let target = format!("{}::entry", instr.block);
+                self.arm_encoder.encode_bl_rel26(0);
+                self.branch_patches.push(BranchPatch { patch_offset, target_label: target, is_arm64: true });
+            }
+            IrOpcode::Load => {
+                let base = if let Some(op) = instr.operands.first() { self.resolve_arm_reg(op) } else { ARM64Reg::X1 };
+                let dest = if let Some(r) = &instr.result { self.resolve_arm_reg(r) } else { ARM64Reg::X0 };
+                self.arm_encoder.encode_ldr_reg_addr(dest, base);
+                if let Some(r) = &instr.result { self.store_arm_result(r, dest); }
+            }
+            IrOpcode::Store => {
+                if instr.operands.len() >= 2 {
+                    let src = self.resolve_arm_reg(&instr.operands[0]);
+                    let base = self.resolve_arm_reg(&instr.operands[1]);
+                    self.arm_encoder.encode_str_reg_addr(src, base);
                 }
             }
             IrOpcode::Return => {
                 self.arm_encoder.encode_ret();
             }
+            IrOpcode::CallExtern => {
+                self.lower_extern_call_arm64(instr)?;
+            }
             _ => {}
         }
         Ok(())
     }
 
+    // Lowers a CallExtern instruction under AAPCS64 rules:
+    //   1. classify each argument via CallingConvention::classify_params
+    //   2. move register-classified args into place, reserve+store stack-overflow args
+    //   3. build the GOT slot's 64-bit address in X16 via MOVZ/MOVK (patched by the linker),
+    //      load the real external function pointer from that slot, BLR through it
+    //   4. caller-cleanup: restore SP for any reserved overflow-arg space
+    fn lower_extern_call_arm64(&mut self, instr: &IrInstruction) -> Result<(), String> {
+        let extern_name = instr.extern_link_name.clone()
+            .or_else(|| instr.extern_name.clone())
+            .unwrap_or_default();
+        let abi = instr.extern_abi.clone().unwrap_or_else(|| "aapcs64".to_string());
+        let cc = CallingConvention::from_abi(&abi);
+
+        let param_types: Vec<&str> = instr.operands.iter().map(|v| v.vtype.as_str()).collect();
+        let locations = cc.classify_params(&param_types);
+
+        let mut stack_args: Vec<IrValue> = Vec::new();
+        for (val, loc) in instr.operands.iter().zip(locations.iter()) {
+            match *loc {
+                ParamLocation::IntReg(slot) => {
+                    let src = self.resolve_arm_reg(val);
+                    let dest = cc.int_reg_arm(slot);
+                    if src != dest {
+                        self.arm_encoder.encode_mov_reg_reg(dest, src);
+                    }
+                }
+                ParamLocation::FloatReg(slot) => {
+                    let src = self.resolve_arm_reg(val);
+                    self.arm_encoder.encode_fmov_d_from_gpr(slot, src);
+                }
+                ParamLocation::Stack(_) => {
+                    stack_args.push(val.clone());
+                }
+            }
+        }
+
+        // AAPCS64 overflow args: reserve the frame slice then store each argument into it.
+        // A real prologue would batch-reserve the whole function's outgoing-arg area; this
+        // per-call reservation keeps each CallExtern site self-contained, at the cost of an
+        // extra SUB/ADD sp pair per call site with overflow args.
+        let stack_bytes = (stack_args.len() as u32) * 8;
+        if stack_bytes > 0 {
+            self.arm_encoder.encode_sub_sp_imm(stack_bytes);
+            for (i, val) in stack_args.iter().rev().enumerate() {
+                let reg = self.resolve_arm_reg(val);
+                self.arm_encoder.encode_str_reg_imm(reg, ARM64Reg::Xsp, (i as i32) * 8);
+            }
+        }
+
+        // Indirect call through a GOT slot: materialize the slot's absolute address in X16 via
+        // four MOVZ/MOVK instructions (patched by the linker's ArmGotMovz64 relocation), load the
+        // real external function pointer from that slot, then branch-with-link through it.
+        let patch_offset = self.arm_encoder.code.len();
+        self.arm_encoder.encode_movz(ARM64Reg::X16, 0, 0);
+        self.arm_encoder.encode_movk(ARM64Reg::X16, 0, 16);
+        self.arm_encoder.encode_movk(ARM64Reg::X16, 0, 32);
+        self.arm_encoder.encode_movk(ARM64Reg::X16, 0, 48);
+        self.got_relocations.push(GotRelocation {
+            patch_offset,
+            symbol_name: extern_name,
+            is_arm64: true,
+        });
+        self.arm_encoder.encode_ldr_reg_addr(ARM64Reg::X16, ARM64Reg::X16);
+        self.arm_encoder.encode_blr(ARM64Reg::X16);
+
+        if stack_bytes > 0 {
+            self.arm_encoder.encode_add_sp_imm(stack_bytes);
+        }
+
+        Ok(())
+    }
+
+    // Write ELF64 executable (Linux x86-64)
+    pub fn write_elf64(&self, text: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        // ELF Header (64 bytes)
+        out.extend_from_slice(&[
+            0x7F, 0x45, 0x4C, 0x46, // Magic: \x7FELF
+            0x02,                   // EI_CLASS: 64-bit
+            0x01,                   // EI_DATA: little-endian
+            0x01,                   // EI_VERSION: 1
+            0x00,                   // EI_OSABI: System V
+        ]);
+        out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding
+        out.extend_from_slice(&(2u16).to_le_bytes());  // e_type: ET_EXEC
+        out.extend_from_slice(&(0x3Eu16).to_le_bytes()); // e_machine: x86-64
+        out.extend_from_slice(&(1u32).to_le_bytes());  // e_version
+        out.extend_from_slice(&(0x400078u64).to_le_bytes()); // e_entry: .text load addr
+        out.extend_from_slice(&(64u64).to_le_bytes()); // e_phoff: program headers right after ELF hdr
+        out.extend_from_slice(&(0u64).to_le_bytes());  // e_shoff: no section headers
+        out.extend_from_slice(&(0u32).to_le_bytes());  // e_flags
+        out.extend_from_slice(&(64u16).to_le_bytes()); // e_ehsize
+        out.extend_from_slice(&(56u16).to_le_bytes()); // e_phentsize
+        out.extend_from_slice(&(2u16).to_le_bytes());  // e_phnum: 2 segments (text + data)
+        out.extend_from_slice(&(64u16).to_le_bytes()); // e_shentsize
+        out.extend_from_slice(&(0u16).to_le_bytes());  // e_shnum
+        out.extend_from_slice(&(0u16).to_le_bytes());  // e_shstrndx
+
+        let text_offset: u64 = 64 + 56 * 2; // after ELF hdr + 2 phdrs
+        let text_vaddr: u64 = 0x400000 + text_offset;
+        let data_offset: u64 = text_offset + text.len() as u64;
+        let data_vaddr: u64 = 0x600000 + data_offset;
+
+        // PT_LOAD for .text (RX)
+        out.extend_from_slice(&(1u32).to_le_bytes());  // p_type: PT_LOAD
+        out.extend_from_slice(&(5u32).to_le_bytes());  // p_flags: PF_R | PF_X
+        out.extend_from_slice(&text_offset.to_le_bytes()); // p_offset
+        out.extend_from_slice(&text_vaddr.to_le_bytes());  // p_vaddr
+        out.extend_from_slice(&text_vaddr.to_le_bytes());  // p_paddr
+        out.extend_from_slice(&(text.len() as u64).to_le_bytes()); // p_filesz
+        out.extend_from_slice(&(text.len() as u64).to_le_bytes()); // p_memsz
+        out.extend_from_slice(&(0x200000u64).to_le_bytes());        // p_align
+
+        // PT_LOAD for .data (RW)
+        out.extend_from_slice(&(1u32).to_le_bytes());  // p_type: PT_LOAD
+        out.extend_from_slice(&(6u32).to_le_bytes());  // p_flags: PF_R | PF_W
+        out.extend_from_slice(&data_offset.to_le_bytes());
+        out.extend_from_slice(&data_vaddr.to_le_bytes());
+        out.extend_from_slice(&data_vaddr.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        out.extend_from_slice(&(0x200000u64).to_le_bytes());
+
+        out.extend_from_slice(text);
+        out.extend_from_slice(data);
+        out
+    }
+
+    // Write PE32+ executable (Windows x86-64)
+    pub fn write_pe32plus(&self, text: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+
+        // MZ header stub (DOS stub that says "This program cannot be run in DOS mode")
+        out.extend_from_slice(b"MZ");
+        out.extend_from_slice(&[0u8; 58]); // padding
+        out.extend_from_slice(&(0x40u32).to_le_bytes()); // e_lfanew = 64
+
+        // PE signature
+        out.extend_from_slice(b"PE\0\0");
+
+        // COFF header (20 bytes)
+        out.extend_from_slice(&(0x8664u16).to_le_bytes()); // Machine: AMD64
+        out.extend_from_slice(&(2u16).to_le_bytes());   // NumberOfSections: 2
+        out.extend_from_slice(&(0u32).to_le_bytes());   // TimeDateStamp
+        out.extend_from_slice(&(0u32).to_le_bytes());   // PointerToSymbolTable
+        out.extend_from_slice(&(0u32).to_le_bytes());   // NumberOfSymbols
+        out.extend_from_slice(&(240u16).to_le_bytes()); // SizeOfOptionalHeader
+        out.extend_from_slice(&(0x22u16).to_le_bytes()); // Characteristics: exe + large-addr
+
+        // Optional header (240 bytes for PE32+)
+        out.extend_from_slice(&(0x20Bu16).to_le_bytes()); // PE32+ magic
+        out.extend_from_slice(&[14u8, 0u8]);               // MajorLinkerVersion, Minor
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes()); // SizeOfCode
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes()); // SizeOfInitializedData
+        out.extend_from_slice(&(0u32).to_le_bytes());   // SizeOfUninitializedData
+        out.extend_from_slice(&(0x1000u32).to_le_bytes()); // AddressOfEntryPoint
+        out.extend_from_slice(&(0x1000u32).to_le_bytes()); // BaseOfCode
+
+        // Windows-specific fields
+        out.extend_from_slice(&(0x140000000u64).to_le_bytes()); // ImageBase
+        out.extend_from_slice(&(0x1000u32).to_le_bytes());  // SectionAlignment
+        out.extend_from_slice(&(0x200u32).to_le_bytes());   // FileAlignment
+        out.extend_from_slice(&[6u8, 0u8, 0u8, 0u8]);       // OS version
+        out.extend_from_slice(&[0u8, 0u8, 0u8, 0u8]);       // Image version
+        out.extend_from_slice(&[6u8, 0u8, 0u8, 0u8]);       // Subsystem version
+        out.extend_from_slice(&[0u8; 4]);                    // Win32VersionValue
+        let image_size: u32 = 0x3000;
+        out.extend_from_slice(&image_size.to_le_bytes());   // SizeOfImage
+        out.extend_from_slice(&(512u32).to_le_bytes());     // SizeOfHeaders
+        out.extend_from_slice(&(0u32).to_le_bytes());       // CheckSum
+        out.extend_from_slice(&(3u16).to_le_bytes());       // Subsystem: Windows CUI
+        out.extend_from_slice(&(0u16).to_le_bytes());       // DllCharacteristics
+        // Stack/Heap reserve/commit sizes (4 x u64)
+        out.extend_from_slice(&(0x100000u64).to_le_bytes());
+        out.extend_from_slice(&(0x1000u64).to_le_bytes());
+        out.extend_from_slice(&(0x100000u64).to_le_bytes());
+        out.extend_from_slice(&(0x1000u64).to_le_bytes());
+        out.extend_from_slice(&(0u32).to_le_bytes());       // LoaderFlags
+        out.extend_from_slice(&(16u32).to_le_bytes());      // NumberOfRvaAndSizes
+        out.extend_from_slice(&[0u8; 128]);                  // DataDirectory (16 x 8 bytes)
+
+        // Section table: .text
+        out.extend_from_slice(b".text\0\0\0");
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes()); // VirtualSize
+        out.extend_from_slice(&(0x1000u32).to_le_bytes());   // VirtualAddress
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes()); // SizeOfRawData
+        out.extend_from_slice(&(512u32).to_le_bytes());       // PointerToRawData
+        out.extend_from_slice(&[0u8; 12]);                   // relocs/line numbers
+        out.extend_from_slice(&(0x60000020u32).to_le_bytes()); // Characteristics: CODE|EXECUTE|READ
+
+        // Section table: .data
+        out.extend_from_slice(b".data\0\0\0");
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(0x2000u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(512u32 + text.len() as u32).to_le_bytes());
+        out.extend_from_slice(&[0u8; 12]);
+        out.extend_from_slice(&(0xC0000040u32).to_le_bytes()); // Characteristics: INITIALIZED_DATA|READ|WRITE
+
+        // Pad to FileAlignment (512)
+        while out.len() % 512 != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(text);
+        while out.len() % 512 != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(data);
+        out
+    }
+
+    // ── AST → IR Lowering ──────────────────────────────────────────────────────────────────────────────────
+    // Converts a parsed ASTNode tree (from TitanFrontend) into an IrModule suitable for code generation.
+    // This is the bridge between the frontend parser and the backend encoder.
+    pub fn ast_to_ir(ast: &crate::frontend::titan_frontend::ASTNode, module_name: &str) -> IrModule {
+        let mut module = IrModule::new(module_name.to_string());
+        let mut tmp_counter: u32 = 0;
+
+        for item in &ast.children {
+            use crate::frontend::titan_frontend::ASTNodeType;
+            match item.node_type {
+                ASTNodeType::Function => {
+                    let func_name = item.name.clone();
+                    let mut func = IrFunction {
+                        name: func_name.clone(),
+                        params: Vec::new(),
+                        return_type: IrValue { id: "ret".to_string(), vtype: item.type_annotation.clone() },
+                        blocks: Vec::new(),
+                        entry_block: "entry".to_string(),
+                    };
+
+                    // Build param IrValues from AST param list
+                    for (i, param) in item.params.iter().enumerate() {
+                        func.params.push(IrValue {
+                            id: format!("p{}", i),
+                            vtype: param.type_annotation.clone(),
+                        });
+                    }
+
+                    // Lower the function body to a single entry block
+                    let mut entry = IrBasicBlock {
+                        label: "entry".to_string(),
+                        instructions: Vec::new(),
+                        successors: Vec::new(),
+                        predecessors: Vec::new(),
+                    };
+
+                    Self::lower_block_to_ir(&item.children, &mut entry, &mut tmp_counter);
+
+                    // Ensure every block ends with a return
+                    let has_ret = entry.instructions.iter().any(|i| matches!(i.opcode, IrOpcode::Return));
+                    if !has_ret {
+                        let mut ret_instr = IrInstruction::new(IrOpcode::Return);
+                        ret_instr.operands.push(IrValue { id: "zero".to_string(), vtype: "i64".to_string() });
+                        entry.instructions.push(ret_instr);
+                    }
+
+                    func.blocks.push(entry);
+                    module.functions.insert(func_name, func);
+                }
+
+                ASTNodeType::Let | ASTNodeType::LetMut => {
+                    // Module-level globals
+                    let name = item.name.clone();
+                    let ty = if item.type_annotation.is_empty() { "i64".to_string() } else { item.type_annotation.clone() };
+                    module.globals.insert(name.clone(), IrValue { id: name, vtype: ty });
+                }
+
+                _ => {} // structs, enums, imports handled during linking
+            }
+        }
+
+        // If no functions were found (e.g. expression-only module), emit a synthetic _start
+        if module.functions.is_empty() {
+            let mut start = IrFunction {
+                name: "_start".to_string(),
+                params: Vec::new(),
+                return_type: IrValue { id: "ret".to_string(), vtype: "i64".to_string() },
+                blocks: Vec::new(),
+                entry_block: "entry".to_string(),
+            };
+            let mut entry = IrBasicBlock {
+                label: "entry".to_string(),
+                instructions: Vec::new(),
+                successors: Vec::new(),
+                predecessors: Vec::new(),
+            };
+            let mut ret = IrInstruction::new(IrOpcode::Return);
+            ret.immediate = Some(0);
+            entry.instructions.push(ret);
+            start.blocks.push(entry);
+            module.functions.insert("_start".to_string(), start);
+        }
+
+        module
+    }
+
+    fn lower_block_to_ir(stmts: &[crate::frontend::titan_frontend::ASTNode], block: &mut IrBasicBlock, tmp: &mut u32) {
+        use crate::frontend::titan_frontend::ASTNodeType;
+        for stmt in stmts {
+            match stmt.node_type {
+                ASTNodeType::Return => {
+                    let mut instr = IrInstruction::new(IrOpcode::Return);
+                    if let Some(expr) = stmt.children.first() {
+                        let val = Self::lower_expr_to_ir(expr, block, tmp);
+                        instr.operands.push(val);
+                    }
+                    block.instructions.push(instr);
+                }
+
+                ASTNodeType::Let | ASTNodeType::LetMut => {
+                    if let Some(init) = stmt.children.first() {
+                        let val = Self::lower_expr_to_ir(init, block, tmp);
+                        let mut instr = IrInstruction::new(IrOpcode::Mov);
+                        instr.result = Some(IrValue { id: stmt.name.clone(), vtype: stmt.type_annotation.clone() });
+                        instr.operands.push(val);
+                        block.instructions.push(instr);
+                    }
+                }
+
+                ASTNodeType::BinaryOp => {
+                    Self::lower_expr_to_ir(stmt, block, tmp);
+                }
+
+                ASTNodeType::If => {
+                    // Emit compare + conditional jump
+                    if let Some(cond) = stmt.children.first() {
+                        let cond_val = Self::lower_expr_to_ir(cond, block, tmp);
+                        let mut cmp_instr = IrInstruction::new(IrOpcode::Compare);
+                        cmp_instr.operands.push(cond_val);
+                        cmp_instr.operands.push(IrValue { id: "zero".to_string(), vtype: "i64".to_string() });
+                        block.instructions.push(cmp_instr);
+                        let mut jmp = IrInstruction::new(IrOpcode::JumpIf);
+                        jmp.block = "then".to_string();
+                        block.instructions.push(jmp);
+                    }
+                    // Body lowered as child stmts (single-block approximation)
+                    if stmt.children.len() > 1 {
+                        Self::lower_block_to_ir(&stmt.children[1..], block, tmp);
+                    }
+                }
+
+                ASTNodeType::For => {
+                    // Emit a back-edge loop: loop header + body + jump back
+                    let mut jmp_back = IrInstruction::new(IrOpcode::Jump);
+                    jmp_back.block = "loop_header".to_string();
+                    Self::lower_block_to_ir(&stmt.children, block, tmp);
+                    block.instructions.push(jmp_back);
+                }
+
+                ASTNodeType::Call => {
+                    Self::lower_expr_to_ir(stmt, block, tmp);
+                }
+
+                _ => {}
+            }
+        }
+    }
+
+    fn lower_expr_to_ir(expr: &crate::frontend::titan_frontend::ASTNode, block: &mut IrBasicBlock, tmp: &mut u32) -> IrValue {
+        use crate::frontend::titan_frontend::ASTNodeType;
+        let result_id = format!("t{}", *tmp);
+        *tmp += 1;
+
+        match expr.node_type {
+            ASTNodeType::IntLiteral => {
+                let mut instr = IrInstruction::new(IrOpcode::Mov);
+                let res = IrValue { id: result_id.clone(), vtype: "i64".to_string() };
+                instr.result = Some(res.clone());
+                instr.immediate = Some(expr.name.parse::<i64>().unwrap_or(0));
+                block.instructions.push(instr);
+                res
+            }
+
+            ASTNodeType::FloatLiteral => {
+                let mut instr = IrInstruction::new(IrOpcode::Mov);
+                let res = IrValue { id: result_id.clone(), vtype: "f64".to_string() };
+                instr.result = Some(res.clone());
+                instr.immediate = Some(expr.name.parse::<f64>().unwrap_or(0.0) as i64);
+                block.instructions.push(instr);
+                res
+            }
+
+            ASTNodeType::Identifier => {
+                IrValue { id: expr.name.clone(), vtype: expr.type_annotation.clone() }
+            }
+
+            ASTNodeType::BinaryOp => {
+                let lhs = if let Some(l) = expr.children.get(0) {
+                    Self::lower_expr_to_ir(l, block, tmp)
+                } else {
+                    IrValue { id: "zero".to_string(), vtype: "i64".to_string() }
+                };
+                let rhs = if let Some(r) = expr.children.get(1) {
+                    Self::lower_expr_to_ir(r, block, tmp)
+                } else {
+                    IrValue { id: "zero".to_string(), vtype: "i64".to_string() }
+                };
+
+                let opcode = match expr.name.as_str() {
+                    "+" => IrOpcode::Add,
+                    "-" => IrOpcode::Sub,
+                    "*" => IrOpcode::Mul,
+                    "/" => IrOpcode::Div,
+                    "==" | "!=" | "<" | ">" | "<=" | ">=" => IrOpcode::Compare,
+                    _ => IrOpcode::Add,
+                };
+
+                let res = IrValue { id: result_id.clone(), vtype: lhs.vtype.clone() };
+                let mut instr = IrInstruction::new(opcode);
+                instr.result = Some(res.clone());
+                instr.operands.push(lhs);
+                instr.operands.push(rhs);
+                block.instructions.push(instr);
+                res
+            }
+
+            ASTNodeType::Call => {
+                // Build call instruction: result = call func(args...)
+                let res = IrValue { id: result_id.clone(), vtype: "i64".to_string() };
+                let mut instr = IrInstruction::new(IrOpcode::Call);
+                instr.result = Some(res.clone());
+                instr.block = expr.name.clone(); // call target label
+                for arg in &expr.children {
+                    let arg_val = Self::lower_expr_to_ir(arg, block, tmp);
+                    instr.operands.push(arg_val);
+                }
+                block.instructions.push(instr);
+                res
+            }
+
+            _ => IrValue { id: result_id, vtype: "i64".to_string() }
+        }
+    }
+
     pub fn generate_debug_info(&self) -> String {
-        format!("Debug information: {} bytes of x86-64 code generated",
-                self.x86_encoder.get_code().len())
+        let x86_code_len = self.x86_encoder.get_code().len();
+        let arm_code_len = self.arm_encoder.get_code().len();
+        let alloc_info = format!("{} registers allocated", self.reg_alloc.allocated.len());
+
+        format!(
+            "Debug Info: x86-64={} bytes, ARM64={} bytes, {}, {} branch patches",
+            x86_code_len, arm_code_len, alloc_info, self.branch_patches.len()
+        )
     }
 }
 

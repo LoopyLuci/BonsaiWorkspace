@@ -1,0 +1,1080 @@
+<script lang="ts">
+  import FileTree        from '$lib/components/FileTree.svelte';
+  import ChatPanel       from '$lib/components/ChatPanel.svelte';
+  import StatusBar       from '$lib/components/StatusBar.svelte';
+  import CommandPalette  from '$lib/components/CommandPalette.svelte';
+  import SessionPanel    from '$lib/components/SessionPanel.svelte';
+  import AgentConnectPanel from '$lib/components/AgentConnectPanel.svelte';
+  import ResourcesPanel    from '$lib/components/ResourcesPanel.svelte';
+  import TerminalPanel   from '$lib/components/TerminalPanel.svelte';
+  import VscodeViewer    from '$lib/components/VscodeViewer.svelte';
+  import DownloadProgress from '$lib/components/DownloadProgress.svelte';
+  import BootstrapScreen from '$lib/components/BootstrapScreen.svelte';
+  import MobileLayout from '$lib/components/MobileLayout.svelte';
+  import PeersPanel         from '$lib/components/PeersPanel.svelte';
+  import GlobalErrorBoundary from '$lib/components/GlobalErrorBoundary.svelte';
+  import SystemHealthPanel  from '$lib/components/SystemHealthPanel.svelte';
+  import OnboardingWizard   from '$lib/components/OnboardingWizard.svelte';
+  import WidgetHost         from '$lib/components/WidgetHost.svelte';
+  // CodeCanvas, AndroidUsbLab, DataWorkbench, VerificationPanel, ModelBuilder,
+  // PackageImportDialog, ExtensionsPanel, SettingsPanel, AgentsPanel,
+  // MobileViewPanel are lazy-loaded below (bundle-size budget: these are
+  // large, rarely-opened overlay panels).
+
+  import { showTerminal, toggleTerminal } from '$lib/stores/terminal';
+  import { isBootstrapping, initModelStores } from '$lib/stores/models';
+  import { restorePersistentSession } from '$lib/stores/chat';
+  import { loadAgentConfigs, loadPersonas } from '$lib/stores/agents';
+  import { loadApiSettings } from '$lib/stores/settings';
+  import { onboardingDone, showOnboarding, restartOnboarding } from '$lib/stores/onboarding';
+  import { instrumentAll } from '$lib/activity';
+  import Toasts from '$lib/components/Toast.svelte';
+
+  // ── Layout toggles ────────────────────────────────────────────────────────
+  let showFileTree  = true;
+  let showChat      = true;
+  let showSettings  = false;
+  let showSession   = false;
+  let showAgentConnect = false;
+  let showAgents       = false;
+  let showExtensions   = false;
+  let showSelfBuild    = false;
+  let showSurvival     = false;
+  let showResources    = false;
+  let showAgentVision  = false;
+  let showCanvas       = false;
+  let showMobileView   = false;
+  let showTools = false;
+  let showAndroidUsbModal = false;
+  let showVscode    = false;
+  let showPeers         = false;
+  let showDataWorkbench = false;
+  let showVerification  = false;
+  let showHealthPanel    = false;
+  let showModelBuilder   = false;
+  let showPackageImport  = false;
+  let packageImportPath  = '';
+  let sidebarWidth  = 280;
+  let chatWidth     = 360;
+  let resizingPane: 'sidebar' | 'chat' | null = null;
+  let pointerStartX = 0;
+  let pointerStartWidth = 0;
+  let monacoEditorComponent: any = null;
+  let monacoLoading = false;
+  let monacoLoadError = '';
+  let agentVisionPanelComponent: any = null;
+  let agentVisionLoadError = '';
+
+  // Lazy-loaded overlay panels (kept out of the main bundle; loaded on first open).
+  // ModelBuilder and Extensions are migrated to the widget registry
+  // ($lib/widgets/registry.ts) + <WidgetHost> — see that file's doc comment.
+  let codeCanvasComponent: any = null;
+  let androidUsbLabComponent: any = null;
+  let dataWorkbenchComponent: any = null;
+  let verificationPanelComponent: any = null;
+  let packageImportDialogComponent: any = null;
+
+  $: if (showCanvas && !codeCanvasComponent) {
+    import('$lib/components/CodeCanvas.svelte').then((m) => (codeCanvasComponent = m.default));
+  }
+  $: if (showAndroidUsbModal && !androidUsbLabComponent) {
+    import('$lib/components/AndroidUsbLab.svelte').then((m) => (androidUsbLabComponent = m.default));
+  }
+  $: if (showDataWorkbench && !dataWorkbenchComponent) {
+    import('$lib/components/DataWorkbench.svelte').then((m) => (dataWorkbenchComponent = m.default));
+  }
+  $: if (showVerification && !verificationPanelComponent) {
+    import('$lib/components/VerificationPanel.svelte').then((m) => (verificationPanelComponent = m.default));
+  }
+  $: if (showPackageImport && !packageImportDialogComponent) {
+    import('$lib/components/PackageImportDialog.svelte').then((m) => (packageImportDialogComponent = m.default));
+  }
+  function handlePackageImported() {
+    showPackageImport = false;
+    showModelBuilder = true;
+  }
+  let settingsPanelComponent: any = null;
+  let agentsPanelComponent: any = null;
+  let mobileViewPanelComponent: any = null;
+
+  $: if (showSettings && !settingsPanelComponent) {
+    import('$lib/components/SettingsPanel.svelte').then((m) => (settingsPanelComponent = m.default));
+  }
+  $: if (showAgents && !agentsPanelComponent) {
+    import('$lib/components/AgentsPanel.svelte').then((m) => (agentsPanelComponent = m.default));
+  }
+  $: if (showMobileView && !mobileViewPanelComponent) {
+    import('$lib/components/MobileViewPanel.svelte').then((m) => (mobileViewPanelComponent = m.default));
+  }
+
+  const MIN_PANE_WIDTH = 120;
+  const MIN_EDITOR_WIDTH = 260;
+  const RESIZER_WIDTH = 10;
+
+  function hasRightPane() {
+    return showChat || showVscode;
+  }
+
+  function visiblePaneCount() {
+    // Editor is always present.
+    return 1 + (showFileTree ? 1 : 0) + (hasRightPane() ? 1 : 0);
+  }
+
+  function visibleResizerCount() {
+    let count = 0;
+    if (showFileTree) count += 1;
+    if (hasRightPane()) count += 1;
+    return count;
+  }
+
+  function paneMaxWidth(pane: 'sidebar' | 'chat') {
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const paneCount = visiblePaneCount();
+    const shareLimit = paneCount >= 3 ? 0.75 : paneCount === 2 ? 0.9 : 1.0;
+    const maxByShare = Math.floor(viewportWidth * shareLimit);
+    const otherPaneWidth = pane === 'sidebar'
+      ? (hasRightPane() ? chatWidth : 0)
+      : (showFileTree ? sidebarWidth : 0);
+    const maxByEditor = Math.max(
+      MIN_PANE_WIDTH,
+      viewportWidth - otherPaneWidth - MIN_EDITOR_WIDTH - (visibleResizerCount() * RESIZER_WIDTH),
+    );
+    return Math.max(MIN_PANE_WIDTH, Math.min(maxByShare, maxByEditor));
+  }
+
+  function startResizingSidebar(event: PointerEvent) {
+    event.preventDefault();
+    resizingPane = 'sidebar';
+    pointerStartX = event.clientX;
+    pointerStartWidth = sidebarWidth;
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResizing);
+  }
+
+  function startResizingChat(event: PointerEvent) {
+    event.preventDefault();
+    resizingPane = 'chat';
+    pointerStartX = event.clientX;
+    pointerStartWidth = chatWidth;
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResizing);
+  }
+
+  function onPointerMove(event: PointerEvent) {
+    if (!resizingPane) return;
+    const delta = event.clientX - pointerStartX;
+    if (resizingPane === 'sidebar') {
+      sidebarWidth = Math.min(paneMaxWidth('sidebar'), Math.max(MIN_PANE_WIDTH, pointerStartWidth + delta));
+    } else if (resizingPane === 'chat') {
+      chatWidth = Math.min(paneMaxWidth('chat'), Math.max(MIN_PANE_WIDTH, pointerStartWidth - delta));
+    }
+  }
+
+  function stopResizing() {
+    resizingPane = null;
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', stopResizing);
+  }
+
+  async function loadMonacoEditorComponent() {
+    if (monacoEditorComponent || monacoLoading) return;
+    monacoLoading = true;
+    try {
+      const mod = await import('$lib/components/MonacoEditor.svelte');
+      monacoEditorComponent = mod.default;
+      monacoLoadError = '';
+    } catch (error) {
+      monacoLoadError = String(error);
+    } finally {
+      monacoLoading = false;
+    }
+  }
+
+  async function loadAgentVisionPanelComponent() {
+    if (agentVisionPanelComponent) return;
+    try {
+      const mod = await import('$lib/components/AgentVisionPanel.svelte');
+      agentVisionPanelComponent = mod.default;
+      agentVisionLoadError = '';
+    } catch (error) {
+      agentVisionLoadError = String(error);
+    }
+  }
+
+  function toggleAgentVisionPanel() {
+    showAgentVision = !showAgentVision;
+    if (showAgentVision) {
+      void loadAgentVisionPanelComponent();
+    }
+  }
+
+  // ── Theme ─────────────────────────────────────────────────────────────────
+  type Theme = 'dark' | 'light' | 'high-contrast';
+  let theme: Theme = 'dark';
+
+  function cycleTheme() {
+    const order: Theme[] = ['dark', 'light', 'high-contrast'];
+    theme = order[(order.indexOf(theme) + 1) % order.length];
+    document.documentElement.dataset.theme = theme;
+  }
+
+  // Mobile detection — true when running inside Tauri on Android.
+  // Falls back to user-agent check so it works in dev/browser previews too.
+  let isMobile = false;
+
+  // Sync theme on mount; initialise model/bootstrap listeners
+  import { invoke } from '@tauri-apps/api/core';
+  import { onMount, onDestroy } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
+
+  // ── Services readiness gate ───────────────────────────────────────────────
+  // The launch supervisor emits these events after health-probing all servers.
+  // Until 'workspace:services-ready' fires, the backend may not be listening.
+  let servicesReady = false;
+  let servicesFailed = '';
+  let serviceLostName = '';
+  let launchComponents: Array<{name: string; state: string; message: string}> = [];
+
+  function globalKey(e: KeyboardEvent) {
+    if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || e.key === 'F1') {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent('open-command-palette'));
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      showSession = true;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      invoke('toggle_assistant_window');
+    }
+  }
+
+  function openSessionEvent() {
+    showSession = true;
+  }
+
+  function openAgentsEvent() {
+    showAgents = true;
+  }
+
+  /** Called once all services are confirmed healthy. Always awaits loadApiSettings first. */
+  async function onServicesReady() {
+    if (servicesReady) return;        // idempotent — supervisor may fire multiple times
+    await loadApiSettings();          // update apiPort store BEFORE any fetch
+    servicesReady = true;
+    servicesFailed = '';
+    initModelStores();
+    void restorePersistentSession();
+    void loadAgentConfigs();
+    void loadPersonas();
+    if (!isMobile && !$onboardingDone) {
+      showOnboarding.set(true);
+    }
+  }
+
+  (onMount as (fn: () => Promise<() => void>) => void)(async () => {
+    document.documentElement.dataset.theme = theme;
+
+    // UI-click and fetch/WebSocket instrumentation for the Activity Log — was
+    // defined in lib/activity.ts but never actually invoked anywhere, so none
+    // of that instrumentation ever ran.
+    instrumentAll();
+
+    // Detect Android before any conditional logic.
+    isMobile = /android/i.test(navigator.userAgent);
+    if (isMobile) {
+      showFileTree = false;
+      showVscode = false;
+      showChat = true;
+      chatWidth = Math.min(chatWidth, Math.max(240, Math.floor(window.innerWidth * 0.92)));
+    }
+
+    window.addEventListener('keydown', globalKey, true);
+    window.addEventListener('open-session', openSessionEvent);
+    window.addEventListener('open-agents', openAgentsEvent);
+
+    // Wire up supervisor events. These are resolved Promises — store the
+    // unlisten functions so we can clean up in onDestroy.
+    const [unlistenReady, unlistenFailed, unlistenProgress, unlistenLost] = await Promise.all([
+      listen<void>('workspace:services-ready', () => { void onServicesReady(); }),
+      listen<string>('workspace:services-failed', (ev) => {
+        servicesFailed = ev.payload ?? 'A required service failed to start.';
+      }),
+      listen<{all_ready: boolean; components: typeof launchComponents}>(
+        'workspace:launch-progress', (ev) => {
+          launchComponents = ev.payload.components;
+          if (ev.payload.all_ready) void onServicesReady();
+        }
+      ),
+      listen<{component: string}>('workspace:service-lost', (ev) => {
+        serviceLostName = ev.payload.component;
+        // Auto-clear after 10 s
+        setTimeout(() => { serviceLostName = ''; }, 10_000);
+      }),
+    ]);
+
+    // Fallback: if the supervisor event never fires (dev/browser mode or very fast start),
+    // call onServicesReady after 3 s so the app doesn't stay gated forever.
+    const fallback = window.setTimeout(() => { void onServicesReady(); }, 3000);
+
+    return () => {
+      window.clearTimeout(fallback);
+      unlistenReady();
+      unlistenFailed();
+      unlistenProgress();
+      unlistenLost();
+      window.removeEventListener('keydown', globalKey, true);
+      window.removeEventListener('open-session', openSessionEvent);
+      window.removeEventListener('open-agents', openAgentsEvent);
+    };
+  });
+
+  onDestroy(() => {
+    window.removeEventListener('keydown', globalKey, true);
+    window.removeEventListener('open-session', openSessionEvent);
+    window.removeEventListener('open-agents', openAgentsEvent);
+  });
+
+  $: if (showFileTree) {
+    sidebarWidth = Math.max(MIN_PANE_WIDTH, Math.min(sidebarWidth, paneMaxWidth('sidebar')));
+  }
+
+  $: if (showChat) {
+    chatWidth = Math.max(MIN_PANE_WIDTH, Math.min(chatWidth, paneMaxWidth('chat')));
+  }
+</script>
+
+<!-- Launch splash — shown until supervisor confirms all services are bound -->
+{#if !servicesReady || servicesFailed}
+  <div class="launch-splash">
+    {#if servicesFailed}
+      <div class="launch-error">
+        <span class="launch-icon">⚠</span>
+        <p class="launch-title">Service startup failed</p>
+        <p class="launch-detail">{servicesFailed}</p>
+        <p class="launch-hint">Check that port 11369 is free and restart Workspace.</p>
+      </div>
+    {:else}
+      <div class="launch-loading">
+        <span class="launch-logo">🌿</span>
+        <p class="launch-title">Starting Workspace…</p>
+        {#each launchComponents as c}
+          <div class="launch-row" class:ready={c.state === 'ready'} class:failed={c.state.startsWith('failed')}>
+            <span class="launch-dot"></span>
+            <span class="launch-name">{c.name}</span>
+            <span class="launch-msg">{c.message}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<!-- Root shell -->
+<div class="root" class:mobile-shell={isMobile} class:services-pending={!servicesReady}>
+
+  {#if isMobile}
+    <MobileLayout />
+    <Toasts />
+    <DownloadProgress />
+    {#if $isBootstrapping}<BootstrapScreen />{/if}
+  {:else}
+
+  <!-- Runtime service-lost banner -->
+  {#if serviceLostName}
+    <div class="service-lost-banner">
+      ⚠ Service "{serviceLostName}" became unreachable — reconnecting…
+      <button class="banner-dismiss" on:click={() => serviceLostName = ''}>✕</button>
+    </div>
+  {/if}
+
+  <!-- Top toolbar -->
+  <header class="toolbar">
+    <span class="logo">🌿</span>
+    <div class="toolbar-actions">
+      <button class="btn-icon" title="Toggle File Tree (Ctrl+B)"
+        on:click={() => (showFileTree = !showFileTree)}>
+        {showFileTree ? '◀ Tree' : '▶ Tree'}
+      </button>
+      <button class="btn-icon" title="Toggle Terminal (Ctrl+`)"
+        on:click={toggleTerminal}>Terminal</button>
+      <button class="btn-icon" title="Workspace Terminal Interface (Ctrl+Alt+T)"
+        on:click={() => invoke('launch_workspace_terminal', { panel: null, workspace: null })}>🖥 BTI</button>
+      <button class="btn-icon" title="Toggle Chat"
+        on:click={() => (showChat = !showChat)}>Chat</button>
+      <button class="btn-icon" class:active={showCanvas} title="Spatial Code Canvas"
+        on:click={() => (showCanvas = !showCanvas)}>Canvas</button>
+      <button class="btn-icon" class:active={showAgents} title="Open Agents"
+        on:click={() => (showAgents = true)}>⚡ Agents</button>
+      <button class="btn-icon" class:active={showExtensions} title="Extensions (🧩)"
+        on:click={() => (showExtensions = !showExtensions)}>🧩 Ext</button>
+      <button class="btn-icon" class:active={showSelfBuild} title="Self-Build — the self-upgrade agent's proposal queue"
+        on:click={() => (showSelfBuild = !showSelfBuild)}>🛠 Self-Build</button>
+      <button class="btn-icon" class:active={showSurvival} title="Survival System — bug discovery, knowledge base, sandbox nervous system"
+        on:click={() => (showSurvival = !showSurvival)}>🩺 Survival</button>
+      <button class="btn-icon" class:active={showResources} title="Open Resources"
+        on:click={() => (showResources = true)}>Resources</button>
+      <button class="btn-icon" class:active={showPeers} title="P2P Peers"
+        on:click={() => (showPeers = !showPeers)}>Peers</button>
+      <button class="btn-icon" class:active={showDataWorkbench} title="Data Workbench"
+        on:click={() => (showDataWorkbench = !showDataWorkbench)}>Data</button>
+      <button class="btn-icon" class:active={showVerification} title="Formal Verification"
+        on:click={() => (showVerification = !showVerification)}>Verify</button>
+      <button class="btn-icon" class:active={showHealthPanel} title="System Health"
+        on:click={() => (showHealthPanel = !showHealthPanel)}>Health</button>
+      <button class="btn-icon" class:active={showModelBuilder} title="Model Builder — combine base models with knowledge modules"
+        on:click={() => (showModelBuilder = !showModelBuilder)}>🧠 Builder</button>
+      <button class="btn-icon" title="Settings"
+        on:click={() => (showSettings = !showSettings)}>⚙</button>
+
+      <!-- Tools dropdown -->
+      <div class="tools-dropdown" role="group" on:mouseleave={() => (showTools = false)}>
+        <button class="btn-icon" title="Tools" on:click={() => (showTools = !showTools)}>Tools ▾</button>
+        {#if showTools}
+          <div class="tools-menu" role="menu">
+            <button class="tools-item" type="button" role="menuitem" title="Workspace Buddy Assistant (Ctrl+Shift+B)" aria-label="Workspace Buddy Assistant" on:click={() => { invoke('toggle_assistant_window'); showTools=false; }}>
+              🌿 Workspace Buddy Assistant
+            </button>
+            <button class="tools-item" type="button" role="menuitem" title="Agent Vision" aria-label="Agent Vision" on:click={() => { toggleAgentVisionPanel(); showTools=false; }}>
+              ⚡ Agent Vision
+            </button>
+            <button class="tools-item" type="button" role="menuitem" title="Android USB Lab" aria-label="Android USB Lab" on:click={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } showTools=false; }}>
+              📱 Android USB Lab
+            </button>
+            <button class="tools-item" type="button" role="menuitem" title="Agent Connect" aria-label="Agent Connect" on:click={() => { showAgentConnect = true; showTools=false; }}>
+              🔗 Agent Connect
+            </button>
+          </div>
+        {/if}
+      </div>
+      <button class="btn-icon" class:active={showMobileView} title="Mobile Viewer"
+        on:click={() => (showMobileView = !showMobileView)}>Mobile Viewer</button>
+      <button class="btn-icon" title="Toggle VSCode Viewer"
+        on:click={() => (showVscode = !showVscode)}>VSCode</button>
+      <button class="btn-icon" title="Cycle Theme"
+        on:click={cycleTheme}>
+        {theme === 'dark' ? '☀' : theme === 'light' ? '⬛' : '🌑'}
+      </button>
+      <button class="btn-icon" title="Restart the guided tour"
+        on:click={restartOnboarding}>?</button>
+    </div>
+  </header>
+
+  <!-- Main work area -->
+  <main class="work-area">
+    <div class="split-layout">
+      {#if showFileTree}
+        <div class="pane sidebar-pane" style="width: {sidebarWidth}px">
+          <FileTree />
+        </div>
+        <div
+          class="split-resizer left-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          on:pointerdown={startResizingSidebar}
+          title="Resize file tree"
+        >
+          <span>⋮</span>
+        </div>
+      {/if}
+
+      <div class="pane editor-pane">
+        {#if monacoEditorComponent}
+          <svelte:component this={monacoEditorComponent} {theme} />
+        {:else if monacoLoadError}
+          <div class="pane-state pane-state-error">Editor failed to load: {monacoLoadError}</div>
+        {:else}
+          <div class="pane-state">
+            <button class="btn-icon" type="button" on:click={() => void loadMonacoEditorComponent()} disabled={monacoLoading}>
+              {monacoLoading ? 'Loading editor...' : 'Open editor'}
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      {#if showVscode}
+        <div
+          class="split-resizer right-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          on:pointerdown={startResizingChat}
+          title="Resize VSCode pane"
+        >
+          <span>⋮</span>
+        </div>
+        <div class="pane chat-pane" style="width: {chatWidth}px">
+          <VscodeViewer />
+        </div>
+      {:else if showChat}
+        <div
+          class="split-resizer right-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          on:pointerdown={startResizingChat}
+          title="Resize chat pane"
+        >
+          <span>⋮</span>
+        </div>
+        <div class="pane chat-pane" style="width: {chatWidth}px">
+          <ChatPanel on:openSession={() => (showSession = true)} />
+        </div>
+      {/if}
+    </div>
+  </main>
+
+  <!-- Terminal drawer -->
+  <div class="terminal-drawer" class:terminal-hidden={!$showTerminal}>
+    <TerminalPanel />
+  </div>
+
+  <Toasts />
+
+  <!-- Status bar -->
+  <StatusBar
+    onOpenModelTrainer={() => (showSettings = true)}
+    onOpenHealthPanel={() => (showHealthPanel = true)}
+  />
+
+  <!-- Overlays -->
+  <CommandPalette />
+  {#if showSettings}
+    {#if settingsPanelComponent}
+      <svelte:component
+        this={settingsPanelComponent}
+        on:close={() => (showSettings = false)}
+        on:openAndroidUsbLab={async () => { try { await invoke('toggle_android_usb_lab_window'); } catch { showAndroidUsbModal = true; } }}
+      />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Settings...</div>
+    {/if}
+  {/if}
+  {#if showSession}<SessionPanel on:close={() => (showSession = false)} />{/if}
+  {#if showAgentConnect}<AgentConnectPanel on:close={() => (showAgentConnect = false)} />{/if}
+  {#if showAgents}
+    {#if agentsPanelComponent}
+      <svelte:component this={agentsPanelComponent} on:close={() => (showAgents = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Agents...</div>
+    {/if}
+  {/if}
+  {#if showExtensions}
+    <div class="overlay-panel" role="dialog" aria-label="Extensions">
+      <WidgetHost widgetId="extensions" />
+      <button class="overlay-close" on:click={() => showExtensions = false} aria-label="Close">✕</button>
+    </div>
+  {/if}
+  {#if showSelfBuild}
+    <div class="overlay-panel" role="dialog" aria-label="Self-Build">
+      <WidgetHost widgetId="self-build" />
+      <button class="overlay-close" on:click={() => showSelfBuild = false} aria-label="Close">✕</button>
+    </div>
+  {/if}
+  {#if showSurvival}
+    <div class="overlay-panel" role="dialog" aria-label="Survival System">
+      <WidgetHost widgetId="survival" />
+      <button class="overlay-close" on:click={() => showSurvival = false} aria-label="Close">✕</button>
+    </div>
+  {/if}
+  {#if showResources}<ResourcesPanel on:close={() => (showResources = false)} />{/if}
+  {#if showAgentVision}
+    {#if agentVisionPanelComponent}
+      <svelte:component
+        this={agentVisionPanelComponent}
+        on:close={() => (showAgentVision = false)}
+        on:openChat={() => {
+          showChat = true;
+          showVscode = false;
+        }}
+      />
+    {:else if agentVisionLoadError}
+      <div class="overlay-error" role="alert">
+        <div>Agent Vision failed to load: {agentVisionLoadError}</div>
+        <button class="btn-icon" type="button" on:click={() => (showAgentVision = false)}>Close</button>
+      </div>
+    {:else}
+      <div class="overlay-loading" role="status">Loading Agent Vision...</div>
+    {/if}
+  {/if}
+  {#if showCanvas}
+    {#if codeCanvasComponent}
+      <svelte:component this={codeCanvasComponent} onClose={() => (showCanvas = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Canvas...</div>
+    {/if}
+  {/if}
+  {#if showMobileView}
+    {#if mobileViewPanelComponent}
+      <svelte:component this={mobileViewPanelComponent} on:close={() => (showMobileView = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Mobile Viewer...</div>
+    {/if}
+  {/if}
+  {#if showAndroidUsbModal}
+    {#if androidUsbLabComponent}
+      <svelte:component this={androidUsbLabComponent} on:close={() => (showAndroidUsbModal = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Android USB Lab...</div>
+    {/if}
+  {/if}
+  {#if showPeers}<PeersPanel on:close={() => (showPeers = false)} />{/if}
+  {#if showDataWorkbench}
+    {#if dataWorkbenchComponent}
+      <svelte:component this={dataWorkbenchComponent} on:close={() => (showDataWorkbench = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Data Workbench...</div>
+    {/if}
+  {/if}
+  {#if showVerification}
+    {#if verificationPanelComponent}
+      <svelte:component this={verificationPanelComponent} on:close={() => (showVerification = false)} />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Verification...</div>
+    {/if}
+  {/if}
+  {#if showHealthPanel}<SystemHealthPanel onClose={() => (showHealthPanel = false)} />{/if}
+  {#if showModelBuilder}
+    <div class="floating-panel model-builder-panel">
+      <WidgetHost widgetId="model-builder" />
+    </div>
+  {/if}
+  {#if showPackageImport}
+    {#if packageImportDialogComponent}
+      <svelte:component
+        this={packageImportDialogComponent}
+        initialPath={packageImportPath}
+        on:imported={handlePackageImported}
+        on:close={() => { showPackageImport = false; packageImportPath = ''; }}
+      />
+    {:else}
+      <div class="overlay-loading" role="status">Loading Package Import...</div>
+    {/if}
+  {/if}
+  <DownloadProgress />
+  {#if $isBootstrapping}<BootstrapScreen />{/if}
+  {#if $showOnboarding}
+    <OnboardingWizard on:openSettings={() => (showSettings = true)} />
+  {/if}
+
+  {/if}
+
+</div>
+
+<GlobalErrorBoundary />
+
+<style>
+  /* ── Extensions overlay panel ── */
+  .overlay-panel {
+    position: fixed;
+    top: 40px;
+    right: 0;
+    bottom: 0;
+    width: 900px;
+    max-width: 90vw;
+    z-index: 600;
+    background: #1a1a2e;
+    border-left: 1px solid #2a2a4a;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -8px 0 40px rgba(0,0,0,0.5);
+  }
+  .overlay-close {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 16px;
+    cursor: pointer;
+    z-index: 1;
+  }
+  .overlay-close:hover { color: #fff; }
+
+  /* ── Model Builder floating panel ── */
+  .floating-panel {
+    position: fixed;
+    z-index: 500;
+    background: var(--bg-primary, #13131f);
+    border: 1px solid var(--border, #333);
+    border-radius: 14px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    overflow: hidden;
+  }
+  .model-builder-panel {
+    top: 3rem; left: 50%; transform: translateX(-50%);
+    width: min(95vw, 1100px);
+    height: min(85vh, 720px);
+  }
+
+  /* ── Runtime service-lost banner ── */
+  .service-lost-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9000;
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 8px 16px;
+    background: rgba(234,179,8,0.92);
+    color: #1a1a1a;
+    font-size: 13px; font-weight: 500;
+  }
+  .banner-dismiss {
+    background: none; border: none; cursor: pointer;
+    font-size: 14px; color: #1a1a1a; padding: 0 4px;
+  }
+
+  /* ── Launch splash ── */
+  .launch-splash {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: #0a0f1a;
+    color: #e2e8f0;
+  }
+  .launch-loading, .launch-error {
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    max-width: 340px;
+  }
+  .launch-logo, .launch-icon { font-size: 2.5rem; margin-bottom: 0.25rem; }
+  .launch-title { font-size: 1.1rem; font-weight: 600; margin: 0; }
+  .launch-detail { color: #f87171; font-size: 0.85rem; margin: 0; text-align: center; }
+  .launch-hint { color: #64748b; font-size: 0.78rem; margin: 0; }
+  .launch-row {
+    display: flex; gap: 0.5rem; align-items: center; font-size: 0.8rem;
+    color: #64748b; width: 100%;
+  }
+  .launch-row.ready { color: #4ade80; }
+  .launch-row.failed { color: #f87171; }
+  .launch-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .launch-name { min-width: 90px; font-weight: 500; }
+  .launch-msg { flex: 1; }
+  .services-pending { pointer-events: none; opacity: 0.4; }
+
+  /* ── CSS custom properties ── */
+  :global(:root) {
+    --z-canvas:   10;
+    --z-inline:   20;
+    --z-panel:   100;
+    --z-dropdown: 300;
+    --z-overlay:  500;
+    --z-modal:    800;
+    --z-context: 1000;
+    --z-toast:   2000;
+    --z-critical: 9999;
+  }
+  :global([data-theme='dark']) {
+    --bg:        #18181b;
+    --bg2:       #1c1c1f;
+    --bg-hover:  #27272a;
+    --text:      #e4e4e7;
+    --text-dim:  #71717a;
+    --border:    #3f3f46;
+    --accent:    #16a34a;
+    --accent-hl: #4ade80;
+    --green:     #22c55e;
+    --red:       #ef4444;
+    --amber:     #f59e0b;
+  }
+  :global([data-theme='light']) {
+    --bg:        #ffffff;
+    --bg2:       #f4f4f5;
+    --bg-hover:  #e4e4e7;
+    --text:      #18181b;
+    --text-dim:  #71717a;
+    --border:    #d4d4d8;
+    --accent:    #15803d;
+    --accent-hl: #16a34a;
+    --green:     #16a34a;
+    --red:       #dc2626;
+    --amber:     #d97706;
+  }
+  :global([data-theme='high-contrast']) {
+    --bg:        #000000;
+    --bg2:       #0a0a0a;
+    --bg-hover:  #1a1a1a;
+    --text:      #ffffff;
+    --text-dim:  #a1a1aa;
+    --border:    #ffffff;
+    --accent:    #4ade80;
+    --accent-hl: #86efac;
+    --green:     #4ade80;
+    --red:       #f87171;
+    --amber:     #fbbf24;
+  }
+
+  :global(*) {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  :global(body) {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100dvh;
+    min-height: 100vh;
+    width: 100vw;
+  }
+
+  /* Diff line decorations for Monaco */
+  :global(.diff-insert-line) { background: rgba(34, 197, 94, 0.12); }
+  :global(.diff-delete-line) { background: rgba(239, 68, 68, 0.12); }
+  :global(.diff-glyph-insert)::before { content: '+'; color: var(--green); font-weight: bold; margin-left: 4px; }
+  :global(.diff-glyph-delete)::before { content: '−'; color: var(--red);   font-weight: bold; margin-left: 4px; }
+
+  /* Splitpanes reset */
+  :global(.splitpanes) { height: 100%; }
+  :global(.splitpanes__splitter) {
+    background: var(--border) !important;
+    width: 2px !important;
+    transition: background 0.15s;
+  }
+  :global(.splitpanes__splitter:hover) { background: var(--accent) !important; }
+
+  /* ── Layout ── */
+  .root {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 12px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 8px;
+    user-select: none;
+    /* Make the window draggable while keeping buttons clickable */
+    -webkit-app-region: drag;
+  }
+  .toolbar button,
+  .toolbar-actions { -webkit-app-region: no-drag; }
+
+  .logo {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.3px;
+    color: var(--accent-hl);
+    margin-right: 8px;
+  }
+
+  .toolbar-actions {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+    align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .toolbar-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .btn-icon {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+    white-space: nowrap;
+  }
+  .btn-icon:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-icon.active {
+    color: var(--accent-hl);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+
+  .work-area {
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .split-layout {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .split-resizer {
+    width: 10px;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    transition: background 0.2s ease;
+    color: rgba(255,255,255,0.45);
+    user-select: none;
+  }
+
+  .split-resizer:hover {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.8);
+  }
+
+  .split-resizer span {
+    transform: rotate(90deg);
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .pane {
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pane-state {
+    height: 100%;
+    display: grid;
+    place-items: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    background: color-mix(in srgb, var(--bg2) 80%, transparent);
+  }
+
+  .pane-state-error {
+    color: #fecaca;
+  }
+
+  .overlay-loading,
+  .overlay-error {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 170;
+    max-width: min(420px, calc(100vw - 40px));
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text);
+    padding: 10px 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .sidebar-pane {
+    width: 280px;
+    min-width: 120px;
+    max-width: none;
+    border-right: 1px solid var(--border);
+  }
+
+  .editor-pane {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .chat-pane {
+    width: 22%;
+    min-width: 120px;
+    max-width: none;
+    overflow: visible;
+    border-left: 1px solid var(--border);
+  }
+
+  .terminal-drawer {
+    height: 240px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--bg);
+    overflow: hidden;
+    transition: height 0.16s ease;
+  }
+
+  .terminal-drawer.terminal-hidden {
+    height: 0;
+    border-top: 0;
+  }
+
+  .mobile-shell .toolbar {
+    height: auto;
+    min-height: 44px;
+    padding: 6px 8px;
+    gap: 6px;
+  }
+
+  .mobile-shell .logo {
+    font-size: 13px;
+    margin-right: 4px;
+    white-space: nowrap;
+  }
+
+  .mobile-shell .toolbar-actions {
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+
+  .mobile-shell .btn-icon {
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+
+  .mobile-shell .sidebar-pane {
+    width: min(76vw, 320px);
+  }
+
+  .mobile-shell .chat-pane {
+    width: min(92vw, 430px);
+  }
+
+  @media (max-width: 900px) {
+    .split-resizer {
+      width: 12px;
+    }
+
+    .terminal-drawer {
+      height: 220px;
+    }
+  }
+
+  /* Tools dropdown */
+  .tools-dropdown { position: relative; }
+  .tools-menu {
+    position: absolute;
+    right: 0;
+    top: 36px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    min-width: 220px;
+    padding: 6px;
+  }
+  .tools-item {
+    background: transparent;
+    border: none;
+    text-align: left;
+    padding: 8px 10px;
+    color: var(--text);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .tools-item:hover { background: var(--bg-hover); }
+</style>

@@ -5,7 +5,7 @@
 </script>
 
 <header class="topbar">
-  <div class="brand">Bonsai Root</div>
+  <div class="brand">Omnisystem Root</div>
   <div class="actions">
     <button on:click={onTimeline} title="Timeline">🕐</button>
     <button on:click={onHealth} title="Health">🛡️</button>

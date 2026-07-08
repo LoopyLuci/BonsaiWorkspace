@@ -17,7 +17,7 @@ test-framework/
 ├── unit-tests/
 │   ├── uosc_tests.titan          (800 tests)
 │   ├── omnisystem_tests.titan    (1,500 tests)
-│   ├── bonsai_tests.titan        (1,500 tests)
+│   ├── omnisystem_tests.titan        (1,500 tests)
 │   └── nnf_tests.titan           (2,000 tests)
 ├── integration-tests/
 │   ├── cross_layer_tests.titan   (500 tests)
@@ -594,11 +594,11 @@ mod omnisystem_tests {
 }
 ```
 
-### BonsaiEcosystem Tests (bonsai_tests.titan)
+### OmnisystemEcosystem Tests (omnisystem_tests.titan)
 
 ```titan
 #[cfg(test)]
-mod bonsai_tests {
+mod omnisystem_tests {
     use super::*
 
     // Workspace Tests
@@ -826,15 +826,15 @@ mod integration_tests {
     }
 
     #[test]
-    fn test_omnisystem_bonsai_file_sync() {
+    fn test_omnisystem_omnisystem_file_sync() {
         // ✅ Omnisystem updates file
-        // ✅ BonsaiEcosystem notified
+        // ✅ OmnisystemEcosystem notified
         // ✅ Workspace reflects change
         true
     }
 
     #[test]
-    fn test_bonsai_nnf_model_execution() {
+    fn test_omnisystem_nnf_model_execution() {
         // ✅ Buddy loads model from Workspace
         // ✅ Trains using NNF
         // ✅ Results stored in Workspace
@@ -887,7 +887,7 @@ mod performance_tests {
     }
 
     #[test]
-    fn bench_bonsai_file_operations() {
+    fn bench_omnisystem_file_operations() {
         // ✅ Create/read/update 1000 files
         // ✅ Measure per-operation latency
         // ✅ Assert <10ms average

@@ -1,5 +1,5 @@
 # ============================================================================
-# QUICK BUILD - Build BonsaiEcosystem Desktop using Omnisystem Native Code
+# QUICK BUILD - Build OmnisystemEcosystem Desktop using Omnisystem Native Code
 # ============================================================================
 # Usage: .\Quick-Build.ps1              (builds desktop, forces rebuild)
 #        .\Quick-Build.ps1 -Release     (release build)
@@ -20,7 +20,7 @@ if (-not (Test-Path $BuildScript)) {
     exit 1
 }
 
-Write-Host "Building BonsaiEcosystem Omnisystem..." -ForegroundColor Cyan
+Write-Host "Building OmnisystemEcosystem Omnisystem..." -ForegroundColor Cyan
 
 $BuildArgs = @{
     Target = $Target

@@ -1,0 +1,308 @@
+// Option A: Real-Time Data Dashboard - Data Ingestion Layer
+// AETHER actors for cryptocurrency feed integration
+
+use validation::shared::CoreTypes::*;
+
+// Cryptocurrency price feed ingestion
+actor CryptoFeeder {
+    let exchange_name: String
+    let symbol: String
+    let is_connected: bool
+    let packets_received: u64
+    let bytes_received: u64
+    let last_price: f64
+    let last_timestamp: u64
+    let reconnect_attempts: u32
+
+    message Connect {
+        exchange: String,
+        symbol: String
+    }
+
+    message Poll {
+        subscriber: channel
+    }
+
+    message Disconnect
+
+    message GetStats {
+        reply_to: channel
+    }
+
+    handler Connect(msg) {
+        println!("[CryptoFeeder] Connecting to {} for {}", msg.exchange, msg.symbol);
+        self.exchange_name = msg.exchange;
+        self.symbol = msg.symbol;
+        self.is_connected = true;
+        self.packets_received = 0;
+        self.bytes_received = 0;
+        self.reconnect_attempts = 0;
+        println!("[CryptoFeeder] Connected to {} feed", msg.exchange);
+    }
+
+    handler Poll(msg) {
+        if !self.is_connected {
+            println!("[CryptoFeeder] Not connected, attempting reconnect...");
+            if self.reconnect_attempts < 3 {
+                self.reconnect_attempts = self.reconnect_attempts + 1;
+                self.is_connected = true;
+            } else {
+                return;
+            }
+        }
+
+        // Simulate receiving price update
+        self.packets_received = self.packets_received + 1;
+        self.bytes_received = self.bytes_received + 32;
+
+        // Generate price update (would come from real WebSocket)
+        let price = 45000.0 + (self.packets_received as f64 % 1000.0);
+        let timestamp = 0; // Would be from system timer
+
+        self.last_price = price;
+        self.last_timestamp = timestamp;
+
+        // Create data point
+        let point = DataPoint {
+            timestamp_ms: timestamp,
+            value: price,
+            value_i32: price as i32,
+            is_float: true,
+            label: format!("{} Price", self.symbol),
+            metadata: HashMap::new()
+        };
+
+        // Send to subscriber
+        println!("[CryptoFeeder] {} = ${:.2} (packet #{})",
+            self.symbol, price, self.packets_received);
+    }
+
+    handler Disconnect {
+        println!("[CryptoFeeder] Disconnecting from {}", self.exchange_name);
+        self.is_connected = false;
+    }
+
+    handler GetStats(msg) {
+        let stats = format!(
+            "Exchange: {}, Packets: {}, Bytes: {}, Last Price: ${:.2}",
+            self.exchange_name,
+            self.packets_received,
+            self.bytes_received,
+            self.last_price
+        );
+        // Would send back via channel
+        println!("[CryptoFeeder] Stats: {}", stats);
+    }
+}
+
+// Multi-exchange price aggregator
+actor PriceAggregator {
+    let active_feeds: Vec<channel>
+    let aggregated_price: f64
+    let high_24h: f64
+    let low_24h: f64
+    let price_updates: u64
+
+    message AddFeed {
+        feed: channel
+    }
+
+    message RemoveFeed {
+        feed: channel
+    }
+
+    message UpdatePrice {
+        price: f64
+    }
+
+    message GetAggregatedPrice {
+        reply_to: channel
+    }
+
+    handler AddFeed(msg) {
+        self.active_feeds.push(msg.feed.clone());
+        println!("[Aggregator] Added feed, total: {}", self.active_feeds.len());
+    }
+
+    handler RemoveFeed(msg) {
+        // Remove from active_feeds
+        println!("[Aggregator] Removed feed");
+    }
+
+    handler UpdatePrice(msg) {
+        self.aggregated_price = msg.price;
+        self.price_updates = self.price_updates + 1;
+
+        if msg.price > self.high_24h {
+            self.high_24h = msg.price;
+        }
+        if msg.price < self.low_24h || self.low_24h == 0.0 {
+            self.low_24h = msg.price;
+        }
+
+        if self.price_updates % 100 == 0 {
+            println!("[Aggregator] {} updates: ${:.2} (24h: ${:.2}-${:.2})",
+                self.price_updates,
+                self.aggregated_price,
+                self.low_24h,
+                self.high_24h);
+        }
+    }
+}
+
+// Order book snapshot
+struct OrderBook {
+    symbol: String,
+    bids: Vec<[f64; 2]>,       // [price, quantity]
+    asks: Vec<[f64; 2]>,
+    timestamp: u64,
+    spread: f64
+}
+
+// Market data aggregator
+actor MarketDataCollector {
+    let order_books: HashMap<String, OrderBook>
+    let trades: Vec<NetworkPacket>
+    let last_update: u64
+
+    message UpdateOrderBook {
+        symbol: String,
+        bids: Vec<[f64; 2]>,
+        asks: Vec<[f64; 2]>
+    }
+
+    message RecordTrade {
+        price: f64,
+        quantity: f64,
+        is_buy: bool
+    }
+
+    message GetOrderBook {
+        symbol: String,
+        reply_to: channel
+    }
+
+    handler UpdateOrderBook(msg) {
+        let bid_ask_spread = if !msg.asks.is_empty() && !msg.bids.is_empty() {
+            msg.asks[0][0] - msg.bids[0][0]
+        } else {
+            0.0
+        };
+
+        let book = OrderBook {
+            symbol: msg.symbol.clone(),
+            bids: msg.bids,
+            asks: msg.asks,
+            timestamp: 0,
+            spread: bid_ask_spread
+        };
+
+        self.order_books.insert(msg.symbol.clone(), book);
+        println!("[MarketData] Updated order book for {} (spread: ${:.4})",
+            msg.symbol, bid_ask_spread);
+    }
+
+    handler RecordTrade(msg) {
+        let packet = NetworkPacket {
+            source_addr: 0,
+            dest_addr: 0,
+            port: 0,
+            protocol: 0,
+            payload: Vec::new(),
+            timestamp_ms: 0,
+            sequence_num: 0,
+            length: 0
+        };
+
+        self.trades.push(packet);
+        println!("[MarketData] Trade recorded: {} @ ${:.2}",
+            if msg.is_buy { "BUY" } else { "SELL" },
+            msg.price);
+    }
+}
+
+// Real-time monitoring dashboard data
+actor DashboardDataPipeline {
+    let incoming_packets: RingBuffer<NetworkPacket>
+    let processed_points: Vec<DataPoint>
+    let error_count: u32
+    let last_error: String
+
+    message IngestPacket {
+        packet: NetworkPacket
+    }
+
+    message ProcessBatch {
+        reply_to: channel
+    }
+
+    message GetDashboardData {
+        reply_to: channel
+    }
+
+    handler IngestPacket(msg) {
+        // Validate packet
+        if !msg.packet.is_valid() {
+            self.error_count = self.error_count + 1;
+            self.last_error = "Invalid packet".to_string();
+            return;
+        }
+
+        // Add to ring buffer
+        self.incoming_packets.push(msg.packet);
+    }
+
+    handler ProcessBatch {
+        let count = self.incoming_packets.len();
+        println!("[Pipeline] Processing batch of {} packets", count);
+
+        // Would convert packets to data points
+        // self.processed_points would be populated
+    }
+
+    handler GetDashboardData(msg) {
+        println!("[Pipeline] Dashboard data requested: {} points, {} errors",
+            self.processed_points.len(),
+            self.error_count);
+        // Would send data back via channel
+    }
+}
+
+// Initialization
+fn initialize_crypto_feeds() {
+    println!("[Ingestion] Initializing cryptocurrency feed ingestion");
+    println!("[Ingestion] Starting CryptoFeeder actor for BTC");
+    println!("[Ingestion] Starting CryptoFeeder actor for ETH");
+    println!("[Ingestion] Starting PriceAggregator");
+    println!("[Ingestion] Starting MarketDataCollector");
+    println!("[Ingestion] Feed ingestion ready");
+}
+
+// Test data generation (for validation without live exchange)
+fn generate_test_price_data(symbol: &str, count: u32) -> Vec<DataPoint> {
+    let mut points = Vec::new();
+    let base_price = match symbol {
+        "BTC" => 45000.0,
+        "ETH" => 2500.0,
+        _ => 1000.0
+    };
+
+    for i in 0..count {
+        let noise = ((i * 17) % 100) as f64 - 50.0;
+        let price = base_price + noise;
+
+        let point = DataPoint {
+            timestamp_ms: (i * 1000) as u64,
+            value: price,
+            value_i32: price as i32,
+            is_float: true,
+            label: format!("{} #{}", symbol, i),
+            metadata: HashMap::new()
+        };
+
+        points.push(point);
+    }
+
+    println!("[TestData] Generated {} price points for {}", count, symbol);
+    points
+}

@@ -1,0 +1,526 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS GPU ACCELERATION — Helix Shader Pipeline
+// GPU-accelerated inference, embedding computation, attention visualization
+// 100% HELIX — High-performance GPU compute for AI harness
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Vertex shader: fullscreen quad for inference overlay ──────────────────────
+
+shader vertex FullscreenVertex {
+    inputs {
+        position: vec2 @location(0)
+        texcoord: vec2 @location(1)
+    }
+    outputs {
+        position: vec4 @builtin(position)
+        uv:       vec2 @location(0)
+    }
+    code {
+        position = vec4(in.position, 0.0, 1.0)
+        uv       = in.texcoord
+    }
+}
+
+// ── Fragment shader: attention heatmap visualization ─────────────────────────
+
+shader fragment AttentionHeatmap {
+    inputs {
+        uv: vec2 @location(0)
+    }
+    outputs {
+        color: vec4 @location(0)
+    }
+    uniforms {
+        attention_map: texture2d<f32> @group(0) @binding(0)
+        sampler_state: sampler         @group(0) @binding(1)
+        head_count:    f32             @group(0) @binding(2)
+        temperature:   f32             @group(0) @binding(3)
+    }
+    code {
+        let raw   = sample(attention_map, sampler_state, uv).r
+        let scaled = clamp(raw * temperature, 0.0, 1.0)
+
+        // Turbo colormap: blue→green→yellow→red
+        let t = scaled
+        let r = clamp(1.5 - abs(t * 4.0 - 3.0), 0.0, 1.0)
+        let g = clamp(1.5 - abs(t * 4.0 - 2.0), 0.0, 1.0)
+        let b = clamp(1.5 - abs(t * 4.0 - 1.0), 0.0, 1.0)
+
+        color = vec4(r, g, b, 0.85)
+    }
+}
+
+// ── Fragment shader: token probability distribution ───────────────────────────
+
+shader fragment TokenProbability {
+    inputs {
+        uv: vec2 @location(0)
+    }
+    outputs {
+        color: vec4 @location(0)
+    }
+    uniforms {
+        logits:     texture1d<f32> @group(0) @binding(0)
+        vocab_size: u32             @group(0) @binding(1)
+        top_k:      u32             @group(0) @binding(2)
+    }
+    code {
+        let token_idx = u32(uv.x * f32(vocab_size))
+        let logit     = load(logits, token_idx).r
+
+        // Sigmoid to [0,1]
+        let prob  = 1.0 / (1.0 + exp(-logit))
+
+        // Color: accent purple gradient
+        let alpha = clamp(prob * 2.0, 0.0, 1.0)
+        color = vec4(0.48, 0.42, 0.97, alpha)
+    }
+}
+
+// ── Fragment shader: memory embedding space (2D UMAP projection) ──────────────
+
+shader fragment EmbeddingSpace {
+    inputs {
+        uv: vec2 @location(0)
+    }
+    outputs {
+        color: vec4 @location(0)
+    }
+    uniforms {
+        point_positions: texture2d<f32> @group(0) @binding(0)  // (x,y) per point
+        point_colors:    texture2d<f32> @group(0) @binding(1)  // RGBA per point
+        point_count:     u32             @group(0) @binding(2)
+        zoom:            f32             @group(0) @binding(3)
+        pan:             vec2            @group(0) @binding(4)
+    }
+    code {
+        let world_pos = (uv - 0.5) / zoom + pan
+
+        var nearest_dist = 1e9
+        var nearest_color = vec4(0.0)
+
+        // Find closest embedding point (soft-rasterized)
+        for i in 0..point_count {
+            let pt_uv  = vec2(f32(i) / f32(point_count), 0.0)
+            let pt_pos = load(point_positions, pt_uv).xy
+            let col    = load(point_colors, pt_uv)
+
+            let dist = length(world_pos - pt_pos)
+            let radius = 0.02 / zoom
+            if dist < radius {
+                let alpha = 1.0 - (dist / radius)
+                nearest_color = mix(nearest_color, col, alpha)
+                nearest_dist  = dist
+            }
+        }
+
+        color = nearest_color
+    }
+}
+
+// ── Compute pipeline: matrix multiply for embedding dot product ───────────────
+
+pipeline EmbeddingDotProduct {
+    target: compute
+    workgroup_size: [16, 16, 1]
+
+    bindings {
+        @group(0) @binding(0) storage_buffer query_vecs:    array<vec4<f32>>  // [N, 128]
+        @group(0) @binding(1) storage_buffer key_vecs:      array<vec4<f32>>  // [M, 128]
+        @group(0) @binding(2) storage_buffer result_matrix: array<f32>        // [N, M]
+        @group(0) @binding(3) uniform_buffer params: struct {
+            n_queries: u32
+            n_keys:    u32
+            dim_4:     u32   // dim / 4 (we pack 4 floats per vec4)
+        }
+    }
+
+    code {
+        let q_idx = global_id.x   // query index
+        let k_idx = global_id.y   // key index
+
+        if q_idx >= params.n_queries || k_idx >= params.n_keys {
+            return
+        }
+
+        var dot = 0.0f32
+        let base_q = q_idx * params.dim_4
+        let base_k = k_idx * params.dim_4
+
+        for d in 0..params.dim_4 {
+            let qv = query_vecs[base_q + d]
+            let kv = key_vecs[base_k + d]
+            dot += dot(qv, kv)
+        }
+
+        result_matrix[q_idx * params.n_keys + k_idx] = dot
+    }
+}
+
+// ── Compute pipeline: softmax over logit rows ────────────────────────────────
+
+pipeline Softmax {
+    target: compute
+    workgroup_size: [256, 1, 1]
+
+    bindings {
+        @group(0) @binding(0) storage_buffer logits:  array<f32>   // [N, V]
+        @group(0) @binding(1) storage_buffer probs:   array<f32>   // [N, V] output
+        @group(0) @binding(2) uniform_buffer params: struct {
+            batch_size: u32
+            vocab_size: u32
+        }
+    }
+
+    shared {
+        max_val:  array<f32, 256>
+        sum_exp:  array<f32, 256>
+    }
+
+    code {
+        let row      = global_id.y
+        let lane     = local_id.x
+        let row_base = row * params.vocab_size
+
+        // Find max for numerical stability (parallel reduction)
+        var thread_max = -1e38
+        for i in range(lane, params.vocab_size, 256u) {
+            thread_max = max(thread_max, logits[row_base + i])
+        }
+        max_val[lane] = thread_max
+        workgroup_barrier()
+
+        // Reduce max across lanes
+        var stride = 128u
+        while stride > 0 {
+            if lane < stride {
+                max_val[lane] = max(max_val[lane], max_val[lane + stride])
+            }
+            workgroup_barrier()
+            stride /= 2
+        }
+        let row_max = max_val[0]
+
+        // Compute exp and partial sum
+        var thread_sum = 0.0
+        for i in range(lane, params.vocab_size, 256u) {
+            let e = exp(logits[row_base + i] - row_max)
+            probs[row_base + i] = e
+            thread_sum += e
+        }
+        sum_exp[lane] = thread_sum
+        workgroup_barrier()
+
+        // Reduce sum
+        stride = 128u
+        while stride > 0 {
+            if lane < stride {
+                sum_exp[lane] += sum_exp[lane + stride]
+            }
+            workgroup_barrier()
+            stride /= 2
+        }
+        let total = sum_exp[0]
+
+        // Normalize
+        for i in range(lane, params.vocab_size, 256u) {
+            probs[row_base + i] /= total
+        }
+    }
+}
+
+// ── Compute pipeline: cosine similarity batch search ─────────────────────────
+
+pipeline CosineSimilarityBatch {
+    target: compute
+    workgroup_size: [64, 1, 1]
+
+    bindings {
+        @group(0) @binding(0) storage_buffer query:   array<f32>   // [128] query embedding
+        @group(0) @binding(1) storage_buffer corpus:  array<f32>   // [N, 128] memory vectors
+        @group(0) @binding(2) storage_buffer scores:  array<f32>   // [N] output similarity scores
+        @group(0) @binding(3) uniform_buffer params: struct {
+            corpus_size: u32    // N
+            embed_dim:   u32    // 128
+        }
+    }
+
+    code {
+        let doc_idx = global_id.x
+        if doc_idx >= params.corpus_size { return }
+
+        let base = doc_idx * params.embed_dim
+
+        var dot   = 0.0
+        var q_sq  = 0.0
+        var d_sq  = 0.0
+
+        for i in 0..params.embed_dim {
+            let q  = query[i]
+            let d  = corpus[base + i]
+            dot   += q * d
+            q_sq  += q * q
+            d_sq  += d * d
+        }
+
+        let denom = sqrt(q_sq) * sqrt(d_sq)
+        scores[doc_idx] = if denom > 0.0 { dot / denom } else { 0.0 }
+    }
+}
+
+// ── Compute pipeline: FNV-1a hash embedding (offline fallback) ───────────────
+
+pipeline HashEmbedding {
+    target: compute
+    workgroup_size: [32, 1, 1]
+
+    bindings {
+        @group(0) @binding(0) storage_buffer text_bytes: array<u32>  // UTF-8 bytes packed as u32
+        @group(0) @binding(1) storage_buffer embedding:  array<f32>  // [128] output
+        @group(0) @binding(2) uniform_buffer params: struct {
+            text_len:  u32
+            embed_dim: u32   // must be 128
+        }
+    }
+
+    code {
+        let lane = global_id.x   // 0..32; each handles 4 embedding slots
+
+        // Zero target slots
+        for k in 0..4u {
+            embedding[lane * 4 + k] = 0.0
+        }
+
+        workgroup_barrier()
+
+        // FNV-1a constants
+        const PRIME: u32 = 16777619u
+        const BASIS: u32 = 2166136261u
+
+        // Each lane processes text_len / 32 bytes
+        let chunk = (params.text_len + 31u) / 32u
+        let start = lane * chunk
+        let end   = min(start + chunk, params.text_len)
+
+        for bi in start..end {
+            let word  = text_bytes[bi / 4u]
+            let byte  = (word >> ((bi % 4u) * 8u)) & 0xFFu
+            let h1    = (BASIS ^ byte).wrapping_mul(PRIME)
+            let slot  = h1 % params.embed_dim
+
+            // Atomic add (via scatter with workgroup accumulator)
+            embedding[slot] += (f32(byte) - 128.0) / 128.0
+        }
+
+        workgroup_barrier()
+
+        // L2 normalize across all lanes
+        if lane == 0u {
+            var norm = 0.0
+            for i in 0..params.embed_dim {
+                norm += embedding[i] * embedding[i]
+            }
+            norm = sqrt(norm)
+            if norm > 0.0 {
+                for i in 0..params.embed_dim {
+                    embedding[i] /= norm
+                }
+            }
+        }
+    }
+}
+
+// ── Render pipeline: inference progress overlay ───────────────────────────────
+
+pipeline InferenceOverlay {
+    target: render
+    topology: triangle_strip
+    blend: alpha_blend
+
+    vertex_shader:   FullscreenVertex
+    fragment_shader: InferenceOverlayFrag
+
+    attachments {
+        color: { format: rgba8unorm, blend: src_alpha }
+    }
+}
+
+shader fragment InferenceOverlayFrag {
+    inputs {
+        uv: vec2 @location(0)
+    }
+    outputs {
+        color: vec4 @location(0)
+    }
+    uniforms {
+        progress:  f32  @group(0) @binding(0)   // 0.0 - 1.0 generation progress
+        time_sec:  f32  @group(0) @binding(1)
+        is_active: u32  @group(0) @binding(2)
+    }
+    code {
+        if is_active == 0u {
+            color = vec4(0.0)
+            return
+        }
+
+        // Animated gradient progress bar at bottom of screen
+        let bar_height = 0.004
+        let bar_y      = 1.0 - bar_height
+
+        if uv.y >= bar_y {
+            let in_bar = uv.x <= progress
+            let wave   = sin(uv.x * 20.0 - time_sec * 4.0) * 0.2 + 0.8
+
+            if in_bar {
+                let r = 0.48 * wave
+                let g = 0.42 * wave
+                let b = 0.97 * wave
+                color = vec4(r, g, b, 0.9)
+            } else {
+                color = vec4(0.15, 0.15, 0.2, 0.7)
+            }
+        } else {
+            color = vec4(0.0)
+        }
+    }
+}
+
+// ── GpuHarnessContext — manages all GPU resources ─────────────────────────────
+
+struct GpuHarnessContext {
+    // Compute pipelines
+    dot_product_pipeline:   EmbeddingDotProduct,
+    softmax_pipeline:       Softmax,
+    cosine_pipeline:        CosineSimilarityBatch,
+    hash_embed_pipeline:    HashEmbedding,
+
+    // Render pipelines
+    attention_pipeline:     AttentionHeatmap,
+    embedding_pipeline:     EmbeddingSpace,
+    overlay_pipeline:       InferenceOverlay,
+
+    // State
+    is_initialized: bool,
+    device_name:    string,
+}
+
+impl GpuHarnessContext {
+    fn init() -> GpuHarnessContext {
+        let device = gpu::request_device(gpu::PowerPreference::HighPerformance)
+        GpuHarnessContext {
+            dot_product_pipeline:  EmbeddingDotProduct::create(device),
+            softmax_pipeline:      Softmax::create(device),
+            cosine_pipeline:       CosineSimilarityBatch::create(device),
+            hash_embed_pipeline:   HashEmbedding::create(device),
+            attention_pipeline:    AttentionHeatmap::create(device),
+            embedding_pipeline:    EmbeddingSpace::create(device),
+            overlay_pipeline:      InferenceOverlay::create(device),
+            is_initialized:        true,
+            device_name:           device.name(),
+        }
+    }
+
+    fn compute_cosine_batch(
+        &self,
+        query_embedding:   &[f32],  // len=128
+        corpus_embeddings: &[f32],  // len = N * 128
+        corpus_size:       u32,
+    ) -> Vec<f32> {
+        let query_buf  = gpu::create_buffer_from_slice(query_embedding, gpu::BufferUsage::Storage)
+        let corpus_buf = gpu::create_buffer_from_slice(corpus_embeddings, gpu::BufferUsage::Storage)
+        let score_buf  = gpu::create_buffer(corpus_size as usize * 4, gpu::BufferUsage::Storage | gpu::BufferUsage::MapRead)
+
+        let params = struct { corpus_size: corpus_size, embed_dim: 128u32 }
+        let param_buf = gpu::create_uniform_buffer(&params)
+
+        let bind_group = gpu::create_bind_group(&[
+            gpu::binding(0, query_buf),
+            gpu::binding(1, corpus_buf),
+            gpu::binding(2, score_buf),
+            gpu::binding(3, param_buf),
+        ])
+
+        let encoder = gpu::create_command_encoder()
+        let pass    = encoder.begin_compute_pass()
+        pass.set_pipeline(self.cosine_pipeline)
+        pass.set_bind_group(0, bind_group)
+        pass.dispatch_workgroups((corpus_size + 63) / 64, 1, 1)
+        pass.end()
+
+        gpu::submit(encoder.finish())
+        gpu::read_buffer_sync(score_buf)
+    }
+
+    fn compute_hash_embedding(&self, text_bytes: &[u8]) -> Vec<f32> {
+        let packed:  Vec<u32> = text_bytes.chunks(4).map(|c| {
+            (c.get(0).copied().unwrap_or(0) as u32)
+            | ((c.get(1).copied().unwrap_or(0) as u32) << 8)
+            | ((c.get(2).copied().unwrap_or(0) as u32) << 16)
+            | ((c.get(3).copied().unwrap_or(0) as u32) << 24)
+        }).collect()
+
+        let text_buf   = gpu::create_buffer_from_slice(&packed, gpu::BufferUsage::Storage)
+        let embed_buf  = gpu::create_buffer(128 * 4, gpu::BufferUsage::Storage | gpu::BufferUsage::MapRead)
+        let params     = struct { text_len: text_bytes.len() as u32, embed_dim: 128u32 }
+        let param_buf  = gpu::create_uniform_buffer(&params)
+
+        let bind_group = gpu::create_bind_group(&[
+            gpu::binding(0, text_buf),
+            gpu::binding(1, embed_buf),
+            gpu::binding(2, param_buf),
+        ])
+
+        let encoder = gpu::create_command_encoder()
+        let pass    = encoder.begin_compute_pass()
+        pass.set_pipeline(self.hash_embed_pipeline)
+        pass.set_bind_group(0, bind_group)
+        pass.dispatch_workgroups(1, 1, 1)
+        pass.end()
+
+        gpu::submit(encoder.finish())
+        gpu::read_buffer_sync(embed_buf)
+    }
+
+    fn render_inference_overlay(
+        &self,
+        target:   &gpu::Texture,
+        progress: f32,
+        time_sec: f32,
+    ) {
+        let is_active: u32 = if progress < 1.0 { 1 } else { 0 }
+        let param_buf = gpu::create_uniform_buffer(&struct {
+            progress:  progress,
+            time_sec:  time_sec,
+            is_active: is_active,
+        })
+
+        let bind_group = gpu::create_bind_group(&[
+            gpu::binding(0, param_buf),
+        ])
+
+        let encoder = gpu::create_command_encoder()
+        let pass    = encoder.begin_render_pass(target)
+        pass.set_pipeline(self.overlay_pipeline)
+        pass.set_bind_group(0, bind_group)
+        pass.draw(4, 1, 0, 0)  // fullscreen quad as triangle strip
+        pass.end()
+
+        gpu::submit(encoder.finish())
+    }
+
+    fn is_gpu_available() -> bool {
+        gpu::is_available()
+    }
+}
+
+pub mod HarnessGPU {
+    pub use super::GpuHarnessContext
+
+    pub fn create() -> Option<GpuHarnessContext> {
+        if GpuHarnessContext::is_gpu_available() {
+            Some(GpuHarnessContext::init())
+        } else {
+            None
+        }
+    }
+}

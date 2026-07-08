@@ -1,0 +1,648 @@
+// UI.vera — Game UI System
+// Omnisystem Showcase Application · Game Demo App
+// Language: VERA · ~1000 LOC
+
+module GameUI {
+
+    // ============================================================================
+    // SHARED TYPES
+    // ============================================================================
+
+    struct Vec2 { x: f32, y: f32 }
+    struct Vec3 { x: f32, y: f32, z: f32 }
+
+    struct Item {
+        id: u32,
+        name: String,
+        icon_id: u32,
+        stackable: bool,
+        count: u32,
+        rarity: String,
+        description: String,
+    }
+
+    enum NotifKind { Info, Warning, Achievement, Error }
+
+    struct Notification {
+        message: String,
+        kind: NotifKind,
+        id: u64,
+        created_at: f32,
+    }
+
+    struct MinimapEntity {
+        pos: Vec2,
+        kind: String,   // "enemy" | "item" | "npc" | "objective"
+        label: String,
+    }
+
+    fn kind_icon(kind: NotifKind) -> &'static str {
+        match kind {
+            NotifKind::Info        => "ℹ",
+            NotifKind::Warning     => "⚠",
+            NotifKind::Achievement => "🏆",
+            NotifKind::Error       => "✗",
+        }
+    }
+
+    fn kind_color(kind: NotifKind) -> &'static str {
+        match kind {
+            NotifKind::Info        => "#60a5fa",
+            NotifKind::Warning     => "#fbbf24",
+            NotifKind::Achievement => "#f59e0b",
+            NotifKind::Error       => "#ef4444",
+        }
+    }
+
+    fn rarity_color(rarity: &str) -> &'static str {
+        match rarity {
+            "legendary" => "#f59e0b",
+            "epic"      => "#a855f7",
+            "rare"      => "#3b82f6",
+            "uncommon"  => "#22c55e",
+            _           => "#94a3b8",
+        }
+    }
+
+    // ============================================================================
+    // HEALTH BAR COMPONENT
+    // ============================================================================
+
+    component HealthBar {
+        props {
+            current: f32,
+            max: f32,
+            color: Vec3,
+            show_numbers: bool,
+            show_icon: bool,
+            width_px: u32,
+            height_px: u32,
+        }
+
+        render -> String {
+            let pct = (self.current / self.max.max(0.001)).clamp(0.0, 1.0)
+            let fill_w = (pct * self.width_px as f32) as u32
+            let color_hex = format!("#{:02X}{:02X}{:02X}",
+                (self.color.x * 255.0) as u8,
+                (self.color.y * 255.0) as u8,
+                (self.color.z * 255.0) as u8)
+
+            // Pulse red at low health
+            let pulse = if pct < 0.25 { "animation:pulse 0.7s infinite;".to_string() } else { String::new() }
+            let bg_color = if pct < 0.25 { "#3d1111" } else { "#1a1a2e" }
+
+            format!(r#"<div class="health-bar" style="width:{}px;height:{}px;background:{};border-radius:{}px;position:relative;overflow:hidden;border:1px solid #333;{}">
+                <div style="width:{}px;height:100%;background:{};border-radius:{}px;transition:width 0.2s ease;position:relative;">
+                    <div style="position:absolute;right:0;top:0;width:4px;height:100%;background:rgba(255,255,255,0.25);border-radius:2px;"></div>
+                </div>
+                {}
+            </div>"#,
+                self.width_px, self.height_px, bg_color,
+                self.height_px / 2, pulse,
+                fill_w, color_hex,
+                self.height_px / 2,
+                if self.show_numbers {
+                    format!(r#"<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);">{}/{}</div>"#,
+                        self.current as u32, self.max as u32)
+                } else { String::new() })
+        }
+    }
+
+    // ============================================================================
+    // MINIMAP COMPONENT
+    // ============================================================================
+
+    component Minimap {
+        props {
+            player_pos: Vec2,
+            entities: Vec<MinimapEntity>,
+            map_range: f32,    // World units the minimap covers
+            size_px: u32,
+        }
+
+        render -> String {
+            let half_range = self.map_range / 2.0
+            let scale = self.size_px as f32 / self.map_range
+
+            // Convert world → minimap coordinates
+            let to_map = |wx: f32, wz: f32| -> (f32, f32) {
+                let mx = (wx - self.player_pos.x + half_range) * scale
+                let my = (wz - self.player_pos.y + half_range) * scale
+                (mx.clamp(0.0, self.size_px as f32), my.clamp(0.0, self.size_px as f32))
+            }
+
+            // Entity dots
+            let entity_dots = self.entities.iter().map(|e| {
+                let (ex, ey) = to_map(e.pos.x, e.pos.y)
+                let (dot_color, dot_size) = match e.kind.as_str() {
+                    "enemy"     => ("#ef4444", 4),
+                    "item"      => ("#fbbf24", 3),
+                    "npc"       => ("#22c55e", 3),
+                    "objective" => ("#a855f7", 6),
+                    _           => ("#94a3b8", 3),
+                }
+                format!(r#"<div title="{}" style="position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:{};border-radius:50%;transform:translate(-50%,-50%);border:1px solid rgba(0,0,0,0.5);"></div>"#,
+                    e.label, ex, ey, dot_size, dot_size, dot_color)
+            }).collect::<Vec<_>>().join("\n")
+
+            // Player dot (center of minimap, always)
+            let px = self.size_px as f32 / 2.0
+            let py = px
+
+            format!(r#"<div style="position:relative;width:{}px;height:{}px;background:rgba(10,15,25,0.9);border:2px solid #374151;border-radius:50%;overflow:hidden;box-shadow:0 0 12px rgba(0,0,0,0.8);">
+                <!-- Compass rose -->
+                <div style="position:absolute;top:4px;left:50%;transform:translateX(-50%);font-size:9px;color:#4b5563;font-weight:700;">N</div>
+                <div style="position:absolute;bottom:4px;left:50%;transform:translateX(-50%);font-size:9px;color:#4b5563;">S</div>
+                <div style="position:absolute;left:4px;top:50%;transform:translateY(-50%);font-size:9px;color:#4b5563;">W</div>
+                <div style="position:absolute;right:4px;top:50%;transform:translateY(-50%);font-size:9px;color:#4b5563;">E</div>
+                <!-- Grid lines -->
+                <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(255,255,255,0.05);"></div>
+                <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.05);"></div>
+                <!-- Entities -->
+                {}
+                <!-- Player (always center) -->
+                <div style="position:absolute;left:{}px;top:{}px;width:8px;height:8px;background:#60a5fa;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 6px #3b82f6;z-index:10;border:2px solid #fff;"></div>
+                <!-- Direction indicator -->
+                <div style="position:absolute;left:{}px;top:{}px;width:0;height:0;border-left:3px solid transparent;border-right:3px solid transparent;border-bottom:8px solid #60a5fa;transform:translate(-50%,-100%);z-index:11;"></div>
+            </div>"#,
+                self.size_px, self.size_px,
+                entity_dots,
+                px, py,
+                px, py - 4.0)
+        }
+    }
+
+    // ============================================================================
+    // HUD COMPONENT
+    // ============================================================================
+
+    component HUD {
+        props {
+            health: f32,
+            max_health: f32,
+            shield: f32,
+            max_shield: f32,
+            ammo_current: u32,
+            ammo_reserve: u32,
+            player_pos: Vec2,
+            minimap_entities: Vec<MinimapEntity>,
+            interaction_prompt: String,
+            show_crosshair: bool,
+            fps: u32,
+            stamina: f32,
+        }
+
+        render -> String {
+            let health_bar = HealthBar {
+                current: self.health,
+                max: self.max_health,
+                color: Vec3 { x: 0.2, y: 0.9, z: 0.3 },
+                show_numbers: true,
+                show_icon: true,
+                width_px: 200,
+                height_px: 18,
+            }
+            let shield_bar = HealthBar {
+                current: self.shield,
+                max: self.max_shield,
+                color: Vec3 { x: 0.35, y: 0.65, z: 1.0 },
+                show_numbers: false,
+                show_icon: false,
+                width_px: 200,
+                height_px: 8,
+            }
+            let minimap = Minimap {
+                player_pos: self.player_pos.clone(),
+                entities: self.minimap_entities.clone(),
+                map_range: 100.0,
+                size_px: 150,
+            }
+            let stamina_w = (self.stamina.clamp(0.0, 1.0) * 100.0) as u32
+            let ammo_low = self.ammo_current < 5
+            let ammo_color = if ammo_low { "#ef4444" } else { "#e2e8f0" }
+
+            format!(r#"<div id="hud" style="position:fixed;inset:0;pointer-events:none;font-family:'Segoe UI',system-ui,sans-serif;">
+                <!-- Bottom-left: Health & Shield -->
+                <div style="position:absolute;bottom:32px;left:28px;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <span style="color:#ef4444;font-size:16px;">♥</span>
+                        {}
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                        <span style="color:#60a5fa;font-size:12px;">⬡</span>
+                        {}
+                    </div>
+                    <!-- Stamina bar -->
+                    <div style="margin-top:4px;width:200px;height:4px;background:#1a1a2e;border-radius:2px;">
+                        <div style="width:{}px;height:100%;background:#f59e0b;border-radius:2px;transition:width 0.1s;"></div>
+                    </div>
+                </div>
+                <!-- Bottom-right: Ammo -->
+                <div style="position:absolute;bottom:32px;right:28px;text-align:right;">
+                    <div style="font-size:2.5rem;font-weight:700;color:{};line-height:1;{}">{}</div>
+                    <div style="font-size:1rem;color:#64748b;margin-top:2px;">/ {}</div>
+                    <div style="font-size:0.7rem;color:#4b5563;margin-top:4px;letter-spacing:0.05em;">RIFLE</div>
+                </div>
+                <!-- Top-right: Minimap -->
+                <div style="position:absolute;top:20px;right:20px;pointer-events:none;">
+                    {}
+                </div>
+                <!-- Center: Crosshair -->
+                {}
+                <!-- Interaction prompt -->
+                {}
+                <!-- FPS counter (top-left) -->
+                <div style="position:absolute;top:8px;left:12px;font-size:11px;color:#4b5563;font-family:monospace;">{} FPS</div>
+            </div>"#,
+                health_bar.render(),
+                shield_bar.render(),
+                stamina_w,
+                ammo_color,
+                if ammo_low { "animation:pulse 0.5s infinite;" } else { "" },
+                self.ammo_current,
+                self.ammo_reserve,
+                minimap.render(),
+                if self.show_crosshair {
+                    r#"<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;">
+                        <div style="position:relative;width:20px;height:20px;">
+                            <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(255,255,255,0.85);"></div>
+                            <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.85);"></div>
+                            <div style="position:absolute;top:50%;left:50%;width:3px;height:3px;background:rgba(255,255,255,0.9);border-radius:50%;transform:translate(-50%,-50%);"></div>
+                        </div>
+                    </div>"#.to_string()
+                } else { String::new() },
+                if !self.interaction_prompt.is_empty() {
+                    format!(r#"<div style="position:absolute;bottom:40%;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);border:1px solid #374151;border-radius:8px;padding:8px 16px;font-size:14px;color:#e2e8f0;white-space:nowrap;">
+                        <kbd style="background:#374151;border-radius:4px;padding:2px 8px;font-size:12px;margin-right:8px;">E</kbd> {}
+                    </div>"#, self.interaction_prompt)
+                } else { String::new() },
+                self.fps)
+        }
+    }
+
+    // ============================================================================
+    // PAUSE MENU COMPONENT
+    // ============================================================================
+
+    component PauseMenu {
+        state {
+            is_open: bool,
+            hovered: String,
+        }
+
+        render -> String {
+            if !self.is_open { return String::new() }
+
+            let btn = |label: &str, action: &str, danger: bool| {
+                let color  = if danger { "#7f1d1d" } else { "#1e2736" }
+                let hover  = if danger { "#991b1b" } else { "#1f3244" }
+                let tcolor = if danger { "#fca5a5" } else { "#e2e8f0" }
+                format!(r#"<button onclick="{}" style="width:100%;padding:14px;background:{};color:{};border:1px solid #374151;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='{}'" onmouseout="this.style.background='{}'">
+                    {}
+                </button>"#, action, color, tcolor, hover, color, label)
+            }
+
+            format!(r#"<div style="position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:1000;">
+                <div style="background:#0f1117;border:1px solid #1e2736;border-radius:16px;padding:2.5rem;width:380px;box-shadow:0 25px 60px rgba(0,0,0,0.8);">
+                    <div style="text-align:center;margin-bottom:2rem;">
+                        <div style="font-size:2rem;font-weight:800;color:#e2e8f0;">Game Paused</div>
+                        <div style="color:#64748b;font-size:0.875rem;margin-top:0.5rem;">Press ESC to resume</div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        {}
+                        {}
+                        {}
+                    </div>
+                </div>
+            </div>"#,
+                btn("▶  Resume", "game.resume()", false),
+                btn("⚙  Options", "game.openOptions()", false),
+                btn("✕  Quit to Menu", "game.quit()", true))
+        }
+
+        fn open(&mut self) { self.is_open = true }
+        fn close(&mut self) { self.is_open = false }
+        fn toggle(&mut self) { self.is_open = !self.is_open }
+    }
+
+    // ============================================================================
+    // OPTIONS MENU COMPONENT
+    // ============================================================================
+
+    component OptionsMenu {
+        state {
+            volume: f32,
+            brightness: f32,
+            fullscreen: bool,
+            mouse_sensitivity: f32,
+        }
+
+        render -> String {
+            let slider = |label: &str, id: &str, value: f32, min: f32, max: f32| {
+                format!(r#"<div style="margin-bottom:1.25rem;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                        <label style="color:#e2e8f0;font-size:14px;">{}</label>
+                        <span style="color:#94a3b8;font-size:13px;">{:.0}%</span>
+                    </div>
+                    <div style="position:relative;height:6px;background:#1e2736;border-radius:3px;">
+                        <div style="width:{}%;height:100%;background:#3b82f6;border-radius:3px;"></div>
+                        <div style="position:absolute;top:50%;left:{}%;width:14px;height:14px;background:#fff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 3px #3b82f6;cursor:pointer;"></div>
+                    </div>
+                </div>"#,
+                    label,
+                    (value - min) / (max - min) * 100.0,
+                    (value - min) / (max - min) * 100.0,
+                    (value - min) / (max - min) * 100.0)
+            }
+
+            let toggle = |label: &str, checked: bool| {
+                let bg = if checked { "#1e3a5f" } else { "#1e2736" }
+                let dot_pos = if checked { "calc(100% - 18px)" } else { "2px" }
+                let dot_color = if checked { "#60a5fa" } else { "#4b5563" }
+                format!(r#"<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+                    <span style="color:#e2e8f0;font-size:14px;">{}</span>
+                    <div style="position:relative;width:44px;height:24px;background:{};border-radius:12px;cursor:pointer;border:1px solid #374151;">
+                        <div style="position:absolute;top:2px;left:{};width:18px;height:18px;background:{};border-radius:50%;transition:left 0.15s;"></div>
+                    </div>
+                </div>"#, label, bg, dot_pos, dot_color)
+            }
+
+            format!(r#"<div style="position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:1001;">
+                <div style="background:#0f1117;border:1px solid #1e2736;border-radius:16px;padding:2.5rem;width:440px;max-height:80vh;overflow-y:auto;box-shadow:0 25px 60px rgba(0,0,0,0.8);">
+                    <h2 style="color:#e2e8f0;font-size:1.5rem;font-weight:700;margin-bottom:2rem;">Options</h2>
+                    <h3 style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:1rem;">Audio</h3>
+                    {}
+                    <h3 style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:1rem;margin-top:1.5rem;">Display</h3>
+                    {}
+                    {}
+                    <h3 style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:1rem;margin-top:1.5rem;">Controls</h3>
+                    {}
+                    <div style="margin-top:0.5rem;padding:0.75rem;background:#151c2a;border-radius:8px;font-size:13px;color:#64748b;">
+                        <strong style="color:#94a3b8;">Key Bindings</strong><br>
+                        WASD — Move  &nbsp; Mouse — Look  &nbsp; Space — Jump<br>
+                        E — Interact  &nbsp; F — Fire  &nbsp; Shift — Sprint  &nbsp; Ctrl — Crouch<br>
+                        Tab — Inventory  &nbsp; ESC — Pause
+                    </div>
+                    <button onclick="options.save()" style="width:100%;margin-top:1.5rem;padding:12px;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;">Apply & Close</button>
+                </div>
+            </div>"#,
+                slider("Master Volume", "volume", self.volume, 0.0, 100.0),
+                slider("Brightness", "brightness", self.brightness, 0.0, 100.0),
+                toggle("Fullscreen", self.fullscreen),
+                slider("Mouse Sensitivity", "sensitivity", self.mouse_sensitivity, 0.0, 100.0))
+        }
+    }
+
+    // ============================================================================
+    // LOADING SCREEN COMPONENT
+    // ============================================================================
+
+    component LoadingScreen {
+        props {
+            progress: f32,
+            message: String,
+            tip: String,
+            level_name: String,
+        }
+
+        render -> String {
+            let pct = (self.progress * 100.0).clamp(0.0, 100.0) as u32
+            let bar_w = (self.progress.clamp(0.0, 1.0) * 400.0) as u32
+
+            format!(r#"<div style="position:fixed;inset:0;background:#050810;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Segoe UI',system-ui,sans-serif;">
+                <!-- Background gradient -->
+                <div style="position:absolute;inset:0;background:radial-gradient(ellipse at 50% 60%,#0d1826 0%,#050810 70%);"></div>
+                <div style="position:relative;z-index:1;text-align:center;max-width:600px;width:100%;padding:2rem;">
+                    <!-- Level name -->
+                    <div style="font-size:0.875rem;color:#4b5563;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:1rem;">Loading</div>
+                    <h1 style="font-size:2.5rem;font-weight:800;color:#e2e8f0;margin-bottom:0.5rem;">{}</h1>
+                    <!-- Animated dots -->
+                    <div style="display:flex;justify-content:center;gap:8px;margin:2rem 0;">
+                        <div style="width:6px;height:6px;background:#3b82f6;border-radius:50%;animation:dot-bounce 1.4s infinite 0.0s;"></div>
+                        <div style="width:6px;height:6px;background:#3b82f6;border-radius:50%;animation:dot-bounce 1.4s infinite 0.2s;"></div>
+                        <div style="width:6px;height:6px;background:#3b82f6;border-radius:50%;animation:dot-bounce 1.4s infinite 0.4s;"></div>
+                    </div>
+                    <!-- Progress bar -->
+                    <div style="margin:0 auto 1rem;width:400px;height:4px;background:#1e2736;border-radius:2px;overflow:hidden;">
+                        <div style="width:{}px;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:2px;transition:width 0.3s;"></div>
+                    </div>
+                    <div style="color:#94a3b8;font-size:14px;margin-bottom:0.5rem;">{}</div>
+                    <div style="color:#4b5563;font-size:12px;">{} %</div>
+                    <!-- Tip -->
+                    <div style="margin-top:3rem;padding:1.25rem;background:rgba(255,255,255,0.03);border:1px solid #1e2736;border-radius:10px;text-align:left;">
+                        <div style="font-size:11px;color:#4b5563;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">💡 Tip</div>
+                        <div style="color:#94a3b8;font-size:14px;line-height:1.6;">{}</div>
+                    </div>
+                </div>
+                <style>
+                    @keyframes dot-bounce {{ 0%, 80%, 100% {{ transform:scale(0.7);opacity:0.5; }} 40% {{ transform:scale(1.0);opacity:1; }} }}
+                </style>
+            </div>"#,
+                self.level_name, bar_w, self.message, pct, self.tip)
+        }
+    }
+
+    // ============================================================================
+    // DIALOGUE BOX COMPONENT
+    // ============================================================================
+
+    component DialogueBox {
+        props {
+            speaker: String,
+            text: String,
+            choices: Vec<String>,
+            portrait_id: u32,
+        }
+
+        state {
+            visible_chars: u32,
+            selected_choice: u32,
+        }
+
+        render -> String {
+            let visible_text = &self.text[..self.visible_chars.min(self.text.len() as u32) as usize]
+            let is_complete  = self.visible_chars >= self.text.len() as u32
+            let cursor       = if is_complete { "" } else { "▌" }
+
+            let choice_buttons = self.choices.iter().enumerate().map(|(i, choice)| {
+                let is_selected = i as u32 == self.selected_choice
+                let bg = if is_selected { "#1e3a5f" } else { "#151c2a" }
+                let border = if is_selected { "#3b82f6" } else { "#374151" }
+                format!(r#"<button style="display:block;width:100%;padding:10px 14px;background:{};border:1px solid {};border-radius:6px;color:#e2e8f0;text-align:left;font-size:14px;cursor:pointer;transition:all 0.1s;">
+                    <span style="color:#4b5563;margin-right:8px;">{}</span> {}
+                </button>"#,
+                    bg, border, (b'A' + i as u8) as char, choice)
+            }).collect::<Vec<_>>().join("")
+
+            format!(r#"<div style="position:fixed;bottom:80px;left:50%;transform:translateX(-50%);width:700px;background:#0d1117;border:1px solid #1e2736;border-radius:12px;padding:1.5rem;box-shadow:0 20px 40px rgba(0,0,0,0.8);font-family:'Segoe UI',system-ui,sans-serif;">
+                <!-- Speaker header -->
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid #1e2736;">
+                    <div style="width:40px;height:40px;background:#1e2736;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;">👤</div>
+                    <div style="font-size:16px;font-weight:700;color:#60a5fa;">{}</div>
+                </div>
+                <!-- Dialogue text with typewriter effect -->
+                <div style="font-size:15px;line-height:1.7;color:#e2e8f0;min-height:72px;margin-bottom:1rem;">
+                    {}{}</div>
+                <!-- Choices (shown only when typewriter complete) -->
+                {}
+                <!-- Continue hint -->
+                {}
+            </div>"#,
+                self.speaker,
+                visible_text, cursor,
+                if is_complete && !self.choices.is_empty() {
+                    format!(r#"<div style="display:flex;flex-direction:column;gap:8px;">{}</div>"#, choice_buttons)
+                } else { String::new() },
+                if is_complete && self.choices.is_empty() {
+                    r#"<div style="text-align:right;color:#4b5563;font-size:12px;">Press <kbd style="background:#1e2736;padding:2px 6px;border-radius:3px;">Space</kbd> to continue</div>"#.to_string()
+                } else { String::new() })
+        }
+
+        fn advance_typewriter(&mut self, chars: u32) {
+            self.visible_chars = (self.visible_chars + chars).min(self.text.len() as u32)
+        }
+    }
+
+    // ============================================================================
+    // INVENTORY GRID COMPONENT
+    // ============================================================================
+
+    component InventoryGrid {
+        props {
+            items: Vec<Item>,
+            cols: u32,
+            rows: u32,
+        }
+
+        state {
+            selected_slot: Option<u32>,
+            hovered_slot: Option<u32>,
+        }
+
+        render -> String {
+            let slot_size = 64u32
+            let total_slots = self.cols * self.rows
+
+            let slots = (0..total_slots).map(|i| {
+                let item = self.items.get(i as usize)
+                let is_selected = self.selected_slot == Option::Some(i)
+                let is_hovered  = self.hovered_slot == Option::Some(i)
+                let bg = if is_selected { "#1e3a5f" } else if is_hovered { "#151c2a" } else { "#0d1117" }
+                let border = if is_selected { "#3b82f6" } else if is_hovered { "#374151" } else { "#1e2736" }
+
+                let inner = match item {
+                    Option::Some(it) => {
+                        let rc = rarity_color(&it.rarity)
+                        format!(r#"<div style="position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
+                            <!-- Item icon placeholder -->
+                            <div style="width:38px;height:38px;background:#1e2736;border-radius:6px;border:2px solid {};display:flex;align-items:center;justify-content:center;font-size:20px;">⬡</div>
+                            <!-- Stack count -->
+                            {}
+                            <!-- Rarity glow -->
+                            <div style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:80%;height:2px;background:{};border-radius:1px;opacity:0.7;"></div>
+                        </div>"#,
+                            rc,
+                            if it.stackable && it.count > 1 {
+                                format!(r#"<div style="position:absolute;bottom:2px;right:2px;font-size:9px;font-weight:700;color:#e2e8f0;background:rgba(0,0,0,0.7);padding:1px 3px;border-radius:2px;">{}</div>"#, it.count)
+                            } else { String::new() },
+                            rc)
+                    }
+                    Option::None => String::new(),
+                }
+
+                format!(r#"<div style="width:{}px;height:{}px;background:{};border:1px solid {};border-radius:8px;cursor:pointer;transition:all 0.1s;"
+                    title="{}"
+                    onmouseover="inventory.hover({})"
+                    onclick="inventory.select({})">
+                    {}
+                </div>"#,
+                    slot_size, slot_size, bg, border,
+                    item.map(|it| it.name.as_str()).unwrap_or(""),
+                    i, i, inner)
+            }).collect::<Vec<_>>().join("")
+
+            format!(r#"<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#0d1117;border:1px solid #1e2736;border-radius:16px;padding:1.5rem;box-shadow:0 25px 60px rgba(0,0,0,0.9);font-family:'Segoe UI',system-ui,sans-serif;z-index:500;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;">
+                    <h2 style="color:#e2e8f0;font-size:1.125rem;font-weight:700;">Inventory</h2>
+                    <div style="color:#64748b;font-size:13px;">{}/{} items</div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat({}, {}px);gap:6px;">
+                    {}
+                </div>
+                <div style="margin-top:1rem;padding:0.75rem;background:#151c2a;border-radius:8px;min-height:60px;font-size:13px;color:#94a3b8;">
+                    {}
+                </div>
+            </div>"#,
+                self.items.len(), total_slots, self.cols, slot_size,
+                slots,
+                if let Option::Some(sel) = self.selected_slot {
+                    if let Option::Some(item) = self.items.get(sel as usize) {
+                        format!(r#"<strong style="color:{};">{}</strong><br>{}"#,
+                            rarity_color(&item.rarity), item.name, item.description)
+                    } else { String::new() }
+                } else {
+                    "Select an item to see details.".to_string()
+                })
+        }
+    }
+
+    // ============================================================================
+    // NOTIFICATION TOAST COMPONENT
+    // ============================================================================
+
+    component NotificationToast {
+        state {
+            queue: Vec<Notification>,
+            next_id: u64,
+        }
+
+        render -> String {
+            if self.queue.is_empty() { return String::new() }
+
+            let toasts = self.queue.iter().take(5).map(|notif| {
+                let icon = kind_icon(notif.kind.clone())
+                let color = kind_color(notif.kind.clone())
+                let bg = match notif.kind {
+                    NotifKind::Info        => "#0f1e35",
+                    NotifKind::Warning     => "#2d1d00",
+                    NotifKind::Achievement => "#2d1e00",
+                    NotifKind::Error       => "#2d0a0a",
+                }
+                format!(r#"<div style="display:flex;align-items:flex-start;gap:10px;background:{};border:1px solid {};border-radius:10px;padding:12px 16px;margin-bottom:8px;box-shadow:0 4px 15px rgba(0,0,0,0.4);animation:slide-in 0.2s ease;min-width:300px;max-width:420px;">
+                    <span style="font-size:18px;line-height:1;">{}</span>
+                    <div style="flex:1;">
+                        <div style="font-size:14px;font-weight:600;color:#e2e8f0;">{}</div>
+                    </div>
+                    <button onclick="notifications.dismiss({})" style="background:none;border:none;color:#4b5563;cursor:pointer;font-size:16px;padding:0;line-height:1;">×</button>
+                </div>"#,
+                    bg, color, icon, notif.message, notif.id)
+            }).collect::<Vec<_>>().join("")
+
+            format!(r#"<div style="position:fixed;top:20px;right:20px;z-index:9999;font-family:'Segoe UI',system-ui,sans-serif;">
+                <style>
+                    @keyframes slide-in {{ from {{ transform:translateX(120%);opacity:0; }} to {{ transform:translateX(0);opacity:1; }} }}
+                </style>
+                {}
+            </div>"#, toasts)
+        }
+
+        fn push(&mut self, message: String, kind: NotifKind, now: f32) {
+            let id = self.next_id
+            self.next_id += 1
+            self.queue.push(Notification { message, kind, id, created_at: now })
+            // Keep only latest 10
+            if self.queue.len() > 10 {
+                self.queue.remove(0)
+            }
+        }
+
+        fn dismiss(&mut self, id: u64) {
+            self.queue.retain(|n| n.id != id)
+        }
+
+        fn tick(&mut self, now: f32, auto_dismiss_s: f32) {
+            self.queue.retain(|n| now - n.created_at < auto_dismiss_s)
+        }
+    }
+
+}  // module GameUI

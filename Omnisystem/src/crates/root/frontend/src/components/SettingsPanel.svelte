@@ -5,7 +5,7 @@
   export let onClose = () => {};
 
   let settings = {
-    bonsai_advisor_enabled: true,
+    omnisystem_advisor_enabled: true,
     p2p_lan_enabled: true,
     p2p_wan_enabled: false,
     survival_warnings_enabled: true,
@@ -49,7 +49,7 @@
     <p class="error">{error}</p>
   {/if}
 
-  <label><input type="checkbox" bind:checked={settings.bonsai_advisor_enabled} /> Enable BonsAI Advisor</label>
+  <label><input type="checkbox" bind:checked={settings.omnisystem_advisor_enabled} /> Enable BonsAI Advisor</label>
   <label><input type="checkbox" bind:checked={settings.p2p_lan_enabled} /> Enable P2P downloads (LAN)</label>
   <label><input type="checkbox" bind:checked={settings.p2p_wan_enabled} /> Enable P2P downloads (Internet)</label>
   <label><input type="checkbox" bind:checked={settings.survival_warnings_enabled} /> Show Survival warnings</label>

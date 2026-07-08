@@ -1,4 +1,4 @@
-# Bonsai KEF Implementation Checklist
+# Omnisystem KEF Implementation Checklist
 
 Complete breakdown of what has been implemented for the Knowledge Extraction Fabric.
 
@@ -14,7 +14,7 @@ Complete breakdown of what has been implemented for the Knowledge Extraction Fab
   - rand (randomization)
   - zstd (compression)
   - crossbeam-channel (progress reporting)
-  - bonsai-hnsw (HNSW indexing)
+  - omnisystem-hnsw (HNSW indexing)
 
 - [x] **lib.rs** - Library root with module declarations
 - [x] **error.rs** - Comprehensive error handling with 15+ error types

@@ -1,0 +1,1395 @@
+// interop.titan — Omnisystem Standard Library: Cross-Language Interop Utilities
+// Language: TITAN  |  Part of the 7-language Omni-Languages ecosystem
+// Provides: OmniValue, JSON/MessagePack serialization, AetherBridge, SylvaBridge,
+//           HelixBridge, TypeRegistry
+
+module stdlib::interop
+
+use stdlib::collections::{HashMap, Vec}
+use stdlib::string::{StringBuilder, split, join, escape_html, base64_encode, base64_decode,
+                     parse_i64, parse_f64, parse_bool, format_str}
+
+// ============================================================
+// SECTION 1: OmniValue — universal value crossing all 7 languages
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub enum OmniValue {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bytes(Vec<u8>),
+    List(Vec<OmniValue>),
+    Map(HashMap<String, OmniValue>),
+}
+
+impl OmniValue {
+    pub fn is_nil(&self)   -> bool { matches!(self, OmniValue::Nil) }
+    pub fn is_bool(&self)  -> bool { matches!(self, OmniValue::Bool(_)) }
+    pub fn is_int(&self)   -> bool { matches!(self, OmniValue::Int(_)) }
+    pub fn is_float(&self) -> bool { matches!(self, OmniValue::Float(_)) }
+    pub fn is_str(&self)   -> bool { matches!(self, OmniValue::Str(_)) }
+    pub fn is_bytes(&self) -> bool { matches!(self, OmniValue::Bytes(_)) }
+    pub fn is_list(&self)  -> bool { matches!(self, OmniValue::List(_)) }
+    pub fn is_map(&self)   -> bool { matches!(self, OmniValue::Map(_)) }
+
+    pub fn as_bool(&self)  -> Option<bool>     { if let OmniValue::Bool(v)  = self { Some(*v) } else { None } }
+    pub fn as_int(&self)   -> Option<i64>      { if let OmniValue::Int(v)   = self { Some(*v) } else { None } }
+    pub fn as_float(&self) -> Option<f64>      { if let OmniValue::Float(v) = self { Some(*v) } else { None } }
+    pub fn as_str(&self)   -> Option<&str>     { if let OmniValue::Str(v)   = self { Some(v.as_str()) } else { None } }
+    pub fn as_bytes(&self) -> Option<&[u8]>    { if let OmniValue::Bytes(v) = self { Some(v.as_slice()) } else { None } }
+    pub fn as_list(&self)  -> Option<&Vec<OmniValue>> { if let OmniValue::List(v) = self { Some(v) } else { None } }
+    pub fn as_map(&self)   -> Option<&HashMap<String, OmniValue>> { if let OmniValue::Map(v) = self { Some(v) } else { None } }
+
+    // Coercion helpers
+    pub fn to_bool(&self) -> bool {
+        match self {
+            OmniValue::Nil        => false,
+            OmniValue::Bool(b)    => *b,
+            OmniValue::Int(i)     => *i != 0,
+            OmniValue::Float(f)   => *f != 0.0,
+            OmniValue::Str(s)     => !s.is_empty(),
+            OmniValue::Bytes(b)   => !b.is_empty(),
+            OmniValue::List(l)    => !l.is_empty(),
+            OmniValue::Map(m)     => !m.is_empty(),
+        }
+    }
+
+    pub fn to_i64(&self) -> Option<i64> {
+        match self {
+            OmniValue::Int(i)    => Some(*i),
+            OmniValue::Float(f)  => Some(*f as i64),
+            OmniValue::Bool(b)   => Some(if *b { 1 } else { 0 }),
+            OmniValue::Str(s)    => parse_i64(s),
+            _ => None,
+        }
+    }
+
+    pub fn to_f64(&self) -> Option<f64> {
+        match self {
+            OmniValue::Float(f)  => Some(*f),
+            OmniValue::Int(i)    => Some(*i as f64),
+            OmniValue::Bool(b)   => Some(if *b { 1.0 } else { 0.0 }),
+            OmniValue::Str(s)    => parse_f64(s),
+            _ => None,
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            OmniValue::Nil        => "null".to_string(),
+            OmniValue::Bool(b)    => if *b { "true".to_string() } else { "false".to_string() },
+            OmniValue::Int(i)     => i.to_string(),
+            OmniValue::Float(f)   => format!("{}", f),
+            OmniValue::Str(s)     => s.clone(),
+            OmniValue::Bytes(b)   => base64_encode(b),
+            OmniValue::List(l)    => format!("[{}]", l.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")),
+            OmniValue::Map(m)     => serialize_json_value(&OmniValue::Map(m.clone())),
+        }
+    }
+
+    // Deep equality
+    pub fn equals(&self, other: &OmniValue) -> bool {
+        match (self, other) {
+            (OmniValue::Nil,           OmniValue::Nil)           => true,
+            (OmniValue::Bool(a),       OmniValue::Bool(b))       => a == b,
+            (OmniValue::Int(a),        OmniValue::Int(b))        => a == b,
+            (OmniValue::Float(a),      OmniValue::Float(b))      => a == b,
+            (OmniValue::Str(a),        OmniValue::Str(b))        => a == b,
+            (OmniValue::Bytes(a),      OmniValue::Bytes(b))      => a == b,
+            (OmniValue::List(a),       OmniValue::List(b))       => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
+            }
+            (OmniValue::Map(a),        OmniValue::Map(b))        => {
+                if a.len() != b.len() { return false }
+                for (k, v) in a.iter() {
+                    match b.get(k) {
+                        None => return false,
+                        Some(bv) => if !v.equals(bv) { return false }
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // Type name for reflection
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            OmniValue::Nil      => "nil",
+            OmniValue::Bool(_)  => "bool",
+            OmniValue::Int(_)   => "int",
+            OmniValue::Float(_) => "float",
+            OmniValue::Str(_)   => "str",
+            OmniValue::Bytes(_) => "bytes",
+            OmniValue::List(_)  => "list",
+            OmniValue::Map(_)   => "map",
+        }
+    }
+
+    // Map access helper
+    pub fn get(&self, key: &str) -> Option<&OmniValue> {
+        self.as_map()?.get(&key.to_string())
+    }
+
+    pub fn index(&self, i: usize) -> Option<&OmniValue> {
+        self.as_list()?.get(i)
+    }
+}
+
+// ============================================================
+// SECTION 2: JSON Serialization
+// ============================================================
+
+fn json_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2)
+    out.push('"')
+    for ch in s.chars() {
+        match ch {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32))
+            }
+            c    => out.push(c),
+        }
+    }
+    out.push('"')
+    out
+}
+
+fn serialize_json_value(v: &OmniValue) -> String {
+    match v {
+        OmniValue::Nil        => "null".to_string(),
+        OmniValue::Bool(b)    => if *b { "true".to_string() } else { "false".to_string() },
+        OmniValue::Int(i)     => i.to_string(),
+        OmniValue::Float(f)   => {
+            if f.is_nan()      { return "null".to_string() }
+            if f.is_infinite() { return "null".to_string() }
+            format!("{}", f)
+        }
+        OmniValue::Str(s)     => json_escape_string(s),
+        OmniValue::Bytes(b)   => json_escape_string(&base64_encode(b)),  // base64-encode bytes
+        OmniValue::List(list) => {
+            let mut sb = StringBuilder::new()
+            sb.append("[")
+            for (i, item) in list.iter().enumerate() {
+                if i > 0 { sb.append(",") }
+                sb.append(&serialize_json_value(item))
+            }
+            sb.append("]")
+            sb.to_string()
+        }
+        OmniValue::Map(map) => {
+            let mut sb = StringBuilder::new()
+            sb.append("{")
+            let mut first = true
+            let mut pairs: Vec<(&String, &OmniValue)> = map.iter().collect()
+            // Sort keys for deterministic output
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b))
+            for (k, v) in pairs {
+                if !first { sb.append(",") }
+                first = false
+                sb.append(&json_escape_string(k))
+                sb.append(":")
+                sb.append(&serialize_json_value(v))
+            }
+            sb.append("}")
+            sb.to_string()
+        }
+    }
+}
+
+pub fn serialize_json(v: &OmniValue) -> String {
+    serialize_json_value(v)
+}
+
+// ============================================================
+// SECTION 3: JSON Deserialization
+// ============================================================
+
+struct JsonParser<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(src: &'a str) -> Self {
+        JsonParser { src: src.as_bytes(), pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.src.len() && (self.src[self.pos] == b' ' || self.src[self.pos] == b'\t'
+            || self.src[self.pos] == b'\n' || self.src[self.pos] == b'\r')
+        {
+            self.pos += 1
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn consume(&mut self) -> Option<u8> {
+        if self.pos < self.src.len() {
+            let b = self.src[self.pos]
+            self.pos += 1
+            Some(b)
+        } else {
+            None
+        }
+    }
+
+    fn expect(&mut self, b: u8) -> Result<(), String> {
+        if self.peek() == Some(b) {
+            self.pos += 1; Ok(())
+        } else {
+            Err(format!("Expected '{}' at pos {}", b as char, self.pos))
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<OmniValue, String> {
+        self.skip_ws()
+        match self.peek() {
+            None       => Err("Unexpected end of JSON".to_string()),
+            Some(b'n') => self.parse_null(),
+            Some(b't') => self.parse_true(),
+            Some(b'f') => self.parse_false(),
+            Some(b'"') => self.parse_string().map(OmniValue::Str),
+            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.parse_object(),
+            Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
+            Some(c)    => Err(format!("Unexpected character '{}' at pos {}", c as char, self.pos)),
+        }
+    }
+
+    fn parse_null(&mut self) -> Result<OmniValue, String> {
+        if self.src.get(self.pos..self.pos+4) == Some(b"null") {
+            self.pos += 4; Ok(OmniValue::Nil)
+        } else {
+            Err("Expected 'null'".to_string())
+        }
+    }
+
+    fn parse_true(&mut self) -> Result<OmniValue, String> {
+        if self.src.get(self.pos..self.pos+4) == Some(b"true") {
+            self.pos += 4; Ok(OmniValue::Bool(true))
+        } else {
+            Err("Expected 'true'".to_string())
+        }
+    }
+
+    fn parse_false(&mut self) -> Result<OmniValue, String> {
+        if self.src.get(self.pos..self.pos+5) == Some(b"false") {
+            self.pos += 5; Ok(OmniValue::Bool(false))
+        } else {
+            Err("Expected 'false'".to_string())
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect(b'"')?
+        let mut out = String::new()
+        loop {
+            match self.consume() {
+                None       => return Err("Unterminated string".to_string()),
+                Some(b'"') => break,
+                Some(b'\\') => {
+                    match self.consume() {
+                        Some(b'"')  => out.push('"'),
+                        Some(b'\\') => out.push('\\'),
+                        Some(b'/')  => out.push('/'),
+                        Some(b'n')  => out.push('\n'),
+                        Some(b'r')  => out.push('\r'),
+                        Some(b't')  => out.push('\t'),
+                        Some(b'b')  => out.push('\x08'),
+                        Some(b'f')  => out.push('\x0C'),
+                        Some(b'u')  => {
+                            // Parse 4 hex digits
+                            let mut hex = 0u16
+                            for _ in 0..4 {
+                                let c = self.consume().ok_or("Truncated \\u escape")?
+                                let digit = match c {
+                                    b'0'..=b'9' => c - b'0',
+                                    b'a'..=b'f' => c - b'a' + 10,
+                                    b'A'..=b'F' => c - b'A' + 10,
+                                    _ => return Err("Invalid hex digit in \\u escape".to_string()),
+                                }
+                                hex = hex * 16 + digit as u16
+                            }
+                            if let Some(ch) = char::from_u32(hex as u32) {
+                                out.push(ch)
+                            } else {
+                                out.push('\u{FFFD}')
+                            }
+                        }
+                        Some(c) => return Err(format!("Unknown escape \\{}", c as char)),
+                        None    => return Err("Truncated escape".to_string()),
+                    }
+                }
+                Some(b) => {
+                    // Multi-byte UTF-8 handling
+                    out.push(b as char)
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn parse_number(&mut self) -> Result<OmniValue, String> {
+        let start = self.pos
+        if self.peek() == Some(b'-') { self.pos += 1 }
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1 }
+        let is_float = self.peek() == Some(b'.') || self.peek() == Some(b'e') || self.peek() == Some(b'E')
+        if is_float {
+            if self.peek() == Some(b'.') {
+                self.pos += 1
+                while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1 }
+            }
+            if self.peek() == Some(b'e') || self.peek() == Some(b'E') {
+                self.pos += 1
+                if self.peek() == Some(b'+') || self.peek() == Some(b'-') { self.pos += 1 }
+                while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1 }
+            }
+            let s = core::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0")
+            parse_f64(s).map(OmniValue::Float).ok_or_else(|| format!("Invalid float: {}", s))
+        } else {
+            let s = core::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0")
+            parse_i64(s).map(OmniValue::Int).ok_or_else(|| format!("Invalid int: {}", s))
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<OmniValue, String> {
+        self.expect(b'[')?
+        let mut items = Vec::new()
+        self.skip_ws()
+        if self.peek() == Some(b']') { self.pos += 1; return Ok(OmniValue::List(items)) }
+        loop {
+            items.push(self.parse_value()?)
+            self.skip_ws()
+            match self.peek() {
+                Some(b']') => { self.pos += 1; break }
+                Some(b',') => { self.pos += 1 }
+                _          => return Err(format!("Expected ',' or ']' in array at pos {}", self.pos)),
+            }
+        }
+        Ok(OmniValue::List(items))
+    }
+
+    fn parse_object(&mut self) -> Result<OmniValue, String> {
+        self.expect(b'{')?
+        let mut map = HashMap::new()
+        self.skip_ws()
+        if self.peek() == Some(b'}') { self.pos += 1; return Ok(OmniValue::Map(map)) }
+        loop {
+            self.skip_ws()
+            let key = self.parse_string()?
+            self.skip_ws()
+            self.expect(b':')?
+            let val = self.parse_value()?
+            map.insert(key, val)
+            self.skip_ws()
+            match self.peek() {
+                Some(b'}') => { self.pos += 1; break }
+                Some(b',') => { self.pos += 1 }
+                _          => return Err(format!("Expected ',' or '}}' in object at pos {}", self.pos)),
+            }
+        }
+        Ok(OmniValue::Map(map))
+    }
+}
+
+pub fn deserialize_json(s: &str) -> Result<OmniValue, String> {
+    let mut parser = JsonParser::new(s)
+    let value = parser.parse_value()?
+    parser.skip_ws()
+    if parser.pos != parser.src.len() {
+        return Err(format!("Trailing garbage at pos {}", parser.pos))
+    }
+    Ok(value)
+}
+
+// ============================================================
+// SECTION 4: MessagePack Binary Serialization
+// ============================================================
+
+// MessagePack format codes
+const MSGPACK_NIL:        u8 = 0xc0
+const MSGPACK_FALSE:      u8 = 0xc2
+const MSGPACK_TRUE:       u8 = 0xc3
+const MSGPACK_FLOAT32:    u8 = 0xca
+const MSGPACK_FLOAT64:    u8 = 0xcb
+const MSGPACK_UINT8:      u8 = 0xcc
+const MSGPACK_UINT16:     u8 = 0xcd
+const MSGPACK_UINT32:     u8 = 0xce
+const MSGPACK_UINT64:     u8 = 0xcf
+const MSGPACK_INT8:       u8 = 0xd0
+const MSGPACK_INT16:      u8 = 0xd1
+const MSGPACK_INT32:      u8 = 0xd2
+const MSGPACK_INT64:      u8 = 0xd3
+const MSGPACK_STR8:       u8 = 0xd9
+const MSGPACK_STR16:      u8 = 0xda
+const MSGPACK_STR32:      u8 = 0xdb
+const MSGPACK_BIN8:       u8 = 0xc4
+const MSGPACK_BIN16:      u8 = 0xc5
+const MSGPACK_BIN32:      u8 = 0xc6
+const MSGPACK_ARRAY16:    u8 = 0xdc
+const MSGPACK_ARRAY32:    u8 = 0xdd
+const MSGPACK_MAP16:      u8 = 0xde
+const MSGPACK_MAP32:      u8 = 0xdf
+
+pub fn serialize_msgpack(v: &OmniValue) -> Vec<u8> {
+    let mut out = Vec::new()
+    msgpack_encode(v, &mut out)
+    out
+}
+
+fn msgpack_encode(v: &OmniValue, out: &mut Vec<u8>) {
+    match v {
+        OmniValue::Nil => {
+            out.push(MSGPACK_NIL)
+        }
+        OmniValue::Bool(b) => {
+            out.push(if *b { MSGPACK_TRUE } else { MSGPACK_FALSE })
+        }
+        OmniValue::Int(i) => {
+            let i = *i
+            if i >= 0 && i <= 127 {
+                out.push(i as u8)  // positive fixint
+            } else if i >= -32 && i < 0 {
+                out.push((i as i8) as u8)  // negative fixint
+            } else if i >= 0 && i <= 0xff {
+                out.push(MSGPACK_UINT8); out.push(i as u8)
+            } else if i >= 0 && i <= 0xffff {
+                out.push(MSGPACK_UINT16)
+                out.extend_from_slice(&(i as u16).to_be_bytes())
+            } else if i >= 0 && i <= 0xffffffff {
+                out.push(MSGPACK_UINT32)
+                out.extend_from_slice(&(i as u32).to_be_bytes())
+            } else if i >= 0 {
+                out.push(MSGPACK_UINT64)
+                out.extend_from_slice(&(i as u64).to_be_bytes())
+            } else if i >= i8::MIN as i64 {
+                out.push(MSGPACK_INT8); out.push((i as i8) as u8)
+            } else if i >= i16::MIN as i64 {
+                out.push(MSGPACK_INT16)
+                out.extend_from_slice(&(i as i16).to_be_bytes())
+            } else if i >= i32::MIN as i64 {
+                out.push(MSGPACK_INT32)
+                out.extend_from_slice(&(i as i32).to_be_bytes())
+            } else {
+                out.push(MSGPACK_INT64)
+                out.extend_from_slice(&i.to_be_bytes())
+            }
+        }
+        OmniValue::Float(f) => {
+            out.push(MSGPACK_FLOAT64)
+            out.extend_from_slice(&f.to_bits().to_be_bytes())
+        }
+        OmniValue::Str(s) => {
+            let bytes = s.as_bytes()
+            let n = bytes.len()
+            if n <= 31 {
+                out.push(0xa0 | n as u8)  // fixstr
+            } else if n <= 0xff {
+                out.push(MSGPACK_STR8); out.push(n as u8)
+            } else if n <= 0xffff {
+                out.push(MSGPACK_STR16)
+                out.extend_from_slice(&(n as u16).to_be_bytes())
+            } else {
+                out.push(MSGPACK_STR32)
+                out.extend_from_slice(&(n as u32).to_be_bytes())
+            }
+            out.extend_from_slice(bytes)
+        }
+        OmniValue::Bytes(b) => {
+            let n = b.len()
+            if n <= 0xff {
+                out.push(MSGPACK_BIN8); out.push(n as u8)
+            } else if n <= 0xffff {
+                out.push(MSGPACK_BIN16)
+                out.extend_from_slice(&(n as u16).to_be_bytes())
+            } else {
+                out.push(MSGPACK_BIN32)
+                out.extend_from_slice(&(n as u32).to_be_bytes())
+            }
+            out.extend_from_slice(b)
+        }
+        OmniValue::List(list) => {
+            let n = list.len()
+            if n <= 15 {
+                out.push(0x90 | n as u8)  // fixarray
+            } else if n <= 0xffff {
+                out.push(MSGPACK_ARRAY16)
+                out.extend_from_slice(&(n as u16).to_be_bytes())
+            } else {
+                out.push(MSGPACK_ARRAY32)
+                out.extend_from_slice(&(n as u32).to_be_bytes())
+            }
+            for item in list { msgpack_encode(item, out) }
+        }
+        OmniValue::Map(map) => {
+            let n = map.len()
+            if n <= 15 {
+                out.push(0x80 | n as u8)  // fixmap
+            } else if n <= 0xffff {
+                out.push(MSGPACK_MAP16)
+                out.extend_from_slice(&(n as u16).to_be_bytes())
+            } else {
+                out.push(MSGPACK_MAP32)
+                out.extend_from_slice(&(n as u32).to_be_bytes())
+            }
+            let mut pairs: Vec<(&String, &OmniValue)> = map.iter().collect()
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b))
+            for (k, v) in pairs {
+                msgpack_encode(&OmniValue::Str(k.clone()), out)
+                msgpack_encode(v, out)
+            }
+        }
+    }
+}
+
+pub fn deserialize_msgpack(b: &[u8]) -> Result<OmniValue, String> {
+    let (val, _) = msgpack_decode(b, 0)?
+    Ok(val)
+}
+
+fn msgpack_decode(b: &[u8], pos: usize) -> Result<(OmniValue, usize), String> {
+    if pos >= b.len() { return Err("Unexpected end of msgpack data".to_string()) }
+    let tag = b[pos]
+
+    match tag {
+        // Positive fixint (0x00–0x7f)
+        0x00..=0x7f => Ok((OmniValue::Int(tag as i64), pos + 1)),
+        // Negative fixint (0xe0–0xff)
+        0xe0..=0xff => Ok((OmniValue::Int((tag as i8) as i64), pos + 1)),
+        // Fixmap (0x80–0x8f)
+        0x80..=0x8f => {
+            let n = (tag & 0x0f) as usize
+            msgpack_decode_map(b, pos + 1, n)
+        }
+        // Fixarray (0x90–0x9f)
+        0x90..=0x9f => {
+            let n = (tag & 0x0f) as usize
+            msgpack_decode_array(b, pos + 1, n)
+        }
+        // Fixstr (0xa0–0xbf)
+        0xa0..=0xbf => {
+            let n = (tag & 0x1f) as usize
+            if pos + 1 + n > b.len() { return Err("fixstr overrun".to_string()) }
+            let s = core::str::from_utf8(&b[pos+1..pos+1+n]).map_err(|_| "Invalid UTF-8 in fixstr".to_string())?
+            Ok((OmniValue::Str(s.to_string()), pos + 1 + n))
+        }
+        MSGPACK_NIL   => Ok((OmniValue::Nil,        pos + 1)),
+        MSGPACK_FALSE => Ok((OmniValue::Bool(false), pos + 1)),
+        MSGPACK_TRUE  => Ok((OmniValue::Bool(true),  pos + 1)),
+        MSGPACK_FLOAT32 => {
+            if pos + 5 > b.len() { return Err("float32 overrun".to_string()) }
+            let bits = u32::from_be_bytes([b[pos+1], b[pos+2], b[pos+3], b[pos+4]])
+            Ok((OmniValue::Float(f32::from_bits(bits) as f64), pos + 5))
+        }
+        MSGPACK_FLOAT64 => {
+            if pos + 9 > b.len() { return Err("float64 overrun".to_string()) }
+            let bits = u64::from_be_bytes([
+                b[pos+1], b[pos+2], b[pos+3], b[pos+4],
+                b[pos+5], b[pos+6], b[pos+7], b[pos+8],
+            ])
+            Ok((OmniValue::Float(f64::from_bits(bits)), pos + 9))
+        }
+        MSGPACK_UINT8  => Ok((OmniValue::Int(b[pos+1] as i64), pos + 2)),
+        MSGPACK_UINT16 => {
+            let v = u16::from_be_bytes([b[pos+1], b[pos+2]])
+            Ok((OmniValue::Int(v as i64), pos + 3))
+        }
+        MSGPACK_UINT32 => {
+            let v = u32::from_be_bytes([b[pos+1], b[pos+2], b[pos+3], b[pos+4]])
+            Ok((OmniValue::Int(v as i64), pos + 5))
+        }
+        MSGPACK_UINT64 => {
+            let v = u64::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4],b[pos+5],b[pos+6],b[pos+7],b[pos+8]])
+            Ok((OmniValue::Int(v as i64), pos + 9))
+        }
+        MSGPACK_INT8  => Ok((OmniValue::Int(b[pos+1] as i8 as i64), pos + 2)),
+        MSGPACK_INT16 => {
+            let v = i16::from_be_bytes([b[pos+1], b[pos+2]])
+            Ok((OmniValue::Int(v as i64), pos + 3))
+        }
+        MSGPACK_INT32 => {
+            let v = i32::from_be_bytes([b[pos+1], b[pos+2], b[pos+3], b[pos+4]])
+            Ok((OmniValue::Int(v as i64), pos + 5))
+        }
+        MSGPACK_INT64 => {
+            let v = i64::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4],b[pos+5],b[pos+6],b[pos+7],b[pos+8]])
+            Ok((OmniValue::Int(v), pos + 9))
+        }
+        MSGPACK_STR8 => {
+            let n = b[pos+1] as usize
+            let s = core::str::from_utf8(&b[pos+2..pos+2+n]).map_err(|_| "Invalid UTF-8 in str8".to_string())?
+            Ok((OmniValue::Str(s.to_string()), pos + 2 + n))
+        }
+        MSGPACK_STR16 => {
+            let n = u16::from_be_bytes([b[pos+1], b[pos+2]]) as usize
+            let s = core::str::from_utf8(&b[pos+3..pos+3+n]).map_err(|_| "Invalid UTF-8 in str16".to_string())?
+            Ok((OmniValue::Str(s.to_string()), pos + 3 + n))
+        }
+        MSGPACK_STR32 => {
+            let n = u32::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4]]) as usize
+            let s = core::str::from_utf8(&b[pos+5..pos+5+n]).map_err(|_| "Invalid UTF-8 in str32".to_string())?
+            Ok((OmniValue::Str(s.to_string()), pos + 5 + n))
+        }
+        MSGPACK_BIN8 => {
+            let n = b[pos+1] as usize
+            Ok((OmniValue::Bytes(b[pos+2..pos+2+n].to_vec()), pos + 2 + n))
+        }
+        MSGPACK_BIN16 => {
+            let n = u16::from_be_bytes([b[pos+1], b[pos+2]]) as usize
+            Ok((OmniValue::Bytes(b[pos+3..pos+3+n].to_vec()), pos + 3 + n))
+        }
+        MSGPACK_BIN32 => {
+            let n = u32::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4]]) as usize
+            Ok((OmniValue::Bytes(b[pos+5..pos+5+n].to_vec()), pos + 5 + n))
+        }
+        MSGPACK_ARRAY16 => {
+            let n = u16::from_be_bytes([b[pos+1], b[pos+2]]) as usize
+            msgpack_decode_array(b, pos + 3, n)
+        }
+        MSGPACK_ARRAY32 => {
+            let n = u32::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4]]) as usize
+            msgpack_decode_array(b, pos + 5, n)
+        }
+        MSGPACK_MAP16 => {
+            let n = u16::from_be_bytes([b[pos+1], b[pos+2]]) as usize
+            msgpack_decode_map(b, pos + 3, n)
+        }
+        MSGPACK_MAP32 => {
+            let n = u32::from_be_bytes([b[pos+1],b[pos+2],b[pos+3],b[pos+4]]) as usize
+            msgpack_decode_map(b, pos + 5, n)
+        }
+        other => Err(format!("Unknown msgpack tag: 0x{:02x}", other)),
+    }
+}
+
+fn msgpack_decode_array(b: &[u8], mut pos: usize, n: usize) -> Result<(OmniValue, usize), String> {
+    let mut items = Vec::with_capacity(n)
+    for _ in 0..n {
+        let (v, new_pos) = msgpack_decode(b, pos)?
+        items.push(v)
+        pos = new_pos
+    }
+    Ok((OmniValue::List(items), pos))
+}
+
+fn msgpack_decode_map(b: &[u8], mut pos: usize, n: usize) -> Result<(OmniValue, usize), String> {
+    let mut map = HashMap::new()
+    for _ in 0..n {
+        let (k, p1) = msgpack_decode(b, pos)?
+        let key = match k {
+            OmniValue::Str(s) => s,
+            other => other.to_string(),
+        }
+        let (v, p2) = msgpack_decode(b, p1)?
+        map.insert(key, v)
+        pos = p2
+    }
+    Ok((OmniValue::Map(map), pos))
+}
+
+// ============================================================
+// SECTION 5: AetherBridge — OmniValue ↔ AETHER actor messages
+// ============================================================
+
+// AETHER messages are represented as byte payloads with a type header.
+// Format: [1-byte type tag][payload]
+// Type tags: 0=nil, 1=bool, 2=int, 3=float, 4=str, 5=bytes, 6=list, 7=map
+
+const AETHER_TAG_NIL:   u8 = 0
+const AETHER_TAG_BOOL:  u8 = 1
+const AETHER_TAG_INT:   u8 = 2
+const AETHER_TAG_FLOAT: u8 = 3
+const AETHER_TAG_STR:   u8 = 4
+const AETHER_TAG_BYTES: u8 = 5
+const AETHER_TAG_LIST:  u8 = 6
+const AETHER_TAG_MAP:   u8 = 7
+
+pub struct AetherBridge;
+
+impl AetherBridge {
+    // Convert OmniValue to AETHER binary message envelope
+    pub fn to_message(v: &OmniValue) -> Vec<u8> {
+        // Use msgpack for efficient binary encoding, prefixed with magic header
+        let magic: &[u8] = b"AETH"
+        let body = serialize_msgpack(v)
+        let mut out = Vec::with_capacity(4 + 4 + body.len())
+        out.extend_from_slice(magic)
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes())
+        out.extend_from_slice(&body)
+        out
+    }
+
+    // Convert AETHER binary message envelope to OmniValue
+    pub fn from_message(data: &[u8]) -> Result<OmniValue, String> {
+        if data.len() < 8 { return Err("AetherBridge: message too short".to_string()) }
+        if &data[..4] != b"AETH" { return Err("AetherBridge: invalid magic header".to_string()) }
+        let len = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize
+        if data.len() < 8 + len { return Err("AetherBridge: truncated body".to_string()) }
+        deserialize_msgpack(&data[8..8+len])
+    }
+
+    // Encode a map of actor mailbox arguments
+    pub fn encode_args(args: &[(&str, OmniValue)]) -> Vec<u8> {
+        let mut map = HashMap::new()
+        for (k, v) in args {
+            map.insert(k.to_string(), v.clone())
+        }
+        Self::to_message(&OmniValue::Map(map))
+    }
+
+    // Decode args map from actor message
+    pub fn decode_args(data: &[u8]) -> Result<HashMap<String, OmniValue>, String> {
+        let v = Self::from_message(data)?
+        match v {
+            OmniValue::Map(m) => Ok(m),
+            _ => Err("AetherBridge: expected Map in args".to_string()),
+        }
+    }
+
+    // Convert actor reply to typed result
+    pub fn decode_result<T, F: Fn(&OmniValue) -> Option<T>>(data: &[u8], extractor: F) -> Result<T, String> {
+        let v = Self::from_message(data)?
+        extractor(&v).ok_or_else(|| format!("AetherBridge: failed to extract {} from result", v.type_name()))
+    }
+}
+
+// ============================================================
+// SECTION 6: SylvaBridge — OmniValue ↔ SYLVA tensor inputs/outputs
+// ============================================================
+
+// SYLVA tensors are represented as dense arrays with shape metadata.
+// Binary format: [magic:4][dtype:1][ndim:1][shape:ndim*4][data:N*dtype_size]
+
+const SYLVA_MAGIC: &[u8] = b"SYLV"
+const SYLVA_DTYPE_F32: u8 = 0
+const SYLVA_DTYPE_F64: u8 = 1
+const SYLVA_DTYPE_I32: u8 = 2
+const SYLVA_DTYPE_I64: u8 = 3
+const SYLVA_DTYPE_BOOL: u8 = 4
+
+pub struct SylvaBridge;
+
+impl SylvaBridge {
+    // Convert a flat list of OmniValue::Float into a SYLVA F64 tensor
+    pub fn list_to_tensor(values: &[OmniValue], shape: &[u32]) -> Result<Vec<u8>, String> {
+        let expected: usize = shape.iter().map(|&d| d as usize).product()
+        if values.len() != expected {
+            return Err(format!("SylvaBridge: shape {:?} requires {} elements, got {}", shape, expected, values.len()))
+        }
+
+        let mut out = Vec::new()
+        out.extend_from_slice(SYLVA_MAGIC)
+        out.push(SYLVA_DTYPE_F64)
+        out.push(shape.len() as u8)
+        for &dim in shape {
+            out.extend_from_slice(&dim.to_be_bytes())
+        }
+        for v in values {
+            let f = v.to_f64().ok_or_else(|| format!("SylvaBridge: cannot convert {} to f64", v.type_name()))?
+            out.extend_from_slice(&f.to_bits().to_be_bytes())
+        }
+        Ok(out)
+    }
+
+    // Convert SYLVA tensor bytes back to a list of OmniValue::Float with shape
+    pub fn tensor_to_list(data: &[u8]) -> Result<(Vec<OmniValue>, Vec<u32>), String> {
+        if data.len() < 6 { return Err("SylvaBridge: tensor too short".to_string()) }
+        if &data[..4] != SYLVA_MAGIC { return Err("SylvaBridge: invalid magic".to_string()) }
+        let dtype = data[4]
+        let ndim  = data[5] as usize
+        if data.len() < 6 + ndim * 4 { return Err("SylvaBridge: truncated shape".to_string()) }
+
+        let mut shape = Vec::new()
+        for i in 0..ndim {
+            let base = 6 + i * 4
+            shape.push(u32::from_be_bytes([data[base], data[base+1], data[base+2], data[base+3]]))
+        }
+
+        let total: usize = shape.iter().map(|&d| d as usize).product()
+        let data_start = 6 + ndim * 4
+        let elem_size: usize = match dtype {
+            SYLVA_DTYPE_F32  => 4,
+            SYLVA_DTYPE_F64  => 8,
+            SYLVA_DTYPE_I32  => 4,
+            SYLVA_DTYPE_I64  => 8,
+            SYLVA_DTYPE_BOOL => 1,
+            _ => return Err(format!("SylvaBridge: unknown dtype {}", dtype)),
+        }
+
+        if data.len() < data_start + total * elem_size {
+            return Err("SylvaBridge: truncated data section".to_string())
+        }
+
+        let mut values = Vec::with_capacity(total)
+        for i in 0..total {
+            let base = data_start + i * elem_size
+            let v: OmniValue = match dtype {
+                SYLVA_DTYPE_F64 => {
+                    let bits = u64::from_be_bytes([data[base],data[base+1],data[base+2],data[base+3],
+                                                   data[base+4],data[base+5],data[base+6],data[base+7]])
+                    OmniValue::Float(f64::from_bits(bits))
+                }
+                SYLVA_DTYPE_F32 => {
+                    let bits = u32::from_be_bytes([data[base],data[base+1],data[base+2],data[base+3]])
+                    OmniValue::Float(f32::from_bits(bits) as f64)
+                }
+                SYLVA_DTYPE_I64 => {
+                    let v = i64::from_be_bytes([data[base],data[base+1],data[base+2],data[base+3],
+                                                data[base+4],data[base+5],data[base+6],data[base+7]])
+                    OmniValue::Int(v)
+                }
+                SYLVA_DTYPE_I32 => {
+                    let v = i32::from_be_bytes([data[base],data[base+1],data[base+2],data[base+3]])
+                    OmniValue::Int(v as i64)
+                }
+                SYLVA_DTYPE_BOOL => OmniValue::Bool(data[base] != 0),
+                _ => unreachable!(),
+            }
+            values.push(v)
+        }
+
+        Ok((values, shape))
+    }
+
+    // Encode inference request (inputs + metadata)
+    pub fn encode_inference_request(
+        inputs:    &HashMap<String, OmniValue>,
+        model_id:  &str,
+    ) -> Vec<u8> {
+        let mut req = HashMap::new()
+        req.insert("model".to_string(),  OmniValue::Str(model_id.to_string()))
+        req.insert("inputs".to_string(), OmniValue::Map(inputs.clone()))
+        serialize_msgpack(&OmniValue::Map(req))
+    }
+
+    // Decode inference response
+    pub fn decode_inference_response(data: &[u8]) -> Result<HashMap<String, OmniValue>, String> {
+        let v = deserialize_msgpack(data)?
+        match v {
+            OmniValue::Map(m) => Ok(m),
+            _ => Err("SylvaBridge: expected Map in response".to_string()),
+        }
+    }
+}
+
+// ============================================================
+// SECTION 7: HelixBridge — OmniValue ↔ HELIX uniform buffers
+// ============================================================
+
+// HELIX uniform buffers are structs of scalar/vector/matrix values.
+// Encoded as packed binary with a field table header.
+
+const HELIX_MAGIC: &[u8] = b"HELX"
+const HELIX_FIELD_F32:  u8 = 0
+const HELIX_FIELD_VEC2: u8 = 1  // 2 x f32
+const HELIX_FIELD_VEC3: u8 = 2  // 3 x f32
+const HELIX_FIELD_VEC4: u8 = 3  // 4 x f32
+const HELIX_FIELD_MAT4: u8 = 4  // 16 x f32
+const HELIX_FIELD_INT:  u8 = 5  // i32
+const HELIX_FIELD_BOOL: u8 = 6  // u32 (0 or 1)
+
+pub struct HelixBridge;
+
+impl HelixBridge {
+    // Convert a Map OmniValue to a HELIX uniform buffer
+    // Convention: float values → f32, int values → i32
+    // List of 2/3/4/16 floats → vec2/vec3/vec4/mat4
+    pub fn to_uniform_buffer(v: &OmniValue) -> Result<Vec<u8>, String> {
+        let map = v.as_map().ok_or("HelixBridge: expected Map")?
+        let mut fields: Vec<(String, u8, Vec<f32>)> = Vec::new()
+
+        let mut sorted_keys: Vec<&String> = map.keys().collect()
+        sorted_keys.sort()
+
+        for key in sorted_keys {
+            let val = map.get(key).unwrap()
+            let (field_type, floats) = match val {
+                OmniValue::Float(f) => (HELIX_FIELD_F32, vec![*f as f32]),
+                OmniValue::Int(i)   => (HELIX_FIELD_INT, vec![*i as f32]),
+                OmniValue::Bool(b)  => (HELIX_FIELD_BOOL, vec![if *b { 1.0 } else { 0.0 }]),
+                OmniValue::List(list) => {
+                    let fs: Option<Vec<f32>> = list.iter()
+                        .map(|v| v.to_f64().map(|f| f as f32))
+                        .collect()
+                    let fs = fs.ok_or_else(|| format!("HelixBridge: non-numeric list in field '{}'", key))?
+                    let field_type = match fs.len() {
+                        2  => HELIX_FIELD_VEC2,
+                        3  => HELIX_FIELD_VEC3,
+                        4  => HELIX_FIELD_VEC4,
+                        16 => HELIX_FIELD_MAT4,
+                        n  => return Err(format!("HelixBridge: unsupported list length {} in field '{}'", n, key)),
+                    }
+                    (field_type, fs)
+                }
+                _ => return Err(format!("HelixBridge: unsupported type '{}' in field '{}'", val.type_name(), key)),
+            }
+            fields.push((key.clone(), field_type, floats))
+        }
+
+        // Build buffer
+        let mut out = Vec::new()
+        out.extend_from_slice(HELIX_MAGIC)
+        out.extend_from_slice(&(fields.len() as u16).to_be_bytes())
+
+        // Write field table (name_len:1 + name + type:1)
+        for (name, ftype, _) in &fields {
+            out.push(name.len() as u8)
+            out.extend_from_slice(name.as_bytes())
+            out.push(*ftype)
+        }
+
+        // Align to 4 bytes
+        while out.len() % 4 != 0 { out.push(0) }
+
+        // Write float data
+        for (_, _, floats) in &fields {
+            for &f in floats {
+                out.extend_from_slice(&f.to_bits().to_be_bytes())
+            }
+        }
+
+        Ok(out)
+    }
+
+    // Convert HELIX uniform buffer bytes back to OmniValue Map
+    pub fn from_uniform_buffer(data: &[u8]) -> Result<OmniValue, String> {
+        if data.len() < 6 { return Err("HelixBridge: buffer too short".to_string()) }
+        if &data[..4] != HELIX_MAGIC { return Err("HelixBridge: invalid magic".to_string()) }
+        let num_fields = u16::from_be_bytes([data[4], data[5]]) as usize
+        let mut pos = 6
+
+        let mut fields: Vec<(String, u8)> = Vec::new()
+        for _ in 0..num_fields {
+            if pos >= data.len() { return Err("HelixBridge: truncated field table".to_string()) }
+            let name_len = data[pos] as usize
+            pos += 1
+            let name = core::str::from_utf8(&data[pos..pos+name_len])
+                .map_err(|_| "HelixBridge: invalid UTF-8 in field name".to_string())?
+                .to_string()
+            pos += name_len
+            let ftype = data[pos]; pos += 1
+            fields.push((name, ftype))
+        }
+        // Skip alignment padding
+        while pos % 4 != 0 { pos += 1 }
+
+        let mut map = HashMap::new()
+        for (name, ftype) in &fields {
+            let count: usize = match *ftype {
+                HELIX_FIELD_F32  => 1,
+                HELIX_FIELD_INT  => 1,
+                HELIX_FIELD_BOOL => 1,
+                HELIX_FIELD_VEC2 => 2,
+                HELIX_FIELD_VEC3 => 3,
+                HELIX_FIELD_VEC4 => 4,
+                HELIX_FIELD_MAT4 => 16,
+                t => return Err(format!("HelixBridge: unknown field type {}", t)),
+            }
+            let mut floats = Vec::with_capacity(count)
+            for _ in 0..count {
+                if pos + 4 > data.len() { return Err("HelixBridge: data overrun".to_string()) }
+                let bits = u32::from_be_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]])
+                floats.push(f32::from_bits(bits))
+                pos += 4
+            }
+            let val: OmniValue = match *ftype {
+                HELIX_FIELD_F32  => OmniValue::Float(floats[0] as f64),
+                HELIX_FIELD_INT  => OmniValue::Int(floats[0] as i64),
+                HELIX_FIELD_BOOL => OmniValue::Bool(floats[0] != 0.0),
+                _ => OmniValue::List(floats.into_iter().map(|f| OmniValue::Float(f as f64)).collect()),
+            }
+            map.insert(name.clone(), val)
+        }
+        Ok(OmniValue::Map(map))
+    }
+}
+
+// ============================================================
+// SECTION 8: TypeRegistry — cross-language type mappings
+// ============================================================
+
+pub struct TypeMapping {
+    pub type_id:        u32,
+    pub titan_name:     String,
+    pub aether_name:    String,
+    pub sylva_name:     String,
+    pub helix_name:     String,
+    pub json_schema:    String,
+    pub msgpack_tag:    Option<u8>,
+}
+
+pub struct TypeRegistry {
+    mappings: HashMap<u32, TypeMapping>,
+    by_name:  HashMap<String, u32>,
+    next_id:  u32,
+}
+
+impl TypeRegistry {
+    pub fn new() -> Self {
+        let mut reg = TypeRegistry {
+            mappings: HashMap::new(),
+            by_name:  HashMap::new(),
+            next_id:  1,
+        }
+        // Register built-in types
+        reg.register_builtin("Nil",    "nil",    "void",    "null",     "{\"type\":\"null\"}")
+        reg.register_builtin("Bool",   "bool",   "bool",    "bool",     "{\"type\":\"boolean\"}")
+        reg.register_builtin("Int",    "i64",    "int64",   "int",      "{\"type\":\"integer\"}")
+        reg.register_builtin("Float",  "f64",    "float64", "float",    "{\"type\":\"number\"}")
+        reg.register_builtin("Str",    "String", "string",  "string",   "{\"type\":\"string\"}")
+        reg.register_builtin("Bytes",  "Vec<u8>","bytes",   "bytes",    "{\"type\":\"string\",\"format\":\"byte\"}")
+        reg.register_builtin("List",   "Vec<T>", "list",    "array",    "{\"type\":\"array\"}")
+        reg.register_builtin("Map",    "HashMap","map",     "object",   "{\"type\":\"object\"}")
+        reg
+    }
+
+    fn register_builtin(&mut self, name: &str, titan: &str, aether: &str, helix: &str, schema: &str) {
+        let id = self.next_id
+        self.next_id += 1
+        self.mappings.insert(id, TypeMapping {
+            type_id:      id,
+            titan_name:   titan.to_string(),
+            aether_name:  aether.to_string(),
+            sylva_name:   name.to_lowercase(),
+            helix_name:   helix.to_string(),
+            json_schema:  schema.to_string(),
+            msgpack_tag:  None,
+        })
+        self.by_name.insert(name.to_string(), id)
+    }
+
+    pub fn register(
+        &mut self,
+        name:        &str,
+        titan_name:  &str,
+        aether_name: &str,
+        sylva_name:  &str,
+        helix_name:  &str,
+        json_schema: &str,
+        msgpack_tag: Option<u8>,
+    ) -> u32 {
+        let id = self.next_id
+        self.next_id += 1
+        self.mappings.insert(id, TypeMapping {
+            type_id:      id,
+            titan_name:   titan_name.to_string(),
+            aether_name:  aether_name.to_string(),
+            sylva_name:   sylva_name.to_string(),
+            helix_name:   helix_name.to_string(),
+            json_schema:  json_schema.to_string(),
+            msgpack_tag,
+        })
+        self.by_name.insert(name.to_string(), id)
+        id
+    }
+
+    pub fn lookup_by_id(&self, id: u32) -> Option<&TypeMapping> {
+        self.mappings.get(&id)
+    }
+
+    pub fn lookup_by_name(&self, name: &str) -> Option<&TypeMapping> {
+        let id = self.by_name.get(name)?
+        self.mappings.get(id)
+    }
+
+    pub fn list_types(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.by_name.keys().map(|s| s.as_str()).collect()
+        names.sort()
+        names
+    }
+
+    pub fn count(&self) -> usize { self.mappings.len() }
+
+    // Auto-detect OmniValue type and return its registered name
+    pub fn type_of(v: &OmniValue) -> &'static str {
+        v.type_name()
+    }
+
+    // Generate JSON schema for an OmniValue (reflective)
+    pub fn value_schema(v: &OmniValue) -> String {
+        match v {
+            OmniValue::Nil      => r#"{"type":"null"}"#.to_string(),
+            OmniValue::Bool(_)  => r#"{"type":"boolean"}"#.to_string(),
+            OmniValue::Int(_)   => r#"{"type":"integer"}"#.to_string(),
+            OmniValue::Float(_) => r#"{"type":"number"}"#.to_string(),
+            OmniValue::Str(_)   => r#"{"type":"string"}"#.to_string(),
+            OmniValue::Bytes(_) => r#"{"type":"string","format":"byte"}"#.to_string(),
+            OmniValue::List(l)  => {
+                let item_schema = l.first().map(TypeRegistry::value_schema)
+                    .unwrap_or_else(|| r#"{}"#.to_string())
+                format!(r#"{{"type":"array","items":{}}}"#, item_schema)
+            }
+            OmniValue::Map(m)   => {
+                let mut props = Vec::new()
+                let mut sorted: Vec<(&String, &OmniValue)> = m.iter().collect()
+                sorted.sort_by_key(|(k, _)| k.as_str())
+                for (k, v) in sorted {
+                    props.push(format!(r#"{}:{}"#, json_escape_string(k), TypeRegistry::value_schema(v)))
+                }
+                format!(r#"{{"type":"object","properties":{{{}}}}}"#, props.join(","))
+            }
+        }
+    }
+}
+
+// ============================================================
+// UNIT TESTS
+// ============================================================
+
+#[test_suite]
+mod tests {
+
+    // --- OmniValue coercions ---
+
+    #[test]
+    fn omni_value_coercions() {
+        let i = OmniValue::Int(42)
+        assert_eq!(i.to_i64(), Some(42))
+        assert_eq!(i.to_f64(), Some(42.0))
+        assert!(i.to_bool())
+
+        let f = OmniValue::Float(3.14)
+        assert_eq!(f.to_i64(), Some(3))
+        assert!(f.to_bool())
+
+        let nil = OmniValue::Nil
+        assert!(!nil.to_bool())
+    }
+
+    #[test]
+    fn omni_value_deep_equality() {
+        let a = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("x".to_string(), OmniValue::Int(1))
+            m.insert("y".to_string(), OmniValue::Str("hello".to_string()))
+            m
+        })
+        let b = a.clone()
+        assert!(a.equals(&b))
+
+        let c = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("x".to_string(), OmniValue::Int(2))  // different value
+            m
+        })
+        assert!(!a.equals(&c))
+    }
+
+    // --- JSON round-trip ---
+
+    #[test]
+    fn json_serialize_nil() {
+        let v = OmniValue::Nil
+        assert_eq!(serialize_json(&v), "null")
+    }
+
+    #[test]
+    fn json_serialize_primitives() {
+        assert_eq!(serialize_json(&OmniValue::Bool(true)),   "true")
+        assert_eq!(serialize_json(&OmniValue::Bool(false)),  "false")
+        assert_eq!(serialize_json(&OmniValue::Int(42)),      "42")
+        assert_eq!(serialize_json(&OmniValue::Int(-99)),     "-99")
+        assert_eq!(serialize_json(&OmniValue::Str("hi".to_string())), "\"hi\"")
+    }
+
+    #[test]
+    fn json_serialize_nested() {
+        let v = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("name".to_string(), OmniValue::Str("Alice".to_string()))
+            m.insert("age".to_string(),  OmniValue::Int(30))
+            m.insert("scores".to_string(), OmniValue::List(vec![
+                OmniValue::Int(95), OmniValue::Int(87), OmniValue::Int(92),
+            ]))
+            m
+        })
+        let json = serialize_json(&v)
+        assert!(json.contains("\"name\":\"Alice\""))
+        assert!(json.contains("\"age\":30"))
+        assert!(json.contains("[95,87,92]"))
+    }
+
+    #[test]
+    fn json_roundtrip() {
+        let original = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("key".to_string(),  OmniValue::Str("value".to_string()))
+            m.insert("num".to_string(),  OmniValue::Int(123))
+            m.insert("flag".to_string(), OmniValue::Bool(false))
+            m.insert("nil".to_string(),  OmniValue::Nil)
+            m.insert("arr".to_string(),  OmniValue::List(vec![
+                OmniValue::Int(1), OmniValue::Int(2), OmniValue::Int(3),
+            ]))
+            m
+        })
+        let json     = serialize_json(&original)
+        let restored = deserialize_json(&json).unwrap()
+        assert!(original.equals(&restored))
+    }
+
+    #[test]
+    fn json_deserialize_edge_cases() {
+        assert_eq!(deserialize_json("null").unwrap().type_name(),  "nil")
+        assert_eq!(deserialize_json("true").unwrap().as_bool(),    Some(true))
+        assert_eq!(deserialize_json("42").unwrap().as_int(),       Some(42))
+        assert_eq!(deserialize_json("3.14").unwrap().to_f64().map(|f| (f * 100.0).round() / 100.0), Some(3.14))
+        assert_eq!(deserialize_json("\"hello\"").unwrap().as_str(), Some("hello"))
+        assert!(deserialize_json("[]").unwrap().is_list())
+        assert!(deserialize_json("{}").unwrap().is_map())
+    }
+
+    #[test]
+    fn json_deserialize_escape_sequences() {
+        let v = deserialize_json("\"hello\\nworld\\t!\"").unwrap()
+        assert_eq!(v.as_str(), Some("hello\nworld\t!"))
+    }
+
+    // --- MessagePack round-trip ---
+
+    #[test]
+    fn msgpack_roundtrip_primitives() {
+        let vals = vec![
+            OmniValue::Nil,
+            OmniValue::Bool(true),
+            OmniValue::Bool(false),
+            OmniValue::Int(0),
+            OmniValue::Int(127),
+            OmniValue::Int(-1),
+            OmniValue::Int(i64::MAX),
+            OmniValue::Float(3.14159),
+            OmniValue::Str("hello world".to_string()),
+        ]
+        for v in &vals {
+            let enc = serialize_msgpack(v)
+            let dec = deserialize_msgpack(&enc).unwrap()
+            assert!(v.equals(&dec), "Roundtrip failed for {:?}", v)
+        }
+    }
+
+    #[test]
+    fn msgpack_roundtrip_nested() {
+        let v = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("list".to_string(), OmniValue::List(vec![
+                OmniValue::Int(1), OmniValue::Str("two".to_string()), OmniValue::Bool(false),
+            ]))
+            m.insert("nested".to_string(), OmniValue::Map({
+                let mut n = HashMap::new()
+                n.insert("deep".to_string(), OmniValue::Int(42))
+                n
+            }))
+            m
+        })
+        let enc = serialize_msgpack(&v)
+        let dec = deserialize_msgpack(&enc).unwrap()
+        assert!(v.equals(&dec))
+    }
+
+    // --- AetherBridge ---
+
+    #[test]
+    fn aether_bridge_roundtrip() {
+        let v   = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("cmd".to_string(),    OmniValue::Str("spawn".to_string()))
+            m.insert("count".to_string(),  OmniValue::Int(5))
+            m
+        })
+        let msg = AetherBridge::to_message(&v)
+        let dec = AetherBridge::from_message(&msg).unwrap()
+        assert!(v.equals(&dec))
+    }
+
+    #[test]
+    fn aether_bridge_args_encoding() {
+        let args = [("method", OmniValue::Str("GET".to_string())), ("status", OmniValue::Int(200))]
+        let enc  = AetherBridge::encode_args(&args)
+        let dec  = AetherBridge::decode_args(&enc).unwrap()
+        assert_eq!(dec.get(&"method".to_string()).and_then(|v| v.as_str()), Some("GET"))
+    }
+
+    // --- HelixBridge ---
+
+    #[test]
+    fn helix_bridge_uniform_buffer_roundtrip() {
+        let v = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("time".to_string(),   OmniValue::Float(1.5))
+            m.insert("scale".to_string(),  OmniValue::Float(2.0))
+            m.insert("enabled".to_string(), OmniValue::Bool(true))
+            m
+        })
+        let buf = HelixBridge::to_uniform_buffer(&v).unwrap()
+        let dec = HelixBridge::from_uniform_buffer(&buf).unwrap()
+        let dm  = dec.as_map().unwrap()
+        // Check individual fields
+        assert!((dm.get(&"time".to_string()).unwrap().to_f64().unwrap() - 1.5).abs() < 1e-4)
+        assert_eq!(dm.get(&"enabled".to_string()).unwrap().as_bool(), Some(true))
+    }
+
+    // --- SylvaBridge ---
+
+    #[test]
+    fn sylva_bridge_tensor_roundtrip() {
+        let values = vec![
+            OmniValue::Float(1.0), OmniValue::Float(2.0),
+            OmniValue::Float(3.0), OmniValue::Float(4.0),
+            OmniValue::Float(5.0), OmniValue::Float(6.0),
+        ]
+        let shape = vec![2u32, 3u32]
+        let enc   = SylvaBridge::list_to_tensor(&values, &shape).unwrap()
+        let (dec_vals, dec_shape) = SylvaBridge::tensor_to_list(&enc).unwrap()
+        assert_eq!(dec_shape, shape)
+        for (a, b) in values.iter().zip(dec_vals.iter()) {
+            let fa = a.to_f64().unwrap()
+            let fb = b.to_f64().unwrap()
+            assert!((fa - fb).abs() < 1e-10)
+        }
+    }
+
+    // --- TypeRegistry ---
+
+    #[test]
+    fn type_registry_builtins() {
+        let reg = TypeRegistry::new()
+        assert!(reg.lookup_by_name("Nil").is_some())
+        assert!(reg.lookup_by_name("Int").is_some())
+        assert!(reg.lookup_by_name("Map").is_some())
+        assert!(reg.count() >= 8)
+    }
+
+    #[test]
+    fn type_registry_custom_type() {
+        let mut reg = TypeRegistry::new()
+        let id = reg.register("Point3D", "Vec3", "vec3_msg", "tensor<3>", "vec3", r#"{"type":"array","minItems":3,"maxItems":3}"#, None)
+        let mapping = reg.lookup_by_id(id).unwrap()
+        assert_eq!(mapping.titan_name, "Vec3")
+        assert_eq!(mapping.helix_name, "vec3")
+    }
+
+    #[test]
+    fn type_registry_value_schema() {
+        let v = OmniValue::Map({
+            let mut m = HashMap::new()
+            m.insert("name".to_string(), OmniValue::Str("test".to_string()))
+            m.insert("count".to_string(), OmniValue::Int(1))
+            m
+        })
+        let schema = TypeRegistry::value_schema(&v)
+        assert!(schema.contains("\"type\":\"object\""))
+        assert!(schema.contains("\"properties\""))
+    }
+}

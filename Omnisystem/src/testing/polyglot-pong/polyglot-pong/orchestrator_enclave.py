@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Polyglot Pong Orchestrator with Bonsai Enclave Runtime Downloader
+Polyglot Pong Orchestrator with Omnisystem Enclave Runtime Downloader
 
-This orchestrator uses Bonsai Enclave to provision language runtimes and execute
+This orchestrator uses Omnisystem Enclave to provision language runtimes and execute
 the Polyglot Pong test matrix in fully isolated, deterministic environments.
 
 Every language runtime is fetched as a content-addressed, cryptographically verified
@@ -25,7 +25,7 @@ import time
 from datetime import datetime
 
 class EnclaveRuntime:
-    """Manages runtime installation and execution via Bonsai Enclave"""
+    """Manages runtime installation and execution via Omnisystem Enclave"""
 
     RUNTIME_MAP = {
         "python": "python@3.12.4",
@@ -354,7 +354,7 @@ class PolyglotPongOrchestrator:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Polyglot Pong Orchestrator with Bonsai Enclave"
+        description="Polyglot Pong Orchestrator with Omnisystem Enclave"
     )
     parser.add_argument(
         "--matrix",

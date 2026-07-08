@@ -1,0 +1,196 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS SMART ROUTER BRIDGE — Titan systems/core layer
+// Thin REST client into SmartRouter (OmniHarness/workspace/src-tauri/src/
+// smart_router.rs): hardware-aware, self-adjusting model selection. Matches
+// ModelLoaderBridge.titan / ModuleSystemBridge.titan's REST-bridge convention.
+// Bridged now because /api/v1/smart-router/* is a real, wired route group —
+// previously SmartRouter was Tauri-command-only and had no REST surface to
+// bridge honestly.
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f32, u32, bool}
+
+struct WorkspaceBridgeConfig {
+    host:       String,
+    port:       i32,
+    auth_token: Option<String>,
+}
+
+fn bridge_config_from_env() -> WorkspaceBridgeConfig {
+    WorkspaceBridgeConfig {
+        host:       std::env::var("OMNIHARNESS_WORKSPACE_HOST").unwrap_or_else(|_| "localhost".to_string()),
+        port:       std::env::var("OMNIHARNESS_WORKSPACE_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8090),
+        auth_token: std::env::var("OMNIHARNESS_WORKSPACE_TOKEN").ok(),
+    }
+}
+
+// ── Mirrors smart_router.rs's public types ────────────────────────────────────
+
+struct HardwareSnapshot {
+    vram_used_mb:         u64,
+    vram_total_mb:        u64,
+    ram_free_mb:          u64,
+    ram_total_mb:         u64,
+    cpu_utilisation_pct:  f32,
+    gpu_utilisation_pct:  f32, // -1 = unavailable (no VRAM figures reported yet)
+    timestamp_secs:       u64,
+}
+
+struct ModelSelection {
+    primary_model:    String,
+    draft_model:      Option<String>,
+    adapter:          Option<String>,
+    swarm_config_id:  Option<String>,
+    confidence:       f32,
+    reasoning:        String,
+}
+
+struct AdaptiveWeights {
+    already_loaded_bonus:              f32,
+    domain_match_bonus:                f32,
+    low_resource_small_model_bonus:    f32,
+    low_resource_large_model_penalty:  f32,
+    power_saving_large_model_penalty:  f32,
+    history_quality_weight:            f32,
+    history_speed_weight:              f32,
+}
+
+// ── Bridge struct ─────────────────────────────────────────────────────────────
+
+pub struct SmartRouterBridge {
+    config: WorkspaceBridgeConfig,
+}
+
+impl SmartRouterBridge {
+    pub fn new(config: WorkspaceBridgeConfig) -> Self {
+        SmartRouterBridge { config }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(bridge_config_from_env())
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}:{}", self.config.host, self.config.port)
+    }
+
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut h = vec![("content-type".to_string(), "application/json".to_string())]
+        if let Some(tok) = &self.config.auth_token {
+            h.push(("authorization".to_string(), format!("Bearer {}", tok)))
+        }
+        h
+    }
+
+    // ── Select a model for a prompt (proxies /api/v1/smart-router/select) ────
+
+    pub fn select_model(&self, prompt: &str, quality_bias: f32, power_saving: bool) -> Result<ModelSelection, String> {
+        let body = format!(
+            r#"{{"prompt":"{}","quality_bias":{},"power_saving":{}}}"#,
+            prompt.replace("\"", "\\\""), quality_bias, power_saving
+        )
+        let url = format!("{}/api/v1/smart-router/select", self.base_url())
+        let resp = omnisystem::net::http_post_with_headers(&url, &body, self.headers())
+            .map_err(|e| format!("SmartRouter select failed: {}", e))?
+        parse_model_selection(resp)
+    }
+
+    // ── Current hardware snapshot (proxies /api/v1/smart-router/hardware) ────
+
+    pub fn hardware(&self) -> Result<HardwareSnapshot, String> {
+        let url  = format!("{}/api/v1/smart-router/hardware", self.base_url())
+        let resp = omnisystem::net::http_get_with_headers(&url, self.headers())
+            .map_err(|e| format!("SmartRouter hardware snapshot unavailable: {}", e))?
+        parse_hardware_snapshot(resp)
+    }
+
+    // ── Current adaptive weights (proxies /api/v1/smart-router/weights) ──────
+
+    pub fn weights(&self) -> Result<AdaptiveWeights, String> {
+        let url  = format!("{}/api/v1/smart-router/weights", self.base_url())
+        let resp = omnisystem::net::http_get_with_headers(&url, self.headers())
+            .map_err(|e| format!("SmartRouter weights unavailable: {}", e))?
+        parse_adaptive_weights(resp)
+    }
+}
+
+// ── Manual JSON field extraction (matches ModelLoaderBridge.titan's style —
+//    no shared JSON-parsing helper module exists in this codebase) ───────────
+
+fn extract_f32(json: &str, field: &str) -> f32 {
+    let key = format!("\"{}\":", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len())
+        return after[..end].trim().parse::<f32>().unwrap_or(0.0)
+    }
+    0.0
+}
+
+fn extract_u64(json: &str, field: &str) -> u64 {
+    extract_f32(json, field) as u64
+}
+
+fn extract_string(json: &str, field: &str) -> String {
+    let key = format!("\"{}\":\"", field)
+    if let Some(start) = json.find(&key) {
+        let after = &json[start + key.len()..]
+        let end = after.find('"').unwrap_or(after.len())
+        return after[..end].to_string()
+    }
+    String::new()
+}
+
+fn extract_string_opt(json: &str, field: &str) -> Option<String> {
+    let key = format!("\"{}\":\"", field)
+    if json.find(&key).is_some() {
+        Some(extract_string(json, field))
+    } else {
+        None
+    }
+}
+
+fn parse_model_selection(json: String) -> Result<ModelSelection, String> {
+    Ok(ModelSelection {
+        primary_model:   extract_string(&json, "primary_model"),
+        draft_model:     extract_string_opt(&json, "draft_model"),
+        adapter:         extract_string_opt(&json, "adapter"),
+        swarm_config_id: extract_string_opt(&json, "swarm_config_id"),
+        confidence:      extract_f32(&json, "confidence"),
+        reasoning:       extract_string(&json, "reasoning"),
+    })
+}
+
+fn parse_hardware_snapshot(json: String) -> Result<HardwareSnapshot, String> {
+    Ok(HardwareSnapshot {
+        vram_used_mb:        extract_u64(&json, "vram_used_mb"),
+        vram_total_mb:       extract_u64(&json, "vram_total_mb"),
+        ram_free_mb:         extract_u64(&json, "ram_free_mb"),
+        ram_total_mb:        extract_u64(&json, "ram_total_mb"),
+        cpu_utilisation_pct: extract_f32(&json, "cpu_utilisation_pct"),
+        gpu_utilisation_pct: extract_f32(&json, "gpu_utilisation_pct"),
+        timestamp_secs:      extract_u64(&json, "timestamp_secs"),
+    })
+}
+
+fn parse_adaptive_weights(json: String) -> Result<AdaptiveWeights, String> {
+    Ok(AdaptiveWeights {
+        already_loaded_bonus:             extract_f32(&json, "already_loaded_bonus"),
+        domain_match_bonus:               extract_f32(&json, "domain_match_bonus"),
+        low_resource_small_model_bonus:   extract_f32(&json, "low_resource_small_model_bonus"),
+        low_resource_large_model_penalty: extract_f32(&json, "low_resource_large_model_penalty"),
+        power_saving_large_model_penalty: extract_f32(&json, "power_saving_large_model_penalty"),
+        history_quality_weight:           extract_f32(&json, "history_quality_weight"),
+        history_speed_weight:             extract_f32(&json, "history_speed_weight"),
+    })
+}
+
+// ── Public module interface ───────────────────────────────────────────────────
+
+pub mod SmartRouter {
+    pub use super::{SmartRouterBridge, WorkspaceBridgeConfig, HardwareSnapshot, ModelSelection, AdaptiveWeights}
+
+    pub fn create() -> SmartRouterBridge {
+        SmartRouterBridge::from_env()
+    }
+}

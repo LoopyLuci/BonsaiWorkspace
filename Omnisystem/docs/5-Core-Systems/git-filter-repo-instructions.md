@@ -41,7 +41,7 @@ pwsh -File .\scripts\git-filter-repo-cleanup.ps1
 - Force-push rewritten refs and tags to `origin`.
 
 ## What the helper currently removes (edit as needed)
-- All `*/target/**` paths (including `bonsai-runtime/target/**`)
+- All `*/target/**` paths (including `omnisystem-runtime/target/**`)
 - Files matching: `*.pdb`, `*.rlib`, `*.exe`, `*.dll`, `*.so`, `*.dylib`
 
 If you need a narrower sweep, modify the `--path-glob` list in the script before running.

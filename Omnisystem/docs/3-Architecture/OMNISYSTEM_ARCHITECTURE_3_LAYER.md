@@ -30,7 +30,7 @@
 ┃  Files: 1,500+ lines documentation + 6 app platforms                  ┃
 ┃                                                                        ┃
 ┃  ┌──────────────────────────────────────────────────────────────┐    ┃
-┃  │ 🚀 BonsaiEcosystem (Primary Application Framework)           │    ┃
+┃  │ 🚀 OmnisystemEcosystem (Primary Application Framework)           │    ┃
 ┃  │                                                              │    ┃
 ┃  │ ├─ Desktop Launcher       (Beautiful app discovery)          │    ┃
 ┃  │ ├─ Control Panel          (System settings & management)     │    ┃
@@ -232,7 +232,7 @@
 
 | Component | Files | Status | Location |
 |-----------|-------|--------|----------|
-| **BonsaiEcosystem** | 744 | ✅ Production | applications/bonsai-ecosystem/ |
+| **OmnisystemEcosystem** | 744 | ✅ Production | applications/omnisystem-ecosystem/ |
 | **Core App** | 76 | ✅ Production | applications/core/ |
 | **Web App** | 17,797 | ✅ Production | applications/web/ |
 | **Mobile App** | 43 | ✅ Production | applications/mobile/ |
@@ -321,7 +321,7 @@ Omnisystem/
 │   ├── LAYER3_INTEGRATION_GUIDE.md
 │   ├── README.md
 │   │
-│   ├── bonsai-ecosystem/             (Primary Framework)
+│   ├── omnisystem-ecosystem/             (Primary Framework)
 │   │   ├── launcher/
 │   │   ├── control-panel/
 │   │   ├── installer/
@@ -374,7 +374,7 @@ Omnisystem/
 ```
 1. User starts Omnisystem
     ↓
-2. BonsaiEcosystem Launcher appears (Layer 3 entry point)
+2. OmnisystemEcosystem Launcher appears (Layer 3 entry point)
     ↓
 3. User searches for application (e.g., "Web Designer")
     ↓
@@ -453,7 +453,7 @@ Omnisystem/
 - [x] Formal verification complete
 
 ### Layer 3: Applications ✅
-- [x] BonsaiEcosystem ready
+- [x] OmnisystemEcosystem ready
 - [x] 6 application platforms ready
 - [x] Master initialization created
 - [x] Documentation complete
@@ -480,7 +480,7 @@ Omnisystem/
 ### As a User
 
 - ✅ Install and run Omnisystem
-- ✅ Use BonsaiEcosystem launcher
+- ✅ Use OmnisystemEcosystem launcher
 - ✅ Run any application from the launcher
 - ✅ Customize themes and settings
 - ✅ Organize workspaces
@@ -571,7 +571,7 @@ Omnisystem/
 
 ## Next Steps
 
-1. **For Users**: Download Omnisystem and run BonsaiEcosystem launcher
+1. **For Users**: Download Omnisystem and run OmnisystemEcosystem launcher
 2. **For Developers**: Follow LAYER3_INTEGRATION_GUIDE.md to create apps
 3. **For Architects**: Use LAYER3_ARCHITECTURE.md to understand design
 4. **For Everyone**: Start building and enjoy 100+ years of computing

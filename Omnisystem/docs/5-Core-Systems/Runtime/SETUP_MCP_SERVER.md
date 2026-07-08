@@ -1,6 +1,6 @@
-# 🔧 Bonsai MCP Server Setup Guide
+# 🔧 Omnisystem MCP Server Setup Guide
 
-**Purpose:** Enable Claude and all agents to access Bonsai ecosystem tools via MCP protocol
+**Purpose:** Enable Claude and all agents to access Omnisystem ecosystem tools via MCP protocol
 
 **Status:** Infrastructure ready, awaiting Rust environment setup
 
@@ -14,17 +14,17 @@ Add this to `.vscode/settings.json`:
 ```json
 {
   "claudeCode.mcpServers": {
-    "bonsai-mcp": {
+    "omnisystem-mcp": {
       "command": "cargo",
       "args": [
         "run",
         "--manifest-path",
-        "Z:\\Projects\\BonsaiWorkspace\\crates\\mcp-server\\Cargo.toml",
+        "Z:\\Projects\\OmnisystemWorkspace\\crates\\mcp-server\\Cargo.toml",
         "--release"
       ],
       "env": {
-        "RUST_LOG": "debug,bonsai_mcp=trace",
-        "BONSAI_CONFIG": "Z:\\Projects\\BonsaiWorkspace\\.bonsai\\config.toml"
+        "RUST_LOG": "debug,omnisystem_mcp=trace",
+        "OMNISYSTEM_CONFIG": "Z:\\Projects\\OmnisystemWorkspace\\.omnisystem\\config.toml"
       }
     }
   }
@@ -39,35 +39,35 @@ Update `~/Library/Application\ Support/Code/User/settings.json` (macOS) or `%APP
 ## 🎯 Available Tools (30 Total)
 
 ### Linting Tools (4)
-- `bonsai_lint` – Lint files/directories
-- `bonsai_apply_fix` – Apply automatic fixes
-- `bonsai_dismiss_diagnostic` – Mark false positives
-- `bonsai_report_false_positive` – Improve rule confidence
+- `omnisystem_lint` – Lint files/directories
+- `omnisystem_apply_fix` – Apply automatic fixes
+- `omnisystem_dismiss_diagnostic` – Mark false positives
+- `omnisystem_report_false_positive` – Improve rule confidence
 
 ### Bug Hunter Tools (10)
-- `bonsai_scan_repo` – Full/incremental/quick repo scan
-- `bonsai_scan_status` – Check scan progress
-- `bonsai_list_findings` – List findings by severity
-- `bonsai_get_finding` – Get finding details
-- `bonsai_auto_fix` – Auto-fix findings
-- `bonsai_explain_diagnostic` – AI explanation
-- `bonsai_prioritize_findings` – Sort by impact/effort
-- `bonsai_generate_report` – Create scan reports
+- `omnisystem_scan_repo` – Full/incremental/quick repo scan
+- `omnisystem_scan_status` – Check scan progress
+- `omnisystem_list_findings` – List findings by severity
+- `omnisystem_get_finding` – Get finding details
+- `omnisystem_auto_fix` – Auto-fix findings
+- `omnisystem_explain_diagnostic` – AI explanation
+- `omnisystem_prioritize_findings` – Sort by impact/effort
+- `omnisystem_generate_report` – Create scan reports
 
 ### Phase C Tools (3)
-- `bonsai_verify_rule` – Axiom formal proofs
-- `bonsai_predict_issues` – ML predictions
-- `bonsai_omnisystem_lint` – Titan/Aether/Sylva/Axiom
+- `omnisystem_verify_rule` – Axiom formal proofs
+- `omnisystem_predict_issues` – ML predictions
+- `omnisystem_omnisystem_lint` – Titan/Aether/Sylva/Axiom
 
 ### Collaboration Tools (4)
-- `bonsai_team_profile` – Team rule overrides
-- `bonsai_vote_proposal` – Rule voting
-- `bonsai_marketplace_search` – Plugin discovery
-- `bonsai_install_plugin` – Install plugins
+- `omnisystem_team_profile` – Team rule overrides
+- `omnisystem_vote_proposal` – Rule voting
+- `omnisystem_marketplace_search` – Plugin discovery
+- `omnisystem_install_plugin` – Install plugins
 
 ### Observability Tools (2)
-- `bonsai_metrics` – Real-time metrics
-- `bonsai_impact_analysis` – Bug density impact
+- `omnisystem_metrics` – Real-time metrics
+- `omnisystem_impact_analysis` – Bug density impact
 
 ---
 
@@ -89,7 +89,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Step 2: Build MCP Server
 
 ```bash
-cd Z:\Projects\BonsaiWorkspace
+cd Z:\Projects\OmnisystemWorkspace
 cargo build --package mcp-server --release
 ```
 
@@ -102,9 +102,9 @@ cargo run --package mcp-server --release -- --list-tools
 Expected output:
 ```
 Registered MCP tools:
-  ✓ bonsai_lint
-  ✓ bonsai_scan_repo
-  ✓ bonsai_list_findings
+  ✓ omnisystem_lint
+  ✓ omnisystem_scan_repo
+  ✓ omnisystem_list_findings
   ... (30 tools total)
 ```
 
@@ -112,7 +112,7 @@ Registered MCP tools:
 
 **Option A: Manual Start**
 ```bash
-cd Z:\Projects\BonsaiWorkspace
+cd Z:\Projects\OmnisystemWorkspace
 cargo run --package mcp-server --release
 ```
 
@@ -120,21 +120,21 @@ cargo run --package mcp-server --release
 ```powershell
 # Start in background
 Start-Process powershell `
-  -ArgumentList "-NoExit -Command `"cd Z:\Projects\BonsaiWorkspace; cargo run --package mcp-server --release`"" `
+  -ArgumentList "-NoExit -Command `"cd Z:\Projects\OmnisystemWorkspace; cargo run --package mcp-server --release`"" `
   -WindowStyle Minimized
 ```
 
 **Option C: Systemd Service (Linux/macOS)**
-Create `/etc/systemd/user/bonsai-mcp.service`:
+Create `/etc/systemd/user/omnisystem-mcp.service`:
 ```ini
 [Unit]
-Description=Bonsai MCP Server
+Description=Omnisystem MCP Server
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/user/BonsaiWorkspace
+WorkingDirectory=/home/user/OmnisystemWorkspace
 ExecStart=/usr/local/cargo/bin/cargo run --package mcp-server --release
 Restart=always
 RestartSec=10
@@ -145,8 +145,8 @@ WantedBy=default.target
 
 Then enable:
 ```bash
-systemctl --user enable bonsai-mcp
-systemctl --user start bonsai-mcp
+systemctl --user enable omnisystem-mcp
+systemctl --user start omnisystem-mcp
 ```
 
 ---
@@ -162,8 +162,8 @@ Expected response:
 ```json
 {
   "tools": [
-    "bonsai_lint",
-    "bonsai_scan_repo",
+    "omnisystem_lint",
+    "omnisystem_scan_repo",
     ... (30 total)
   ]
 }
@@ -171,15 +171,15 @@ Expected response:
 
 ### Test 2: Get Tool Definition
 ```bash
-curl http://localhost:3000/tools/bonsai_lint
+curl http://localhost:3000/tools/omnisystem_lint
 ```
 
 ### Test 3: Call a Tool
 ```bash
-curl -X POST http://localhost:3000/tools/bonsai_scan_repo \
+curl -X POST http://localhost:3000/tools/omnisystem_scan_repo \
   -H "Content-Type: application/json" \
   -d '{
-    "path": "Z:\\Projects\\BonsaiWorkspace",
+    "path": "Z:\\Projects\\OmnisystemWorkspace",
     "mode": "quick",
     "ai_review": true
   }'
@@ -198,7 +198,7 @@ print(response.json())
 
 # Call tool
 response = client.post(
-    "http://localhost:3000/tools/bonsai_scan_repo",
+    "http://localhost:3000/tools/omnisystem_scan_repo",
     json={
         "path": ".",
         "mode": "quick"
@@ -213,7 +213,7 @@ print(response.json())
 
 ### Environment Variables
 
-Create `.bonsai/config.toml`:
+Create `.omnisystem/config.toml`:
 ```toml
 [mcp_server]
 bind_address = "127.0.0.1"
@@ -239,7 +239,7 @@ tracing_level = "debug"
 Only agents with valid auth token can call tools:
 ```bash
 curl -H "Authorization: Bearer your-secret-token-here" \
-  http://localhost:3000/tools/bonsai_lint
+  http://localhost:3000/tools/omnisystem_lint
 ```
 
 ---
@@ -249,10 +249,10 @@ curl -H "Authorization: Bearer your-secret-token-here" \
 ### View Logs
 ```bash
 # Real-time logs
-journalctl -u bonsai-mcp -f
+journalctl -u omnisystem-mcp -f
 
 # Or from file
-tail -f ~/.bonsai/logs/mcp-server.log
+tail -f ~/.omnisystem/logs/mcp-server.log
 ```
 
 ### Metrics Endpoint
@@ -279,11 +279,11 @@ Once MCP server is running, Claude can automatically invoke tools:
 
 ### Example 1: Scan Repository
 ```
-Claude: "Scan the BonsaiWorkspace repository for critical issues"
+Claude: "Scan the OmnisystemWorkspace repository for critical issues"
 
 Claude will automatically call:
-  bonsai_scan_repo(
-    path="Z:\Projects\BonsaiWorkspace",
+  omnisystem_scan_repo(
+    path="Z:\Projects\OmnisystemWorkspace",
     mode="full",
     ai_review=true
   )
@@ -294,10 +294,10 @@ Claude will automatically call:
 Claude: "Find and fix all high-severity bugs in the code"
 
 Claude will:
-  1. Call bonsai_scan_repo() to find issues
-  2. Call bonsai_list_findings() to get details
-  3. Call bonsai_auto_fix() for each fixable issue
-  4. Call bonsai_explain_diagnostic() for others
+  1. Call omnisystem_scan_repo() to find issues
+  2. Call omnisystem_list_findings() to get details
+  3. Call omnisystem_auto_fix() for each fixable issue
+  4. Call omnisystem_explain_diagnostic() for others
 ```
 
 ### Example 3: Analyze Impact
@@ -305,8 +305,8 @@ Claude will:
 Claude: "Which rule has the most impact on bug reduction?"
 
 Claude will:
-  1. Call bonsai_metrics() to get current stats
-  2. Call bonsai_impact_analysis() for each rule
+  1. Call omnisystem_metrics() to get current stats
+  2. Call omnisystem_impact_analysis() for each rule
   3. Summarize findings
 ```
 
@@ -327,7 +327,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 ### Issue: "Port 3000 already in use"
 **Solution:** Use different port
 ```bash
-BONSAI_MCP_PORT=3001 cargo run --package mcp-server --release
+OMNISYSTEM_MCP_PORT=3001 cargo run --package mcp-server --release
 ```
 
 ### Issue: "MCP server not responding"
@@ -399,5 +399,5 @@ Once MCP server is running:
 
 **Status: Ready for Rust environment setup** ✅
 
-Once Rust is installed, all 30 Bonsai MCP tools will be available to Claude and all agents.
+Once Rust is installed, all 30 Omnisystem MCP tools will be available to Claude and all agents.
 

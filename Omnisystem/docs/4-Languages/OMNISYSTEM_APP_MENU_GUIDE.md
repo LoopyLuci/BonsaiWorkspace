@@ -8,7 +8,7 @@
 
 The Omnisystem App Menu is the main interface that users see when launching `Omnisystem.exe`. It provides:
 
-- **One-click access** to all 11 BonsaiEcosystem applications
+- **One-click access** to all 11 OmnisystemEcosystem applications
 - **Visual status indicators** for all services
 - **System health information** at a glance
 - **Quick launcher** for common tools
@@ -19,7 +19,7 @@ The Omnisystem App Menu is the main interface that users see when launching `Omn
 ```
 1. Omnisystem.exe starts
    ↓
-2. BonsaiEcosystem initializes (5 phases, ~3-5 seconds)
+2. OmnisystemEcosystem initializes (5 phases, ~3-5 seconds)
    - Service registry registration
    - Infrastructure initialization
    - Application services launch
@@ -38,13 +38,13 @@ The Omnisystem App Menu is the main interface that users see when launching `Omn
 
 ### Header Section (90px)
 - **Title:** "OMNISYSTEM v28.0.0"
-- **Subtitle:** "Enterprise Operating System | BonsaiEcosystem Launcher"
+- **Subtitle:** "Enterprise Operating System | OmnisystemEcosystem Launcher"
 - **Status Display:** All services operational
 - **Visual:** Dark header with orange accent bar
 
 ### Main Content (5 Sections)
 
-#### Section 1: 🌿 BONSAI ECOSYSTEM (5 Applications)
+#### Section 1: 🌿 OMNISYSTEM ECOSYSTEM (5 Applications)
 
 **Workspace IDE**
 - Icon: 💻
@@ -169,7 +169,7 @@ Each application is displayed as a clickable card with:
 
 - **F1** — Help and keyboard shortcuts
 - **Ctrl+,** (comma) — Settings
-- **Ctrl+1-5** — Quick launch Bonsai apps (1=Workspace, 2=Buddy, etc)
+- **Ctrl+1-5** — Quick launch Omnisystem apps (1=Workspace, 2=Buddy, etc)
 - **Alt+F4** — Close menu and shutdown gracefully
 
 ## System Status Indicators
@@ -205,7 +205,7 @@ Each application is displayed as a clickable card with:
 
 When you first launch Omnisystem:
 
-1. **BonsaiEcosystem initializes** (3-5 seconds)
+1. **OmnisystemEcosystem initializes** (3-5 seconds)
    - You'll see initialization logs
    - All services starting up
    - Health checks running
@@ -310,7 +310,7 @@ http://localhost:12345
 
 ## What's Running
 
-After BonsaiEcosystem initialization, these services are always running:
+After OmnisystemEcosystem initialization, these services are always running:
 
 1. **Control Panel** — Port 12345
 2. **Notification Daemon** — Background

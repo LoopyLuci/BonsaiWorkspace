@@ -1,0 +1,598 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS UI — Vera Component System
+// Chat interface, model selector, thought panel, memory graph, tool panel
+// 100% VERA — Enterprise UI for the OmniHarness AI interface
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, Arc, Mutex, i32, f32, bool}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+struct HarnessTheme {
+    bg_primary:    String,  // #0a0a0f
+    bg_secondary:  String,  // #12121a
+    bg_panel:      String,  // #1a1a24
+    accent:        String,  // #7c6af7
+    accent_hover:  String,  // #9d8fff
+    text_primary:  String,  // #e8e8f0
+    text_secondary: String, // #888899
+    success:       String,  // #4ecca3
+    warning:       String,  // #f5a623
+    error_color:   String,  // #e74c3c
+    border:        String,  // #2a2a38
+    user_bubble:   String,  // #1e2040
+    assistant_bubble: String, // #1a2a1a
+    tool_bg:       String,  // #1a1a10
+}
+
+fn harness_dark_theme() -> HarnessTheme {
+    HarnessTheme {
+        bg_primary:      "#0a0a0f".to_string(),
+        bg_secondary:    "#12121a".to_string(),
+        bg_panel:        "#1a1a24".to_string(),
+        accent:          "#7c6af7".to_string(),
+        accent_hover:    "#9d8fff".to_string(),
+        text_primary:    "#e8e8f0".to_string(),
+        text_secondary:  "#888899".to_string(),
+        success:         "#4ecca3".to_string(),
+        warning:         "#f5a623".to_string(),
+        error_color:     "#e74c3c".to_string(),
+        border:          "#2a2a38".to_string(),
+        user_bubble:     "#1e2040".to_string(),
+        assistant_bubble: "#1a2a1a".to_string(),
+        tool_bg:         "#1a1a10".to_string(),
+    }
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+enum MessageRole { User, Assistant, System, Tool }
+
+enum StepStatus { Pending, Running, Success, Failed }
+
+struct ChatMessage {
+    id:       String,
+    role:     MessageRole,
+    content:  String,
+    steps:    Vec<AgentStep>,
+    tokens:   i32,
+    model:    String,
+    time_ms:  i64,
+}
+
+struct AgentStep {
+    id:          String,
+    thought:     String,
+    action:      String,
+    action_input: String,
+    observation: String,
+    status:      StepStatus,
+    latency_ms:  f32,
+}
+
+struct ModelEntry {
+    id:             String,
+    provider:       String,
+    display_name:   String,
+    context_window: i32,
+    supports_tools: bool,
+    available:      bool,
+}
+
+struct MemoryNode {
+    id:         String,
+    content:    String,
+    importance: f32,
+    x:          f32,
+    y:          f32,
+}
+
+// ── OmniBar — the main input component ───────────────────────────────────────
+
+component OmniBar {
+    props {
+        placeholder: String = "Ask anything, or @ a tool…",
+        on_submit:   fn(String) -> (),
+        on_attach:   fn() -> (),
+        disabled:    bool = false,
+    }
+    state {
+        input_text:  String = "".to_string(),
+        is_focused:  bool   = false,
+        char_count:  i32    = 0,
+    }
+
+    render {
+        div(class="omnibar-container") {
+            div(class="omnibar-inner") {
+                textarea(
+                    class="omnibar-input",
+                    placeholder=self.placeholder,
+                    value=self.input_text,
+                    disabled=self.disabled,
+                    rows=1,
+                    on_change=|e| {
+                        self.input_text = e.value.clone()
+                        self.char_count = e.value.len() as i32
+                    },
+                    on_key_down=|e| {
+                        if e.key == "Enter" && !e.shift_key {
+                            e.prevent_default()
+                            if !self.input_text.trim().is_empty() {
+                                let text = self.input_text.clone()
+                                self.input_text = "".to_string()
+                                self.char_count = 0
+                                (self.on_submit)(text)
+                            }
+                        }
+                    },
+                    on_focus=|_| { self.is_focused = true },
+                    on_blur=|_|  { self.is_focused = false },
+                ) {}
+                div(class="omnibar-actions") {
+                    button(
+                        class="btn-icon",
+                        title="Attach file",
+                        on_click=|_| (self.on_attach)(),
+                    ) { icon("paperclip") }
+                    button(
+                        class=if self.disabled { "btn-send disabled" } else { "btn-send" },
+                        disabled=self.disabled,
+                        on_click=|_| {
+                            if !self.input_text.trim().is_empty() && !self.disabled {
+                                let text = self.input_text.clone()
+                                self.input_text = "".to_string()
+                                (self.on_submit)(text)
+                            }
+                        },
+                    ) { icon("send") }
+                }
+            }
+            if self.char_count > 1000 {
+                span(class="char-counter warning") {
+                    text(format!("{}/4096", self.char_count))
+                }
+            }
+        }
+    }
+
+    style {
+        ".omnibar-container" {
+            padding:    "16px",
+            border-top: "1px solid #2a2a38",
+            background: "#12121a",
+        }
+        ".omnibar-inner" {
+            display:       "flex",
+            align-items:   "flex-end",
+            gap:           "8px",
+            background:    "#1a1a24",
+            border:        "1px solid #2a2a38",
+            border-radius: "12px",
+            padding:       "12px 16px",
+        }
+        ".omnibar-input" {
+            flex:        "1",
+            background:  "transparent",
+            border:      "none",
+            color:       "#e8e8f0",
+            font-size:   "15px",
+            line-height: "1.5",
+            resize:      "none",
+            outline:     "none",
+            max-height:  "200px",
+            overflow-y:  "auto",
+        }
+        ".btn-send" {
+            background:    "#7c6af7",
+            border:        "none",
+            border-radius: "8px",
+            color:         "#fff",
+            cursor:        "pointer",
+            padding:       "8px 16px",
+            transition:    "background 0.2s",
+        }
+        ".btn-send:hover" { background: "#9d8fff" }
+        ".btn-send.disabled" { background: "#333"; cursor: "not-allowed" }
+        ".btn-icon" {
+            background: "transparent",
+            border:     "none",
+            color:      "#888899",
+            cursor:     "pointer",
+            padding:    "8px",
+        }
+        ".char-counter.warning" { color: "#f5a623"; font-size: "12px" }
+    }
+}
+
+// ── ThoughtPanel — displays agent steps and reasoning ────────────────────────
+
+component ThoughtPanel {
+    props {
+        messages: Vec<ChatMessage>,
+    }
+    state {
+        expanded_steps: HashMap<String, bool> = HashMap::new(),
+    }
+
+    render {
+        div(class="thought-panel") {
+            for msg in &self.messages {
+                match msg.role {
+                    MessageRole::User => {
+                        div(class="message-row user") {
+                            div(class="message-bubble user-bubble") {
+                                p(class="message-content") { text(msg.content.clone()) }
+                            }
+                        }
+                    }
+                    MessageRole::Assistant => {
+                        div(class="message-row assistant") {
+                            div(class="message-bubble assistant-bubble") {
+                                p(class="message-content") { text(msg.content.clone()) }
+                                if !msg.steps.is_empty() {
+                                    div(class="steps-container") {
+                                        for step in &msg.steps {
+                                            StepCard(step=step.clone())
+                                        }
+                                    }
+                                }
+                                div(class="message-meta") {
+                                    span(class="meta-model") { text(msg.model.clone()) }
+                                    if msg.tokens > 0 {
+                                        span(class="meta-tokens") {
+                                            text(format!("{} tokens", msg.tokens))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    MessageRole::Tool => {
+                        div(class="message-row tool") {
+                            div(class="tool-output") {
+                                span(class="tool-label") { text("Tool Output") }
+                                pre(class="tool-content") { text(msg.content.clone()) }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    style {
+        ".thought-panel" {
+            flex:       "1",
+            overflow-y: "auto",
+            padding:    "24px",
+            display:    "flex",
+            flex-direction: "column",
+            gap:        "16px",
+        }
+        ".message-row.user"      { align-self: "flex-end";  max-width: "70%" }
+        ".message-row.assistant" { align-self: "flex-start"; max-width: "85%" }
+        ".message-bubble" {
+            border-radius: "12px",
+            padding:       "14px 18px",
+        }
+        ".user-bubble"      { background: "#1e2040" }
+        ".assistant-bubble" { background: "#1a2a1a" }
+        ".message-content"  { color: "#e8e8f0"; margin: 0; line-height: "1.6" }
+        ".message-meta"     { display: "flex"; gap: "12px"; margin-top: "8px" }
+        ".meta-model"       { color: "#888899"; font-size: "12px" }
+        ".meta-tokens"      { color: "#666"; font-size: "12px" }
+        ".steps-container"  { margin-top: "12px"; display: "flex"; flex-direction: "column"; gap: "6px" }
+        ".tool-output"      { background: "#1a1a10"; border-radius: "8px"; padding: "12px" }
+        ".tool-label"       { color: "#f5a623"; font-size: "11px"; text-transform: "uppercase"; letter-spacing: "0.05em" }
+        ".tool-content"     { color: "#ccc"; font-size: "13px"; margin-top: "8px"; white-space: "pre-wrap" }
+    }
+}
+
+// ── StepCard — individual ReAct step visualization ────────────────────────────
+
+component StepCard {
+    props {
+        step: AgentStep,
+    }
+    state {
+        expanded: bool = false,
+    }
+
+    render {
+        div(class=format!("step-card {}", match self.step.status {
+            StepStatus::Success => "success",
+            StepStatus::Failed  => "failed",
+            StepStatus::Running => "running",
+            _                   => "pending",
+        })) {
+            div(
+                class="step-header",
+                on_click=|_| { self.expanded = !self.expanded },
+            ) {
+                span(class="step-icon") {
+                    text(match self.step.status {
+                        StepStatus::Success => "✓",
+                        StepStatus::Failed  => "✗",
+                        StepStatus::Running => "⟳",
+                        _                   => "○",
+                    })
+                }
+                span(class="step-action") { text(self.step.action.clone()) }
+                span(class="step-latency") {
+                    text(format!("{:.0}ms", self.step.latency_ms))
+                }
+                span(class="step-toggle") { text(if self.expanded { "▲" } else { "▼" }) }
+            }
+            if self.expanded {
+                div(class="step-detail") {
+                    if !self.step.thought.is_empty() {
+                        div(class="step-thought") {
+                            span(class="step-label") { text("Thought") }
+                            p { text(self.step.thought.clone()) }
+                        }
+                    }
+                    if !self.step.action_input.is_empty() {
+                        div(class="step-input") {
+                            span(class="step-label") { text("Input") }
+                            pre { text(self.step.action_input.clone()) }
+                        }
+                    }
+                    if !self.step.observation.is_empty() {
+                        div(class="step-observation") {
+                            span(class="step-label") { text("Result") }
+                            pre { text(self.step.observation.clone()) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    style {
+        ".step-card" {
+            border:        "1px solid #2a2a38",
+            border-radius: "8px",
+            overflow:      "hidden",
+        }
+        ".step-card.success" { border-color: "#4ecca3" }
+        ".step-card.failed"  { border-color: "#e74c3c" }
+        ".step-card.running" { border-color: "#7c6af7" }
+        ".step-header" {
+            display:     "flex",
+            align-items: "center",
+            gap:         "10px",
+            padding:     "10px 14px",
+            cursor:      "pointer",
+            background:  "#1a1a24",
+        }
+        ".step-icon"    { font-size: "14px"; width: "20px" }
+        ".step-action"  { flex: "1"; color: "#e8e8f0"; font-size: "14px" }
+        ".step-latency" { color: "#666"; font-size: "12px" }
+        ".step-toggle"  { color: "#888899"; font-size: "10px" }
+        ".step-detail"  { padding: "12px 14px"; background: "#12121a" }
+        ".step-label"   { color: "#888899"; font-size: "11px"; text-transform: "uppercase"; display: "block"; margin-bottom: "4px" }
+        ".step-thought" { margin-bottom: "10px" }
+        ".step-input"   { margin-bottom: "10px" }
+        "pre"           { color: "#ccc"; font-size: "12px"; margin: 0; white-space: "pre-wrap" }
+    }
+}
+
+// ── ModelSelector — choose AI model ──────────────────────────────────────────
+
+component ModelSelector {
+    props {
+        models:        Vec<ModelEntry>,
+        current_model: String,
+        on_change:     fn(String) -> (),
+    }
+    state {
+        search:   String = "".to_string(),
+        expanded: bool   = false,
+    }
+
+    render {
+        div(class="model-selector") {
+            div(
+                class=format!("model-current {}", if self.expanded { "open" } else { "" }),
+                on_click=|_| { self.expanded = !self.expanded },
+            ) {
+                div(class="model-dot") {}
+                span(class="model-name") {
+                    text(self.models.iter()
+                        .find(|m| m.id == self.current_model)
+                        .map(|m| m.display_name.clone())
+                        .unwrap_or_else(|| self.current_model.clone()))
+                }
+                span(class="chevron") { text("▼") }
+            }
+            if self.expanded {
+                div(class="model-dropdown") {
+                    input(
+                        type="text",
+                        placeholder="Search models…",
+                        class="model-search",
+                        value=self.search,
+                        on_change=|e| { self.search = e.value.clone() },
+                    ) {}
+                    let filtered: Vec<&ModelEntry> = self.models.iter()
+                        .filter(|m| self.search.is_empty() ||
+                            m.display_name.to_lowercase().contains(&self.search.to_lowercase()) ||
+                            m.provider.to_lowercase().contains(&self.search.to_lowercase()))
+                        .collect()
+                    for model in filtered {
+                        div(
+                            class=format!("model-option {}", if model.id == self.current_model { "selected" } else { "" }),
+                            on_click=|_| {
+                                (self.on_change)(model.id.clone())
+                                self.expanded = false
+                                self.search   = "".to_string()
+                            },
+                        ) {
+                            div(class="model-option-info") {
+                                span(class="model-option-name") { text(model.display_name.clone()) }
+                                span(class="model-option-provider") { text(model.provider.clone()) }
+                            }
+                            div(class="model-option-badges") {
+                                if model.supports_tools {
+                                    span(class="badge tools") { text("tools") }
+                                }
+                                if !model.available {
+                                    span(class="badge unavailable") { text("offline") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    style {
+        ".model-selector"   { position: "relative" }
+        ".model-current"    { display: "flex"; align-items: "center"; gap: "8px"; padding: "10px 14px"; background: "#1a1a24"; border: "1px solid #2a2a38"; border-radius: "8px"; cursor: "pointer" }
+        ".model-dot"        { width: "8px"; height: "8px"; border-radius: "50%"; background: "#4ecca3" }
+        ".model-name"       { flex: "1"; color: "#e8e8f0"; font-size: "14px" }
+        ".chevron"          { color: "#888899"; font-size: "10px" }
+        ".model-dropdown"   { position: "absolute"; top: "calc(100% + 4px)"; left: 0; right: 0; background: "#1a1a24"; border: "1px solid #2a2a38"; border-radius: "8px"; max-height: "300px"; overflow-y: "auto"; z-index: 100 }
+        ".model-search"     { width: "100%"; padding: "10px 14px"; background: "#12121a"; border: "none"; border-bottom: "1px solid #2a2a38"; color: "#e8e8f0"; outline: "none" }
+        ".model-option"     { display: "flex"; justify-content: "space-between"; padding: "10px 14px"; cursor: "pointer" }
+        ".model-option:hover" { background: "#2a2a38" }
+        ".model-option.selected" { background: "#1e1a40" }
+        ".model-option-name"  { color: "#e8e8f0"; font-size: "13px" }
+        ".model-option-provider" { color: "#888899"; font-size: "11px" }
+        ".badge"            { padding: "2px 6px"; border-radius: "4px"; font-size: "10px" }
+        ".badge.tools"      { background: "#1a2040"; color: "#7c6af7" }
+        ".badge.unavailable" { background: "#2a1a1a"; color: "#e74c3c" }
+    }
+}
+
+// ── HarnessShell — top-level layout component ─────────────────────────────────
+
+component HarnessShell {
+    props {
+        api_base: String = "http://localhost:8080".to_string(),
+    }
+    state {
+        messages:      Vec<ChatMessage> = Vec::new(),
+        model_id:      String = "claude-sonnet-4-6".to_string(),
+        models:        Vec<ModelEntry>  = Vec::new(),
+        session_id:    String = "".to_string(),
+        is_loading:    bool   = false,
+        sidebar_open:  bool   = true,
+        error_msg:     Option<String> = None,
+        token_total:   i32    = 0,
+    }
+
+    render {
+        div(class="harness-shell") {
+            // Sidebar
+            div(class=format!("sidebar {}", if self.sidebar_open { "open" } else { "closed" })) {
+                div(class="sidebar-header") {
+                    span(class="logo") { text("⬡ OmniHarness") }
+                    button(class="btn-icon", on_click=|_| { self.sidebar_open = false }) {
+                        icon("chevron-left")
+                    }
+                }
+                ModelSelector(
+                    models=self.models.clone(),
+                    current_model=self.model_id.clone(),
+                    on_change=|id| { self.model_id = id },
+                )
+                div(class="sidebar-stats") {
+                    span { text(format!("Tokens: {}", self.token_total)) }
+                    span { text(format!("Messages: {}", self.messages.len())) }
+                }
+            }
+
+            // Main area
+            div(class="main-area") {
+                // Topbar
+                div(class="topbar") {
+                    if !self.sidebar_open {
+                        button(class="btn-icon", on_click=|_| { self.sidebar_open = true }) {
+                            icon("menu")
+                        }
+                    }
+                    span(class="session-id") { text(format!("Session: {}", &self.session_id[..8.min(self.session_id.len())])) }
+                    button(class="btn-new-session", on_click=|_| {
+                        self.messages   = Vec::new()
+                        self.session_id = harness_new_session_id()
+                        self.token_total = 0
+                    }) { text("New Session") }
+                }
+
+                // Error banner
+                if let Some(err) = &self.error_msg {
+                    div(class="error-banner") {
+                        text(err.clone())
+                        button(on_click=|_| { self.error_msg = None }) { text("✕") }
+                    }
+                }
+
+                // Chat
+                ThoughtPanel(messages=self.messages.clone())
+
+                // Loading indicator
+                if self.is_loading {
+                    div(class="loading-indicator") {
+                        div(class="pulse") {}
+                        span { text("Thinking…") }
+                    }
+                }
+
+                // Input
+                OmniBar(
+                    placeholder="Message OmniHarness… (Enter to send, Shift+Enter for newline)".to_string(),
+                    disabled=self.is_loading,
+                    on_attach=|| {},
+                    on_submit=|text| {
+                        let user_msg = ChatMessage {
+                            id:      harness_new_session_id(),
+                            role:    MessageRole::User,
+                            content: text.clone(),
+                            steps:   Vec::new(),
+                            tokens:  0,
+                            model:   "".to_string(),
+                            time_ms: 0,
+                        }
+                        self.messages.push(user_msg)
+                        self.is_loading = true
+                        self.error_msg  = None
+                        // Trigger async chat call via event system
+                        harness_dispatch_chat(text, self.model_id.clone(), self.session_id.clone())
+                    },
+                )
+            }
+        }
+    }
+
+    style {
+        ".harness-shell"   { display: "flex"; height: "100vh"; background: "#0a0a0f"; color: "#e8e8f0"; font-family: "'Inter', system-ui, sans-serif" }
+        ".sidebar"         { width: "280px"; background: "#12121a"; border-right: "1px solid #2a2a38"; display: "flex"; flex-direction: "column"; padding: "20px"; gap: "16px"; transition: "width 0.2s" }
+        ".sidebar.closed"  { width: 0; padding: 0; overflow: "hidden" }
+        ".sidebar-header"  { display: "flex"; justify-content: "space-between"; align-items: "center" }
+        ".logo"            { color: "#7c6af7"; font-size: "18px"; font-weight: 600 }
+        ".main-area"       { flex: 1; display: "flex"; flex-direction: "column"; overflow: "hidden" }
+        ".topbar"          { display: "flex"; align-items: "center"; gap: "12px"; padding: "12px 20px"; border-bottom: "1px solid #2a2a38"; background: "#12121a" }
+        ".session-id"      { color: "#888899"; font-size: "12px"; font-family: "monospace" }
+        ".btn-new-session" { margin-left: "auto"; padding: "6px 14px"; background: "#1e1a40"; border: "1px solid #7c6af7"; border-radius: "6px"; color: "#7c6af7"; cursor: "pointer" }
+        ".error-banner"    { background: "#2a1a1a"; color: "#e74c3c"; padding: "10px 20px"; display: "flex"; justify-content: "space-between" }
+        ".sidebar-stats"   { margin-top: "auto"; color: "#666"; font-size: "12px"; display: "flex"; flex-direction: "column"; gap: "4px" }
+        ".loading-indicator" { display: "flex"; align-items: "center"; gap: "8px"; padding: "8px 24px"; color: "#888899" }
+        ".pulse"           { width: "8px"; height: "8px"; border-radius: "50%"; background: "#7c6af7"; animation: "pulse 1s infinite" }
+    }
+}
+
+fn harness_new_session_id() -> String {
+    format!("sess_{}", omnisystem::time::now_ms())
+}
+
+fn harness_dispatch_chat(text: String, model_id: String, session_id: String) {
+    // Dispatch to event system — Omnisystem runtime handles the async fetch
+    omnisystem::events::dispatch("harness:chat", &format!(
+        r#"{{"text":"{}","model":"{}","session":"{}"}}"#,
+        text.replace("\"", "\\\""), model_id, session_id
+    ))
+}

@@ -1,0 +1,1126 @@
+// Game.titan — Game Engine and ECS Loop
+// Omnisystem Showcase Application · Game Demo App
+// Language: TITAN · ~2000 LOC
+
+use omnisystem::{String, Vec, HashMap, Option, Result, Box, u32, f32}
+
+// ============================================================================
+// MATH PRIMITIVES
+// ============================================================================
+
+pub struct Vec2 { pub x: f32, pub y: f32 }
+pub struct Vec3 { pub x: f32, pub y: f32, pub z: f32 }
+pub struct Vec4 { pub x: f32, pub y: f32, pub z: f32, pub w: f32 }
+pub struct Quat { pub x: f32, pub y: f32, pub z: f32, pub w: f32 }
+pub struct Mat4 { pub cols: [[f32; 4]; 4] }
+
+impl Vec2 {
+    pub fn new(x: f32, y: f32) -> Self { Vec2 { x, y } }
+    pub fn zero() -> Self { Vec2 { x: 0.0, y: 0.0 } }
+    pub fn length(&self) -> f32 { (self.x * self.x + self.y * self.y).sqrt() }
+    pub fn normalize(&self) -> Self {
+        let l = self.length().max(1e-7)
+        Vec2 { x: self.x / l, y: self.y / l }
+    }
+    pub fn dot(&self, other: &Vec2) -> f32 { self.x * other.x + self.y * other.y }
+    pub fn lerp(&self, other: &Vec2, t: f32) -> Vec2 {
+        Vec2 { x: self.x + t * (other.x - self.x), y: self.y + t * (other.y - self.y) }
+    }
+}
+
+impl Vec3 {
+    pub fn new(x: f32, y: f32, z: f32) -> Self { Vec3 { x, y, z } }
+    pub fn zero() -> Self { Vec3 { x: 0.0, y: 0.0, z: 0.0 } }
+    pub fn one() -> Self { Vec3 { x: 1.0, y: 1.0, z: 1.0 } }
+    pub fn up() -> Self { Vec3 { x: 0.0, y: 1.0, z: 0.0 } }
+
+    pub fn length(&self) -> f32 { (self.x*self.x + self.y*self.y + self.z*self.z).sqrt() }
+    pub fn length_sq(&self) -> f32 { self.x*self.x + self.y*self.y + self.z*self.z }
+
+    pub fn normalize(&self) -> Self {
+        let l = self.length().max(1e-7)
+        Vec3 { x: self.x/l, y: self.y/l, z: self.z/l }
+    }
+
+    pub fn dot(&self, o: &Vec3) -> f32 { self.x*o.x + self.y*o.y + self.z*o.z }
+
+    pub fn cross(&self, o: &Vec3) -> Vec3 {
+        Vec3 {
+            x: self.y*o.z - self.z*o.y,
+            y: self.z*o.x - self.x*o.z,
+            z: self.x*o.y - self.y*o.x,
+        }
+    }
+
+    pub fn add(&self, o: &Vec3) -> Vec3 { Vec3 { x: self.x+o.x, y: self.y+o.y, z: self.z+o.z } }
+    pub fn sub(&self, o: &Vec3) -> Vec3 { Vec3 { x: self.x-o.x, y: self.y-o.y, z: self.z-o.z } }
+    pub fn scale(&self, s: f32)  -> Vec3 { Vec3 { x: self.x*s, y: self.y*s, z: self.z*s } }
+
+    pub fn lerp(&self, o: &Vec3, t: f32) -> Vec3 {
+        Vec3 {
+            x: self.x + t*(o.x - self.x),
+            y: self.y + t*(o.y - self.y),
+            z: self.z + t*(o.z - self.z),
+        }
+    }
+
+    pub fn distance_to(&self, o: &Vec3) -> f32 {
+        self.sub(o).length()
+    }
+}
+
+impl Quat {
+    pub fn identity() -> Self { Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+
+    pub fn from_axis_angle(axis: &Vec3, angle_rad: f32) -> Self {
+        let half = angle_rad * 0.5
+        let s = half.sin()
+        let n = axis.normalize()
+        Quat { x: n.x * s, y: n.y * s, z: n.z * s, w: half.cos() }
+    }
+
+    pub fn mul(&self, o: &Quat) -> Quat {
+        Quat {
+            x: self.w*o.x + self.x*o.w + self.y*o.z - self.z*o.y,
+            y: self.w*o.y - self.x*o.z + self.y*o.w + self.z*o.x,
+            z: self.w*o.z + self.x*o.y - self.y*o.x + self.z*o.w,
+            w: self.w*o.w - self.x*o.x - self.y*o.y - self.z*o.z,
+        }
+    }
+
+    pub fn rotate_vec3(&self, v: &Vec3) -> Vec3 {
+        let qv = Vec3::new(self.x, self.y, self.z)
+        let t  = qv.cross(v).scale(2.0)
+        v.add(&t.scale(self.w)).add(&qv.cross(&t))
+    }
+
+    pub fn slerp(&self, other: &Quat, t: f32) -> Quat {
+        let mut dot = self.x*other.x + self.y*other.y + self.z*other.z + self.w*other.w
+        let (ox, oy, oz, ow) = if dot < 0.0 {
+            dot = -dot
+            (-other.x, -other.y, -other.z, -other.w)
+        } else {
+            (other.x, other.y, other.z, other.w)
+        }
+        if dot > 0.9995 {
+            // Linear interpolation for nearly parallel quaternions
+            let nx = self.x + t*(ox - self.x)
+            let ny = self.y + t*(oy - self.y)
+            let nz = self.z + t*(oz - self.z)
+            let nw = self.w + t*(ow - self.w)
+            let l = (nx*nx + ny*ny + nz*nz + nw*nw).sqrt().max(1e-7)
+            Quat { x: nx/l, y: ny/l, z: nz/l, w: nw/l }
+        } else {
+            let theta_0 = dot.acos()
+            let theta   = theta_0 * t
+            let sin_t   = theta.sin()
+            let sin_t0  = theta_0.sin().max(1e-7)
+            let s0 = theta.cos() - dot * sin_t / sin_t0
+            let s1 = sin_t / sin_t0
+            Quat {
+                x: s0*self.x + s1*ox,
+                y: s0*self.y + s1*oy,
+                z: s0*self.z + s1*oz,
+                w: s0*self.w + s1*ow,
+            }
+        }
+    }
+}
+
+// ============================================================================
+// GAME CONFIG
+// ============================================================================
+
+pub struct GameConfig {
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    pub target_fps: u32,
+    pub fullscreen: bool,
+    pub physics_hz: u32,
+    pub max_entities: u32,
+}
+
+impl GameConfig {
+    pub fn default() -> Self {
+        GameConfig {
+            title: "OmniGame Demo".to_string(),
+            width: 1920,
+            height: 1080,
+            target_fps: 60,
+            fullscreen: false,
+            physics_hz: 60,
+            max_entities: 10000,
+        }
+    }
+}
+
+// ============================================================================
+// ECS — ENTITY COMPONENT SYSTEM
+// ============================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct EntityId(pub u32);
+
+pub trait Component: 'static {}
+
+pub struct World {
+    next_id: u32,
+    alive: Vec<EntityId>,
+    // Component storage (type-erased via type name key)
+    transforms:    HashMap<u32, Transform>,
+    velocities:    HashMap<u32, Velocity>,
+    rigid_bodies:  HashMap<u32, RigidBody>,
+    colliders:     HashMap<u32, Collider>,
+    renderables:   HashMap<u32, Renderable>,
+    cameras:       HashMap<u32, Camera>,
+    lights:        HashMap<u32, Light>,
+    audio_sources: HashMap<u32, AudioSource>,
+    player_inputs: HashMap<u32, PlayerInput>,
+    tags:          HashMap<u32, Vec<String>>,
+}
+
+impl World {
+    pub fn new() -> Self {
+        World {
+            next_id: 1,
+            alive: Vec::new(),
+            transforms:    HashMap::new(),
+            velocities:    HashMap::new(),
+            rigid_bodies:  HashMap::new(),
+            colliders:     HashMap::new(),
+            renderables:   HashMap::new(),
+            cameras:       HashMap::new(),
+            lights:        HashMap::new(),
+            audio_sources: HashMap::new(),
+            player_inputs: HashMap::new(),
+            tags:          HashMap::new(),
+        }
+    }
+
+    pub fn spawn(&mut self) -> EntityId {
+        let id = EntityId(self.next_id)
+        self.next_id += 1
+        self.alive.push(id)
+        id
+    }
+
+    pub fn despawn(&mut self, id: EntityId) {
+        self.alive.retain(|&e| e != id)
+        self.transforms.remove(&id.0)
+        self.velocities.remove(&id.0)
+        self.rigid_bodies.remove(&id.0)
+        self.colliders.remove(&id.0)
+        self.renderables.remove(&id.0)
+        self.cameras.remove(&id.0)
+        self.lights.remove(&id.0)
+        self.audio_sources.remove(&id.0)
+        self.player_inputs.remove(&id.0)
+        self.tags.remove(&id.0)
+    }
+
+    pub fn is_alive(&self, id: EntityId) -> bool {
+        self.alive.iter().any(|&e| e == id)
+    }
+
+    pub fn entity_count(&self) -> usize {
+        self.alive.len()
+    }
+
+    // --- Tag helpers ---
+    pub fn add_tag(&mut self, id: EntityId, tag: &str) {
+        self.tags.entry(id.0).or_insert_with(Vec::new).push(tag.to_string())
+    }
+
+    pub fn has_tag(&self, id: EntityId, tag: &str) -> bool {
+        self.tags.get(&id.0).map(|ts| ts.iter().any(|t| t == tag)).unwrap_or(false)
+    }
+
+    pub fn entities_with_tag(&self, tag: &str) -> Vec<EntityId> {
+        self.alive.iter()
+            .filter(|&&e| self.has_tag(e, tag))
+            .cloned()
+            .collect()
+    }
+
+    // --- Component insert/get ---
+    pub fn add_transform(&mut self, id: EntityId, c: Transform)    { self.transforms.insert(id.0, c); }
+    pub fn add_velocity(&mut self, id: EntityId, c: Velocity)      { self.velocities.insert(id.0, c); }
+    pub fn add_rigid_body(&mut self, id: EntityId, c: RigidBody)   { self.rigid_bodies.insert(id.0, c); }
+    pub fn add_collider(&mut self, id: EntityId, c: Collider)      { self.colliders.insert(id.0, c); }
+    pub fn add_renderable(&mut self, id: EntityId, c: Renderable)  { self.renderables.insert(id.0, c); }
+    pub fn add_camera(&mut self, id: EntityId, c: Camera)          { self.cameras.insert(id.0, c); }
+    pub fn add_light(&mut self, id: EntityId, c: Light)            { self.lights.insert(id.0, c); }
+    pub fn add_audio_source(&mut self, id: EntityId, c: AudioSource){ self.audio_sources.insert(id.0, c); }
+    pub fn add_player_input(&mut self, id: EntityId, c: PlayerInput){ self.player_inputs.insert(id.0, c); }
+
+    pub fn get_transform(&self, id: EntityId) -> Option<&Transform>    { self.transforms.get(&id.0) }
+    pub fn get_velocity(&self, id: EntityId)  -> Option<&Velocity>     { self.velocities.get(&id.0) }
+    pub fn get_rigid_body(&self, id: EntityId)-> Option<&RigidBody>    { self.rigid_bodies.get(&id.0) }
+    pub fn get_collider(&self, id: EntityId)  -> Option<&Collider>     { self.colliders.get(&id.0) }
+    pub fn get_renderable(&self, id: EntityId)-> Option<&Renderable>   { self.renderables.get(&id.0) }
+    pub fn get_camera(&self, id: EntityId)    -> Option<&Camera>       { self.cameras.get(&id.0) }
+    pub fn get_player_input(&self, id: EntityId) -> Option<&PlayerInput> { self.player_inputs.get(&id.0) }
+
+    pub fn get_transform_mut(&mut self, id: EntityId) -> Option<&mut Transform>     { self.transforms.get_mut(&id.0) }
+    pub fn get_velocity_mut(&mut self, id: EntityId)  -> Option<&mut Velocity>      { self.velocities.get_mut(&id.0) }
+    pub fn get_rigid_body_mut(&mut self, id: EntityId)-> Option<&mut RigidBody>     { self.rigid_bodies.get_mut(&id.0) }
+    pub fn get_camera_mut(&mut self, id: EntityId)    -> Option<&mut Camera>        { self.cameras.get_mut(&id.0) }
+    pub fn get_player_input_mut(&mut self, id: EntityId) -> Option<&mut PlayerInput> { self.player_inputs.get_mut(&id.0) }
+
+    pub fn query_transform_velocity(&self) -> Vec<EntityId> {
+        self.alive.iter()
+            .filter(|&&e| self.transforms.contains_key(&e.0) && self.velocities.contains_key(&e.0))
+            .cloned()
+            .collect()
+    }
+
+    pub fn query_renderable_transform(&self) -> Vec<EntityId> {
+        self.alive.iter()
+            .filter(|&&e| self.renderables.contains_key(&e.0) && self.transforms.contains_key(&e.0))
+            .cloned()
+            .collect()
+    }
+
+    pub fn query_physics_entities(&self) -> Vec<EntityId> {
+        self.alive.iter()
+            .filter(|&&e| self.transforms.contains_key(&e.0) &&
+                          self.velocities.contains_key(&e.0) &&
+                          self.rigid_bodies.contains_key(&e.0))
+            .cloned()
+            .collect()
+    }
+}
+
+// ============================================================================
+// COMPONENTS
+// ============================================================================
+
+pub struct Transform {
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
+}
+
+impl Transform {
+    pub fn new(pos: Vec3) -> Self {
+        Transform { position: pos, rotation: Quat::identity(), scale: Vec3::one() }
+    }
+
+    pub fn default() -> Self {
+        Transform { position: Vec3::zero(), rotation: Quat::identity(), scale: Vec3::one() }
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        self.rotation.rotate_vec3(&Vec3::new(0.0, 0.0, -1.0))
+    }
+
+    pub fn right(&self) -> Vec3 {
+        self.rotation.rotate_vec3(&Vec3::new(1.0, 0.0, 0.0))
+    }
+
+    pub fn up(&self) -> Vec3 {
+        self.rotation.rotate_vec3(&Vec3::up())
+    }
+}
+
+impl Component for Transform {}
+
+pub struct Velocity {
+    pub linear: Vec3,
+    pub angular: Vec3,
+}
+
+impl Velocity {
+    pub fn zero() -> Self { Velocity { linear: Vec3::zero(), angular: Vec3::zero() } }
+    pub fn new(linear: Vec3) -> Self { Velocity { linear, angular: Vec3::zero() } }
+}
+
+impl Component for Velocity {}
+
+pub struct RigidBody {
+    pub mass: f32,
+    pub restitution: f32,
+    pub friction: f32,
+    pub is_static: bool,
+    pub gravity_scale: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+}
+
+impl RigidBody {
+    pub fn dynamic_body(mass: f32) -> Self {
+        RigidBody { mass, restitution: 0.3, friction: 0.5, is_static: false, gravity_scale: 1.0, linear_damping: 0.1, angular_damping: 0.05 }
+    }
+    pub fn static_body() -> Self {
+        RigidBody { mass: f32::INFINITY, restitution: 0.2, friction: 0.8, is_static: true, gravity_scale: 0.0, linear_damping: 0.0, angular_damping: 0.0 }
+    }
+}
+
+impl Component for RigidBody {}
+
+pub enum ColliderShape {
+    Sphere { radius: f32 },
+    Aabb { half_extents: Vec3 },
+    Capsule { radius: f32, half_height: f32 },
+}
+
+pub struct Collider {
+    pub shape: ColliderShape,
+    pub center: Vec3,
+    pub is_trigger: bool,
+    pub layer: u32,
+}
+
+impl Component for Collider {}
+
+pub struct Renderable {
+    pub mesh_id: u32,
+    pub material_id: u32,
+    pub visible: bool,
+    pub cast_shadows: bool,
+    pub receive_shadows: bool,
+    pub lod_distance: f32,
+}
+
+impl Renderable {
+    pub fn new(mesh_id: u32, material_id: u32) -> Self {
+        Renderable { mesh_id, material_id, visible: true, cast_shadows: true, receive_shadows: true, lod_distance: 100.0 }
+    }
+}
+
+impl Component for Renderable {}
+
+pub struct Camera {
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
+    pub aspect: f32,
+    pub is_main: bool,
+}
+
+impl Camera {
+    pub fn new(fov: f32, aspect: f32) -> Self {
+        Camera { fov, near: 0.1, far: 1000.0, aspect, is_main: true }
+    }
+
+    pub fn view_matrix(&self, transform: &Transform) -> Mat4 {
+        let pos = &transform.position
+        let forward = transform.forward()
+        let up = transform.up()
+        let right = forward.cross(&up).normalize()
+        let up_corrected = right.cross(&forward).normalize()
+        let tx = -right.dot(pos)
+        let ty = -up_corrected.dot(pos)
+        let tz = forward.dot(pos)
+        Mat4 { cols: [
+            [right.x,         up_corrected.x,  -forward.x,     0.0],
+            [right.y,         up_corrected.y,  -forward.y,     0.0],
+            [right.z,         up_corrected.z,  -forward.z,     0.0],
+            [tx,              ty,               tz,             1.0],
+        ]}
+    }
+
+    pub fn proj_matrix(&self) -> Mat4 {
+        let f = 1.0 / (self.fov * 0.5).tan()
+        let range_inv = 1.0 / (self.near - self.far)
+        Mat4 { cols: [
+            [f / self.aspect, 0.0,  0.0,                              0.0],
+            [0.0,             f,    0.0,                              0.0],
+            [0.0,             0.0, (self.near + self.far) * range_inv,-1.0],
+            [0.0,             0.0,  2.0 * self.near * self.far * range_inv, 0.0],
+        ]}
+    }
+}
+
+impl Component for Camera {}
+
+pub enum LightKind { Directional, Point { range: f32 }, Spot { range: f32, inner_cone: f32, outer_cone: f32 } }
+
+pub struct Light {
+    pub kind: LightKind,
+    pub color: Vec3,
+    pub intensity: f32,
+    pub cast_shadows: bool,
+    pub direction: Vec3,  // For directional and spot lights
+}
+
+impl Component for Light {}
+
+pub struct AudioSource {
+    pub clip_id: u32,
+    pub volume: f32,
+    pub looping: bool,
+    pub playing: bool,
+    pub pitch: f32,
+    pub spatial: bool,
+    pub min_distance: f32,
+    pub max_distance: f32,
+}
+
+impl AudioSource {
+    pub fn new(clip_id: u32) -> Self {
+        AudioSource { clip_id, volume: 1.0, looping: false, playing: false, pitch: 1.0, spatial: true, min_distance: 1.0, max_distance: 50.0 }
+    }
+}
+
+impl Component for AudioSource {}
+
+pub struct PlayerInput {
+    pub move_dir: Vec2,
+    pub look_dir: Vec2,
+    pub jump: bool,
+    pub fire: bool,
+    pub sprint: bool,
+    pub crouch: bool,
+    pub interact: bool,
+}
+
+impl PlayerInput {
+    pub fn idle() -> Self {
+        PlayerInput { move_dir: Vec2::zero(), look_dir: Vec2::zero(), jump: false, fire: false, sprint: false, crouch: false, interact: false }
+    }
+}
+
+impl Component for PlayerInput {}
+
+// ============================================================================
+// SYSTEMS
+// ============================================================================
+
+pub trait System {
+    fn run(&mut self, world: &mut World, dt: f32)
+}
+
+// --- PHYSICS SYSTEM ---
+pub struct PhysicsSystem {
+    gravity: Vec3,
+    contacts: Vec<(EntityId, EntityId)>,
+}
+
+impl PhysicsSystem {
+    pub fn new() -> Self {
+        PhysicsSystem { gravity: Vec3::new(0.0, -9.81, 0.0), contacts: Vec::new() }
+    }
+
+    fn test_sphere_sphere(ta: &Transform, ca: &Collider, tb: &Transform, cb: &Collider) -> Option<(Vec3, f32)> {
+        let (ra, rb) = match (&ca.shape, &cb.shape) {
+            (ColliderShape::Sphere { radius: ra }, ColliderShape::Sphere { radius: rb }) => (*ra, *rb),
+            _ => return Option::None,
+        }
+        let pa = ta.position.add(&ca.center)
+        let pb = tb.position.add(&cb.center)
+        let diff = pa.sub(&pb)
+        let dist = diff.length()
+        let min_dist = ra + rb
+        if dist < min_dist && dist > 1e-6 {
+            let normal = diff.normalize()
+            let penetration = min_dist - dist
+            Option::Some((normal, penetration))
+        } else {
+            Option::None
+        }
+    }
+
+    fn test_aabb_aabb(ta: &Transform, ca: &Collider, tb: &Transform, cb: &Collider) -> Option<(Vec3, f32)> {
+        let (he_a, he_b) = match (&ca.shape, &cb.shape) {
+            (ColliderShape::Aabb { half_extents: a }, ColliderShape::Aabb { half_extents: b }) => (a, b),
+            _ => return Option::None,
+        }
+        let pa = ta.position.add(&ca.center)
+        let pb = tb.position.add(&cb.center)
+        let overlap_x = (he_a.x + he_b.x) - (pa.x - pb.x).abs()
+        let overlap_y = (he_a.y + he_b.y) - (pa.y - pb.y).abs()
+        let overlap_z = (he_a.z + he_b.z) - (pa.z - pb.z).abs()
+        if overlap_x > 0.0 && overlap_y > 0.0 && overlap_z > 0.0 {
+            // Find smallest penetration axis
+            let (normal, penetration) = if overlap_x < overlap_y && overlap_x < overlap_z {
+                let nx = if pa.x > pb.x { 1.0 } else { -1.0 }
+                (Vec3::new(nx, 0.0, 0.0), overlap_x)
+            } else if overlap_y < overlap_z {
+                let ny = if pa.y > pb.y { 1.0 } else { -1.0 }
+                (Vec3::new(0.0, ny, 0.0), overlap_y)
+            } else {
+                let nz = if pa.z > pb.z { 1.0 } else { -1.0 }
+                (Vec3::new(0.0, 0.0, nz), overlap_z)
+            }
+            Option::Some((normal, penetration))
+        } else {
+            Option::None
+        }
+    }
+}
+
+impl System for PhysicsSystem {
+    fn run(&mut self, world: &mut World, dt: f32) {
+        let entities = world.query_physics_entities()
+        self.contacts.clear()
+
+        // Integration step
+        for &id in &entities {
+            let is_static = world.get_rigid_body(id).map(|rb| rb.is_static).unwrap_or(true)
+            if is_static { continue }
+
+            let gravity_scale = world.get_rigid_body(id).map(|rb| rb.gravity_scale).unwrap_or(1.0)
+            let lin_damping   = world.get_rigid_body(id).map(|rb| rb.linear_damping).unwrap_or(0.1)
+
+            if let Option::Some(vel) = world.get_velocity_mut(id) {
+                // Apply gravity
+                vel.linear.y += self.gravity.y * gravity_scale * dt
+                // Apply damping
+                vel.linear.x *= 1.0 - lin_damping * dt
+                vel.linear.z *= 1.0 - lin_damping * dt
+                // Clamp velocity
+                let speed = vel.linear.length()
+                if speed > 50.0 {
+                    let clamped = vel.linear.scale(50.0 / speed)
+                    vel.linear = clamped
+                }
+            }
+
+            // Integrate position
+            let vel_linear = world.get_velocity(id).map(|v| v.linear.clone()).unwrap_or(Vec3::zero())
+            if let Option::Some(transform) = world.get_transform_mut(id) {
+                transform.position = transform.position.add(&vel_linear.scale(dt))
+            }
+
+            // Ground plane collision (y = 0)
+            if let Option::Some(transform) = world.get_transform_mut(id) {
+                if transform.position.y < 0.0 {
+                    transform.position.y = 0.0
+                    let restitution = world.get_rigid_body(id).map(|rb| rb.restitution).unwrap_or(0.3)
+                    if let Option::Some(vel) = world.get_velocity_mut(id) {
+                        vel.linear.y = (-vel.linear.y * restitution).max(0.0)
+                    }
+                }
+            }
+        }
+
+        // Broad-phase collision detection (N^2 for demo, spatial hash in production)
+        let collider_ids: Vec<EntityId> = entities.iter()
+            .filter(|&&e| world.colliders.contains_key(&e.0))
+            .cloned()
+            .collect()
+
+        let n = collider_ids.len()
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = collider_ids[i]
+                let b = collider_ids[j]
+                let a_static = world.get_rigid_body(a).map(|rb| rb.is_static).unwrap_or(true)
+                let b_static = world.get_rigid_body(b).map(|rb| rb.is_static).unwrap_or(true)
+                if a_static && b_static { continue }
+
+                let ta = world.transforms.get(&a.0).cloned()
+                let tb = world.transforms.get(&b.0).cloned()
+                let ca = world.colliders.get(&a.0)
+                let cb = world.colliders.get(&b.0)
+
+                if let (Option::Some(ta), Option::Some(tb), Option::Some(ca), Option::Some(cb)) = (ta, tb, ca, cb) {
+                    let contact = match (&ca.shape, &cb.shape) {
+                        (ColliderShape::Sphere { .. }, ColliderShape::Sphere { .. }) =>
+                            Self::test_sphere_sphere(&ta, ca, &tb, cb),
+                        (ColliderShape::Aabb { .. }, ColliderShape::Aabb { .. }) =>
+                            Self::test_aabb_aabb(&ta, ca, &tb, cb),
+                        _ => Option::None,
+                    }
+                    if let Option::Some((normal, penetration)) = contact {
+                        // Resolve penetration
+                        let correction = penetration * 0.8
+                        if !a_static {
+                            if let Option::Some(ta) = world.get_transform_mut(a) {
+                                ta.position = ta.position.add(&normal.scale(correction * 0.5))
+                            }
+                        }
+                        if !b_static {
+                            if let Option::Some(tb) = world.get_transform_mut(b) {
+                                tb.position = tb.position.sub(&normal.scale(correction * 0.5))
+                            }
+                        }
+                        // Impulse resolution
+                        let va = world.get_velocity(a).map(|v| v.linear.clone()).unwrap_or(Vec3::zero())
+                        let vb = world.get_velocity(b).map(|v| v.linear.clone()).unwrap_or(Vec3::zero())
+                        let ma = world.get_rigid_body(a).map(|rb| rb.mass).unwrap_or(1.0)
+                        let mb = world.get_rigid_body(b).map(|rb| rb.mass).unwrap_or(1.0)
+                        let e  = world.get_rigid_body(a).map(|rb| rb.restitution).unwrap_or(0.3)
+                            .min(world.get_rigid_body(b).map(|rb| rb.restitution).unwrap_or(0.3))
+                        let rel_vel = va.sub(&vb).dot(&normal)
+                        if rel_vel < 0.0 {
+                            let j = -(1.0 + e) * rel_vel / (1.0/ma + 1.0/mb)
+                            if !a_static {
+                                if let Option::Some(va) = world.get_velocity_mut(a) {
+                                    va.linear = va.linear.add(&normal.scale(j / ma))
+                                }
+                            }
+                            if !b_static {
+                                if let Option::Some(vb) = world.get_velocity_mut(b) {
+                                    vb.linear = vb.linear.sub(&normal.scale(j / mb))
+                                }
+                            }
+                        }
+                        self.contacts.push((a, b))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- INPUT SYSTEM ---
+pub struct InputSystem {}
+
+impl InputSystem {
+    pub fn new() -> Self { InputSystem {} }
+}
+
+impl System for InputSystem {
+    fn run(&mut self, world: &mut World, dt: f32) {
+        let player_ids: Vec<EntityId> = world.alive.iter()
+            .filter(|&&e| world.player_inputs.contains_key(&e.0) && world.velocities.contains_key(&e.0))
+            .cloned()
+            .collect()
+
+        for &id in &player_ids {
+            // Simulate input cycling for demo
+            let frame = (dt * 1000.0) as u32 % 120
+            let input = PlayerInput {
+                move_dir: Vec2::new(
+                    if frame < 30 { 1.0 } else if frame < 60 { 0.0 } else if frame < 90 { -1.0 } else { 0.0 },
+                    if frame < 60 { 1.0 } else { -1.0 },
+                ),
+                look_dir: Vec2::new(0.01, 0.0),
+                jump: frame == 0,
+                fire: frame == 30,
+                sprint: frame < 30,
+                crouch: false,
+                interact: frame == 90,
+            }
+            world.player_inputs.insert(id.0, input)
+
+            let (move_x, move_z, sprint, jump) = {
+                let inp = world.player_inputs.get(&id.0).unwrap()
+                (inp.move_dir.x, inp.move_dir.y, inp.sprint, inp.jump)
+            }
+            let speed = if sprint { 8.0 } else { 5.0 }
+            if let Option::Some(vel) = world.get_velocity_mut(id) {
+                vel.linear.x = move_x * speed
+                vel.linear.z = move_z * speed
+                if jump { vel.linear.y = 6.0 }
+            }
+        }
+    }
+}
+
+// --- CAMERA SYSTEM ---
+pub struct CameraSystem {
+    target_entity: Option<EntityId>,
+    camera_offset: Vec3,
+}
+
+impl CameraSystem {
+    pub fn new() -> Self {
+        CameraSystem {
+            target_entity: Option::None,
+            camera_offset: Vec3::new(0.0, 8.0, 12.0),
+        }
+    }
+
+    pub fn set_target(&mut self, id: EntityId) {
+        self.target_entity = Option::Some(id)
+    }
+}
+
+impl System for CameraSystem {
+    fn run(&mut self, world: &mut World, dt: f32) {
+        let target = match self.target_entity {
+            Option::Some(t) => t,
+            Option::None    => return,
+        }
+        let target_pos = match world.get_transform(target) {
+            Option::Some(t) => t.position.clone(),
+            Option::None    => return,
+        }
+        let desired_pos = target_pos.add(&self.camera_offset)
+
+        let cam_ids: Vec<EntityId> = world.alive.iter()
+            .filter(|&&e| world.cameras.contains_key(&e.0))
+            .cloned()
+            .collect()
+
+        for &cam_id in &cam_ids {
+            if let Option::Some(cam_transform) = world.get_transform_mut(cam_id) {
+                // Smooth lerp toward desired position
+                cam_transform.position = cam_transform.position.lerp(&desired_pos, dt * 5.0)
+                // Look at target
+                let to_target = target_pos.sub(&cam_transform.position).normalize()
+                let pitch = (-to_target.y).asin()
+                let yaw   = to_target.z.atan2(to_target.x)
+                cam_transform.rotation = Quat::from_axis_angle(&Vec3::up(), yaw)
+                    .mul(&Quat::from_axis_angle(&Vec3::new(1.0, 0.0, 0.0), pitch))
+            }
+        }
+    }
+}
+
+// --- ANIMATION SYSTEM ---
+pub struct AnimationSystem {
+    time: f32,
+}
+
+impl AnimationSystem {
+    pub fn new() -> Self { AnimationSystem { time: 0.0 } }
+}
+
+impl System for AnimationSystem {
+    fn run(&mut self, world: &mut World, dt: f32) {
+        self.time += dt
+        // Animate non-static entities with a gentle idle bob
+        let movable: Vec<EntityId> = world.alive.iter()
+            .filter(|&&e| world.velocities.contains_key(&e.0) && world.transforms.contains_key(&e.0))
+            .cloned()
+            .collect()
+        for &id in &movable {
+            let base_y = id.0 as f32 * 0.1  // different phase per entity
+            if let Option::Some(tr) = world.get_transform_mut(id) {
+                // Subtle scale breathe animation
+                let breathe = 1.0 + 0.02 * (self.time * 2.0 + base_y).sin()
+                tr.scale.y = breathe
+            }
+        }
+    }
+}
+
+// --- AUDIO SYSTEM ---
+pub struct AudioSystem {
+    audio_events: Vec<String>,
+}
+
+impl AudioSystem {
+    pub fn new() -> Self { AudioSystem { audio_events: Vec::new() } }
+}
+
+impl System for AudioSystem {
+    fn run(&mut self, world: &mut World, dt: f32) {
+        let audio_ids: Vec<EntityId> = world.alive.iter()
+            .filter(|&&e| world.audio_sources.contains_key(&e.0))
+            .cloned()
+            .collect()
+
+        for &id in &audio_ids {
+            if let Option::Some(src) = world.audio_sources.get(&id.0) {
+                if src.playing {
+                    let event = format!("[Audio] clip={} vol={:.2} pitch={:.2} spatial={}",
+                        src.clip_id, src.volume, src.pitch, src.spatial)
+                    self.audio_events.push(event)
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// ASSET MANAGER
+// ============================================================================
+
+pub struct Mesh {
+    pub id: u32,
+    pub name: String,
+    pub vertex_count: u32,
+    pub index_count: u32,
+}
+
+pub struct Texture {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+}
+
+pub struct AssetManager {
+    meshes: HashMap<u32, Mesh>,
+    textures: HashMap<u32, Texture>,
+    audio_clips: HashMap<u32, String>,
+    next_mesh_id: u32,
+    next_tex_id: u32,
+}
+
+impl AssetManager {
+    pub fn new() -> Self {
+        let mut am = AssetManager {
+            meshes: HashMap::new(),
+            textures: HashMap::new(),
+            audio_clips: HashMap::new(),
+            next_mesh_id: 1,
+            next_tex_id: 1,
+        }
+        // Pre-load default assets
+        am.load_cube_mesh()
+        am.load_sphere_mesh()
+        am.load_plane_mesh()
+        am.load_default_texture()
+        am
+    }
+
+    fn load_cube_mesh(&mut self) -> u32 {
+        let id = self.next_mesh_id
+        self.next_mesh_id += 1
+        self.meshes.insert(id, Mesh { id, name: "cube".to_string(), vertex_count: 24, index_count: 36 })
+        id
+    }
+
+    fn load_sphere_mesh(&mut self) -> u32 {
+        let id = self.next_mesh_id
+        self.next_mesh_id += 1
+        self.meshes.insert(id, Mesh { id, name: "sphere".to_string(), vertex_count: 512, index_count: 960 })
+        id
+    }
+
+    fn load_plane_mesh(&mut self) -> u32 {
+        let id = self.next_mesh_id
+        self.next_mesh_id += 1
+        self.meshes.insert(id, Mesh { id, name: "plane".to_string(), vertex_count: 4, index_count: 6 })
+        id
+    }
+
+    fn load_default_texture(&mut self) -> u32 {
+        let id = self.next_tex_id
+        self.next_tex_id += 1
+        self.textures.insert(id, Texture { id, width: 4, height: 4, format: "rgba8".to_string() })
+        id
+    }
+
+    pub fn get_mesh(&self, id: u32) -> Option<&Mesh> { self.meshes.get(&id) }
+    pub fn get_texture(&self, id: u32) -> Option<&Texture> { self.textures.get(&id) }
+}
+
+// ============================================================================
+// GAME LOOP
+// ============================================================================
+
+pub struct GameStats {
+    pub frames_rendered: u32,
+    pub entities_spawned: u32,
+    pub physics_steps: u32,
+    pub total_time_s: f32,
+    pub avg_fps: f32,
+    pub peak_entity_count: u32,
+}
+
+pub struct GameLoop {
+    config: GameConfig,
+    world: World,
+    assets: AssetManager,
+    physics: PhysicsSystem,
+    input: InputSystem,
+    camera: CameraSystem,
+    animation: AnimationSystem,
+    audio: AudioSystem,
+    stats: GameStats,
+}
+
+impl GameLoop {
+    pub fn new(config: GameConfig) -> Self {
+        GameLoop {
+            config,
+            world: World::new(),
+            assets: AssetManager::new(),
+            physics: PhysicsSystem::new(),
+            input: InputSystem::new(),
+            camera: CameraSystem::new(),
+            animation: AnimationSystem::new(),
+            audio: AudioSystem::new(),
+            stats: GameStats {
+                frames_rendered: 0,
+                entities_spawned: 0,
+                physics_steps: 0,
+                total_time_s: 0.0,
+                avg_fps: 0.0,
+                peak_entity_count: 0,
+            },
+        }
+    }
+
+    pub fn run(&mut self, max_frames: u32) {
+        println!("=== {} ===", self.config.title)
+        println!("Resolution: {}×{} | Target FPS: {} | Fullscreen: {}",
+            self.config.width, self.config.height, self.config.target_fps, self.config.fullscreen)
+        println!("Physics Hz: {} | Max entities: {}", self.config.physics_hz, self.config.max_entities)
+        println!("Starting game loop ({} frames)...\n", max_frames)
+
+        let dt_physics = 1.0 / self.config.physics_hz as f32
+        let dt_render  = 1.0 / self.config.target_fps as f32
+
+        let mut accum = 0.0_f32
+        let mut frame = 0u32
+
+        while frame < max_frames {
+            let dt = dt_render
+            accum += dt
+            self.stats.total_time_s += dt
+            self.stats.frames_rendered += 1
+            frame += 1
+
+            // Fixed physics steps
+            while accum >= dt_physics {
+                self.physics.run(&mut self.world, dt_physics)
+                accum -= dt_physics
+                self.stats.physics_steps += 1
+            }
+
+            // Variable-rate systems
+            self.input.run(&mut self.world, dt)
+            self.camera.run(&mut self.world, dt)
+            self.animation.run(&mut self.world, dt)
+            self.audio.run(&mut self.world, dt)
+
+            let ec = self.world.entity_count() as u32
+            if ec > self.stats.peak_entity_count { self.stats.peak_entity_count = ec }
+
+            if frame % 60 == 0 {
+                println!("[Frame {:4}] entities={} physics_steps={} t={:.2}s",
+                    frame, ec, self.stats.physics_steps, self.stats.total_time_s)
+            }
+        }
+
+        self.stats.avg_fps = self.stats.frames_rendered as f32 / self.stats.total_time_s.max(0.001)
+        println!("\n=== Game Loop Complete ===")
+        println!("  Frames:      {}", self.stats.frames_rendered)
+        println!("  Physics:     {} steps", self.stats.physics_steps)
+        println!("  Time:        {:.2}s", self.stats.total_time_s)
+        println!("  Avg FPS:     {:.1}", self.stats.avg_fps)
+        println!("  Peak ents:   {}", self.stats.peak_entity_count)
+    }
+}
+
+// ============================================================================
+// SCENE BUILDER
+// ============================================================================
+
+pub fn build_demo_scene(game: &mut GameLoop) {
+    println!("Building demo scene...")
+
+    // --- Directional light ---
+    let sun = game.world.spawn()
+    game.world.add_transform(sun, Transform::new(Vec3::new(100.0, 100.0, 100.0)))
+    game.world.add_light(sun, Light {
+        kind: LightKind::Directional,
+        color: Vec3::new(1.0, 0.95, 0.8),
+        intensity: 1.2,
+        cast_shadows: true,
+        direction: Vec3::new(-0.5, -1.0, -0.5).normalize(),
+    })
+    game.world.add_tag(sun, "light")
+    game.stats.entities_spawned += 1
+
+    // --- Player entity ---
+    let player = game.world.spawn()
+    game.world.add_transform(player, Transform::new(Vec3::new(0.0, 1.0, 0.0)))
+    game.world.add_velocity(player, Velocity::zero())
+    game.world.add_rigid_body(player, RigidBody::dynamic_body(70.0))
+    game.world.add_collider(player, Collider {
+        shape: ColliderShape::Capsule { radius: 0.4, half_height: 0.9 },
+        center: Vec3::zero(),
+        is_trigger: false,
+        layer: 0,
+    })
+    game.world.add_renderable(player, Renderable::new(1, 1))
+    game.world.add_player_input(player, PlayerInput::idle())
+    game.world.add_audio_source(player, AudioSource::new(1))
+    game.world.add_tag(player, "player")
+    game.camera.set_target(player)
+    game.stats.entities_spawned += 1
+    println!("  Spawned player (EntityId={})", player.0)
+
+    // --- Camera ---
+    let cam = game.world.spawn()
+    game.world.add_transform(cam, Transform::new(Vec3::new(0.0, 8.0, 12.0)))
+    game.world.add_camera(cam, Camera::new(1.0472, 16.0/9.0))  // 60 deg FOV
+    game.world.add_tag(cam, "camera")
+    game.stats.entities_spawned += 1
+
+    // --- 50 platforms ---
+    for i in 0..50u32 {
+        let platform = game.world.spawn()
+        let px = ((i * 7 + 13) % 40) as f32 - 20.0
+        let py = ((i * 3 + 1) % 8) as f32 * 2.0
+        let pz = ((i * 11 + 5) % 40) as f32 - 20.0
+        let w  = 1.5 + (i % 4) as f32
+        let h  = 0.25
+        let d  = 1.5 + (i % 3) as f32
+
+        game.world.add_transform(platform, Transform {
+            position: Vec3::new(px, py, pz),
+            rotation: Quat::identity(),
+            scale: Vec3::new(w, h, d),
+        })
+        game.world.add_rigid_body(platform, RigidBody::static_body())
+        game.world.add_collider(platform, Collider {
+            shape: ColliderShape::Aabb { half_extents: Vec3::new(w, h, d) },
+            center: Vec3::zero(),
+            is_trigger: false,
+            layer: 1,
+        })
+        game.world.add_renderable(platform, Renderable::new(3, 2))
+        game.world.add_tag(platform, "platform")
+        game.stats.entities_spawned += 1
+    }
+    println!("  Spawned 50 platforms")
+
+    // --- 10 enemies ---
+    for i in 0..10u32 {
+        let enemy = game.world.spawn()
+        let ex = ((i * 23 + 7) % 30) as f32 - 15.0
+        let ez = ((i * 17 + 3) % 30) as f32 - 15.0
+        game.world.add_transform(enemy, Transform::new(Vec3::new(ex, 1.0, ez)))
+        game.world.add_velocity(enemy, Velocity::new(Vec3::new(
+            (i as f32 * 0.3 - 1.5).sin() * 2.0,
+            0.0,
+            (i as f32 * 0.3).cos() * 2.0,
+        )))
+        game.world.add_rigid_body(enemy, RigidBody::dynamic_body(60.0))
+        game.world.add_collider(enemy, Collider {
+            shape: ColliderShape::Sphere { radius: 0.5 },
+            center: Vec3::zero(),
+            is_trigger: false,
+            layer: 2,
+        })
+        game.world.add_renderable(enemy, Renderable::new(2, 3))
+        game.world.add_audio_source(enemy, AudioSource { playing: true, looping: true, ..AudioSource::new(2) })
+        game.world.add_tag(enemy, "enemy")
+        game.stats.entities_spawned += 1
+    }
+    println!("  Spawned 10 enemies")
+    println!("  Total entities: {}", game.world.entity_count())
+}
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
+
+pub fn main() {
+    println!("╔══════════════════════════════════════╗")
+    println!("║  OmniGame Engine — TITAN             ║")
+    println!("╚══════════════════════════════════════╝\n")
+
+    let config = GameConfig {
+        title: "OmniGame Demo v1.0".to_string(),
+        width: 1920,
+        height: 1080,
+        target_fps: 60,
+        fullscreen: false,
+        physics_hz: 60,
+        max_entities: 10000,
+    }
+
+    let mut game = GameLoop::new(config)
+    build_demo_scene(&mut game)
+    game.run(300)
+
+    let stats = &game.stats
+    println!("\nFinal Stats:")
+    println!("  Entities spawned: {}", stats.entities_spawned)
+    println!("  Physics steps:    {}", stats.physics_steps)
+    println!("  Frames rendered:  {}", stats.frames_rendered)
+    println!("  Avg FPS:          {:.1}", stats.avg_fps)
+    println!("  Peak entities:    {}", stats.peak_entity_count)
+}

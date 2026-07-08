@@ -11,13 +11,13 @@ function Show-Banner {
 ================================================================================
                       OMNISYSTEM v28.0.0
 ================================================================================
-         Enterprise Operating System | BonsaiEcosystem Launcher
+         Enterprise Operating System | OmnisystemEcosystem Launcher
          All 11 Applications Ready | 50+ Capabilities Available
 
 STATUS: OPERATIONAL - All services initialized and ready
 
 ================================================================================
-  BONSAI ECOSYSTEM (5 Applications)
+  OMNISYSTEM ECOSYSTEM (5 Applications)
 ================================================================================
 
   1. Workspace IDE              2. Buddy AI

@@ -30,7 +30,7 @@
 Z:\Projects\Omnisystem\build\output\
   ├── Omnisystem.exe          ✅ Ready
   ├── OmnisystemGUI.exe       ⏳ Building
-  └── BonsaiLauncher.exe      ⏳ Building
+  └── OmnisystemLauncher.exe      ⏳ Building
 ```
 
 ---
@@ -93,7 +93,7 @@ Run: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
 |-----------|--------|--------|
 | Desktop Environment | ✅ Working | Omnisystem.exe |
 | GUI Launcher | ⏳ Building | OmnisystemGUI.exe |
-| Ecosystem Launcher | ⏳ Building | BonsaiLauncher.exe |
+| Ecosystem Launcher | ⏳ Building | OmnisystemLauncher.exe |
 
 ---
 

@@ -1,0 +1,359 @@
+module omnisystem.memory.memory_tier_manager
+
+# Memory Tier Manager - Automatic Promotion/Demotion & Tier Transitions
+# Manages seamless movement of pages across 4-tier hierarchy
+
+import omnisystem.unified_memory_manager
+
+# ============================================================================
+# TIER PROMOTION/DEMOTION ENGINE
+# ============================================================================
+
+type MemoryTierManager = struct {
+    manager: *UnifiedMemoryManager,
+
+    # Promotion thresholds
+    promotion_access_threshold: u32,  // Accesses before promotion
+    promotion_priority_boost: f64,
+
+    # Demotion thresholds
+    demotion_idle_time_ms: u64,
+    demotion_pressure_threshold: f64,
+
+    # Statistics
+    promotions_executed: u64,
+    demotions_executed: u64,
+    bytes_promoted: u64,
+    bytes_demoted: u64,
+    avg_promotion_time_us: f64,
+    avg_demotion_time_us: f64,
+}
+
+impl MemoryTierManager {
+    fun new(manager: *UnifiedMemoryManager) -> Self {
+        MemoryTierManager {
+            manager,
+            promotion_access_threshold: 100,
+            promotion_priority_boost: 1.5,
+            demotion_idle_time_ms: 30000,  // 30 seconds
+            demotion_pressure_threshold: 0.85,
+            promotions_executed: 0,
+            demotions_executed: 0,
+            bytes_promoted: 0,
+            bytes_demoted: 0,
+            avg_promotion_time_us: 0.0,
+            avg_demotion_time_us: 0.0,
+        }
+    }
+
+    fun evaluate_promotion(&mut self, page_id: u64) -> Result<(), string> {
+        let manager = unsafe { &mut *self.manager }
+
+        if page_id >= manager.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+
+        let page = &manager.page_table[page_id as usize]
+        let access_count = page.access_count.load()
+
+        # Promotion candidate if:
+        # 1. Access count above threshold
+        # 2. Currently in slower tier
+        # 3. Space available in faster tier
+        if access_count > self.promotion_access_threshold {
+            let target_tier = match page.current_tier {
+                omnisystem::unified_memory_manager::MemoryTier::Ssd => {
+                    omnisystem::unified_memory_manager::MemoryTier::Nvme
+                },
+                omnisystem::unified_memory_manager::MemoryTier::Nvme => {
+                    omnisystem::unified_memory_manager::MemoryTier::Ram
+                },
+                omnisystem::unified_memory_manager::MemoryTier::Ram => {
+                    omnisystem::unified_memory_manager::MemoryTier::Vram
+                },
+                _ => return Ok(()),  // Already at fastest tier
+            }
+
+            self.promote_page(page_id, target_tier)?
+        }
+
+        Ok(())
+    }
+
+    fun evaluate_demotion(&mut self, page_id: u64) -> Result<(), string> {
+        let manager = unsafe { &mut *self.manager }
+
+        if page_id >= manager.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+
+        let page = &manager.page_table[page_id as usize]
+        let now = get_timestamp()
+        let idle_time = now - page.last_access_time
+
+        # Demotion candidate if:
+        # 1. Idle longer than threshold
+        # 2. Currently in faster tier
+        # 3. Memory pressure above threshold
+        let (vram_util, ram_util, nvme_util, _ssd_util) = manager.get_utilization()
+        let highest_pressure = vram_util.max(ram_util).max(nvme_util)
+
+        if idle_time > self.demotion_idle_time_ms as u64 &&
+           highest_pressure > self.demotion_pressure_threshold {
+
+            let target_tier = match page.current_tier {
+                omnisystem::unified_memory_manager::MemoryTier::Vram => {
+                    omnisystem::unified_memory_manager::MemoryTier::Ram
+                },
+                omnisystem::unified_memory_manager::MemoryTier::Ram => {
+                    omnisystem::unified_memory_manager::MemoryTier::Nvme
+                },
+                omnisystem::unified_memory_manager::MemoryTier::Nvme => {
+                    omnisystem::unified_memory_manager::MemoryTier::Ssd
+                },
+                _ => return Ok(()),  // Already slowest
+            }
+
+            self.demote_page(page_id, target_tier)?
+        }
+
+        Ok(())
+    }
+
+    fun promote_page(&mut self, page_id: u64, target_tier: omnisystem::unified_memory_manager::MemoryTier)
+        -> Result<(), string> {
+
+        let start_time = get_timestamp()
+        let manager = unsafe { &mut *self.manager }
+
+        let page = &manager.page_table[page_id as usize]
+        let page_size = page.size
+
+        # Promote
+        manager.promote_page(page_id, target_tier.clone())?
+
+        let elapsed = get_timestamp() - start_time
+        self.promotions_executed += 1
+        self.bytes_promoted += page_size
+        self.avg_promotion_time_us = (self.avg_promotion_time_us * 0.9) + (elapsed as f64 * 0.1)
+
+        Ok(())
+    }
+
+    fun demote_page(&mut self, page_id: u64, target_tier: omnisystem::unified_memory_manager::MemoryTier)
+        -> Result<(), string> {
+
+        let start_time = get_timestamp()
+        let manager = unsafe { &mut *self.manager }
+
+        let page = &manager.page_table[page_id as usize]
+        let page_size = page.size
+
+        # Demote
+        manager.demote_page(page_id, target_tier.clone())?
+
+        let elapsed = get_timestamp() - start_time
+        self.demotions_executed += 1
+        self.bytes_demoted += page_size
+        self.avg_demotion_time_us = (self.avg_demotion_time_us * 0.9) + (elapsed as f64 * 0.1)
+
+        Ok(())
+    }
+
+    fun run_periodic_maintenance(&mut self) -> Result<(), string> {
+        let manager = unsafe { &*self.manager }
+
+        for page_id in 0..manager.page_table.len() as u64 {
+            # Evaluate all pages
+            let _ = self.evaluate_promotion(page_id)
+            let _ = self.evaluate_demotion(page_id)
+        }
+
+        Ok(())
+    }
+
+    fun print_statistics(&self) {
+        println!("Memory Tier Manager Statistics")
+        println!("─────────────────────────────────────────")
+        println!("Promotions:         {} ({} GB promoted)",
+                 self.promotions_executed,
+                 self.bytes_promoted / (1024 * 1024 * 1024))
+        println!("Demotions:          {} ({} GB demoted)",
+                 self.demotions_executed,
+                 self.bytes_demoted / (1024 * 1024 * 1024))
+        println!("Avg Promotion Time: {:.2} µs", self.avg_promotion_time_us)
+        println!("Avg Demotion Time:  {:.2} µs", self.avg_demotion_time_us)
+    }
+}
+
+# ============================================================================
+# TIER STATISTICS & MONITORING
+# ============================================================================
+
+type TierStatistics = struct {
+    vram_used: u64,
+    vram_total: u64,
+    ram_used: u64,
+    ram_total: u64,
+    nvme_used: u64,
+    nvme_total: u64,
+    ssd_used: u64,
+    ssd_total: u64,
+
+    vram_access_ratio: f64,
+    ram_access_ratio: f64,
+    nvme_access_ratio: f64,
+    ssd_access_ratio: f64,
+
+    promotions_per_second: f64,
+    demotions_per_second: f64,
+}
+
+type MemoryTierMonitor = struct {
+    statistics: TierStatistics,
+    history: Vec<TierStatistics>,
+    sample_interval_ms: u64,
+    last_sample_time: u64,
+}
+
+impl MemoryTierMonitor {
+    fun new(sample_interval_ms: u64) -> Self {
+        MemoryTierMonitor {
+            statistics: TierStatistics {
+                vram_used: 0,
+                vram_total: 0,
+                ram_used: 0,
+                ram_total: 0,
+                nvme_used: 0,
+                nvme_total: 0,
+                ssd_used: 0,
+                ssd_total: 0,
+                vram_access_ratio: 0.0,
+                ram_access_ratio: 0.0,
+                nvme_access_ratio: 0.0,
+                ssd_access_ratio: 0.0,
+                promotions_per_second: 0.0,
+                demotions_per_second: 0.0,
+            },
+            history: Vec::new(),
+            sample_interval_ms,
+            last_sample_time: 0,
+        }
+    }
+
+    fun update_statistics(&mut self, manager: &UnifiedMemoryManager) {
+        let (vram_util, ram_util, nvme_util, ssd_util) = manager.get_utilization()
+        let stats = manager.get_stats()
+
+        self.statistics.vram_used = stats.vram_usage
+        self.statistics.ram_used = stats.ram_usage
+        self.statistics.nvme_used = stats.nvme_usage
+        self.statistics.ssd_used = stats.ssd_usage
+
+        # Access ratios (would be calculated from actual page access counts)
+        self.statistics.vram_access_ratio = vram_util
+        self.statistics.ram_access_ratio = ram_util
+        self.statistics.nvme_access_ratio = nvme_util
+        self.statistics.ssd_access_ratio = ssd_util
+
+        self.history.push(self.statistics.clone())
+        if self.history.len() > 1000 {
+            self.history.remove(0)
+        }
+    }
+
+    fun get_trend(&self, tier: TierType) -> TrendDirection {
+        if self.history.len() < 2 {
+            return TrendDirection::Stable
+        }
+
+        let recent = match tier {
+            TierType::Vram => self.statistics.vram_access_ratio,
+            TierType::Ram => self.statistics.ram_access_ratio,
+            TierType::Nvme => self.statistics.nvme_access_ratio,
+            TierType::Ssd => self.statistics.ssd_access_ratio,
+        }
+
+        let previous = match tier {
+            TierType::Vram => self.history[self.history.len() - 2].vram_access_ratio,
+            TierType::Ram => self.history[self.history.len() - 2].ram_access_ratio,
+            TierType::Nvme => self.history[self.history.len() - 2].nvme_access_ratio,
+            TierType::Ssd => self.history[self.history.len() - 2].ssd_access_ratio,
+        }
+
+        if recent > previous * 1.1 {
+            TrendDirection::Increasing
+        } else if recent < previous * 0.9 {
+            TrendDirection::Decreasing
+        } else {
+            TrendDirection::Stable
+        }
+    }
+
+    fun print_dashboard(&self) {
+        println!("═════════════════════════════════════════════════════");
+        println!("MEMORY TIER UTILIZATION DASHBOARD");
+        println!("═════════════════════════════════════════════════════");
+        println!()
+        println!("VRAM:  {:>6} / {:>6} MB ({:>5.1}%) {}",
+                 self.statistics.vram_used / (1024 * 1024),
+                 self.statistics.vram_total / (1024 * 1024),
+                 self.statistics.vram_access_ratio * 100.0,
+                 "████████░░");
+        println!("RAM:   {:>6} / {:>6} MB ({:>5.1}%) {}",
+                 self.statistics.ram_used / (1024 * 1024),
+                 self.statistics.ram_total / (1024 * 1024),
+                 self.statistics.ram_access_ratio * 100.0,
+                 "████████░░");
+        println!("NVMe:  {:>6} / {:>6} MB ({:>5.1}%) {}",
+                 self.statistics.nvme_used / (1024 * 1024),
+                 self.statistics.nvme_total / (1024 * 1024),
+                 self.statistics.nvme_access_ratio * 100.0,
+                 "████████░░");
+        println!("SSD:   {:>6} / {:>6} MB ({:>5.1}%) {}",
+                 self.statistics.ssd_used / (1024 * 1024),
+                 self.statistics.ssd_total / (1024 * 1024),
+                 self.statistics.ssd_access_ratio * 100.0,
+                 "████████░░");
+        println!("═════════════════════════════════════════════════════");
+    }
+}
+
+enum TierType {
+    Vram,
+    Ram,
+    Nvme,
+    Ssd,
+}
+
+enum TrendDirection {
+    Increasing,
+    Stable,
+    Decreasing,
+}
+
+impl Clone for TierStatistics {
+    fn clone(&self) -> Self {
+        TierStatistics {
+            vram_used: self.vram_used,
+            vram_total: self.vram_total,
+            ram_used: self.ram_used,
+            ram_total: self.ram_total,
+            nvme_used: self.nvme_used,
+            nvme_total: self.nvme_total,
+            ssd_used: self.ssd_used,
+            ssd_total: self.ssd_total,
+            vram_access_ratio: self.vram_access_ratio,
+            ram_access_ratio: self.ram_access_ratio,
+            nvme_access_ratio: self.nvme_access_ratio,
+            ssd_access_ratio: self.ssd_access_ratio,
+            promotions_per_second: self.promotions_per_second,
+            demotions_per_second: self.demotions_per_second,
+        }
+    }
+}
+
+# Helper function
+fn get_timestamp() -> u64 {
+    0
+}

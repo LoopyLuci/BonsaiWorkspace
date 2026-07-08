@@ -226,21 +226,26 @@ pub actor IncrementalBuildManager {
     }
 
     message ComputeContentHash(path: String, content: String) -> Result<String, String> {
-        // Simple hash: just count bytes (in real implementation, use SHA256)
-        let hash = format!("hash_{}", content.len())
+        let hash = fnv1a_str(&content)
         content_hash_cache.lock().unwrap().insert(path, hash.clone())
         Ok(hash)
     }
 
     message CheckIfNeedsRebuild(path: String) -> Result<bool, String> {
-        let cache = content_hash_cache.lock().unwrap()
-
-        if let Some(_old_hash) = cache.get(&path) {
-            // File was compiled before, check if content changed
-            Ok(false)  // For now, assume no rebuild needed
-        } else {
-            Ok(true)  // New file, needs compilation
+        let cached_hash = {
+            let cache = content_hash_cache.lock().unwrap()
+            cache.get(&path).cloned()
         }
+
+        let old_hash = match cached_hash {
+            None => return Ok(true),  // never compiled — must build
+            Some(h) => h,
+        }
+
+        // Read file from disk and hash it; rebuild only when hash changed
+        let content = read_source_file(&path)?
+        let current_hash = fnv1a_str(&content)
+        Ok(current_hash != old_hash)
     }
 
     message BuildFile(path: String, content: String) -> Result<Vec<u8>, String> {
@@ -449,4 +454,60 @@ pub fn test_build_system() -> Result<(), String> {
     test_incremental_build()?
     test_omnicc_build()?
     Ok(())
+}
+
+// ============================================================================
+// FILE I/O & HASH HELPERS
+// ============================================================================
+
+extern "Win32" {
+    fn CreateFileA(path: *const u8, access: u32, share: u32, sec: *mut u8, disp: u32, flags: u32, tmpl: *mut u8) -> *mut u8
+    fn GetFileSize(h: *mut u8, high: *mut u32) -> u32
+    fn ReadFile(h: *mut u8, buf: *mut u8, n: u32, nread: *mut u32, ov: *mut u8) -> i32
+    fn CloseHandle(h: *mut u8) -> i32
+}
+extern "POSIX" {
+    fn open_rdonly(path: *const u8) -> i32
+    fn lseek_end(fd: i32) -> i64
+    fn lseek_set(fd: i32, off: i64)
+    fn read_fd(fd: i32, buf: *mut u8, n: usize) -> isize
+    fn close_fd(fd: i32)
+}
+
+fn read_source_file(path: &str) -> Result<String, String> {
+    let path_c: Vec<u8> = path.bytes().chain(std::iter::once(0u8)).collect()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA(path_c.as_ptr(), 0x80000000u32, 1, std::ptr::null_mut(), 3, 0x80, std::ptr::null_mut())
+        if h as usize == usize::MAX { return Err(format!("cannot open: {}", path)) }
+        let sz = GetFileSize(h, std::ptr::null_mut()) as usize
+        let mut buf = vec![0u8; sz]
+        let mut nread = 0u32
+        ReadFile(h, buf.as_mut_ptr(), sz as u32, &mut nread, std::ptr::null_mut())
+        CloseHandle(h)
+        buf.truncate(nread as usize)
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_rdonly(path_c.as_ptr())
+        if fd < 0 { return Err(format!("cannot open: {}", path)) }
+        let sz = lseek_end(fd) as usize
+        lseek_set(fd, 0)
+        let mut buf = vec![0u8; sz]
+        let n = read_fd(fd, buf.as_mut_ptr(), sz)
+        close_fd(fd)
+        if n < 0 { return Err("read error".to_string()) }
+        buf.truncate(n as usize)
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
+}
+
+fn fnv1a_str(s: &str) -> String {
+    let mut h: u64 = 14695981039346656037u64
+    for b in s.bytes() {
+        h ^= b as u64
+        h = h.wrapping_mul(1099511628211u64)
+    }
+    format!("{:016x}", h)
 }

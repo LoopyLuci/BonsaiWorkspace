@@ -1,4 +1,4 @@
-# Bonsai KEF API Reference
+# Omnisystem KEF API Reference
 
 Complete API documentation for the Knowledge Extraction Fabric.
 
@@ -526,9 +526,9 @@ pub enum KefError {
     IngestionFailed(String),
     RedactionFailed(String),
     ScoringFailed(String),
-    Kdb(bonsai_kdb::KdbError),
+    Kdb(omnisystem_kdb::KdbError),
     Tdl(String),
-    Hnsw(bonsai_hnsw::HnswError),
+    Hnsw(omnisystem_hnsw::HnswError),
     InvalidChunk(String),
     DimensionMismatch { expected: usize, got: usize },
     Cancelled,
@@ -548,7 +548,7 @@ pub type Result<T> = std::result::Result<T, KefError>;
 ### Simple Extraction
 
 ```rust
-use bonsai_kef::{KefService, ExtractionMethod};
+use omnisystem_kef::{KefService, ExtractionMethod};
 use std::path::Path;
 
 #[tokio::main]
@@ -572,7 +572,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Custom Configuration
 
 ```rust
-use bonsai_kef::{KefService, curator::CuratorConfig, ingestion::IngestionConfig};
+use omnisystem_kef::{KefService, curator::CuratorConfig, ingestion::IngestionConfig};
 
 let curator_config = CuratorConfig {
     quality_threshold: 0.75,

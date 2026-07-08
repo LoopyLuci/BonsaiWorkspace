@@ -1,0 +1,426 @@
+module omnisystem.memory_scaler
+
+# Dynamic memory scaling 0-100% utilization
+# Adjusts allocation policies based on system load and workload patterns
+
+import omnisystem.unified_memory_manager
+
+enum ScalingPolicy {
+    Aggressive,   # Maximize usage, higher eviction cost
+    Balanced,     # Steady state operation
+    Conservative, # Minimize usage, reduce latency
+}
+
+enum MemoryPressure {
+    Low,          # <30% utilization
+    Moderate,     # 30-60% utilization
+    High,         # 60-85% utilization
+    Critical,     # >85% utilization
+}
+
+type MemoryScaler = struct {
+    current_policy: ScalingPolicy,
+    target_utilization: f64,     # 0.0-1.0
+    current_utilization: f64,
+    memory_pressure: MemoryPressure,
+    adaptive_scaling: bool,
+
+    # Scaling parameters
+    aggression_factor: f64,        # 0.5-2.0
+    pre_allocation_threshold: f64, # When to pre-allocate
+    compaction_threshold: f64,     # When to compact memory
+
+    # Tracking
+    allocation_attempts: u64,
+    successful_allocations: u64,
+    failed_allocations: u64,
+    compaction_count: u64,
+
+    # History for adaptation
+    utilization_history: Vec<f64>,
+    allocation_rate: f64,
+    eviction_rate: f64,
+}
+
+impl MemoryScaler {
+    fun new(policy: ScalingPolicy) -> Self {
+        let (target_util, aggression) = match policy {
+            ScalingPolicy::Aggressive => (0.85, 1.5),
+            ScalingPolicy::Balanced => (0.65, 1.0),
+            ScalingPolicy::Conservative => (0.45, 0.7),
+        }
+
+        MemoryScaler {
+            current_policy: policy,
+            target_utilization: target_util,
+            current_utilization: 0.0,
+            memory_pressure: MemoryPressure::Low,
+            adaptive_scaling: true,
+
+            aggression_factor: aggression,
+            pre_allocation_threshold: 0.5,
+            compaction_threshold: 0.8,
+
+            allocation_attempts: 0,
+            successful_allocations: 0,
+            failed_allocations: 0,
+            compaction_count: 0,
+
+            utilization_history: Vec::new(),
+            allocation_rate: 0.0,
+            eviction_rate: 0.0,
+        }
+    }
+
+    fun update_utilization(&mut self, vram: f64, ram: f64, nvme: f64, ssd: f64) {
+        # Weighted utilization: VRAM most critical
+        self.current_utilization = (vram * 0.5) + (ram * 0.3) + (nvme * 0.15) + (ssd * 0.05)
+
+        # Track history for adaptive scaling
+        self.utilization_history.push(self.current_utilization)
+        if self.utilization_history.len() > 100 {
+            self.utilization_history.remove(0)
+        }
+
+        # Update memory pressure
+        self.memory_pressure = match self.current_utilization {
+            u if u < 0.30 => MemoryPressure::Low,
+            u if u < 0.60 => MemoryPressure::Moderate,
+            u if u < 0.85 => MemoryPressure::High,
+            _ => MemoryPressure::Critical,
+        }
+    }
+
+    fun should_allocate(&self, size: u64, available: u64) -> bool {
+        # Check if allocation should proceed
+        match self.memory_pressure {
+            MemoryPressure::Low => {
+                # Always allocate under low pressure
+                size <= available
+            },
+            MemoryPressure::Moderate => {
+                # Allocate if doesn't exceed 70% of available
+                (size as f64) <= (available as f64) * 0.7
+            },
+            MemoryPressure::High => {
+                # Allocate only if doesn't exceed 50% of available
+                (size as f64) <= (available as f64) * 0.5
+            },
+            MemoryPressure::Critical => {
+                # Only allocate if explicitly required (size < 10% available)
+                (size as f64) < (available as f64) * 0.1
+            },
+        }
+    }
+
+    fun record_allocation(&mut self, success: bool) {
+        self.allocation_attempts += 1
+        if success {
+            self.successful_allocations += 1
+            self.allocation_rate = (self.successful_allocations as f64) / (self.allocation_attempts as f64)
+        } else {
+            self.failed_allocations += 1
+        }
+    }
+
+    fun should_prealloc_ahead(&self) -> bool {
+        # Pre-allocate memory ahead when utilization is low
+        self.current_utilization < self.pre_allocation_threshold
+    }
+
+    fun get_prealloc_size(&self, total_memory: u64) -> u64 {
+        # Calculate how much to pre-allocate
+        match self.memory_pressure {
+            MemoryPressure::Low => (total_memory as f64 * 0.3) as u64,
+            MemoryPressure::Moderate => (total_memory as f64 * 0.15) as u64,
+            MemoryPressure::High => (total_memory as f64 * 0.05) as u64,
+            MemoryPressure::Critical => 0,
+        }
+    }
+
+    fun should_compact(&self) -> bool {
+        self.current_utilization > self.compaction_threshold
+    }
+
+    fun get_compaction_target(&self) -> f64 {
+        # Target utilization for compaction
+        match self.memory_pressure {
+            MemoryPressure::Low => 0.50,
+            MemoryPressure::Moderate => 0.60,
+            MemoryPressure::High => 0.70,
+            MemoryPressure::Critical => 0.75,
+        }
+    }
+
+    fun adapt_policy(&mut self) {
+        # Automatically adjust policy based on observed behavior
+        if !self.adaptive_scaling {
+            return
+        }
+
+        # Calculate trend
+        if self.utilization_history.len() < 10 {
+            return
+        }
+
+        let recent_avg = self.utilization_history
+            .iter()
+            .rev()
+            .take(5)
+            .sum::<f64>() / 5.0
+
+        let older_avg = self.utilization_history
+            .iter()
+            .rev()
+            .skip(5)
+            .take(5)
+            .sum::<f64>() / 5.0
+
+        let trend = recent_avg - older_avg
+
+        # Adjust aggression based on trend
+        if trend > 0.1 {
+            # Utilization increasing: reduce aggression
+            self.aggression_factor *= 0.9
+        } else if trend < -0.1 {
+            # Utilization decreasing: increase aggression
+            self.aggression_factor *= 1.1
+        }
+
+        # Clamp aggression factor
+        self.aggression_factor = if self.aggression_factor > 2.0 {
+            2.0
+        } else if self.aggression_factor < 0.5 {
+            0.5
+        } else {
+            self.aggression_factor
+        }
+    }
+
+    fun get_current_scale(&self) -> f64 {
+        # Returns current scaling level (0.0-1.0)
+        self.current_utilization / self.target_utilization
+    }
+
+    fun is_overutilized(&self) -> bool {
+        self.current_utilization > 0.9
+    }
+
+    fun is_underutilized(&self) -> bool {
+        self.current_utilization < 0.3
+    }
+
+    fun get_eviction_aggressiveness(&self) -> f64 {
+        # How aggressively to evict pages
+        match self.memory_pressure {
+            MemoryPressure::Low => 0.1,
+            MemoryPressure::Moderate => 0.3,
+            MemoryPressure::High => 0.6,
+            MemoryPressure::Critical => 0.9,
+        }
+    }
+
+    fun get_allocation_priority_boost(&self) -> f64 {
+        # Boost for allocation priority
+        match self.memory_pressure {
+            MemoryPressure::Low => 1.0,
+            MemoryPressure::Moderate => 0.8,
+            MemoryPressure::High => 0.5,
+            MemoryPressure::Critical => 0.2,
+        }
+    }
+
+    fun get_stats(&self) -> ScalingStats {
+        ScalingStats {
+            current_utilization: self.current_utilization,
+            target_utilization: self.target_utilization,
+            allocation_success_rate: if self.allocation_attempts > 0 {
+                (self.successful_allocations as f64) / (self.allocation_attempts as f64)
+            } else {
+                1.0
+            },
+            failed_allocations: self.failed_allocations,
+            compaction_count: self.compaction_count,
+            memory_pressure: match self.memory_pressure {
+                MemoryPressure::Low => "Low".to_string(),
+                MemoryPressure::Moderate => "Moderate".to_string(),
+                MemoryPressure::High => "High".to_string(),
+                MemoryPressure::Critical => "Critical".to_string(),
+            },
+            allocation_rate: self.allocation_rate,
+            eviction_rate: self.eviction_rate,
+        }
+    }
+}
+
+type ScalingStats = struct {
+    current_utilization: f64,
+    target_utilization: f64,
+    allocation_success_rate: f64,
+    failed_allocations: u64,
+    compaction_count: u64,
+    memory_pressure: string,
+    allocation_rate: f64,
+    eviction_rate: f64,
+}
+
+# Memory scaling controller for integrated management
+type MemoryScalingController = struct {
+    scaler: MemoryScaler,
+    manager: *UnifiedMemoryManager,
+
+    min_free_memory: u64,     # Keep minimum free for emergencies
+    compaction_watermark: u64, # Trigger compaction threshold
+    prealloc_watermark: u64,   # Trigger pre-allocation threshold
+}
+
+impl MemoryScalingController {
+    fun new(scaler: MemoryScaler, manager: *UnifiedMemoryManager,
+            min_free: u64, compact_watermark: u64, prealloc_watermark: u64)
+        -> Self {
+
+        MemoryScalingController {
+            scaler,
+            manager,
+            min_free_memory: min_free,
+            compaction_watermark: compact_watermark,
+            prealloc_watermark: prealloc_watermark,
+        }
+    }
+
+    fun should_trigger_maintenance(&mut self) -> MaintenanceAction {
+        let (vram, ram, nvme, ssd) = unsafe { (*self.manager).get_utilization() }
+
+        self.scaler.update_utilization(vram, ram, nvme, ssd)
+        self.scaler.adapt_policy()
+
+        # Determine what action to take
+        match self.scaler.memory_pressure {
+            MemoryPressure::Low => {
+                if self.scaler.should_prealloc_ahead() {
+                    MaintenanceAction::Prealloc
+                } else {
+                    MaintenanceAction::None
+                }
+            },
+            MemoryPressure::Moderate => MaintenanceAction::Monitor,
+            MemoryPressure::High => {
+                if self.scaler.should_compact() {
+                    MaintenanceAction::Compact
+                } else {
+                    MaintenanceAction::Monitor
+                }
+            },
+            MemoryPressure::Critical => MaintenanceAction::EvictAggressive,
+        }
+    }
+
+    fun get_target_allocation_size(&self, requested: u64) -> Option<u64> {
+        # Calculate if and how much to allocate
+        if self.scaler.should_allocate(requested, self.min_free_memory) {
+            Some(requested)
+        } else {
+            None
+        }
+    }
+}
+
+enum MaintenanceAction {
+    None,
+    Monitor,
+    Prealloc,
+    Compact,
+    EvictAggressive,
+}
+
+# Predictive scaling based on workload patterns
+type PredictiveScaler = struct {
+    access_patterns: Vec<AccessPattern>,
+    burst_detector: BurstDetector,
+    next_predicted_peak: f64,
+    time_to_peak_ms: u64,
+}
+
+type AccessPattern = struct {
+    timestamp: u64,
+    allocation_size: u64,
+    allocation_count: u32,
+    duration_ms: u64,
+}
+
+type BurstDetector = struct {
+    baseline_rate: f64,
+    current_rate: f64,
+    threshold_multiplier: f64,  # Burst = baseline * threshold
+    burst_detected: bool,
+}
+
+impl BurstDetector {
+    fun new() -> Self {
+        BurstDetector {
+            baseline_rate: 1.0,
+            current_rate: 1.0,
+            threshold_multiplier: 3.0,
+            burst_detected: false,
+        }
+    }
+
+    fun update(&mut self, current_rate: f64) {
+        self.current_rate = current_rate
+
+        # Update baseline (exponential moving average)
+        self.baseline_rate = (self.baseline_rate * 0.9) + (current_rate * 0.1)
+
+        # Detect burst
+        self.burst_detected = current_rate > (self.baseline_rate * self.threshold_multiplier)
+    }
+
+    fun is_burst(&self) -> bool {
+        self.burst_detected
+    }
+}
+
+impl PredictiveScaler {
+    fun new() -> Self {
+        PredictiveScaler {
+            access_patterns: Vec::new(),
+            burst_detector: BurstDetector::new(),
+            next_predicted_peak: 0.0,
+            time_to_peak_ms: 0,
+        }
+    }
+
+    fun record_access_pattern(&mut self, pattern: AccessPattern) {
+        self.access_patterns.push(pattern)
+
+        # Keep only recent patterns (last 100)
+        if self.access_patterns.len() > 100 {
+            self.access_patterns.remove(0)
+        }
+
+        self.predict_next_peak()
+    }
+
+    fun predict_next_peak(&mut self) {
+        if self.access_patterns.len() < 10 {
+            return
+        }
+
+        # Simple prediction: look for patterns in allocation sizes
+        let recent: Vec<_> = self.access_patterns
+            .iter()
+            .rev()
+            .take(20)
+            .collect()
+
+        let avg_size: u64 = recent.iter()
+            .map(|p| p.allocation_size)
+            .sum::<u64>() / recent.len() as u64
+
+        self.next_predicted_peak = avg_size as f64 * 1.5  // Predict 50% higher
+    }
+
+    fun get_prediction(&self) -> (f64, u64) {
+        (self.next_predicted_peak, self.time_to_peak_ms)
+    }
+}

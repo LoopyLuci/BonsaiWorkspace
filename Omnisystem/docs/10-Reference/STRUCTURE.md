@@ -1,11 +1,11 @@
-# Bonsai KEF Project Structure
+# Omnisystem KEF Project Structure
 
 Complete overview of the Knowledge Extraction Fabric implementation.
 
 ## Directory Layout
 
 ```
-crates/bonsai-kef/
+crates/omnisystem-kef/
 ├── Cargo.toml                  # Package manifest with dependencies
 ├── README.md                   # User guide and feature overview
 ├── API.md                      # Complete API reference
@@ -212,7 +212,7 @@ crates/bonsai-kef/
 ## Dependency Graph
 
 ```
-bonsai-kef
+omnisystem-kef
 ├── tokio (async runtime)
 ├── async-trait
 ├── serde / serde_json (serialization)
@@ -226,8 +226,8 @@ bonsai-kef
 ├── zstd (compression)
 ├── crossbeam-channel (progress reporting)
 │
-├── bonsai-hnsw (HNSW indexing)
-├── bonsai-error (error types)
+├── omnisystem-hnsw (HNSW indexing)
+├── omnisystem-error (error types)
 │
 └── [dev] tempfile, tokio-test
 ```
@@ -281,8 +281,8 @@ pub enum KefError {
     ScoringFailed(String),
     
     // Integration errors
-    Kdb(bonsai_kdb::KdbError),
-    Hnsw(bonsai_hnsw::HnswError),
+    Kdb(omnisystem_kdb::KdbError),
+    Hnsw(omnisystem_hnsw::HnswError),
     
     // Validation
     DimensionMismatch { expected, got },
@@ -337,16 +337,16 @@ pub enum KefError {
 
 ```bash
 # Build
-cargo build -p bonsai-kef
+cargo build -p omnisystem-kef
 
 # Run tests
-cargo test -p bonsai-kef
+cargo test -p omnisystem-kef
 
 # Run with logging
-RUST_LOG=debug cargo test -p bonsai-kef -- --nocapture
+RUST_LOG=debug cargo test -p omnisystem-kef -- --nocapture
 
 # Benchmark
-cargo bench -p bonsai-kef
+cargo bench -p omnisystem-kef
 
 # Example
 cargo run --example extract_knowledge

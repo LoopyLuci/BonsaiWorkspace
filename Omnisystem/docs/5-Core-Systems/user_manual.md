@@ -1,10 +1,10 @@
-# Bonsai Workspace User Manual
+# Omnisystem Workspace User Manual
 
-This manual is the complete user guide for Bonsai Workspace. It explains every visible feature, how each workflow functions, and how to operate the app safely and efficiently.
+This manual is the complete user guide for Omnisystem Workspace. It explains every visible feature, how each workflow functions, and how to operate the app safely and efficiently.
 
 ## 1) Product Overview
 
-Bonsai Workspace is a local-first AI coding workspace that combines:
+Omnisystem Workspace is a local-first AI coding workspace that combines:
 
 - File explorer and editor (Monaco)
 - Integrated terminal with multiple shell tabs
@@ -62,7 +62,7 @@ Additional behaviors:
 
 ### 3.3 File-type detection and icons
 
-Bonsai detects file type using filename and extension.
+Omnisystem detects file type using filename and extension.
 
 Examples:
 
@@ -103,7 +103,7 @@ When a diff is available:
 - You can Accept or Reject each hunk.
 - Accepted hunks are applied and file is reloaded.
 
-### 4.4 Ask Bonsai on selected code
+### 4.4 Ask Omnisystem on selected code
 
 Context actions include:
 
@@ -180,7 +180,7 @@ Quick Options is a shortcut dropdown in the chat area for common assistant actio
 
 Available options:
 
-- Weather: asks Bonsai Buddy for current weather details.
+- Weather: asks Omnisystem Buddy for current weather details.
 - Time: requests local date/time from runtime tools.
 - Files: launches a file-focused request pattern for search/read operations.
 - Sys Stats: fetches live machine metrics and hardware summary.
@@ -306,7 +306,7 @@ Tracks events from:
 - Terminal output patterns
 - Unhandled runtime errors
 
-- UI actions: All interactive UI controls are annotated with `data-bonsai-action` (format "Area:Action") so user interactions are captured with structured labels in the Activity Log. Clickable controls in draggable titlebar regions are set to `-webkit-app-region: no-drag` to ensure they remain interactive.
+- UI actions: All interactive UI controls are annotated with `data-omnisystem-action` (format "Area:Action") so user interactions are captured with structured labels in the Activity Log. Clickable controls in draggable titlebar regions are set to `-webkit-app-region: no-drag` to ensure they remain interactive.
 
 Controls:
 
@@ -341,7 +341,7 @@ The Model Selector is the main model control surface.
 
 Core actions:
 
-- Browse installed models and Bonsai Catalog entries.
+- Browse installed models and Omnisystem Catalog entries.
 - Load or switch the active model.
 - Monitor load progress (percentage and elapsed time).
 
@@ -476,7 +476,7 @@ Priority behavior:
 
 ## 14) Local API and External Automation
 
-Bonsai exposes a local API for automated testing and agent integration.
+Omnisystem exposes a local API for automated testing and agent integration.
 
 Capabilities include:
 
@@ -491,10 +491,10 @@ Compatible scripts in src include orchestrated smoke/liveness/HITL flows.
 
 ### 15.1 Root launcher scripts
 
-- Launch-BonsaiWorkspace.cmd
-- Launch-BonsaiWorkspace.ps1
-- Generate-BonsaiDesktopShortcut.cmd
-- Generate-BonsaiDesktopShortcut.ps1
+- Launch-OmnisystemWorkspace.cmd
+- Launch-OmnisystemWorkspace.ps1
+- Generate-OmnisystemDesktopShortcut.cmd
+- Generate-OmnisystemDesktopShortcut.ps1
 
 ### 15.2 Reporting artifacts
 
@@ -582,7 +582,7 @@ Reports are designed for traceability, including failure cases.
 
 ## 22) Setup, Build, and Run — Full Developer Guide
 
-This section summarizes how to prepare a development machine, run tests, and start the Workspace, the local `bonsai-bot` service, and the Mobile Viewer (scrcpy) components.
+This section summarizes how to prepare a development machine, run tests, and start the Workspace, the local `omnisystem-bot` service, and the Mobile Viewer (scrcpy) components.
 
 ### 22.1 System prerequisites
 
@@ -592,21 +592,21 @@ This section summarizes how to prepare a development machine, run tests, and sta
 - Install Android Platform Tools (ADB): https://developer.android.com/studio/releases/platform-tools
 - (Optional) Install `scrcpy` for Mobile Viewer: https://github.com/Genymobile/scrcpy
 
-On Windows, prefer adding `adb.exe` and `scrcpy.exe` to PATH; Bonsai will also probe common install locations and display candidate paths in the Mobile Viewer settings.
+On Windows, prefer adding `adb.exe` and `scrcpy.exe` to PATH; Omnisystem will also probe common install locations and display candidate paths in the Mobile Viewer settings.
 
 ### 22.2 Build and run (developer loop)
 
 1. Install frontend deps (once):
 
 ```bash
-cd bonsai-workspace/src
+cd omnisystem-workspace/src
 npm ci
 ```
 
 2. Start the frontend dev server (Vite):
 
 ```bash
-npm --prefix "bonsai-workspace/src" run dev
+npm --prefix "omnisystem-workspace/src" run dev
 ```
 
 Frontend dev server default URL: `http://localhost:1420` (check console output).
@@ -614,18 +614,18 @@ Frontend dev server default URL: `http://localhost:1420` (check console output).
 3. Start the native app / Tauri dev (optional - launches the desktop shell):
 
 ```bash
-cd bonsai-workspace
+cd omnisystem-workspace
 npx --yes --package @tauri-apps/cli tauri dev
 ```
 
-4. Start `bonsai-bot` (platform connectors, admin API):
+4. Start `omnisystem-bot` (platform connectors, admin API):
 
 ```bash
-cd bonsai-bot
+cd omnisystem-bot
 cargo run --release
 ```
 
-The `bonsai-bot` admin API listens by default on port `11421` (near-by fallbacks possible) and writes the resolved port to `bonsai-bot-port.json` in the standard config dir for local discovery.
+The `omnisystem-bot` admin API listens by default on port `11421` (near-by fallbacks possible) and writes the resolved port to `omnisystem-bot-port.json` in the standard config dir for local discovery.
 
 5. Run the Tauri backend / workspace API (if not running via `tauri dev`) — see the repository README for the exact command. The workspace API default port is `11369`.
 
@@ -634,14 +634,14 @@ The `bonsai-bot` admin API listens by default on port `11421` (near-by fallbacks
 From the Tauri crate (recommended):
 
 ```bash
-cd bonsai-workspace/src-tauri
+cd omnisystem-workspace/src-tauri
 cargo test
 ```
 
 From the bot service:
 
 ```bash
-cd bonsai-bot
+cd omnisystem-bot
 cargo test
 ```
 
@@ -649,9 +649,9 @@ Unit tests and quick integration checks are included for: policy rules, tool sch
 
 ## 23) Bots: setup, platforms, and communication
 
-## 23.0 BonsaiBot Setup
+## 23.0 OmnisystemBot Setup
 
-BonsaiBot provides messaging integration and admin control endpoints.
+OmnisystemBot provides messaging integration and admin control endpoints.
 
 Supported platforms:
 
@@ -662,7 +662,7 @@ Supported platforms:
 
 Where to configure:
 
-- Main config: OS config directory `bonsai-bot-config.json` (or working directory override).
+- Main config: OS config directory `omnisystem-bot-config.json` (or working directory override).
 - Secrets/tokens: platform sections in config and keyring-backed admin token handling.
 
 Token placement guidance:
@@ -674,15 +674,15 @@ Token placement guidance:
 
 Validation:
 
-1. Start `bonsai-bot`.
+1. Start `omnisystem-bot`.
 2. Check `/health` for liveness.
 3. Check authenticated `/status` for per-platform connection state.
 
-`bonsai-bot` is the local platform gateway and adapter that connects the Workspace to chat platforms (Discord, Telegram, Matrix, Email) and to the Buddy local API.
+`omnisystem-bot` is the local platform gateway and adapter that connects the Workspace to chat platforms (Discord, Telegram, Matrix, Email) and to the Buddy local API.
 
 ### 23.1 Configuration
 
-- `bonsai-bot` reads `bonsai-bot-config.json` in the OS config dir (or the working directory). See `bonsai-bot/src/config.rs` for fields and defaults.
+- `omnisystem-bot` reads `omnisystem-bot-config.json` in the OS config dir (or the working directory). See `omnisystem-bot/src/config.rs` for fields and defaults.
 - Key fields to configure:
 	- `admin_port` — admin API port (default 11421)
 	- `buddy_api_url` — URL to the local Buddy API (default `http://127.0.0.1:11420`)
@@ -690,13 +690,13 @@ Validation:
 
 Example quick-start flow to enable a platform:
 
-1. Edit `bonsai-bot-config.json` (or use the built-in admin endpoints) and enable e.g. `discord.enabled = true` and fill the platform `config` values.
-2. Start `bonsai-bot`.
+1. Edit `omnisystem-bot-config.json` (or use the built-in admin endpoints) and enable e.g. `discord.enabled = true` and fill the platform `config` values.
+2. Start `omnisystem-bot`.
 3. Use the admin API `/status` endpoint to confirm platform adapters are connected (requires admin token). The admin health endpoint `/health` is unauthenticated for quick checks.
 
 ### 23.2 Admin API & tokens
 
-- On first run `bonsai-bot` ensures `bot_admin_token` in the OS keyring (see `src/config.rs`).
+- On first run `omnisystem-bot` ensures `bot_admin_token` in the OS keyring (see `src/config.rs`).
 - The admin API exposes management endpoints under `/` such as `/status`, `/sessions`, `/broadcast` and `/config/rotate-admin-token`.
 - `/status` requires `Authorization: Bearer <bot_admin_token>`; `/health` is open and can be used to detect if the admin API is listening.
 
@@ -707,7 +707,7 @@ curl -sS http://127.0.0.1:11421/health
 # expected: { "status": "ok", "version": "..." }
 ```
 
-If `/health` returns OK but the UI cannot reach bots, confirm `bonsai-bot` wrote `bonsai-bot-port.json` in your config dir and that the UI / workspace is configured to use the same admin endpoint.
+If `/health` returns OK but the UI cannot reach bots, confirm `omnisystem-bot` wrote `omnisystem-bot-port.json` in your config dir and that the UI / workspace is configured to use the same admin endpoint.
 
 ### 23.3 Platform onboarding notes
 
@@ -725,7 +725,7 @@ The Mobile Viewer lets you mirror and control Android devices via `scrcpy` and a
 ### 24.1 Install and verify prerequisites
 
 - Install `adb` (Android Platform Tools) and ensure it's on `PATH`.
-- Install `scrcpy` for screen mirroring (on Windows, put `scrcpy.exe` in PATH or install through Chocolatey / Scoop). Bonsai probes common locations and shows candidate paths in the Mobile Viewer UI.
+- Install `scrcpy` for screen mirroring (on Windows, put `scrcpy.exe` in PATH or install through Chocolatey / Scoop). Omnisystem probes common locations and shows candidate paths in the Mobile Viewer UI.
 
 Verify ADB and scrcpy from your shell:
 
@@ -742,46 +742,46 @@ If `scrcpy` is not detected, the Mobile Viewer UI shows candidate locations that
 2. Open `Mobile Viewer` from Tools → Mobile Viewer.
 3. Click `Refresh` to populate devices.
 4. Select device and click `Start Viewer` — this launches `scrcpy` locally and starts the remote surface runtime on-device (reverse ports).
-5. Optionally click `Prepare Runtime` to ensure ADB reverse ports are set, Bonsai app is launched on device, and remote surface (frame/input) endpoints are exposed.
+5. Optionally click `Prepare Runtime` to ensure ADB reverse ports are set, Omnisystem app is launched on device, and remote surface (frame/input) endpoints are exposed.
 6. Use the on-screen controls to tap, swipe, type, take screenshots, or start/stop recordings.
 
 Under the hood:
 
 - The backend command `android_mobile_view_start` launches `scrcpy` with the selected flags. If the process cannot start the backend returns a helpful error listing candidate `scrcpy` paths checked.
-- The backend command `android_mobile_prepare_uniform_runtime` performs wake/unlock, `adb reverse` for the API and WS ports, launches the Bonsai app, and optionally starts the Remote Surface activity that posts frames to the desktop API.
+- The backend command `android_mobile_prepare_uniform_runtime` performs wake/unlock, `adb reverse` for the API and WS ports, launches the Omnisystem app, and optionally starts the Remote Surface activity that posts frames to the desktop API.
 
 ### 24.3 Troubleshooting Mobile Viewer
 
-- If `Start Viewer` fails with `Failed to start scrcpy`, verify `scrcpy` is installed and accessible from the user context used to run Bonsai.
+- If `Start Viewer` fails with `Failed to start scrcpy`, verify `scrcpy` is installed and accessible from the user context used to run Omnisystem.
 - If frames are missing but `scrcpy` runs, try `Prepare Runtime` to ensure reverse ports and Remote Surface activity are launched.
 - If reverse port errors occur, ensure `adb reverse --list` shows the mapping and that the device supports reverse (some vendor OEM builds or older Android versions may not).
 
 ## 25) Quick verification steps (end-to-end)
 
-1. Start frontend dev server (`npm --prefix bonsai-workspace/src run dev`) and confirm `http://localhost:1420` responds in a browser.
-2. Start `bonsai-bot` (`cargo run` in `bonsai-bot`) and check `http://127.0.0.1:11421/health` returns OK.
+1. Start frontend dev server (`npm --prefix omnisystem-workspace/src run dev`) and confirm `http://localhost:1420` responds in a browser.
+2. Start `omnisystem-bot` (`cargo run` in `omnisystem-bot`) and check `http://127.0.0.1:11421/health` returns OK.
 3. Start the workspace backend (Tauri) or run `tauri dev` and open the Tools → Bots/Settings → Bots tab.
 4. The Bots tab queries the admin endpoints and the workspace API; if both services are running the Bots tab will show connected platforms, statuses, and allow platform-specific configuration.
 
 ## 26) Files and locations
 
-- Frontend code: `bonsai-workspace/src`
-- Tauri backend: `bonsai-workspace/src-tauri/src`
-- Bots service: `bonsai-bot/src`
-- Config examples: `bonsai-bot/bonsai-bot-config.json` (created in the config dir on first run)
+- Frontend code: `omnisystem-workspace/src`
+- Tauri backend: `omnisystem-workspace/src-tauri/src`
+- Bots service: `omnisystem-bot/src`
+- Config examples: `omnisystem-bot/omnisystem-bot-config.json` (created in the config dir on first run)
 
 ## 27) Contact and contribution notes
 
 If you extend platform adapters or add new skill types, add unit tests under the corresponding crate and update `user_manual.md` with the new platform connection steps and security considerations.
 
 
-# Bonsai Workspace User Manual
+# Omnisystem Workspace User Manual
 
-This manual is the complete user guide for Bonsai Workspace. It explains every visible feature, how each workflow functions, and how to operate the app safely and efficiently.
+This manual is the complete user guide for Omnisystem Workspace. It explains every visible feature, how each workflow functions, and how to operate the app safely and efficiently.
 
 ## 1) Product Overview
 
-Bonsai Workspace is a local-first AI coding workspace that combines:
+Omnisystem Workspace is a local-first AI coding workspace that combines:
 
 - File explorer and editor (Monaco)
 - Integrated terminal with multiple shell tabs
@@ -839,7 +839,7 @@ Additional behaviors:
 
 ### 3.3 File-type detection and icons
 
-Bonsai detects file type using filename and extension.
+Omnisystem detects file type using filename and extension.
 
 Examples:
 
@@ -880,7 +880,7 @@ When a diff is available:
 - You can Accept or Reject each hunk.
 - Accepted hunks are applied and file is reloaded.
 
-### 4.4 Ask Bonsai on selected code
+### 4.4 Ask Omnisystem on selected code
 
 Context actions include:
 
@@ -1187,7 +1187,7 @@ Persistent session state includes:
 
 ## 14) Local API and External Automation
 
-Bonsai exposes a local API for automated testing and agent integration.
+Omnisystem exposes a local API for automated testing and agent integration.
 
 Capabilities include:
 
@@ -1202,10 +1202,10 @@ Compatible scripts in src include orchestrated smoke/liveness/HITL flows.
 
 ### 15.1 Root launcher scripts
 
-- Launch-BonsaiWorkspace.cmd
-- Launch-BonsaiWorkspace.ps1
-- Generate-BonsaiDesktopShortcut.cmd
-- Generate-BonsaiDesktopShortcut.ps1
+- Launch-OmnisystemWorkspace.cmd
+- Launch-OmnisystemWorkspace.ps1
+- Generate-OmnisystemDesktopShortcut.cmd
+- Generate-OmnisystemDesktopShortcut.ps1
 
 ### 15.2 Reporting artifacts
 

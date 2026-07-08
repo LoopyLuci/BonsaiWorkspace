@@ -234,7 +234,7 @@ These systems have significant backend implementation but lack UIs. They provide
 
 **Path**: `./Omnisystem/runtime/services/vault/`
 
-**What It Does**: Manage nested Bonsai instances and resource quotas
+**What It Does**: Manage nested Omnisystem instances and resource quotas
 
 **Required UI Components**:
 - Nested instance list view
@@ -383,7 +383,7 @@ These systems would be nice to have but are less critical.
 
 **Path**: `./Omnisystem/runtime/services/studio/`
 
-**What It Does**: Full IDE for Bonsai development
+**What It Does**: Full IDE for Omnisystem development
 
 **Required UI**: Code editor, project tree view, problem panel, debug panel, task runner, output panel
 
@@ -454,7 +454,7 @@ These systems would be nice to have but are less critical.
 ### 22. GESTURE RECOGNITION UI
 **Effort**: 10-15 hours
 
-**Path**: `./Omnisystem/applications/bonsai-desktop-environment/src/input/GestureRecognitionSystem.vera`
+**Path**: `./Omnisystem/applications/omnisystem-desktop-environment/src/input/GestureRecognitionSystem.vera`
 
 **What It Does**: Configure and test gestures
 
@@ -469,7 +469,7 @@ These systems would be nice to have but are less critical.
 ### 23. CONFIGURATION EDITOR
 **Effort**: 15-25 hours
 
-**Path**: `./Omnisystem/applications/bonsai-desktop-environment/src/core/ConfigurationSystem.vera`
+**Path**: `./Omnisystem/applications/omnisystem-desktop-environment/src/core/ConfigurationSystem.vera`
 
 **What It Does**: Visual configuration editing
 
@@ -484,7 +484,7 @@ These systems would be nice to have but are less critical.
 ### 24. ANIMATION EDITOR
 **Effort**: 20-30 hours
 
-**Path**: `./Omnisystem/applications/bonsai-desktop-environment/src/graphics/AnimationEngine.vera`
+**Path**: `./Omnisystem/applications/omnisystem-desktop-environment/src/graphics/AnimationEngine.vera`
 
 **What It Does**: Create and preview animations
 

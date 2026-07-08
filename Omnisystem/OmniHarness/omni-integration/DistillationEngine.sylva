@@ -1,0 +1,131 @@
+// ════════════════════════════════════════════════════════════════════════════
+// OMNIHARNESS DISTILLATION ENGINE — Sylva ML Layer
+// Multi-teacher distillation, preference learning, and evolutionary optimization.
+// Train a new model from the ground up, or from a HYBRID of many teacher models.
+// 100% SYLVA — Machine learning for AI self-improvement and evolution
+// ════════════════════════════════════════════════════════════════════════════
+
+use omnisystem::{Vec, HashMap, Option, Result, String, f32, f64, i32, bool}
+
+// ── Student model built from scratch (train-from-ground-up path) ──────────────
+
+layer TokenEmbedding {
+    input:   [1]            // token id
+    output:  [768]          // embedding dim
+    vocab:   131072
+}
+
+layer TransformerBlock {
+    input:      [768]
+    heads:      12
+    ffn_hidden: [3072]
+    output:     [768]
+    activation: gelu
+    norm:       rmsnorm
+    rope:       true
+}
+
+model StudentLM {
+    architecture: [
+        TokenEmbedding,
+        TransformerBlock * 24,   // depth
+        RMSNorm,
+        LMHead
+    ]
+    loss:       cross_entropy
+    optimizer:  adamw(lr=3e-4, weight_decay=0.1, betas=[0.9, 0.95])
+    scheduler:  cosine(warmup=2000)
+    batch_size: 32
+    context:    8192
+    precision:  bf16
+}
+
+// ── Multi-teacher distillation dataset (hybrid of N models) ───────────────────
+
+struct Teacher {
+    model_id: String,
+    weight:   f32,      // ensemble contribution weight
+}
+
+struct DistillSample {
+    prompt:         String,
+    teacher_outputs: HashMap<String, String>,  // model_id -> response
+    chosen:         String,                     // judged / merged best answer
+    logprob_hint:   Option<f32>,
+}
+
+pipeline MultiTeacherDistillation {
+    // For each prompt, gather all teachers' answers, then let a judge model
+    // select or merge the best response into a single training target.
+    stage gather {
+        input:  prompt: String, teachers: Vec<Teacher>
+        map:    teacher => ModelBridge::infer(teacher.model_id, prompt, system)
+        output: teacher_outputs: HashMap<String, String>
+    }
+    stage judge {
+        input:  teacher_outputs
+        model:  judge_model                       // may itself be an ensemble
+        reduce: outputs => synthesize_best(outputs)
+        output: chosen: String
+    }
+    stage emit {
+        input:  prompt, chosen
+        format: chat_jsonl { messages: [system?, user(prompt), assistant(chosen)] }
+    }
+}
+
+// ── Knowledge distillation objective (soft targets when logits available) ─────
+
+model DistillationObjective {
+    student: StudentLM
+    teachers: [Teacher]
+    loss: weighted_sum([
+        cross_entropy(student.logits, chosen_tokens)     * 0.5,   // hard target
+        kl_divergence(student.logits, teacher_soft(T=2)) * 0.5,   // soft targets
+    ])
+    optimizer: adamw(lr=1e-4)
+}
+
+// ── Preference learning (DPO/ORPO from chosen/rejected pairs) ─────────────────
+
+struct PreferencePair {
+    prompt:   String,
+    chosen:   String,
+    rejected: String,
+}
+
+model PreferenceOptimizer {
+    base:  StudentLM
+    loss:  dpo(beta=0.1)          // direct preference optimization
+    data:  [PreferencePair]
+    optimizer: adamw(lr=5e-6)
+}
+
+// ── Evolutionary search over agent/training configs ───────────────────────────
+
+struct Genome {
+    system_prompt: String,
+    temperature:   f32,
+    lr:            f32,
+    depth:         i32,
+    fitness:       f32,
+}
+
+evolve AgentEvolution {
+    population: 16
+    elitism:    2
+    mutation:   0.6
+    crossover:  0.5
+    selection:  tournament(k=3)
+
+    mutate(g: Genome) -> Genome {
+        g.temperature = clamp(g.temperature + gaussian(0.0, 0.2), 0.0, 1.5)
+        g.system_prompt = append_hint(g.system_prompt, random_hint())
+        g
+    }
+    fitness(g: Genome) -> f32 {
+        // Pluggable: benchmark task success, reward model score, or eval suite.
+        benchmark_success_rate(g)
+    }
+    terminate: generations >= 8 || best_fitness >= 0.95
+}

@@ -1,4 +1,4 @@
-# Troubleshooting Guide - Bonsai Mobile FFI
+# Troubleshooting Guide - Omnisystem Mobile FFI
 
 ## Build Issues
 
@@ -107,7 +107,7 @@ ls $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-and
 
 **Problem:**
 ```
-error: failed to run custom build command for 'bonsai-mobile-ffi'
+error: failed to run custom build command for 'omnisystem-mobile-ffi'
 ```
 
 **Solution:**
@@ -128,7 +128,7 @@ cargo ndk -t arm64-v8a build --release
 
 **Problem:**
 ```
-error: could not compile 'bonsai-mobile-ffi'
+error: could not compile 'omnisystem-mobile-ffi'
 ```
 
 **Solution:**
@@ -150,24 +150,24 @@ cargo ndk -t arm64-v8a build --release
 
 ## Runtime Issues
 
-### 7. "UnsatisfiedLinkError: Failed to load bonsai_mobile_ffi"
+### 7. "UnsatisfiedLinkError: Failed to load omnisystem_mobile_ffi"
 
 **Problem:**
 ```
-java.lang.UnsatisfiedLinkError: Failed to load bonsai_mobile_ffi
+java.lang.UnsatisfiedLinkError: Failed to load omnisystem_mobile_ffi
 ```
 
 **Diagnosis:**
 ```bash
 # Check if .so exists
-adb shell "find /data/app -name 'libbonsai_mobile_ffi.so' 2>/dev/null"
+adb shell "find /data/app -name 'libomnisystem_mobile_ffi.so' 2>/dev/null"
 
 # Check library dependencies
-adb push libbonsai_mobile_ffi.so /data/local/tmp/
-adb shell "ldd /data/local/tmp/libbonsai_mobile_ffi.so"
+adb push libomnisystem_mobile_ffi.so /data/local/tmp/
+adb shell "ldd /data/local/tmp/libomnisystem_mobile_ffi.so"
 
 # Check logcat for detailed error
-adb logcat | grep -E "libbonsai|linker|library"
+adb logcat | grep -E "libomnisystem|linker|library"
 ```
 
 **Solutions:**
@@ -178,7 +178,7 @@ adb logcat | grep -E "libbonsai|linker|library"
 unzip app/build/outputs/apk/debug/app-debug.apk -d apk_contents
 
 # Check jniLibs
-ls apk_contents/lib/arm64-v8a/libbonsai_mobile_ffi.so
+ls apk_contents/lib/arm64-v8a/libomnisystem_mobile_ffi.so
 
 # If missing, rebuild
 ./gradlew buildRustFFI
@@ -188,18 +188,18 @@ ls apk_contents/lib/arm64-v8a/libbonsai_mobile_ffi.so
 **2. Check library architecture**
 ```bash
 # On build machine
-file crates/bonsai-mobile-ffi/target/aarch64-linux-android/release/libbonsai_mobile_ffi.so
+file crates/omnisystem-mobile-ffi/target/aarch64-linux-android/release/libomnisystem_mobile_ffi.so
 # Output should be: ELF 64-bit LSB shared object, ARM aarch64
 
 # On device
-adb shell "file /data/app/.../lib/arm64-v8a/libbonsai_mobile_ffi.so"
+adb shell "file /data/app/.../lib/arm64-v8a/libomnisystem_mobile_ffi.so"
 ```
 
 **3. Verify JNI naming**
 ```bash
-# Library MUST be named exactly: libbonsai_mobile_ffi.so
-# System.loadLibrary("bonsai_mobile_ffi") will look for:
-# - libbonsai_mobile_ffi.so on Android
+# Library MUST be named exactly: libomnisystem_mobile_ffi.so
+# System.loadLibrary("omnisystem_mobile_ffi") will look for:
+# - libomnisystem_mobile_ffi.so on Android
 
 ls -la app/src/main/jniLibs/arm64-v8a/
 ```
@@ -268,7 +268,7 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.L) {
 
 **Problem:**
 ```
-SIGSEGV in libbonsai_mobile_ffi.so
+SIGSEGV in libomnisystem_mobile_ffi.so
 Process crashed: native crash
 ```
 
@@ -282,7 +282,7 @@ adb logcat > crash.log
 adb shell "logcat -d | grep -A 20 'signal 11'"
 
 # Use addr2line to get source locations (requires debug symbols)
-aarch64-linux-android-addr2line -e libbonsai_mobile_ffi.so 0x1234567
+aarch64-linux-android-addr2line -e libomnisystem_mobile_ffi.so 0x1234567
 ```
 
 **Solutions:**
@@ -720,7 +720,7 @@ echo "=== Device Info ===" && \
 adb shell getprop ro.product.model && \
 adb shell getprop ro.product.cpu.abi && \
 echo "=== Library Check ===" && \
-adb shell ls /data/app/com.yourapp-*/lib/arm64-v8a/libbonsai_mobile_ffi.so && \
+adb shell ls /data/app/com.yourapp-*/lib/arm64-v8a/libomnisystem_mobile_ffi.so && \
 echo "=== Codec Support ===" && \
 adb shell dumpsys media.codec | grep -c "video/avc" && \
 echo "=== Logcat Errors ===" && \

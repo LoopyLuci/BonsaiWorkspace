@@ -1,13 +1,13 @@
-# SRWSTS Applications - Bonsai Ecosystem Stress Testing
+# SRWSTS Applications - Omnisystem Ecosystem Stress Testing
 
 ## Overview
 
-SRWSTS Applications provides comprehensive, production-grade stress testing for Bonsai Ecosystem applications (Workspace, Buddy, Omni-Bot) running within the complete Omnisystem environment. The crate enables intensive validation of application resilience, performance, and reliability under extreme load conditions.
+SRWSTS Applications provides comprehensive, production-grade stress testing for Omnisystem Ecosystem applications (Workspace, Buddy, Omni-Bot) running within the complete Omnisystem environment. The crate enables intensive validation of application resilience, performance, and reliability under extreme load conditions.
 
 ## Architecture
 
 ### 1. ApplicationBootstrap - Ecosystem Initialization
-Loads the complete Bonsai Ecosystem image on top of Omnisystem:
+Loads the complete Omnisystem Ecosystem image on top of Omnisystem:
 
 ```rust
 pub async fn bootstrap(&self) -> BootstrapResult<()> {
@@ -360,7 +360,7 @@ Apache License 2.0
 
 ## Contributing
 
-This crate is part of the Bonsai Ecosystem project. All code follows the project's guidelines for:
+This crate is part of the Omnisystem Ecosystem project. All code follows the project's guidelines for:
 - Production-grade quality
 - Comprehensive testing
 - Type safety

@@ -64,7 +64,7 @@ modules/
 │
 ├── 📁 universal-modules/
 │   ├── ecosystem/
-│   │   └── BonsaiEcosystem/   (1 implemented)
+│   │   └── OmnisystemEcosystem/   (1 implemented)
 │   ├── phase-19-extensions/   (6 slots)
 │   ├── phase-20-prompt-system/(4 slots)
 │   ├── phase-21-advanced-languages/ (4 slots)
@@ -126,7 +126,7 @@ base-modules/frameworks/
 
 | Module | Purpose | Location |
 |--------|---------|----------|
-| **BonsaiEcosystem** | Advanced ecosystem framework | `universal-modules/ecosystem/BonsaiEcosystem/` |
+| **OmnisystemEcosystem** | Advanced ecosystem framework | `universal-modules/ecosystem/OmnisystemEcosystem/` |
 
 ### Phase 19: Extensions (6 planned)
 

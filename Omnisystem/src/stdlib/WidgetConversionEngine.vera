@@ -1,0 +1,343 @@
+// Widget Conversion Engine — Vera UI Component
+// Live, real-time conversion between Omnisystem Languages and external widget formats
+
+import WidgetIR from "./WidgetIR.titan"
+import ConversionRuntime from "../systems/widget-converter/ConversionRuntime.titan"
+
+component WidgetConversionEngine {
+
+    props {
+        initial_source_lang: String = "javascript"
+        initial_target_lang: String = "vera"
+        on_convert: Fn(source: String, source_lang: String, target_lang: String) -> ConversionResult = || ConversionResult::empty()
+        on_create_file: Fn(code: String, target_lang: String, name: String) = |_, _, _| {}
+        on_copy: Fn(code: String) = |_| {}
+        theme: String = "omni-dark"
+    }
+
+    state {
+        source_code: String = ""
+        output_code: String = ""
+        source_lang: String = "javascript"
+        target_lang: String = "vera"
+        widget_type: String = "unknown"
+        confidence: String = "—"
+        is_converting: Bool = false
+        notes: Vec<String> = []
+        preview_html: String = ""
+        input_stats: String = "0 lines · 0 chars"
+        output_stats: String = "—"
+        log_lines: Vec<String> = ["Ready — paste widget code to convert"]
+        debounce_handle: Option<TimerHandle> = None
+        detected_name: String = "Widget"
+    }
+
+    fn handle_source_change(new_code: String) {
+        self.source_code = new_code
+        let lines = new_code.split('\n').len()
+        let chars = new_code.len()
+        self.input_stats = format!("{} lines · {} chars", lines, chars)
+
+        // Cancel pending debounce
+        if let Some(handle) = self.debounce_handle {
+            handle.cancel()
+        }
+
+        // Debounce conversion 300ms
+        if new_code.trim().len() > 10 {
+            self.debounce_handle = Some(
+                Timer::defer(300, || self.trigger_convert())
+            )
+        }
+    }
+
+    fn trigger_convert() {
+        if self.source_code.trim().is_empty() { return }
+        self.is_converting = true
+        self.log("Converting...")
+
+        let result = self.on_convert(
+            self.source_code.clone(),
+            self.source_lang.clone(),
+            self.target_lang.clone()
+        )
+
+        self.output_code = result.code.clone()
+        self.widget_type = result.widget_type.label()
+        self.confidence = format!("{} confidence", result.confidence.label())
+        self.detected_name = result.widget_name.clone()
+        self.notes = result.notes.clone()
+        self.is_converting = false
+
+        let out_lines = result.code.split('\n').len()
+        let out_chars = result.code.len()
+        self.output_stats = format!("{} lines · {} chars · {}", out_lines, out_chars, result.file_extension)
+
+        self.update_preview(result.widget_type)
+        for note in result.notes.iter() {
+            self.log(format!("  ℹ {}", note))
+        }
+        self.log(format!("✓ Converted {} → {} ({})",
+            self.source_lang, self.target_lang, self.widget_type))
+    }
+
+    fn update_preview(kind: WidgetKind) {
+        self.preview_html = ConversionRuntime::render_ow_preview(kind, self.detected_name.clone())
+    }
+
+    fn log(msg: String) {
+        self.log_lines.push(msg)
+        if self.log_lines.len() > 50 {
+            self.log_lines.remove(0)
+        }
+    }
+
+    fn handle_source_lang_change(lang: String) {
+        self.source_lang = lang
+        if !self.source_code.is_empty() {
+            self.trigger_convert()
+        }
+    }
+
+    fn handle_target_lang_change(lang: String) {
+        self.target_lang = lang
+        if !self.source_code.is_empty() {
+            self.trigger_convert()
+        }
+    }
+
+    fn do_copy() {
+        self.on_copy(self.output_code.clone())
+        self.log("✓ Copied to clipboard")
+    }
+
+    fn do_create_file() {
+        self.on_create_file(
+            self.output_code.clone(),
+            self.target_lang.clone(),
+            self.detected_name.clone()
+        )
+        self.log(format!("✓ Created file: {}.{}", self.detected_name, self.target_lang))
+    }
+
+    fn clear_all() {
+        self.source_code = ""
+        self.output_code = ""
+        self.widget_type = "unknown"
+        self.confidence = "—"
+        self.notes = []
+        self.preview_html = ""
+        self.input_stats = "0 lines · 0 chars"
+        self.output_stats = "—"
+        self.log_lines = ["Cleared"]
+    }
+
+    render {
+        <div class="wc-shell ow-bg" data-theme={self.theme}>
+
+            <!-- Header -->
+            <div class="wc-header ow-bg-card ow-border-b">
+                <div class="wc-logo">⇄</div>
+                <div class="wc-header-text">
+                    <h1 class="ow-accent">Widget Converter</h1>
+                    <p class="ow-text-dim">Live conversion between Omnisystem Languages and JS · TS · CSS · Tauri · Python GUI</p>
+                </div>
+                <div class="wc-header-meta">
+                    <span class="wc-badge wc-badge-blue">{self.widget_type}</span>
+                    <span class="wc-badge wc-badge-green">{self.confidence}</span>
+                </div>
+            </div>
+
+            <!-- Toolbar -->
+            <div class="wc-toolbar ow-bg-raise ow-border-b">
+                <div class="wc-lang-group">
+                    <label class="wc-lang-label ow-text-dim">From</label>
+                    <select class="wc-lang-select ow-input"
+                            value={self.source_lang}
+                            on:change={|e| self.handle_source_lang_change(e.value)}>
+                        <option value="javascript">JavaScript</option>
+                        <option value="typescript">TypeScript</option>
+                        <option value="css">CSS</option>
+                        <option value="tauri">Tauri (HTML+JS)</option>
+                        <option value="python">Python GUI</option>
+                        <option value="vera">Vera (OW Component)</option>
+                        <option value="nexus">Nexus (OW Layout)</option>
+                        <option value="titan">Titan (OW Runtime)</option>
+                    </select>
+                </div>
+
+                <button class="wc-swap-btn ow-btn ow-btn-ghost"
+                        aria-label="Swap languages"
+                        on:click={|| {
+                            let tmp = self.source_lang.clone()
+                            self.source_lang = self.target_lang.clone()
+                            self.target_lang = tmp
+                            if !self.source_code.is_empty() { self.trigger_convert() }
+                        }}>
+                    ⇄
+                </button>
+
+                <div class="wc-lang-group">
+                    <label class="wc-lang-label ow-text-dim">To</label>
+                    <select class="wc-lang-select ow-input"
+                            value={self.target_lang}
+                            on:change={|e| self.handle_target_lang_change(e.value)}>
+                        <option value="vera">Vera (OW Component)</option>
+                        <option value="nexus">Nexus (OW Layout)</option>
+                        <option value="titan">Titan (OW Runtime)</option>
+                        <option value="javascript">JavaScript</option>
+                        <option value="typescript">TypeScript</option>
+                        <option value="css">CSS</option>
+                        <option value="tauri">Tauri (HTML+JS)</option>
+                        <option value="python">Python GUI</option>
+                    </select>
+                </div>
+
+                <div class="wc-toolbar-actions">
+                    <button class="ow-btn ow-btn-primary"
+                            disabled={self.is_converting}
+                            on:click={|| self.trigger_convert()}>
+                        {if self.is_converting { "Converting..." } else { "Convert ⇄" }}
+                    </button>
+                    <button class="ow-btn ow-btn-ghost" on:click={|| self.clear_all()}>
+                        Clear
+                    </button>
+                </div>
+            </div>
+
+            <!-- Split pane -->
+            <div class="wc-split">
+
+                <!-- Input pane -->
+                <div class="wc-pane wc-input-pane ow-bg-card ow-border">
+                    <div class="wc-pane-header ow-border-b">
+                        <span class="wc-pane-title ow-text">Source Code</span>
+                        <span class="wc-stats ow-text-dim">{self.input_stats}</span>
+                    </div>
+                    <textarea
+                        class="wc-editor"
+                        placeholder="Paste JavaScript, TypeScript, CSS, Tauri, Python GUI, Vera, Nexus, or Titan widget code here..."
+                        value={self.source_code}
+                        on:input={|e| self.handle_source_change(e.value)}
+                        spellcheck="false"
+                        autocomplete="off"
+                        autocorrect="off"
+                        autocapitalize="off"
+                    />
+                </div>
+
+                <!-- Divider -->
+                <div class="wc-divider">
+                    <div class="wc-divider-line ow-border" />
+                </div>
+
+                <!-- Output pane -->
+                <div class="wc-pane wc-output-pane ow-bg-card ow-border">
+                    <div class="wc-pane-header ow-border-b">
+                        <span class="wc-pane-title ow-text">Converted Code</span>
+                        <span class="wc-stats ow-text-dim">{self.output_stats}</span>
+                        <div class="wc-pane-actions">
+                            <button class="ow-btn ow-btn-secondary"
+                                    disabled={self.output_code.is_empty()}
+                                    on:click={|| self.do_copy()}>
+                                Copy
+                            </button>
+                            <button class="ow-btn ow-btn-primary"
+                                    disabled={self.output_code.is_empty()}
+                                    on:click={|| self.do_create_file()}>
+                                Create File
+                            </button>
+                        </div>
+                    </div>
+                    <div class="wc-output-scroll">
+                        <pre class="wc-code-display"><code class={format!("language-{}", self.target_lang)}>{
+                            if self.output_code.is_empty() {
+                                "// Conversion output will appear here\n// Paste source code on the left to begin"
+                            } else {
+                                self.output_code.as_str()
+                            }
+                        }</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Notes row -->
+            if !self.notes.is_empty() {
+                <div class="wc-notes ow-bg-raise ow-border-t">
+                    <span class="wc-notes-label ow-text-dim">Notes:</span>
+                    for note in self.notes.iter() {
+                        <span class="wc-note ow-text-dim">· {note}</span>
+                    }
+                </div>
+            }
+
+            <!-- Live Preview -->
+            <div class="wc-preview ow-bg-card ow-border-t">
+                <div class="wc-preview-header ow-border-b">
+                    <span class="wc-preview-title ow-text">Live Widget Preview</span>
+                    <span class="wc-badge wc-badge-blue">
+                        {if self.widget_type == "unknown" { "Detecting type..." } else { self.widget_type.as_str() }}
+                    </span>
+                </div>
+                <div class="wc-preview-canvas ow-bg">
+                    {if self.preview_html.is_empty() {
+                        <div class="wc-preview-empty ow-text-dim">
+                            Widget preview will render here after conversion
+                        </div>
+                    } else {
+                        <div class="wc-preview-content" inner_html={self.preview_html} />
+                    }}
+                </div>
+            </div>
+
+            <!-- Log -->
+            <div class="wc-log-section ow-bg ow-border-t">
+                <div class="wc-log-header ow-text-dim">Conversion Log</div>
+                <div class="wc-log-scroll">
+                    for line in self.log_lines.iter() {
+                        <div class="wc-log-line ow-text-dim">{line}</div>
+                    }
+                </div>
+            </div>
+
+        </div>
+    }
+}
+
+
+// Supporting component: Language selector chip group
+component LanguageChipGroup {
+    props {
+        selected: String
+        options: Vec<(String, String)>  // (value, label)
+        on_select: Fn(String) = |_| {}
+    }
+    render {
+        <div class="wc-chip-group" role="radiogroup">
+            for (val, lbl) in self.options.iter() {
+                <button
+                    class={if val == self.selected { "wc-chip wc-chip-active" } else { "wc-chip" }}
+                    role="radio"
+                    aria-checked={val == self.selected}
+                    on:click={|| self.on_select(val.clone())}
+                >
+                    {lbl}
+                </button>
+            }
+        </div>
+    }
+}
+
+
+// Supporting component: Conversion confidence indicator
+component ConfidenceBar {
+    props {
+        confidence: String  // "high" | "medium" | "low"
+    }
+    render {
+        <div class="wc-confidence">
+            <div class={format!("wc-confidence-fill wc-confidence-{}", self.confidence)} />
+            <span class="wc-confidence-label ow-text-dim">{self.confidence} confidence</span>
+        </div>
+    }
+}

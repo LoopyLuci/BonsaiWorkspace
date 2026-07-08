@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Omnisystem is a complete rebuilding of the Bonsai Ecosystem using four Omni-languages:
+The Omnisystem is a complete rebuilding of the Omnisystem Ecosystem using four Omni-languages:
 
 1. **Titan**: Systems language (linear types, effects, self-hosting)
 2. **Sylva**: Scripting language (dynamic + gradual static, JIT)

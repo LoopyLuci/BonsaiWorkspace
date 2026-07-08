@@ -1,0 +1,1536 @@
+// ============================================================
+// LanguageAnalyzer.titan — Multi-language semantic analysis
+// Omnisystem LSP Server · Symbolic analysis for all 7 languages
+// Tokenize, parse declarations, build symbol tables, emit diagnostics.
+// ============================================================
+
+module LanguageAnalyzer
+
+use std::collections::HashMap
+use LspProtocol::{
+    Position, Range, Location, Diagnostic, DiagnosticSeverity,
+    offset_to_position, position_to_offset, word_at_position,
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 1  SYMBOL TABLE
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum SymbolKindEx {
+    Function,
+    Struct,
+    Enum,
+    EnumVariant,
+    Field,
+    Variable,
+    Parameter,
+    Constant,
+    Module,
+    Trait,
+    TypeAlias,
+    // VERA
+    Component,
+    Prop,
+    State,
+    // HELIX
+    Pipeline,
+    Shader,
+    Uniform,
+    StorageBuffer,
+    // AETHER
+    Actor,
+    Message,
+    Handler,
+    // SYLVA
+    Layer,
+    Model,
+    // AXIOM
+    Theorem,
+    Precondition,
+    Postcondition,
+    Invariant,
+    // NEXUS
+    Layout,
+    Breakpoint,
+}
+
+#[derive(Clone, Debug)]
+pub struct SymbolInfo {
+    pub name:        String,
+    pub kind:        SymbolKindEx,
+    pub type_str:    String,
+    pub location:    Location,
+    pub doc_comment: String,
+    pub params:      Vec<(String, String)>, // (name, type)
+    pub ret_type:    String,
+    pub scope_depth: usize,
+}
+
+impl SymbolInfo {
+    pub fn hover_text(&self) -> String {
+        let kind_label = match &self.kind {
+            SymbolKindEx::Function  => "fn",
+            SymbolKindEx::Struct    => "struct",
+            SymbolKindEx::Enum      => "enum",
+            SymbolKindEx::Variable  => "let",
+            SymbolKindEx::Constant  => "const",
+            SymbolKindEx::Component => "component",
+            SymbolKindEx::Actor     => "actor",
+            SymbolKindEx::Pipeline  => "pipeline",
+            SymbolKindEx::Theorem   => "theorem",
+            SymbolKindEx::Layer     => "layer",
+            SymbolKindEx::Layout    => "layout",
+            _                       => "symbol",
+        };
+        let mut lines = Vec::new();
+        // Code block header
+        let sig = if !self.params.is_empty() || !self.ret_type.is_empty() {
+            let params_str = self.params.iter()
+                .map(|(n, t)| format!("{}: {}", n, t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if self.ret_type.is_empty() {
+                format!("{} {}({})", kind_label, self.name, params_str)
+            } else {
+                format!("{} {}({}) -> {}", kind_label, self.name, params_str, self.ret_type)
+            }
+        } else if !self.type_str.is_empty() {
+            format!("{} {}: {}", kind_label, self.name, self.type_str)
+        } else {
+            format!("{} {}", kind_label, self.name)
+        };
+        lines.push(format!("```titan\n{}\n```", sig));
+        if !self.doc_comment.is_empty() {
+            lines.push(String::new());
+            lines.push(self.doc_comment.clone());
+        }
+        lines.join("\n")
+    }
+}
+
+pub struct SymbolTable {
+    pub scopes: Vec<HashMap<String, SymbolInfo>>,
+}
+
+impl SymbolTable {
+    pub fn new() -> Self {
+        SymbolTable { scopes: vec![HashMap::new()] }
+    }
+
+    pub fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    pub fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
+    pub fn define(&mut self, info: SymbolInfo) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(info.name.clone(), info);
+        }
+    }
+
+    pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(sym) = scope.get(name) {
+                return Some(sym);
+            }
+        }
+        None
+    }
+
+    pub fn all_symbols(&self) -> Vec<&SymbolInfo> {
+        let mut out = Vec::new();
+        for scope in &self.scopes {
+            for sym in scope.values() {
+                out.push(sym);
+            }
+        }
+        out
+    }
+
+    pub fn global_symbols(&self) -> Vec<&SymbolInfo> {
+        if let Some(scope) = self.scopes.first() {
+            scope.values().collect()
+        } else {
+            vec![]
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 2  ANALYSIS RESULT
+// ─────────────────────────────────────────────────────────────
+
+pub struct AnalysisResult {
+    pub symbols:    SymbolTable,
+    pub diagnostics: Vec<Diagnostic>,
+    pub hover_map:  HashMap<(u32, u32), String>,  // (line, char) -> hover text
+    pub uri:        String,
+    pub language:   String,
+    pub source:     String,
+}
+
+impl AnalysisResult {
+    pub fn new(uri: &str, language: &str, source: &str) -> Self {
+        AnalysisResult {
+            symbols:     SymbolTable::new(),
+            diagnostics: Vec::new(),
+            hover_map:   HashMap::new(),
+            uri:         uri.to_string(),
+            language:    language.to_string(),
+            source:      source.to_string(),
+        }
+    }
+
+    pub fn add_diag(&mut self, d: Diagnostic) {
+        self.diagnostics.push(d);
+    }
+
+    pub fn register_hover(&mut self, start: Position, end: Position, text: String) {
+        for line in start.line..=end.line {
+            let ch_start = if line == start.line { start.character } else { 0 };
+            let ch_end   = if line == end.line   { end.character }   else { 999 };
+            for ch in ch_start..ch_end {
+                self.hover_map.insert((line, ch), text.clone());
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 3  SIMPLE TOKENIZER
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenKind {
+    Ident(String),
+    Keyword(String),
+    Number(String),
+    Str(String),
+    Punct(char),
+    Comment(String),
+    DocComment(String),
+    Newline,
+    EOF,
+}
+
+#[derive(Clone, Debug)]
+pub struct Token {
+    pub kind:   TokenKind,
+    pub line:   u32,
+    pub column: u32,
+}
+
+pub struct Lexer {
+    src:    Vec<char>,
+    pos:    usize,
+    line:   u32,
+    column: u32,
+}
+
+impl Lexer {
+    pub fn new(src: &str) -> Self {
+        Lexer { src: src.chars().collect(), pos: 0, line: 0, column: 0 }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn peek2(&self) -> Option<char> {
+        self.src.get(self.pos + 1).copied()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let c = self.src.get(self.pos).copied()?;
+        self.pos += 1;
+        if c == '\n' { self.line += 1; self.column = 0; }
+        else { self.column += 1; }
+        Some(c)
+    }
+
+    fn skip_whitespace_no_newline(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ' ' || c == '\t' || c == '\r' {
+                self.advance();
+            } else { break; }
+        }
+    }
+
+    pub fn next_token(&mut self) -> Token {
+        self.skip_whitespace_no_newline();
+        let line = self.line;
+        let col  = self.column;
+
+        match self.peek() {
+            None => Token { kind: TokenKind::EOF, line, column: col },
+            Some('\n') => {
+                self.advance();
+                Token { kind: TokenKind::Newline, line, column: col }
+            }
+            Some('/') if self.peek2() == Some('/') => {
+                self.advance(); self.advance();
+                let is_doc = self.peek() == Some('/');
+                if is_doc { self.advance(); }
+                let mut text = String::new();
+                while let Some(c) = self.peek() {
+                    if c == '\n' { break; }
+                    text.push(c);
+                    self.advance();
+                }
+                let kind = if is_doc { TokenKind::DocComment(text.trim().to_string()) }
+                           else      { TokenKind::Comment(text.trim().to_string()) };
+                Token { kind, line, column: col }
+            }
+            Some('"') => {
+                self.advance();
+                let mut s = String::new();
+                loop {
+                    match self.advance() {
+                        Some('"') | None => break,
+                        Some('\\') => { self.advance(); }
+                        Some(c) => s.push(c),
+                    }
+                }
+                Token { kind: TokenKind::Str(s), line, column: col }
+            }
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                let mut name = String::new();
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        name.push(c);
+                        self.advance();
+                    } else { break; }
+                }
+                let kind = if is_keyword(&name) { TokenKind::Keyword(name) }
+                           else                  { TokenKind::Ident(name) };
+                Token { kind, line, column: col }
+            }
+            Some(c) if c.is_ascii_digit() => {
+                let mut num = String::new();
+                while let Some(c) = self.peek() {
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                        num.push(c); self.advance();
+                    } else { break; }
+                }
+                Token { kind: TokenKind::Number(num), line, column: col }
+            }
+            Some(c) => {
+                self.advance();
+                Token { kind: TokenKind::Punct(c), line, column: col }
+            }
+        }
+    }
+
+    pub fn tokenize(&mut self) -> Vec<Token> {
+        let mut tokens = Vec::new();
+        loop {
+            let t = self.next_token();
+            let is_eof = t.kind == TokenKind::EOF;
+            tokens.push(t);
+            if is_eof { break; }
+        }
+        tokens
+    }
+}
+
+fn is_keyword(s: &str) -> bool {
+    matches!(s,
+        "fn" | "let" | "mut" | "struct" | "enum" | "impl" | "pub" | "use" | "mod" |
+        "if" | "else" | "for" | "while" | "return" | "match" | "break" | "continue" |
+        "true" | "false" | "self" | "Self" | "const" | "static" | "trait" | "type" |
+        "in" | "as" | "where" | "async" | "await" | "move" | "ref" |
+        // VERA
+        "component" | "props" | "state" | "render" | "on_click" | "on_change" |
+        "use_effect" | "use_state" |
+        // HELIX
+        "pipeline" | "shader" | "vertex" | "fragment" | "compute" | "uniform" |
+        "storage_buffer" | "texture2d" | "sampler" | "workgroup" |
+        // AETHER
+        "actor" | "message" | "handler" | "spawn" | "send" | "yield_now" |
+        "self_ref" | "run_event_loop" |
+        // SYLVA
+        "layer" | "model" | "dense" | "conv2d" | "relu" | "softmax" | "sigmoid" |
+        "train" | "forward" | "backward" |
+        // AXIOM
+        "theorem" | "precondition" | "postcondition" | "invariant" | "for_all" |
+        "there_exists" | "assert" | "prove" |
+        // NEXUS
+        "layout" | "breakpoint" | "flex" | "grid" | "row" | "col" | "align" |
+        "justify" | "gap" | "padding" | "margin"
+    )
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 4  TOKEN STREAM HELPER
+// ─────────────────────────────────────────────────────────────
+
+pub struct TokenStream {
+    pub tokens: Vec<Token>,
+    pub pos: usize,
+}
+
+impl TokenStream {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        TokenStream { tokens, pos: 0 }
+    }
+
+    pub fn peek(&self) -> &Token {
+        self.tokens.get(self.pos)
+            .unwrap_or(&Token { kind: TokenKind::EOF, line: 0, column: 0 })
+    }
+
+    pub fn advance(&mut self) -> &Token {
+        let t = self.tokens.get(self.pos)
+            .unwrap_or(&Token { kind: TokenKind::EOF, line: 0, column: 0 });
+        self.pos += 1;
+        t
+    }
+
+    pub fn skip_newlines(&mut self) {
+        while matches!(self.peek().kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::DocComment(_)) {
+            self.pos += 1;
+        }
+    }
+
+    pub fn expect_ident(&mut self) -> Option<(String, u32, u32)> {
+        self.skip_newlines();
+        match &self.peek().kind.clone() {
+            TokenKind::Ident(name) => {
+                let t = self.advance();
+                Some((name.clone(), t.line, t.column))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn consume_until_punct(&mut self, p: char) {
+        loop {
+            match &self.peek().kind {
+                TokenKind::Punct(c) if *c == p => { self.advance(); break; }
+                TokenKind::EOF => break,
+                _ => { self.advance(); }
+            }
+        }
+    }
+
+    pub fn consume_until_newline(&mut self) {
+        loop {
+            match &self.peek().kind {
+                TokenKind::Newline | TokenKind::EOF => break,
+                _ => { self.advance(); }
+            }
+        }
+    }
+
+    pub fn collect_doc_comments(&mut self) -> String {
+        let mut docs = Vec::new();
+        loop {
+            match &self.peek().kind.clone() {
+                TokenKind::DocComment(s) => { docs.push(s.clone()); self.advance(); }
+                TokenKind::Newline => { self.advance(); }
+                _ => break,
+            }
+        }
+        docs.join("\n")
+    }
+
+    pub fn collect_type_annotation(&mut self) -> String {
+        // After ':' — collect tokens until '=' or '{' or newline
+        let mut type_str = String::new();
+        loop {
+            match &self.peek().kind.clone() {
+                TokenKind::Punct('=') | TokenKind::Punct('{') | TokenKind::Newline | TokenKind::EOF => break,
+                TokenKind::Ident(s) => { type_str.push_str(s); type_str.push(' '); self.advance(); }
+                TokenKind::Keyword(s) => { type_str.push_str(s); type_str.push(' '); self.advance(); }
+                TokenKind::Punct(c) => {
+                    let c = *c;
+                    type_str.push(c); self.advance();
+                    if c == '>' { break; } // generics end
+                }
+                _ => { self.advance(); }
+            }
+        }
+        type_str.trim().to_string()
+    }
+
+    pub fn collect_params(&mut self) -> Vec<(String, String)> {
+        // Expect '(' already consumed or consume it
+        if matches!(self.peek().kind, TokenKind::Punct('(')) { self.advance(); }
+        let mut params = Vec::new();
+        loop {
+            self.skip_newlines();
+            match &self.peek().kind.clone() {
+                TokenKind::Punct(')') | TokenKind::EOF => { self.advance(); break; }
+                TokenKind::Punct(',') => { self.advance(); }
+                TokenKind::Ident(name) | TokenKind::Keyword(name) => {
+                    let name = name.clone();
+                    self.advance();
+                    self.skip_newlines();
+                    let ty = if matches!(self.peek().kind, TokenKind::Punct(':')) {
+                        self.advance();
+                        self.collect_type_annotation()
+                    } else { String::new() };
+                    params.push((name, ty));
+                }
+                _ => { self.advance(); }
+            }
+        }
+        params
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 5  TITAN ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_titan(uri: &str, source: &str) -> AnalysisResult {
+    let mut result = AnalysisResult::new(uri, "titan", source);
+    let mut lexer  = Lexer::new(source);
+    let tokens     = lexer.tokenize();
+    let mut ts     = TokenStream::new(tokens);
+    let mut current_container: Option<String> = None;
+    let mut declared_vars: Vec<String>        = Vec::new();
+    let mut used_vars: Vec<String>            = Vec::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+
+        // Check visibility
+        let is_pub = matches!(ts.peek().kind, TokenKind::Keyword(ref k) if k == "pub");
+        if is_pub { ts.advance(); ts.skip_newlines(); }
+
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "fn" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let params = ts.collect_params();
+                            ts.skip_newlines();
+                            // Return type
+                            let ret_type = if matches!(ts.peek().kind, TokenKind::Punct('-')) {
+                                ts.advance(); // -
+                                if matches!(ts.peek().kind, TokenKind::Punct('>')) {
+                                    ts.advance(); // >
+                                    ts.collect_type_annotation()
+                                } else { String::new() }
+                            } else { String::new() };
+
+                            let range = Range::point(ln, col);
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Function,
+                                type_str: ret_type.clone(),
+                                location: Location::new(uri, range.clone()),
+                                doc_comment: doc.clone(),
+                                params: params.clone(),
+                                ret_type: ret_type.clone(),
+                                scope_depth: ts.pos,
+                            };
+                            let hover = sym.hover_text();
+                            result.symbols.define(sym);
+                            result.register_hover(
+                                Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32),
+                                hover,
+                            );
+                            declared_vars.push(name.clone());
+                            current_container = Some(name);
+                            // Skip body
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                let mut depth = 1;
+                                loop {
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('{') => { depth += 1; ts.advance(); }
+                                        TokenKind::Punct('}') => {
+                                            depth -= 1; ts.advance();
+                                            if depth == 0 { break; }
+                                        }
+                                        TokenKind::EOF => break,
+                                        TokenKind::Ident(v) => {
+                                            used_vars.push(v.clone());
+                                            ts.advance();
+                                        }
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                            current_container = None;
+                        }
+                    }
+                    "struct" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let range = Range::point(ln, col);
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Struct,
+                                type_str: name.clone(),
+                                location: Location::new(uri, range),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = sym.hover_text();
+                            result.symbols.define(sym);
+                            result.register_hover(
+                                Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32),
+                                hover,
+                            );
+                            // Parse fields
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                loop {
+                                    ts.skip_newlines();
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('}') | TokenKind::EOF => { ts.advance(); break; }
+                                        TokenKind::Keyword(ref k) if k == "pub" => { ts.advance(); }
+                                        TokenKind::Ident(field_name) => {
+                                            let fl = field_name.clone();
+                                            let ft = ts.advance();
+                                            let fln = ft.line; let fcol = ft.column;
+                                            ts.skip_newlines();
+                                            let ftype = if matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                                                ts.advance();
+                                                ts.collect_type_annotation()
+                                            } else { String::new() };
+                                            let fsym = SymbolInfo {
+                                                name: fl.clone(),
+                                                kind: SymbolKindEx::Field,
+                                                type_str: ftype.clone(),
+                                                location: Location::new(uri, Range::point(fln, fcol)),
+                                                doc_comment: String::new(),
+                                                params: vec![],
+                                                ret_type: String::new(),
+                                                scope_depth: 1,
+                                            };
+                                            let fhover = format!("```titan\n{}.{}: {}\n```", name, fl, ftype);
+                                            result.symbols.define(fsym);
+                                            result.register_hover(
+                                                Position::new(fln, fcol),
+                                                Position::new(fln, fcol + fl.len() as u32),
+                                                fhover,
+                                            );
+                                        }
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "enum" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let range = Range::point(ln, col);
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Enum,
+                                type_str: name.clone(),
+                                location: Location::new(uri, range),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = sym.hover_text();
+                            result.symbols.define(sym);
+                            result.register_hover(
+                                Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32),
+                                hover,
+                            );
+                            // Parse variants
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                loop {
+                                    ts.skip_newlines();
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('}') | TokenKind::EOF => { ts.advance(); break; }
+                                        TokenKind::Ident(variant) => {
+                                            let v = variant.clone();
+                                            let vt = ts.advance();
+                                            let vln = vt.line; let vcol = vt.column;
+                                            let vsym = SymbolInfo {
+                                                name: v.clone(),
+                                                kind: SymbolKindEx::EnumVariant,
+                                                type_str: name.clone(),
+                                                location: Location::new(uri, Range::point(vln, vcol)),
+                                                doc_comment: String::new(),
+                                                params: vec![],
+                                                ret_type: String::new(),
+                                                scope_depth: 1,
+                                            };
+                                            result.symbols.define(vsym);
+                                        }
+                                        TokenKind::Punct(',') => { ts.advance(); }
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "let" => {
+                        let is_mut = matches!(ts.peek().kind, TokenKind::Keyword(ref k) if k == "mut");
+                        if is_mut { ts.advance(); }
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let ty = if matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                                ts.advance();
+                                ts.collect_type_annotation()
+                            } else { String::new() };
+                            declared_vars.push(name.clone());
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Variable,
+                                type_str: ty.clone(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: String::new(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: ts.pos,
+                            };
+                            let hover = sym.hover_text();
+                            result.symbols.define(sym);
+                            result.register_hover(
+                                Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32),
+                                hover,
+                            );
+                        }
+                        ts.consume_until_newline();
+                    }
+                    "const" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let ty = if matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                                ts.advance();
+                                ts.collect_type_annotation()
+                            } else { String::new() };
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Constant,
+                                type_str: ty,
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = sym.hover_text();
+                            result.symbols.define(sym);
+                            result.register_hover(
+                                Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32),
+                                hover,
+                            );
+                        }
+                        ts.consume_until_newline();
+                    }
+                    "mod" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Module,
+                                type_str: String::new(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                    }
+                    "impl" => {
+                        ts.skip_newlines();
+                        if let Some((name, _, _)) = ts.expect_ident() {
+                            current_container = Some(name);
+                        }
+                    }
+                    "use" => { ts.consume_until_newline(); }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Unused variable warnings: declared but not used
+    for var in &declared_vars {
+        if !used_vars.contains(var) && !var.starts_with('_') {
+            if let Some(sym) = result.symbols.lookup(var) {
+                if matches!(sym.kind, SymbolKindEx::Variable) {
+                    result.add_diag(Diagnostic::warning(
+                        sym.location.range.clone(),
+                        &format!("unused variable: `{}`", var),
+                        "titan-lsp",
+                    ));
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 6  VERA ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_vera(uri: &str, source: &str) -> AnalysisResult {
+    let mut result = AnalysisResult::new(uri, "vera", source);
+    let mut lexer  = Lexer::new(source);
+    let tokens     = lexer.tokenize();
+    let mut ts     = TokenStream::new(tokens);
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "component" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Component,
+                                type_str: "Component".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: "Element".to_string(),
+                                scope_depth: 0,
+                            };
+                            let hover = format!("```vera\ncomponent {}\n```\n\nVERA UI Component", name);
+                            result.symbols.define(sym);
+                            result.register_hover(Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32), hover);
+                            // Parse props block
+                            ts.skip_newlines();
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                let mut depth = 1;
+                                loop {
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('{') => { depth += 1; ts.advance(); }
+                                        TokenKind::Punct('}') => {
+                                            depth -= 1; ts.advance();
+                                            if depth == 0 { break; }
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "props" && depth == 1 => {
+                                            ts.advance();
+                                            ts.skip_newlines();
+                                            // props block
+                                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                                ts.advance();
+                                                loop {
+                                                    ts.skip_newlines();
+                                                    match ts.peek().kind.clone() {
+                                                        TokenKind::Punct('}') | TokenKind::EOF => { ts.advance(); break; }
+                                                        TokenKind::Ident(prop_name) => {
+                                                            let pn = prop_name.clone();
+                                                            let pt = ts.advance();
+                                                            let pl = pt.line; let pc = pt.column;
+                                                            let pty = if matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                                                                ts.advance();
+                                                                ts.collect_type_annotation()
+                                                            } else { String::new() };
+                                                            let psym = SymbolInfo {
+                                                                name: pn.clone(),
+                                                                kind: SymbolKindEx::Prop,
+                                                                type_str: pty.clone(),
+                                                                location: Location::new(uri, Range::point(pl, pc)),
+                                                                doc_comment: String::new(),
+                                                                params: vec![],
+                                                                ret_type: String::new(),
+                                                                scope_depth: 1,
+                                                            };
+                                                            result.symbols.define(psym);
+                                                        }
+                                                        _ => { ts.advance(); }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        TokenKind::EOF => break,
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 7  HELIX ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_helix(uri: &str, source: &str) -> AnalysisResult {
+    let mut result = AnalysisResult::new(uri, "helix", source);
+    let mut lexer  = Lexer::new(source);
+    let tokens     = lexer.tokenize();
+    let mut ts     = TokenStream::new(tokens);
+    let mut declared_uniforms: Vec<String>  = Vec::new();
+    let mut vertex_outputs:    Vec<String>  = Vec::new();
+    let mut fragment_inputs:   Vec<String>  = Vec::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "pipeline" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Pipeline,
+                                type_str: "Pipeline".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = format!("```helix\npipeline {}\n```\n\nHELIX Render Pipeline", name);
+                            result.symbols.define(sym);
+                            result.register_hover(Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32), hover);
+                            // Skip body, collecting uniforms
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                let mut depth = 1;
+                                loop {
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('{') => { depth += 1; ts.advance(); }
+                                        TokenKind::Punct('}') => {
+                                            depth -= 1; ts.advance();
+                                            if depth == 0 { break; }
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "uniform" => {
+                                            ts.advance(); ts.skip_newlines();
+                                            if let Some((uname, uln, ucol)) = ts.expect_ident() {
+                                                let uty = if matches!(ts.peek().kind, TokenKind::Punct(':')) {
+                                                    ts.advance(); ts.collect_type_annotation()
+                                                } else { String::new() };
+                                                declared_uniforms.push(uname.clone());
+                                                let usym = SymbolInfo {
+                                                    name: uname.clone(),
+                                                    kind: SymbolKindEx::Uniform,
+                                                    type_str: uty.clone(),
+                                                    location: Location::new(uri, Range::point(uln, ucol)),
+                                                    doc_comment: String::new(),
+                                                    params: vec![],
+                                                    ret_type: String::new(),
+                                                    scope_depth: 1,
+                                                };
+                                                result.symbols.define(usym);
+                                            }
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "vertex" => {
+                                            ts.advance();
+                                            // collect output names
+                                            ts.consume_until_newline();
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "fragment" => {
+                                            ts.advance();
+                                            ts.consume_until_newline();
+                                        }
+                                        TokenKind::EOF => break,
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "shader" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Shader,
+                                type_str: "Shader".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                        ts.consume_until_newline();
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 8  AETHER ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_aether(uri: &str, source: &str) -> AnalysisResult {
+    let mut result = AnalysisResult::new(uri, "aether", source);
+    let mut lexer  = Lexer::new(source);
+    let tokens     = lexer.tokenize();
+    let mut ts     = TokenStream::new(tokens);
+    let mut declared_messages: Vec<String> = Vec::new();
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "actor" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Actor,
+                                type_str: "Actor".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = format!("```aether\nactor {}\n```\n\nAETHER concurrent actor", name);
+                            result.symbols.define(sym);
+                            result.register_hover(Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32), hover);
+                            // Parse body for handlers
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                let mut depth = 1;
+                                loop {
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('{') => { depth += 1; ts.advance(); }
+                                        TokenKind::Punct('}') => {
+                                            depth -= 1; ts.advance();
+                                            if depth == 0 { break; }
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "handler" && depth == 1 => {
+                                            ts.advance(); ts.skip_newlines();
+                                            if let Some((hname, hln, hcol)) = ts.expect_ident() {
+                                                let hsym = SymbolInfo {
+                                                    name: hname.clone(),
+                                                    kind: SymbolKindEx::Handler,
+                                                    type_str: String::new(),
+                                                    location: Location::new(uri, Range::point(hln, hcol)),
+                                                    doc_comment: String::new(),
+                                                    params: vec![],
+                                                    ret_type: String::new(),
+                                                    scope_depth: 1,
+                                                };
+                                                if !declared_messages.contains(&hname) {
+                                                    result.add_diag(Diagnostic::warning(
+                                                        Range::point(hln, hcol),
+                                                        &format!("handler '{}' has no corresponding message type declared", hname),
+                                                        "aether-lsp",
+                                                    ));
+                                                }
+                                                result.symbols.define(hsym);
+                                            }
+                                        }
+                                        TokenKind::EOF => break,
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "message" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            declared_messages.push(name.clone());
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Message,
+                                type_str: "Message".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                        ts.consume_until_newline();
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 9  SYLVA ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_sylva(uri: &str, source: &str) -> AnalysisResult {
+    let mut result  = AnalysisResult::new(uri, "sylva", source);
+    let mut lexer   = Lexer::new(source);
+    let tokens      = lexer.tokenize();
+    let mut ts      = TokenStream::new(tokens);
+    let mut layers: Vec<(String, Option<usize>, Option<usize>)> = Vec::new(); // (name, in_dim, out_dim)
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "model" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Model,
+                                type_str: "Model".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                    }
+                    "layer" | "dense" | "conv2d" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            // Try to parse in/out dimensions
+                            let mut in_dim:  Option<usize> = None;
+                            let mut out_dim: Option<usize> = None;
+                            if matches!(ts.peek().kind, TokenKind::Punct('(')) {
+                                ts.advance();
+                                // in_dim
+                                if let TokenKind::Number(ref n) = ts.peek().kind.clone() {
+                                    in_dim = n.parse().ok();
+                                    ts.advance();
+                                }
+                                if matches!(ts.peek().kind, TokenKind::Punct(',')) {
+                                    ts.advance();
+                                    if let TokenKind::Number(ref n) = ts.peek().kind.clone() {
+                                        out_dim = n.parse().ok();
+                                        ts.advance();
+                                    }
+                                }
+                                ts.consume_until_punct(')');
+                            }
+                            layers.push((name.clone(), in_dim, out_dim));
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Layer,
+                                type_str: kw.clone(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Check dimension mismatches between consecutive layers
+    for i in 1..layers.len() {
+        let (prev_name, _, prev_out) = &layers[i - 1];
+        let (curr_name, curr_in, _) = &layers[i];
+        if let (Some(out), Some(inp)) = (prev_out, curr_in) {
+            if out != inp {
+                if let Some(sym) = result.symbols.lookup(curr_name) {
+                    result.add_diag(Diagnostic::error(
+                        sym.location.range.clone(),
+                        &format!(
+                            "layer dimension mismatch: '{}' output {} != '{}' input {}",
+                            prev_name, out, curr_name, inp
+                        ),
+                        "sylva-lsp",
+                    ));
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 10  AXIOM ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_axiom(uri: &str, source: &str) -> AnalysisResult {
+    let mut result  = AnalysisResult::new(uri, "axiom", source);
+    let mut lexer   = Lexer::new(source);
+    let tokens      = lexer.tokenize();
+    let mut ts      = TokenStream::new(tokens);
+    let mut theorems: Vec<(String, bool, bool, u32, u32)> = Vec::new(); // (name, has_pre, has_post, ln, col)
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "theorem" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Theorem,
+                                type_str: "Theorem".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            let hover = format!("```axiom\ntheorem {}\n```\n\nAXIOM formal theorem", name);
+                            result.symbols.define(sym);
+                            result.register_hover(Position::new(ln, col),
+                                Position::new(ln, col + name.len() as u32), hover);
+                            // scan body for pre/postconditions
+                            let mut has_pre  = false;
+                            let mut has_post = false;
+                            if matches!(ts.peek().kind, TokenKind::Punct('{')) {
+                                ts.advance();
+                                let mut depth = 1;
+                                loop {
+                                    match ts.peek().kind.clone() {
+                                        TokenKind::Punct('{') => { depth += 1; ts.advance(); }
+                                        TokenKind::Punct('}') => {
+                                            depth -= 1; ts.advance();
+                                            if depth == 0 { break; }
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "precondition" && depth == 1 => {
+                                            has_pre = true; ts.advance();
+                                        }
+                                        TokenKind::Keyword(ref k) if k == "postcondition" && depth == 1 => {
+                                            has_post = true; ts.advance();
+                                        }
+                                        TokenKind::EOF => break,
+                                        _ => { ts.advance(); }
+                                    }
+                                }
+                            }
+                            theorems.push((name, has_pre, has_post, ln, col));
+                        }
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+
+    // Emit diagnostics
+    for (name, _has_pre, has_post, ln, col) in &theorems {
+        if !has_post {
+            result.add_diag(Diagnostic::warning(
+                Range::point(*ln, *col),
+                &format!("theorem '{}' has no postconditions — formally unproven", name),
+                "axiom-lsp",
+            ));
+        }
+    }
+
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 11  NEXUS ANALYZER
+// ─────────────────────────────────────────────────────────────
+
+pub fn analyze_nexus(uri: &str, source: &str) -> AnalysisResult {
+    let mut result = AnalysisResult::new(uri, "nexus", source);
+    let mut lexer  = Lexer::new(source);
+    let tokens     = lexer.tokenize();
+    let mut ts     = TokenStream::new(tokens);
+
+    while !matches!(ts.peek().kind, TokenKind::EOF) {
+        ts.skip_newlines();
+        let doc = ts.collect_doc_comments();
+        ts.skip_newlines();
+        match ts.peek().kind.clone() {
+            TokenKind::Keyword(ref kw) => {
+                let kw = kw.clone();
+                ts.advance();
+                match kw.as_str() {
+                    "layout" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Layout,
+                                type_str: "Layout".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                    }
+                    "breakpoint" => {
+                        ts.skip_newlines();
+                        if let Some((name, ln, col)) = ts.expect_ident() {
+                            let sym = SymbolInfo {
+                                name: name.clone(),
+                                kind: SymbolKindEx::Breakpoint,
+                                type_str: "Breakpoint".to_string(),
+                                location: Location::new(uri, Range::point(ln, col)),
+                                doc_comment: doc.clone(),
+                                params: vec![],
+                                ret_type: String::new(),
+                                scope_depth: 0,
+                            };
+                            result.symbols.define(sym);
+                        }
+                        ts.consume_until_newline();
+                    }
+                    _ => { ts.consume_until_newline(); }
+                }
+            }
+            TokenKind::EOF => break,
+            _ => { ts.advance(); }
+        }
+    }
+    result
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 12  LANGUAGE DISPATCH
+// ─────────────────────────────────────────────────────────────
+
+pub fn detect_language(uri: &str) -> &str {
+    if uri.ends_with(".titan") || uri.ends_with(".ti")   { return "titan"; }
+    if uri.ends_with(".vera")  || uri.ends_with(".ve")   { return "vera";  }
+    if uri.ends_with(".helix") || uri.ends_with(".hlx")  { return "helix"; }
+    if uri.ends_with(".aether")|| uri.ends_with(".ae")   { return "aether";}
+    if uri.ends_with(".sylva") || uri.ends_with(".sy")   { return "sylva"; }
+    if uri.ends_with(".axiom") || uri.ends_with(".ax")   { return "axiom"; }
+    if uri.ends_with(".nexus") || uri.ends_with(".nx")   { return "nexus"; }
+    "titan" // default
+}
+
+pub fn analyze(uri: &str, source: &str) -> AnalysisResult {
+    match detect_language(uri) {
+        "titan"  => analyze_titan(uri, source),
+        "vera"   => analyze_vera(uri, source),
+        "helix"  => analyze_helix(uri, source),
+        "aether" => analyze_aether(uri, source),
+        "sylva"  => analyze_sylva(uri, source),
+        "axiom"  => analyze_axiom(uri, source),
+        "nexus"  => analyze_nexus(uri, source),
+        _        => analyze_titan(uri, source),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 13  QUERY FUNCTIONS
+// ─────────────────────────────────────────────────────────────
+
+pub fn get_hover(result: &AnalysisResult, pos: &Position) -> Option<String> {
+    // First check the hover map at exact position
+    if let Some(text) = result.hover_map.get(&(pos.line, pos.character)) {
+        return Some(text.clone());
+    }
+    // Fallback: find word at position and look up symbol
+    let word_info = word_at_position(&result.source, pos)?;
+    let (word, _range) = word_info;
+    result.symbols.lookup(&word).map(|s| s.hover_text())
+}
+
+pub fn get_definition(result: &AnalysisResult, pos: &Position) -> Option<Location> {
+    let (word, _) = word_at_position(&result.source, pos)?;
+    result.symbols.lookup(&word).map(|s| s.location.clone())
+}
+
+pub fn get_references(
+    all_results: &HashMap<String, AnalysisResult>,
+    symbol_name: &str,
+) -> Vec<Location> {
+    let mut refs = Vec::new();
+    for (uri, result) in all_results {
+        // Find all occurrences of the symbol name in each document's source
+        let source = &result.source;
+        let bytes  = source.as_bytes();
+        let name   = symbol_name.as_bytes();
+        let nlen   = name.len();
+        let mut i  = 0;
+        while i + nlen <= bytes.len() {
+            let match_start = &bytes[i..i + nlen] == name;
+            if match_start {
+                let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+                let after_ok  = i + nlen >= bytes.len() ||
+                    !bytes[i + nlen].is_ascii_alphanumeric() && bytes[i + nlen] != b'_';
+                if before_ok && after_ok {
+                    let start_pos = offset_to_position(source, i);
+                    let end_pos   = offset_to_position(source, i + nlen);
+                    refs.push(Location::new(uri, Range::new(start_pos, end_pos)));
+                }
+            }
+            i += 1;
+        }
+    }
+    refs
+}
+
+// ─────────────────────────────────────────────────────────────
+// § 14  UNIT TESTS
+// ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_language() {
+        assert_eq!(detect_language("foo.titan"), "titan");
+        assert_eq!(detect_language("Bar.vera"),  "vera");
+        assert_eq!(detect_language("x.helix"),   "helix");
+        assert_eq!(detect_language("y.aether"),  "aether");
+        assert_eq!(detect_language("z.sylva"),   "sylva");
+        assert_eq!(detect_language("t.axiom"),   "axiom");
+        assert_eq!(detect_language("u.nexus"),   "nexus");
+        assert_eq!(detect_language("unknown"),   "titan");
+    }
+
+    #[test]
+    fn test_analyze_titan_fn() {
+        let src = r#"
+/// Adds two numbers together
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"#;
+        let r = analyze_titan("file:///test.titan", src);
+        assert!(r.symbols.lookup("add").is_some());
+        let sym = r.symbols.lookup("add").unwrap();
+        assert!(matches!(sym.kind, SymbolKindEx::Function));
+        assert_eq!(sym.ret_type, "i32");
+    }
+
+    #[test]
+    fn test_analyze_titan_struct() {
+        let src = r#"
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+"#;
+        let r = analyze_titan("file:///test.titan", src);
+        assert!(r.symbols.lookup("Point").is_some());
+        assert!(r.symbols.lookup("x").is_some());
+        assert!(r.symbols.lookup("y").is_some());
+    }
+
+    #[test]
+    fn test_analyze_axiom_no_postcondition() {
+        let src = r#"
+theorem safety {
+    precondition { x > 0 }
+}
+"#;
+        let r = analyze_axiom("file:///test.axiom", src);
+        assert!(!r.diagnostics.is_empty());
+        assert!(r.diagnostics[0].message.contains("unproven"));
+    }
+
+    #[test]
+    fn test_sylva_dimension_mismatch() {
+        let src = r#"
+model MyNet {
+    dense input(784, 256)
+    dense hidden(128, 64)
+}
+"#;
+        let r = analyze_sylva("file:///test.sylva", src);
+        // 256 != 128 → should emit error
+        let has_mismatch = r.diagnostics.iter().any(|d| d.message.contains("mismatch"));
+        assert!(has_mismatch);
+    }
+
+    #[test]
+    fn test_get_hover_falls_back_to_symbol() {
+        let src = "fn greet() {}\n";
+        let r   = analyze_titan("file:///t.titan", src);
+        let pos = Position::new(0, 3);
+        let h   = get_hover(&r, &pos);
+        assert!(h.is_some());
+        assert!(h.unwrap().contains("greet"));
+    }
+
+    #[test]
+    fn test_get_definition() {
+        let src = "fn compute(x: i32) -> i32 { x }\n";
+        let r   = analyze_titan("file:///t.titan", src);
+        let pos = Position::new(0, 3);
+        let loc = get_definition(&r, &pos);
+        assert!(loc.is_some());
+        assert_eq!(loc.unwrap().uri, "file:///t.titan");
+    }
+}

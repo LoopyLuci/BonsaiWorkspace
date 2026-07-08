@@ -1,8 +1,8 @@
-# Bonsai Adaptive Transformer: Benchmarking & Testing Framework
+# Omnisystem Adaptive Transformer: Benchmarking & Testing Framework
 
 ## Overview
 
-This framework provides comprehensive testing, validation, and benchmarking for the Bonsai Adaptive Transformer. It ensures that scaling is safe, efficient, and produces quality results across all parameter ranges.
+This framework provides comprehensive testing, validation, and benchmarking for the Omnisystem Adaptive Transformer. It ensures that scaling is safe, efficient, and produces quality results across all parameter ranges.
 
 ## Architecture
 
@@ -176,26 +176,26 @@ Regression detection benchmarks:
 
 ### Unit Tests
 ```bash
-cargo test -p bonsai-adaptive-benchmarks
+cargo test -p omnisystem-adaptive-benchmarks
 ```
 
 ### Specific Test Module
 ```bash
-cargo test -p bonsai-adaptive-benchmarks unit_tests::
-cargo test -p bonsai-adaptive-benchmarks correctness::
-cargo test -p bonsai-adaptive-benchmarks formal_verification::
+cargo test -p omnisystem-adaptive-benchmarks unit_tests::
+cargo test -p omnisystem-adaptive-benchmarks correctness::
+cargo test -p omnisystem-adaptive-benchmarks formal_verification::
 ```
 
 ### Benchmarks
 ```bash
-cargo bench -p bonsai-adaptive-benchmarks
-cargo bench -p bonsai-adaptive-benchmarks --bench adaptive_scale_bench
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
+cargo bench -p omnisystem-adaptive-benchmarks
+cargo bench -p omnisystem-adaptive-benchmarks --bench adaptive_scale_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
 ```
 
 ### With Profiling
 ```bash
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench -- --profile-time=10
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench -- --profile-time=10
 ```
 
 ### Generate Regression Report
@@ -267,20 +267,20 @@ for dataset in &fixture.datasets {
 
 ### Pre-Commit
 ```bash
-cargo test -p bonsai-adaptive-benchmarks --lib
-cargo fmt -p bonsai-adaptive-benchmarks --check
-cargo clippy -p bonsai-adaptive-benchmarks -- -D warnings
+cargo test -p omnisystem-adaptive-benchmarks --lib
+cargo fmt -p omnisystem-adaptive-benchmarks --check
+cargo clippy -p omnisystem-adaptive-benchmarks -- -D warnings
 ```
 
 ### Nightly
 ```bash
-cargo bench -p bonsai-adaptive-benchmarks --bench performance_bench
-cargo bench -p bonsai-adaptive-benchmarks --bench correctness_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench performance_bench
+cargo bench -p omnisystem-adaptive-benchmarks --bench correctness_bench
 ```
 
 ### Weekly
 ```bash
-cargo bench -p bonsai-adaptive-benchmarks  # All benchmarks
+cargo bench -p omnisystem-adaptive-benchmarks  # All benchmarks
 # Compare against baseline
 # Update dashboard
 # Send regression alerts if needed

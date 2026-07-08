@@ -159,7 +159,7 @@ Our architecture delegates video decoding to hardware (MediaCodec), not GPU. Thi
 
 ```
 System + Android Framework    → 1.5 GB
-Bonsai Buddy + libs           → 0.5 GB
+Omnisystem Buddy + libs           → 0.5 GB
 MediaCodec buffers            → 0.05 GB
 Coroutine scope + StateFlow   → 0.05 GB
 Frame buffer ring (3 frames)  → 0.1 GB
@@ -455,7 +455,7 @@ Android Studio Profiler:
 
 ```bash
 # Real-time FPS counter
-adb shell dumpsys gfxinfo ai.bonsai.buddy | grep "120fps"
+adb shell dumpsys gfxinfo ai.omnisystem.buddy | grep "120fps"
 
 # Check thermal sensors
 adb shell cat /sys/devices/virtual/thermal/thermal_zone*/temp
@@ -464,7 +464,7 @@ adb shell cat /sys/devices/virtual/thermal/thermal_zone*/temp
 adb shell dumpsys media_codec
 
 # CPU/Memory/Thermal stats
-adb shell top -n1 | grep ai.bonsai.buddy
+adb shell top -n1 | grep ai.omnisystem.buddy
 ```
 
 ## Future Optimizations

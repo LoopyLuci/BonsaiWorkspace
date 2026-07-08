@@ -299,7 +299,7 @@ impl OmnisystemInstaller {
 
                         children: vec![
                             self.render_component_option("Core System", "Omnisystem core runtime (required)", 50, true),
-                            self.render_component_option("Desktop Environment", "Bonsai Desktop GUI and tools", 120, true),
+                            self.render_component_option("Desktop Environment", "Omnisystem Desktop GUI and tools", 120, true),
                             self.render_component_option("Development Tools", "Compilers and SDKs for all 7 languages", 280, false),
                             self.render_component_option("Documentation", "Complete user and developer documentation", 45, true),
                             self.render_component_option("Examples", "Sample applications and code examples", 35, false),
@@ -925,8 +925,35 @@ impl OmnisystemInstaller {
     }
 
     fn get_available_disk_space() -> u64 {
-        // Placeholder - in real implementation would query filesystem
-        500 * 1024 * 1024 // 500 MB
+        #[cfg(target_os = "windows")]
+        unsafe {
+            extern "system" {
+                fn GetDiskFreeSpaceExA(path: *const u8, free_caller: *mut u64, total: *mut u64, free_total: *mut u64) -> i32
+            }
+            let path = b".\0";
+            let mut free_caller = 0u64;
+            let mut total = 0u64;
+            let mut free_total = 0u64;
+            if GetDiskFreeSpaceExA(path.as_ptr(), &mut free_caller, &mut total, &mut free_total) != 0 {
+                return free_caller;
+            }
+            500 * 1024 * 1024
+        }
+        #[cfg(not(target_os = "windows"))]
+        unsafe {
+            extern "C" {
+                fn statvfs(path: *const u8, buf: *mut u8) -> i32
+            }
+            // statvfs64 buf layout: f_bsize(u64), f_frsize(u64), f_blocks(u64), f_bfree(u64), f_bavail(u64)...
+            let mut buf = [0u8; 128];
+            let path = b".\0";
+            if statvfs(path.as_ptr(), buf.as_mut_ptr()) == 0 {
+                let bsize  = u64::from_le_bytes(buf[0..8].try_into().unwrap_or([0;8]));
+                let bavail = u64::from_le_bytes(buf[32..40].try_into().unwrap_or([0;8]));
+                return bsize * bavail;
+            }
+            500 * 1024 * 1024
+        }
     }
 
     // ============================================================================
@@ -985,11 +1012,26 @@ impl OmnisystemInstaller {
 
     #[cfg(target_os = "windows")]
     fn create_windows_integration(&mut self) -> Result<(), String> {
-        // Create Windows shortcuts and registry entries
-        // This would use Windows API calls to create Start Menu shortcuts
-        // and add registry keys for file associations
-        self.installed_files.push("Windows shortcuts created".to_string());
-        self.installed_files.push("Registry entries updated".to_string());
+        // Write .lnk shortcut as a plain file reference (Windows Explorer picks up .url format)
+        let start_menu = "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs"
+        let shortcut_path = format!("{}\\Omnisystem.url", start_menu)
+        let install_dir = self.installation_path.to_string_lossy().replace('/', "\\")
+        let shortcut_content = format!("[InternetShortcut]\nURL=file:///{}\\omnicc.cmd\nIconIndex=0\n", install_dir)
+        if let Err(_) = installer_write_file(&shortcut_path, &shortcut_content) {
+            // Fallback: write shortcut to user's Desktop
+            let desktop_path = "C:\\Users\\Public\\Desktop\\Omnisystem.url"
+            let _ = installer_write_file(desktop_path, &shortcut_content)
+        }
+        self.installed_files.push(shortcut_path)
+        // Write file association registry .reg file for .titan/.vera/.helix files
+        let reg_content = "Windows Registry Editor Version 5.00\n\
+[HKEY_CLASSES_ROOT\\.titan]\n@=\"OmnisystemSourceFile\"\n\
+[HKEY_CLASSES_ROOT\\.vera]\n@=\"OmnisystemSourceFile\"\n\
+[HKEY_CLASSES_ROOT\\.helix]\n@=\"OmnisystemSourceFile\"\n\
+[HKEY_CLASSES_ROOT\\OmnisystemSourceFile]\n@=\"Omnisystem Source\"\n"
+        let reg_path = format!("{}\\omnisystem.reg", install_dir)
+        let _ = installer_write_file(&reg_path, reg_content)
+        self.installed_files.push(reg_path)
         Ok(())
     }
 
@@ -1099,3 +1141,29 @@ pub static INSTALLER_STATE: LazyStatic<Mutex<OmnisystemInstaller>> =
     LazyStatic::new(|| {
         Mutex::new(OmnisystemInstaller::new(AssetManager::global()))
     });
+
+// ── File write helper for installer integration ───────────────────────────────
+
+extern "Win32"  { fn CreateFileA_ins(p: *const u8, acc: u32, sh: u32, s: *mut u8, cr: u32, f: u32, t: *mut u8) -> isize }
+extern "Win32"  { fn WriteFile_ins(h: isize, buf: *const u8, n: u32, wr: *mut u32, ov: *mut u8) -> i32 }
+extern "Win32"  { fn CloseHandle_ins(h: isize) -> i32 }
+extern "POSIX"  { fn open_wronly_creat_ins(p: *const u8, flags: i32, mode: u32) -> i32 }
+extern "POSIX"  { fn write_fd_ins(fd: i32, buf: *const u8, n: usize) -> isize }
+extern "POSIX"  { fn close_fd_ins(fd: i32) -> i32 }
+
+fn installer_write_file(path: &str, content: &str) -> Result<(), String> {
+    let mut pb = path.as_bytes().to_vec(); pb.push(0)
+    let data = content.as_bytes()
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let h = CreateFileA_ins(pb.as_ptr(), 0x40000000u32, 0, std::ptr::null_mut(), 2, 0x80, std::ptr::null_mut())
+        if h == -1isize { return Err(format!("Cannot create {}", path)) }
+        let mut wr = 0u32; WriteFile_ins(h, data.as_ptr(), data.len() as u32, &mut wr, std::ptr::null_mut()); CloseHandle_ins(h); Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        let fd = open_wronly_creat_ins(pb.as_ptr(), 0o1|0o100, 0o644)
+        if fd < 0 { return Err(format!("Cannot create {}", path)) }
+        write_fd_ins(fd, data.as_ptr(), data.len()); close_fd_ins(fd); Ok(())
+    }
+}

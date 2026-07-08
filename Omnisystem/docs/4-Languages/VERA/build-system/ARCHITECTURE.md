@@ -60,7 +60,7 @@ The Omnisystem build system is a **PowerShell-based build orchestration framewor
 │  .\build\output\                                            │
 │  ├─ Omnisystem.exe          (Desktop Environment)          │
 │  ├─ OmnisystemGUI.exe       (GUI Launcher)                 │
-│  └─ BonsaiLauncher.exe      (App Launcher)                 │
+│  └─ OmnisystemLauncher.exe      (App Launcher)                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -171,9 +171,9 @@ ProjectDir/
 
 #### Desktop Environment Project
 ```
-applications/bonsai-desktop-environment/
+applications/omnisystem-desktop-environment/
 ├── Cargo.toml
-│   ├── package: bonsai-desktop
+│   ├── package: omnisystem-desktop
 │   ├── version: 29.0.0
 │   ├── [[bin]]: name = "Omnisystem"
 │   └── [workspace]: (standalone)
@@ -305,11 +305,11 @@ Z:\Projects\Omnisystem\
 │   ├── output/
 │   │   ├── Omnisystem.exe       # Desktop env
 │   │   ├── OmnisystemGUI.exe    # GUI launcher
-│   │   └── BonsaiLauncher.exe   # App launcher
+│   │   └── OmnisystemLauncher.exe   # App launcher
 │   └── build.log                # Build log
 │
 └── Omnisystem/
-    ├── applications/bonsai-desktop-environment/  # Project 1
+    ├── applications/omnisystem-desktop-environment/  # Project 1
     ├── src/crates/omnisystem-launcher-gui/       # Project 2
     └── modules/base-modules/.../launcher/        # Project 3
 ```
@@ -625,7 +625,7 @@ Verify: cargo build --verbose
 
 ## Conclusion
 
-The build system is a **modular, extensible, and maintainable** solution for compiling BonsaiEcosystem applications. It separates concerns across layers, provides clear error handling, and offers both simple and advanced interfaces for different user needs.
+The build system is a **modular, extensible, and maintainable** solution for compiling OmnisystemEcosystem applications. It separates concerns across layers, provides clear error handling, and offers both simple and advanced interfaces for different user needs.
 
 **Key Strengths:**
 - ✅ Simple to use

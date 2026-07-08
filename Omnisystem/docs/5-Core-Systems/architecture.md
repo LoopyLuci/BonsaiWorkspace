@@ -1,4 +1,4 @@
-# Bonsai Universal Installer Architecture
+# Omnisystem Universal Installer Architecture
 
 **Production-Grade Installation Orchestrator for All Platforms**
 
@@ -6,7 +6,7 @@
 
 ## Overview
 
-The Bonsai Installer is a **single, universal executable** that:
+The Omnisystem Installer is a **single, universal executable** that:
 1. Detects the host environment (OS, virtualization, hardware)
 2. Selects the optimal Omnisystem deployment mode
 3. Orchestrates flawless installation across all platforms
@@ -118,7 +118,7 @@ else if (iOS) {
 1. **Welcome Screen**
    ```
    ┌─────────────────────────────────────────┐
-   │       Welcome to Bonsai Omnisystem      │
+   │       Welcome to Omnisystem Omnisystem      │
    │                                         │
    │  The sovereign operating system        │
    │                                         │
@@ -243,7 +243,7 @@ else if (iOS) {
    ├─ Enable device passthrough (USB, GPU)
    └─ Save configuration
 
-6. Install Bonsai Launcher
+6. Install Omnisystem Launcher
    ├─ Windows: Create Start Menu shortcut, add to PATH
    ├─ macOS: Create .app bundle, add to Launchpad
    ├─ Linux: Create .desktop entry, add to PATH
@@ -271,7 +271,7 @@ else if (iOS) {
    ├─ Save recovery image
    └─ Update package manager (if Linux)
 
-10. Launch Bonsai Workspace
+10. Launch Omnisystem Workspace
     ├─ Start Omnisystem (if not running)
     ├─ Connect display (VNC, SPICE, or native)
     ├─ Wait for desktop environment
@@ -293,18 +293,18 @@ Current step: Setting up Hyper-V virtual machine
 
 **Error Handling**:
 - If step fails, show error with options: [Retry], [Skip], [Rollback & Cancel]
-- Log all errors to `/var/log/bonsai-installer.log`
+- Log all errors to `/var/log/omnisystem-installer.log`
 - On rollback, restore from checkpoint (reverse all steps)
 
 ---
 
 ### Phase 4: Post-Installation
 
-**Bonsai Launcher** (system entry point):
+**Omnisystem Launcher** (system entry point):
 - Detects Omnisystem not running → starts it
 - Shows splash screen with progress
 - Displays console output during boot
-- Auto-launches Bonsai Workspace on completion
+- Auto-launches Omnisystem Workspace on completion
 
 **First-Time Setup Wizard** (inside Omnisystem):
 - Timezone & language selection
@@ -313,7 +313,7 @@ Current step: Setting up Hyper-V virtual machine
 - Default applications
 - Privacy settings
 
-**Bonsai Control Panel** (system tray app):
+**Omnisystem Control Panel** (system tray app):
 - Start/Stop Omnisystem
 - Monitor resources
 - Manage capabilities
@@ -341,15 +341,15 @@ Current step: Setting up Hyper-V virtual machine
 **Architecture**:
 ```
 Host OS
-  ├─ Bonsai Launcher (start Omnisystem)
-  ├─ Bonsai Control Panel (manage Omnisystem)
+  ├─ Omnisystem Launcher (start Omnisystem)
+  ├─ Omnisystem Control Panel (manage Omnisystem)
   ├─ Hypervisor (KVM, Hyper-V, etc.)
   └─ Capability Broker
          │
          └─→ [VM: Omnisystem]
               ├─ Kernel
               ├─ Services
-              ├─ Bonsai Workspace
+              ├─ Omnisystem Workspace
               └─ User applications
 ```
 
@@ -369,12 +369,12 @@ Host OS
 **Architecture**:
 ```
 Host OS
-  ├─ Bonsai Launcher (start Omnisystem)
+  ├─ Omnisystem Launcher (start Omnisystem)
   ├─ Library OS Translator (syscall interception)
   ├─ Omnisystem Process
   │   ├─ Kernel (in-process)
   │   ├─ Services
-  │   ├─ Bonsai Workspace
+  │   ├─ Omnisystem Workspace
   │   └─ User applications
   └─ Capability Broker (local enforcement)
 ```
@@ -396,11 +396,11 @@ Host OS
 ```
 Host OS
   ├─ Container Runtime (Docker, Podman)
-  ├─ Bonsai Launcher
+  ├─ Omnisystem Launcher
   └─ [Container: Omnisystem]
       ├─ Kernel (user-space in container)
       ├─ Services
-      ├─ Bonsai Workspace
+      ├─ Omnisystem Workspace
       └─ User applications
 ```
 
@@ -408,7 +408,7 @@ Host OS
 
 ## Multi-Platform Installer Implementation
 
-### Windows Installer (Bonsai.exe)
+### Windows Installer (Omnisystem.exe)
 
 **Built With**: WiX Toolset or NSIS
 
@@ -419,17 +419,17 @@ Host OS
 - Administrator privileges
 
 **Installs**:
-- Omnisystem image to `C:\Program Files\Bonsai\omnisystem`
-- Bonsai Launcher to system PATH
+- Omnisystem image to `C:\Program Files\Omnisystem\omnisystem`
+- Omnisystem Launcher to system PATH
 - Windows service (optional auto-start)
 - Capability broker as Windows service
 
 **Creates Shortcuts**:
-- Start Menu: "Bonsai Omnisystem"
-- Desktop: "Bonsai Workspace"
-- System Tray: Bonsai Control Panel
+- Start Menu: "Omnisystem Omnisystem"
+- Desktop: "Omnisystem Workspace"
+- System Tray: Omnisystem Control Panel
 
-### macOS Installer (Bonsai.dmg)
+### macOS Installer (Omnisystem.dmg)
 
 **Built With**: macOS Installer framework
 
@@ -438,21 +438,21 @@ Host OS
 - Virtualization.framework available
 
 **Installs**:
-- Omnisystem image to `~/Library/Application Support/Bonsai`
-- Bonsai Launcher to `/Applications/Bonsai.app`
+- Omnisystem image to `~/Library/Application Support/Omnisystem`
+- Omnisystem Launcher to `/Applications/Omnisystem.app`
 - Capability broker as launchd daemon
 - System extension (if needed for device passthrough)
 
 **Creates Shortcuts**:
-- Launchpad: "Bonsai Omnisystem"
-- Menu Bar: Bonsai Control Panel
-- Finder: `~/Library/Application Support/Bonsai`
+- Launchpad: "Omnisystem Omnisystem"
+- Menu Bar: Omnisystem Control Panel
+- Finder: `~/Library/Application Support/Omnisystem`
 
-### Linux Installer (bonsai-*.sh or .deb/.rpm)
+### Linux Installer (omnisystem-*.sh or .deb/.rpm)
 
 **Shell Installer**:
 ```bash
-$ curl -fsSL https://installer.bonsai.eco/install.sh | bash
+$ curl -fsSL https://installer.omnisystem.eco/install.sh | bash
 ```
 
 **Detects**:
@@ -461,22 +461,22 @@ $ curl -fsSL https://installer.bonsai.eco/install.sh | bash
 - Permissions (sudo)
 
 **Installs**:
-- Omnisystem image to `/opt/bonsai/omnisystem`
-- Bonsai Launcher to `/usr/local/bin/bonsai`
-- systemd service: `bonsaid.service`
+- Omnisystem image to `/opt/omnisystem/omnisystem`
+- Omnisystem Launcher to `/usr/local/bin/omnisystem`
+- systemd service: `omnisystemd.service`
 - Capability broker via systemd
 
 **DEB Package** (.deb for Ubuntu/Debian):
 ```bash
-$ sudo apt install ./bonsai-latest.deb
+$ sudo apt install ./omnisystem-latest.deb
 ```
 
 **RPM Package** (.rpm for Fedora/RHEL):
 ```bash
-$ sudo rpm -i bonsai-latest.rpm
+$ sudo rpm -i omnisystem-latest.rpm
 ```
 
-### Android Installer (Bonsai.apk)
+### Android Installer (Omnisystem.apk)
 
 **Detects**:
 - Android version, pKVM available
@@ -518,7 +518,7 @@ $ sudo rpm -i bonsai-latest.rpm
 
 Every installation creates a **rollback checkpoint** before starting:
 ```
-.bonsai/rollback/2026-06-08_14-32-15/
+.omnisystem/rollback/2026-06-08_14-32-15/
 ├── prev_state.json       (snapshot of previous state)
 ├── installation_log.txt  (what was installed)
 └── image_backup/         (backup of old image, if upgrade)

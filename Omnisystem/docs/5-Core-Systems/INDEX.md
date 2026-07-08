@@ -13,7 +13,7 @@ This section contains documentation for Core Systems - Compiler, runtime, and fr
  - ANDROID_APP_INTEGRATION_GUIDE.md
  - APP_GENERATION_SUMMARY.md
  - architecture.md
- - bonsai-core-smoke-test.md
+ - omnisystem-core-smoke-test.md
  - BUILD_COMPLETE.md
  - BUILD_SCRIPTS_README.md
  - COMPLETE_FEATURE_SUMMARY.md

@@ -12,7 +12,7 @@ Add the remote desktop module:
 mod remote_desktop_commands;
 
 use remote_desktop_commands::*;
-use bonsai_remote_desktop::RemoteDesktopService;
+use omnisystem_remote_desktop::RemoteDesktopService;
 use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -36,7 +36,7 @@ pub fn run() {
 ### 2. Create `src-tauri/src/remote_desktop_commands.rs`
 
 ```rust
-use bonsai_remote_desktop::{RemoteDesktopService, PeerId, SessionId};
+use omnisystem_remote_desktop::{RemoteDesktopService, PeerId, SessionId};
 use std::sync::Arc;
 use tauri::State;
 
@@ -153,7 +153,7 @@ Add these handlers to the invoke_handler registration:
 Add the 5 remote desktop tools:
 
 ```rust
-use bonsai_remote_desktop::RemoteDesktopService;
+use omnisystem_remote_desktop::RemoteDesktopService;
 
 pub fn get_remote_desktop_tools() -> Vec<Tool> {
     vec![
@@ -287,7 +287,7 @@ pub async fn handle_remote_desktop_tool(
 
 ### 1. Register `:rd` Command Group
 
-In your BTI (Bonsai Terminal Interface) command handler:
+In your BTI (Omnisystem Terminal Interface) command handler:
 
 ```rust
 pub mod rd_commands {
@@ -649,13 +649,13 @@ In your main layout or app component:
 
 ```bash
 # Test the crate
-cargo test -p bonsai-remote-desktop
+cargo test -p omnisystem-remote-desktop
 
 # Run with output
-cargo test -p bonsai-remote-desktop -- --nocapture
+cargo test -p omnisystem-remote-desktop -- --nocapture
 
 # Run specific test
-cargo test -p bonsai-remote-desktop test_create_token -- --nocapture
+cargo test -p omnisystem-remote-desktop test_create_token -- --nocapture
 ```
 
 ### Integration Test Example

@@ -1,0 +1,376 @@
+syntax = "proto3";
+package omniharness.v1;
+
+// Emit each message/enum as its own top-level Java class in package
+// omniharness.v1 (e.g. omniharness.v1.AppendRequest) rather than nesting them
+// inside a single outer wrapper class. The Clojure orchestrator imports these
+// message types directly. (Java-only options; ignored by the Rust/prost build.)
+option java_multiple_files = true;
+option java_package = "omniharness.v1";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OmniHarness Century Protocol v1
+// Polyglot AI Harness — Rust Kernel / Python Orchestrator / Clojure Planner
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── 1. EVENT STORE ─────────────────────────────────────────────────────────
+
+service EventStoreService {
+  rpc AppendEvent    (AppendRequest)  returns (AppendResponse);
+  rpc VerifyChain    (VerifyRequest)  returns (VerifyResponse);
+  rpc QueryEvents    (QueryRequest)   returns (stream SystemEvent);
+  rpc GetTip         (TipRequest)     returns (TipResponse);
+}
+
+message AppendRequest {
+  string module_source  = 1;
+  string event_type     = 2;
+  string payload_json   = 3;
+  string session_id     = 4;
+}
+
+message AppendResponse {
+  string event_hash = 1;
+  string event_id   = 2;
+  bool   success    = 3;
+  string error      = 4;
+}
+
+message VerifyRequest {}
+
+message VerifyResponse {
+  bool   is_valid  = 1;
+  string tip_hash  = 2;
+  uint64 depth     = 3;
+}
+
+message QueryRequest {
+  string module_source = 1;  // filter; empty = all
+  string event_type    = 2;  // filter; empty = all
+  int64  since_ts      = 3;  // unix seconds, 0 = beginning
+  uint32 limit         = 4;  // 0 = 1000
+}
+
+message TipRequest {}
+message TipResponse {
+  string tip_hash = 1;
+  uint64 depth    = 2;
+}
+
+message SystemEvent {
+  string id              = 1;
+  int64  timestamp_utc   = 2;
+  string module_source   = 3;
+  string event_type      = 4;
+  string payload_json    = 5;
+  string previous_hash   = 6;
+  string current_hash    = 7;
+  string session_id      = 8;
+}
+
+// ─── 2. MODEL SERVICE ────────────────────────────────────────────────────────
+
+service ModelService {
+  rpc Chat          (ChatRequest)        returns (ChatResponse);
+  rpc ChatStream    (ChatRequest)        returns (stream ChatChunk);
+  rpc ListModels    (ListModelsRequest)  returns (ListModelsResponse);
+  rpc HealthCheck   (ModelHealthRequest) returns (ModelHealthResponse);
+  rpc RegisterModel (RegisterModelReq)   returns (RegisterModelResp);
+}
+
+message ChatMessage {
+  string role    = 1;  // system, user, assistant, tool
+  string content = 2;
+  string name    = 3;  // for tool messages
+  string tool_call_id = 4;
+}
+
+message ToolCall {
+  string id        = 1;
+  string name      = 2;
+  string arguments = 3;  // JSON string
+}
+
+message ChatRequest {
+  string             model_id     = 1;  // e.g. "claude-sonnet-4-6", "gpt-4o", "llama3.2"
+  repeated ChatMessage messages   = 2;
+  float              temperature  = 3;
+  int32              max_tokens   = 4;
+  repeated string    stop         = 5;
+  bool               stream       = 6;
+  string             system       = 7;
+  repeated ToolDef   tools        = 8;
+  string             session_id   = 9;
+  map<string,string> metadata     = 10;
+}
+
+message ChatResponse {
+  string             content       = 1;
+  string             model_used    = 2;
+  string             finish_reason = 3;
+  int32              input_tokens  = 4;
+  int32              output_tokens = 5;
+  repeated ToolCall  tool_calls    = 6;
+  string             session_id    = 7;
+  double             latency_ms    = 8;
+}
+
+message ChatChunk {
+  string content       = 1;
+  bool   is_final      = 2;
+  string finish_reason = 3;
+  int32  output_tokens = 4;
+}
+
+message ListModelsRequest {
+  string provider = 1;  // filter; empty = all
+}
+
+message ModelInfo {
+  string id           = 1;
+  string provider     = 2;
+  string display_name = 3;
+  int32  context_window = 4;
+  bool   supports_tools = 5;
+  bool   supports_vision = 6;
+  bool   available    = 7;
+  double cost_per_1k_input  = 8;
+  double cost_per_1k_output = 9;
+}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+message ModelHealthRequest {
+  string provider = 1;
+}
+
+message ModelHealthResponse {
+  bool   healthy      = 1;
+  string provider     = 2;
+  double latency_ms   = 3;
+  string error        = 4;
+}
+
+message RegisterModelReq {
+  string id       = 1;
+  string provider = 2;
+  string base_url = 3;
+  string api_key  = 4;
+  map<string,string> params = 5;
+}
+
+message RegisterModelResp {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message ToolDef {
+  string name        = 1;
+  string description = 2;
+  string input_schema = 3;  // JSON Schema string
+}
+
+// ─── 3. MEMORY SERVICE ───────────────────────────────────────────────────────
+
+service MemoryService {
+  rpc Store          (StoreRequest)          returns (StoreResponse);
+  rpc Retrieve       (RetrieveRequest)       returns (RetrieveResponse);
+  rpc SearchSemantic (SemanticSearchRequest) returns (SemanticSearchResponse);
+  rpc Delete         (DeleteRequest)         returns (DeleteResponse);
+  rpc ListCollections(ListCollRequest)       returns (ListCollResponse);
+  rpc Summarize      (SummarizeRequest)      returns (SummarizeResponse);
+}
+
+message MemoryEntry {
+  string             id          = 1;
+  string             collection  = 2;
+  string             content     = 3;
+  map<string,string> metadata    = 4;
+  repeated float     embedding   = 5;
+  int64              created_at  = 6;
+  double             score       = 7;  // similarity score when returned from search
+}
+
+message StoreRequest {
+  string             collection = 1;
+  string             content    = 2;
+  map<string,string> metadata   = 3;
+  bool               embed      = 4;  // generate embedding automatically
+}
+
+message StoreResponse {
+  string id      = 1;
+  bool   success = 2;
+  string error   = 3;
+}
+
+message RetrieveRequest {
+  string id         = 1;
+  string collection = 2;
+}
+
+message RetrieveResponse {
+  MemoryEntry entry = 1;
+  bool        found = 2;
+}
+
+message SemanticSearchRequest {
+  string          collection = 1;
+  string          query      = 2;
+  uint32          top_k      = 3;
+  float           threshold  = 4;  // minimum similarity score
+  map<string,string> filter  = 5;
+}
+
+message SemanticSearchResponse {
+  repeated MemoryEntry results = 1;
+}
+
+message DeleteRequest {
+  string id         = 1;
+  string collection = 2;
+}
+
+message DeleteResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message ListCollRequest {}
+message ListCollResponse {
+  repeated string collections = 1;
+}
+
+message SummarizeRequest {
+  string collection = 1;
+  int32  max_tokens = 2;
+}
+
+message SummarizeResponse {
+  string summary = 1;
+}
+
+// ─── 4. TOOL SERVICE ─────────────────────────────────────────────────────────
+
+service ToolService {
+  rpc Execute       (ToolExecuteRequest)  returns (ToolExecuteResponse);
+  rpc Register      (ToolRegisterRequest) returns (ToolRegisterResponse);
+  rpc List          (ToolListRequest)     returns (ToolListResponse);
+  rpc Unregister    (ToolUnregRequest)    returns (ToolUnregResponse);
+}
+
+message ToolExecuteRequest {
+  string name       = 1;
+  string arguments  = 2;  // JSON
+  string session_id = 3;
+  int32  timeout_ms = 4;
+}
+
+message ToolExecuteResponse {
+  string result     = 1;
+  bool   success    = 2;
+  string error      = 3;
+  double latency_ms = 4;
+}
+
+message ToolRegisterRequest {
+  string name        = 1;
+  string description = 2;
+  string schema      = 3;  // JSON Schema
+  string handler_url = 4;  // HTTP endpoint for remote tools
+  bool   builtin     = 5;
+}
+
+message ToolRegisterResponse {
+  bool   success = 1;
+  string error   = 2;
+}
+
+message ToolListRequest {
+  bool builtins_only = 1;
+}
+
+message ToolListResponse {
+  repeated ToolDef tools = 1;
+}
+
+message ToolUnregRequest  { string name = 1; }
+message ToolUnregResponse { bool success = 1; string error = 2; }
+
+// ─── 5. SESSION SERVICE ──────────────────────────────────────────────────────
+
+service SessionService {
+  rpc CreateSession (CreateSessionReq) returns (CreateSessionResp);
+  rpc GetSession    (GetSessionReq)    returns (GetSessionResp);
+  rpc ListSessions  (ListSessionsReq) returns (ListSessionsResp);
+  rpc DeleteSession (DeleteSessionReq) returns (DeleteSessionResp);
+}
+
+message Session {
+  string             id          = 1;
+  string             title       = 2;
+  string             model_id    = 3;
+  int64              created_at  = 4;
+  int64              updated_at  = 5;
+  int32              message_count = 6;
+  map<string,string> metadata    = 7;
+}
+
+message CreateSessionReq  { string title = 1; string model_id = 2; map<string,string> metadata = 3; }
+message CreateSessionResp { Session session = 1; string error = 2; }
+message GetSessionReq     { string id = 1; }
+message GetSessionResp    { Session session = 1; repeated ChatMessage history = 2; bool found = 3; }
+message ListSessionsReq   { uint32 limit = 1; int64 since = 2; }
+message ListSessionsResp  { repeated Session sessions = 1; }
+message DeleteSessionReq  { string id = 1; }
+message DeleteSessionResp { bool success = 1; }
+
+// ─── 6. HARNESS CONTROL ──────────────────────────────────────────────────────
+
+service HarnessService {
+  rpc Status  (StatusRequest)  returns (StatusResponse);
+  rpc Config  (ConfigRequest)  returns (ConfigResponse);
+  rpc Reload  (ReloadRequest)  returns (ReloadResponse);
+  rpc Metrics (MetricsRequest) returns (MetricsResponse);
+}
+
+message StatusRequest {}
+message StatusResponse {
+  string   version       = 1;
+  bool     healthy       = 2;
+  int64    uptime_secs   = 3;
+  uint64   events_stored = 4;
+  uint64   requests_served = 5;
+  string   tip_hash      = 6;
+}
+
+message ConfigRequest  { string key = 1; }
+message ConfigResponse { string value = 1; bool found = 2; }
+message ReloadRequest  {}
+message ReloadResponse { bool success = 1; string error = 2; }
+
+message MetricsRequest {}
+message MetricsResponse {
+  double   avg_latency_ms    = 1;
+  double   p99_latency_ms    = 2;
+  uint64   total_tokens_in   = 3;
+  uint64   total_tokens_out  = 4;
+  uint64   cache_hits        = 5;
+  uint64   cache_misses      = 6;
+  map<string,uint64> provider_counts = 7;
+}
+
+// ─── 7. MESH / P2P ───────────────────────────────────────────────────────────
+
+service MeshService {
+  rpc BroadcastEvent (BroadcastRequest) returns (BroadcastResponse);
+  rpc ListPeers      (ListPeersRequest) returns (ListPeersResponse);
+}
+
+message BroadcastRequest  { bytes   data    = 1; }
+message BroadcastResponse { uint32  peers   = 1; bool success = 2; }
+message Peer              { string  peer_id = 1; string addr = 2; int64 connected_at = 3; }
+message ListPeersRequest  {}
+message ListPeersResponse { repeated Peer peers = 1; }

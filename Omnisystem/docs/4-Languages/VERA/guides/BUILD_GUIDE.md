@@ -1,6 +1,6 @@
 # 🏗️ Omnisystem Build Guide
 
-Complete guide to building all BonsaiEcosystem launchers and components.
+Complete guide to building all OmnisystemEcosystem launchers and components.
 
 ## Quick Start
 
@@ -95,14 +95,14 @@ Build outputs are placed in: `.\build\output\`
 |-----------|------------|------|
 | Desktop Environment | `Omnisystem.exe` | ~146 KB |
 | GUI Launcher | `OmnisystemGUI.exe` | TBD |
-| BonsaiEcosystem Launcher | `BonsaiLauncher.exe` | TBD |
+| OmnisystemEcosystem Launcher | `OmnisystemLauncher.exe` | TBD |
 
 ## Project Structure
 
 ```
 Omnisystem/
 ├── applications/
-│   └── bonsai-desktop-environment/
+│   └── omnisystem-desktop-environment/
 │       ├── Cargo.toml               (Project config)
 │       ├── src/
 │       │   └── launcher/
@@ -115,17 +115,17 @@ Omnisystem/
 │       ├── Cargo.toml               (Tauri config)
 │       └── src/main.rs
 │
-└── modules/base-modules/applications/bonsai-ecosystem/launcher/
+└── modules/base-modules/applications/omnisystem-ecosystem/launcher/
     ├── Cargo.toml                   (Launcher config)
     └── src-tauri/src/main.rs
 ```
 
 ## Launchers
 
-### 1. BonsaiEcosystem Desktop Environment (v29.0.0)
+### 1. OmnisystemEcosystem Desktop Environment (v29.0.0)
 
 **Binary:** `Omnisystem.exe`  
-**Location:** `Omnisystem/applications/bonsai-desktop-environment/`  
+**Location:** `Omnisystem/applications/omnisystem-desktop-environment/`  
 **Type:** Rust Console Application  
 **Status:** ✅ Building Successfully
 
@@ -160,10 +160,10 @@ Omnisystem/
 - Tray icon support
 - DevTools
 
-### 3. BonsaiEcosystem Launcher
+### 3. OmnisystemEcosystem Launcher
 
-**Binary:** `BonsaiLauncher.exe`  
-**Location:** `Omnisystem/modules/base-modules/applications/bonsai-ecosystem/launcher/`  
+**Binary:** `OmnisystemLauncher.exe`  
+**Location:** `Omnisystem/modules/base-modules/applications/omnisystem-ecosystem/launcher/`  
 **Type:** Tauri Application  
 **Status:** Building (dependencies in progress)
 

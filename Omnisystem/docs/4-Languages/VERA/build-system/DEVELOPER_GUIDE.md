@@ -47,7 +47,7 @@ Z:\Projects\Omnisystem\
 
 ```
 Z:\Projects\Omnisystem\Omnisystem\
-├── applications/bonsai-desktop-environment/    [PROJECT 1]
+├── applications/omnisystem-desktop-environment/    [PROJECT 1]
 │   ├── Cargo.toml
 │   ├── src/launcher/main.rs
 │   └── src/launcher/Omnisystem.rs
