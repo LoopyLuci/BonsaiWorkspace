@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+
+logger = logging.getLogger("omniharness.server")
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await grpc.connect()
     except Exception:
+        logger.exception("Kernel gRPC client failed to initialize — degrading to kernel-less mode")
         grpc = None  # kernel not running — graceful degradation
 
     yield
@@ -143,7 +147,7 @@ async def health():
             status = await grpc.status()
             kernel_ok = status.get("healthy", False)
         except Exception:
-            pass
+            logger.exception("Kernel gRPC health check failed")
     clj_ok = await clj.health()
     return {"status": "ok", "providers": providers, "kernel": kernel_ok, "clj_orchestrator": clj_ok, "version": "1.0.0"}
 
