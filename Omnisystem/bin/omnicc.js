@@ -387,6 +387,38 @@ function extractBlock(source, openBraceIdx) {
   return null;
 }
 
+// Parses `format!("template", arg1, arg2, ...)` at the start of `expr` via a
+// linear scan rather than a single regex — CodeQL flagged the previous regex
+// (`(?:,\s*[^,)]+)*`) as a possible catastrophic-backtracking risk. Matches
+// the original regex's tokenization exactly, including its pre-existing
+// naive limitation that args containing their own "," or ")" (e.g. a nested
+// call) split incorrectly — fixing that is a separate, unrelated concern.
+function matchFormatCall(expr) {
+  const head = /^format!\s*\(\s*"/.exec(expr);
+  if (!head) return null;
+  let i = head[0].length;
+  const tmplStart = i;
+  while (i < expr.length && expr[i] !== '"') i++;
+  if (i >= expr.length) return null;
+  const tmpl = expr.slice(tmplStart, i);
+  i++; // past closing quote
+  while (i < expr.length && /\s/.test(expr[i])) i++;
+
+  let argsRaw = '';
+  while (i < expr.length && expr[i] === ',') {
+    const argStart = i;
+    i++;
+    while (i < expr.length && /\s/.test(expr[i])) i++;
+    const valStart = i;
+    while (i < expr.length && expr[i] !== ',' && expr[i] !== ')') i++;
+    if (i === valStart) return null; // [^,)]+ requires at least one char
+    argsRaw += expr.slice(argStart, i);
+  }
+  while (i < expr.length && /\s/.test(expr[i])) i++;
+  if (expr[i] !== ')') return null;
+  return { tmpl, argsRaw };
+}
+
 function evalExpr(expr, env) {
   expr = expr.trim();
   if (!expr) return '';
@@ -400,10 +432,10 @@ function evalExpr(expr, env) {
   if (expr === 'true') return true;
   if (expr === 'false') return false;
   // Format string: format!("...", args)
-  const fmtM = expr.match(/^format!\s*\(\s*"([^"]*)"\s*((?:,\s*[^,)]+)*)\s*\)/);
+  const fmtM = matchFormatCall(expr);
   if (fmtM) {
-    let tmpl = fmtM[1];
-    const fmtArgs = (fmtM[2] || '').split(',').map(a => a.trim()).filter(Boolean);
+    let tmpl = fmtM.tmpl;
+    const fmtArgs = fmtM.argsRaw.split(',').map(a => a.trim()).filter(Boolean);
     let ai = 0;
     tmpl = tmpl.replace(/\{\}/g, () => String(evalExpr(fmtArgs[ai++] ?? '', env)));
     tmpl = tmpl.replace(/\{(\w+)\}/g, (_, k) => String(env.get(k) ?? k));

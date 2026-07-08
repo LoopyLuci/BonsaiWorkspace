@@ -353,6 +353,16 @@ async def list_tools():
 async def execute_tool(req: ToolExecReq):
     reg    = get_registry()
     result = await reg.execute(req.name, req.arguments)
+    # ToolRegistry.execute() intentionally returns raw exception text on
+    # failure (react/engine.py's ReAct loop calls it directly and needs real
+    # error detail to self-correct) — but that same string flowing straight
+    # over HTTP to this endpoint's caller is a different trust boundary.
+    # Log the full detail server-side; only a generic message crosses the
+    # wire. See ToolRegistry.execute()'s "Error: ..." convention in
+    # react/tools.py for why this prefix reliably identifies failures.
+    if isinstance(result, str) and result.startswith("Error:"):
+        logger.warning("Tool '%s' execution failed: %s", req.name, result)
+        return {"result": f"Tool '{req.name}' failed. See server logs for details.", "tool": req.name}
     return {"result": result, "tool": req.name}
 
 # ── Knowledge Graph ───────────────────────────────────────────────────────────
