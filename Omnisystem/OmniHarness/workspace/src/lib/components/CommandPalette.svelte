@@ -5,6 +5,7 @@
   import { requestOpenFile }   from '$lib/stores/openFile';
   import { addAssistantMessage } from '$lib/stores/chat';
   import { setWorkspace } from '$lib/stores/workspace';
+  import { restartOnboarding } from '$lib/stores/onboarding';
 
   let isOpen   = false;
   let query    = '';
@@ -75,6 +76,11 @@
         const path = await invoke<string>('prompt_gguf_import');
         if (path) addAssistantMessage(`Model imported from: \`${path}\``);
       },
+    },
+    {
+      id: 'restart-tour', label: 'Restart Guided Tour',
+      hint: 'Replay the first-run setup walkthrough',
+      action: restartOnboarding,
     },
   ];
 

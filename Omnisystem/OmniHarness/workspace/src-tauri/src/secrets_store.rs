@@ -56,3 +56,4 @@ pub const ACCOUNT_SMTP_USERNAME: &str = "smtp_username";
 pub const ACCOUNT_SMTP_HOST: &str = "smtp_host";
 pub const ACCOUNT_SMTP_FROM: &str = "smtp_from";
 pub const ACCOUNT_DESKTOP_CONNECTION_TOKEN: &str = "desktop_connection_token";
+pub const ACCOUNT_OPENCODE_GO_API_KEY: &str = "opencode_go_api_key";

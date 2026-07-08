@@ -770,6 +770,7 @@ fn default_base_url(provider: &str) -> &'static str {
         "ollama" => "http://127.0.0.1:11434/v1",
         "together" => "https://api.together.xyz/v1",
         "deepseek" => "https://api.deepseek.com/v1",
+        "opencode-go" => crate::opencode_go::BASE_URL,
         _ => "https://api.openai.com/v1",
     }
 }

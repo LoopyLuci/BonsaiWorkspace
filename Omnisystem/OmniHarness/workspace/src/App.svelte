@@ -14,6 +14,8 @@
   import PeersPanel         from '$lib/components/PeersPanel.svelte';
   import GlobalErrorBoundary from '$lib/components/GlobalErrorBoundary.svelte';
   import SystemHealthPanel  from '$lib/components/SystemHealthPanel.svelte';
+  import OnboardingWizard   from '$lib/components/OnboardingWizard.svelte';
+  import WidgetHost         from '$lib/components/WidgetHost.svelte';
   // CodeCanvas, AndroidUsbLab, DataWorkbench, VerificationPanel, ModelBuilder,
   // PackageImportDialog, ExtensionsPanel, SettingsPanel, AgentsPanel,
   // MobileViewPanel are lazy-loaded below (bundle-size budget: these are
@@ -24,6 +26,7 @@
   import { restorePersistentSession } from '$lib/stores/chat';
   import { loadAgentConfigs, loadPersonas } from '$lib/stores/agents';
   import { loadApiSettings } from '$lib/stores/settings';
+  import { onboardingDone, showOnboarding, restartOnboarding } from '$lib/stores/onboarding';
   import { instrumentAll } from '$lib/activity';
   import Toasts from '$lib/components/Toast.svelte';
 
@@ -35,6 +38,8 @@
   let showAgentConnect = false;
   let showAgents       = false;
   let showExtensions   = false;
+  let showSelfBuild    = false;
+  let showSurvival     = false;
   let showResources    = false;
   let showAgentVision  = false;
   let showCanvas       = false;
@@ -61,13 +66,13 @@
   let agentVisionLoadError = '';
 
   // Lazy-loaded overlay panels (kept out of the main bundle; loaded on first open).
+  // ModelBuilder and Extensions are migrated to the widget registry
+  // ($lib/widgets/registry.ts) + <WidgetHost> — see that file's doc comment.
   let codeCanvasComponent: any = null;
   let androidUsbLabComponent: any = null;
   let dataWorkbenchComponent: any = null;
   let verificationPanelComponent: any = null;
-  let modelBuilderComponent: any = null;
   let packageImportDialogComponent: any = null;
-  let extensionsPanelComponent: any = null;
 
   $: if (showCanvas && !codeCanvasComponent) {
     import('$lib/components/CodeCanvas.svelte').then((m) => (codeCanvasComponent = m.default));
@@ -81,9 +86,6 @@
   $: if (showVerification && !verificationPanelComponent) {
     import('$lib/components/VerificationPanel.svelte').then((m) => (verificationPanelComponent = m.default));
   }
-  $: if (showModelBuilder && !modelBuilderComponent) {
-    import('$lib/components/ModelBuilder.svelte').then((m) => (modelBuilderComponent = m.default));
-  }
   $: if (showPackageImport && !packageImportDialogComponent) {
     import('$lib/components/PackageImportDialog.svelte').then((m) => (packageImportDialogComponent = m.default));
   }
@@ -91,10 +93,6 @@
     showPackageImport = false;
     showModelBuilder = true;
   }
-  $: if (showExtensions && !extensionsPanelComponent) {
-    import('$lib/panels/ExtensionsPanel.svelte').then((m) => (extensionsPanelComponent = m.default));
-  }
-
   let settingsPanelComponent: any = null;
   let agentsPanelComponent: any = null;
   let mobileViewPanelComponent: any = null;
@@ -272,6 +270,9 @@
     void restorePersistentSession();
     void loadAgentConfigs();
     void loadPersonas();
+    if (!isMobile && !$onboardingDone) {
+      showOnboarding.set(true);
+    }
   }
 
   (onMount as (fn: () => Promise<() => void>) => void)(async () => {
@@ -410,6 +411,10 @@
         on:click={() => (showAgents = true)}>⚡ Agents</button>
       <button class="btn-icon" class:active={showExtensions} title="Extensions (🧩)"
         on:click={() => (showExtensions = !showExtensions)}>🧩 Ext</button>
+      <button class="btn-icon" class:active={showSelfBuild} title="Self-Build — the self-upgrade agent's proposal queue"
+        on:click={() => (showSelfBuild = !showSelfBuild)}>🛠 Self-Build</button>
+      <button class="btn-icon" class:active={showSurvival} title="Survival System — bug discovery, knowledge base, sandbox nervous system"
+        on:click={() => (showSurvival = !showSurvival)}>🩺 Survival</button>
       <button class="btn-icon" class:active={showResources} title="Open Resources"
         on:click={() => (showResources = true)}>Resources</button>
       <button class="btn-icon" class:active={showPeers} title="P2P Peers"
@@ -453,6 +458,8 @@
         on:click={cycleTheme}>
         {theme === 'dark' ? '☀' : theme === 'light' ? '⬛' : '🌑'}
       </button>
+      <button class="btn-icon" title="Restart the guided tour"
+        on:click={restartOnboarding}>?</button>
     </div>
   </header>
 
@@ -555,12 +562,20 @@
   {/if}
   {#if showExtensions}
     <div class="overlay-panel" role="dialog" aria-label="Extensions">
-      {#if extensionsPanelComponent}
-        <svelte:component this={extensionsPanelComponent} />
-      {:else}
-        <div class="overlay-loading" role="status">Loading Extensions...</div>
-      {/if}
+      <WidgetHost widgetId="extensions" />
       <button class="overlay-close" on:click={() => showExtensions = false} aria-label="Close">✕</button>
+    </div>
+  {/if}
+  {#if showSelfBuild}
+    <div class="overlay-panel" role="dialog" aria-label="Self-Build">
+      <WidgetHost widgetId="self-build" />
+      <button class="overlay-close" on:click={() => showSelfBuild = false} aria-label="Close">✕</button>
+    </div>
+  {/if}
+  {#if showSurvival}
+    <div class="overlay-panel" role="dialog" aria-label="Survival System">
+      <WidgetHost widgetId="survival" />
+      <button class="overlay-close" on:click={() => showSurvival = false} aria-label="Close">✕</button>
     </div>
   {/if}
   {#if showResources}<ResourcesPanel on:close={() => (showResources = false)} />{/if}
@@ -622,11 +637,7 @@
   {#if showHealthPanel}<SystemHealthPanel onClose={() => (showHealthPanel = false)} />{/if}
   {#if showModelBuilder}
     <div class="floating-panel model-builder-panel">
-      {#if modelBuilderComponent}
-        <svelte:component this={modelBuilderComponent} />
-      {:else}
-        <div class="overlay-loading" role="status">Loading Model Builder...</div>
-      {/if}
+      <WidgetHost widgetId="model-builder" />
     </div>
   {/if}
   {#if showPackageImport}
@@ -643,6 +654,9 @@
   {/if}
   <DownloadProgress />
   {#if $isBootstrapping}<BootstrapScreen />{/if}
+  {#if $showOnboarding}
+    <OnboardingWizard on:openSettings={() => (showSettings = true)} />
+  {/if}
 
   {/if}
 

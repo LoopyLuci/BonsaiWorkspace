@@ -2245,6 +2245,236 @@ pub async fn get_task_queue_status(state: State<'_, AppState>) -> Result<TaskQue
     Ok(state.task_queue.status().await)
 }
 
+// ─── OpenCode Go provider ────────────────────────────────────────────────────
+
+/// Stores the OpenCode Go API key in the OS credential vault. An empty
+/// string clears it (mirrors `save_discord_bot_config`'s "empty = leave
+/// untouched" convention, except here empty explicitly means "remove").
+#[tauri::command]
+pub async fn save_opencode_go_api_key(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<(), String> {
+    if api_key.is_empty() {
+        state
+            .secrets_store
+            .delete(crate::secrets_store::ACCOUNT_OPENCODE_GO_API_KEY)
+    } else {
+        state
+            .secrets_store
+            .store(crate::secrets_store::ACCOUNT_OPENCODE_GO_API_KEY, &api_key)
+    }
+}
+
+#[tauri::command]
+pub async fn has_opencode_go_api_key(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state
+        .secrets_store
+        .has(crate::secrets_store::ACCOUNT_OPENCODE_GO_API_KEY))
+}
+
+/// Fetches the live OpenCode Go model catalog using the stored API key.
+#[tauri::command]
+pub async fn fetch_opencode_go_models(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::opencode_go::OpenCodeGoModel>, String> {
+    let api_key = state
+        .secrets_store
+        .get(crate::secrets_store::ACCOUNT_OPENCODE_GO_API_KEY)?
+        .ok_or("No OpenCode Go API key saved yet — add one in Settings first.")?;
+    crate::opencode_go::fetch_models(&api_key).await
+}
+
+// ─── Self-upgrade proposal queue ─────────────────────────────────────────────
+// Triggering a proposal reuses the generic `send_agent_message` command
+// with `agent_id: "self-upgrader"` — no dedicated "trigger" command needed.
+
+#[tauri::command]
+pub async fn list_self_upgrade_proposals(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::self_upgrade::gate::SelfUpgradeProposal>, String> {
+    Ok(state.self_upgrade_gate.list())
+}
+
+/// Approves or rejects a proposal. Approving a never-sandboxed
+/// (safety-critical, `PendingReview`) proposal runs the sandbox now, as
+/// part of this explicit human authorization, then applies it immediately
+/// if the sandbox passes — a single deliberate click covers both "attempt
+/// this" and "merge it" for safety-critical changes, since the human has
+/// already reviewed the raw diff (the highest-signal review point).
+/// Approving an already-sandboxed (`PendingApproval`) proposal just
+/// promotes the existing, already-tested worktree.
+#[tauri::command]
+pub async fn resolve_self_upgrade_proposal(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    proposal_id: String,
+    approved: bool,
+) -> Result<String, String> {
+    let repo_root = crate::self_upgrade::find_repo_root();
+    let resolved = state.self_upgrade_gate.resolve(&proposal_id, approved, &app_handle)?;
+
+    if !approved {
+        if let Some(outcome) = &resolved.sandbox {
+            let _ = crate::self_upgrade::sandbox::discard(&repo_root, outcome);
+        }
+        return Ok("Rejected — nothing applied.".to_string());
+    }
+
+    if let Some(outcome) = &resolved.sandbox {
+        // Already sandboxed (PendingApproval) — just promote it.
+        crate::self_upgrade::sandbox::promote(&repo_root, outcome)?;
+        state.self_upgrade_gate.mark_auto_merged(&proposal_id, &app_handle);
+        return Ok("Approved and merged.".to_string());
+    }
+
+    // Never sandboxed (PendingReview / safety-critical) — run it now.
+    let files_for_sandbox: Vec<(String, String)> = resolved
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.new_content.clone()))
+        .collect();
+    let outcome = crate::self_upgrade::sandbox::run_in_worktree(&repo_root, &files_for_sandbox, None)?;
+    if outcome.passed() {
+        crate::self_upgrade::sandbox::promote(&repo_root, &outcome)?;
+        state.self_upgrade_gate.mark_auto_merged(&proposal_id, &app_handle);
+        Ok("Sandbox passed — approved and merged.".to_string())
+    } else {
+        let _ = crate::self_upgrade::sandbox::discard(&repo_root, &outcome);
+        state.self_upgrade_gate.mark_failed(&proposal_id, &app_handle);
+        Err(format!(
+            "Sandbox build/test failed after approval — discarded, nothing applied.\n\n{}\n{}",
+            outcome.build_output, outcome.test_output
+        ))
+    }
+}
+
+// ─── Survival System — Bug Database ──────────────────────────────────────────
+// Background discovery of compile/test/lint/runtime/fuzzing bugs into a
+// deduplicated database; fixable ones are routed through the same
+// self-upgrade pipeline above (`survival::daemon::submit_for_fix` calls the
+// identical `agent_host.handle("self-upgrader", ...)` path `send_agent_message`
+// uses). `SurvivalDaemon` is the single shared state — the background loop
+// and these commands operate on the exact same round-robin/cursor state.
+
+#[derive(serde::Serialize)]
+pub struct SurvivalTargetInfo {
+    pub name: String,
+    pub rel_path: String,
+    pub kind: String,
+}
+
+/// The monitored-target registry, for the Survival panel's Overview tab —
+/// read-only, static (matches `survival::targets::default_registry()`
+/// exactly; see its doc comment for why "the entire monorepo" isn't every
+/// crate yet).
+#[tauri::command]
+pub fn list_survival_targets() -> Vec<SurvivalTargetInfo> {
+    crate::survival::targets::default_registry()
+        .into_iter()
+        .map(|t| SurvivalTargetInfo {
+            name: t.name.to_string(),
+            rel_path: t.rel_path.to_string(),
+            kind: format!("{:?}", t.kind),
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn list_bugs(
+    daemon: State<'_, Arc<crate::survival::daemon::SurvivalDaemon>>,
+) -> Result<Vec<crate::survival::bug_db::BugRecord>, String> {
+    daemon.bug_db.list().await
+}
+
+/// Runs one scan+ingest(+maybe-submit) cycle immediately, the same cycle
+/// the background daemon runs on its timer. Returns how many bugs were
+/// touched (new or repeat occurrences).
+#[tauri::command]
+pub async fn scan_now(
+    daemon: State<'_, Arc<crate::survival::daemon::SurvivalDaemon>>,
+) -> Result<usize, String> {
+    Ok(crate::survival::daemon::run_cycle(&daemon).await)
+}
+
+#[tauri::command]
+pub async fn resolve_bug(
+    daemon: State<'_, Arc<crate::survival::daemon::SurvivalDaemon>>,
+    bug_id: i64,
+    action: String,
+) -> Result<(), String> {
+    let status = match action.as_str() {
+        "ignore" => "ignored",
+        "wontfix" => "wontfix",
+        "reopen" => "open",
+        other => return Err(format!("Unknown bug action '{other}' — expected ignore/wontfix/reopen")),
+    };
+    daemon.bug_db.set_status(bug_id, status).await
+}
+
+/// Manually submits a specific bug for fixing, bypassing the daemon's
+/// occurrence-based auto-selection. Still subject to `self_upgrade_enabled`'s
+/// existing hard check inside `SelfUpgrader::handle_message`.
+#[tauri::command]
+pub async fn attempt_fix_now(
+    app_handle: AppHandle,
+    daemon: State<'_, Arc<crate::survival::daemon::SurvivalDaemon>>,
+    bug_id: i64,
+) -> Result<String, String> {
+    let bugs = daemon.bug_db.list().await?;
+    let bug = bugs.into_iter().find(|b| b.id == bug_id).ok_or_else(|| format!("No bug with id {bug_id}"))?;
+
+    let goal = format!(
+        "Fix this bug:\n\nSource: {}\nSeverity: {}\nFile: {}\nOccurrences: {}\n\n{}",
+        bug.source,
+        bug.severity,
+        bug.file_path.as_deref().unwrap_or("(unknown)"),
+        bug.occurrence_count,
+        bug.message,
+    );
+    let ctx = crate::agent::AgentContext { model_url: daemon.orchestrator.active_slot_url().await };
+    let msg = crate::agent::AgentMessage { content: goal, role: None, metadata: None };
+    let output = daemon.agent_host.handle("self-upgrader", ctx, msg).await.map_err(|e| e.to_string())?;
+
+    if let Some(id) = output.actions.first().and_then(|a| a.payload.get("id")).and_then(|v| v.as_str()) {
+        daemon.bug_db.link_proposal(bug.id, id).await?;
+    } else {
+        daemon.bug_db.increment_fix_attempts(bug.id).await?;
+    }
+    let _ = app_handle.emit("bug-updated", bug.id);
+    Ok(output.content)
+}
+
+// ─── Survival System — Knowledge Base + Sandbox Nervous System (read-only UI) ─
+// `survival::kb`'s commands (`repair_error`/`report_fix`/`list_fixes`/etc.)
+// and `fff_commands`'s F3/SNS commands are registered directly in
+// `generate_handler!` (see `lib.rs`) — no wrapper needed here, they're
+// already real Tauri commands, just previously unused by any frontend.
+
+/// Sends a single test message to an OpenCode Go model and returns the
+/// reply — used both by the Settings "Test connection" button and by the
+/// integration verification pass (proves both wire protocols round-trip).
+#[tauri::command]
+pub async fn send_opencode_go_test_message(
+    state: State<'_, AppState>,
+    model_id: String,
+    message: String,
+) -> Result<String, String> {
+    let api_key = state
+        .secrets_store
+        .get(crate::secrets_store::ACCOUNT_OPENCODE_GO_API_KEY)?
+        .ok_or("No OpenCode Go API key saved yet — add one in Settings first.")?;
+    crate::opencode_go::send_chat(
+        &api_key,
+        &model_id,
+        vec![crate::opencode_go::ChatMessage {
+            role: "user".to_string(),
+            content: message,
+        }],
+    )
+    .await
+}
+
 // ─── Cluster Orchestrator ───────────────────────────────────────────────────
 
 #[tauri::command]

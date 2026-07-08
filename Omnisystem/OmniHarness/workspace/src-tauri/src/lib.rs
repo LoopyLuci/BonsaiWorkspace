@@ -94,6 +94,8 @@ pub mod data_curator;
 mod dual_inference;
 mod error;
 mod features;
+mod gguf;
+mod gguf_tokenizer;
 mod gpu_layer;
 mod gpu_model_loader;
 mod gpu_telemetry;
@@ -108,6 +110,7 @@ mod memory_store;
 mod model_data;
 mod model_data_generator;
 mod model_data_store;
+mod opencode_go;
 mod model_orchestrator;
 mod model_registry;
 mod plugin_host;
@@ -120,6 +123,7 @@ mod remote_input;
 mod rich_markdown;
 mod sandbox_executor;
 mod secrets_store;
+mod self_upgrade;
 mod sidecar_manager;
 mod sidecar_supervisor;
 mod skill_executor;
@@ -338,6 +342,8 @@ pub struct AppState {
     pub task_queue: Arc<task_queue::TaskQueue>,
     /// Pluggable agent registry with built-in CodeWriter and CodeReviewer.
     pub agent_host: Arc<agent_host::AgentHost>,
+    /// Self-upgrade proposal queue (see `self_upgrade::gate`).
+    pub self_upgrade_gate: Arc<self_upgrade::gate::SelfUpgradeGateState>,
     /// Agent-Core orchestrator — plan, execute, curate.
     pub agent_core: Arc<agent_core::AgentCore>,
     /// Telemetry store — training runs + inference metrics.
@@ -660,7 +666,7 @@ pub fn run() {
                     .to_string_lossy()
                     .to_string();
                 // Just initialise; sync happens via sync_watchdog_kb command.
-                let _ = survival::SurvivalState::new(&survival_db);
+                let _ = survival::kb::SurvivalState::new(&survival_db);
             }
 
             let chat_sessions = Arc::new(
@@ -961,12 +967,21 @@ pub fn run() {
 
             // ── Agent Host — built-in agent registry ──────────────────────────
             let agent_host = Arc::new(agent_host::AgentHost::new());
+            let self_upgrade_gate = Arc::new(self_upgrade::gate::SelfUpgradeGateState::new());
             {
                 let host = agent_host.clone();
+                let self_upgrade_gate = self_upgrade_gate.clone();
+                let app_handle_for_agents = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     host.register(Arc::new(agents::code_writer::CodeWriter)).await;
                     host.register(Arc::new(agents::code_reviewer::CodeReviewer)).await;
-                    tracing::info!("[agent-host] Built-in agents registered (code-writer, code-reviewer)");
+                    host.register(Arc::new(agents::self_upgrader::SelfUpgrader {
+                        gate: self_upgrade_gate,
+                        app_handle: app_handle_for_agents,
+                        repo_root: self_upgrade::find_repo_root(),
+                    }))
+                    .await;
+                    tracing::info!("[agent-host] Built-in agents registered (code-writer, code-reviewer, self-upgrader)");
                 });
             }
 
@@ -1537,6 +1552,7 @@ pub fn run() {
                 model_data_store: model_data_store.clone(),
                 task_queue,
                 agent_host,
+                self_upgrade_gate,
                 agent_core: shared_agent_core,
                 telemetry:   telemetry_store.clone(),
                 hybrid_engine: Arc::new(hybrid_engine::HybridEngineState::new()),
@@ -1687,7 +1703,8 @@ pub fn run() {
                 });
             }
 
-            // Survival engine — self-repair with growing knowledge base
+            // Survival System — the shell-script KB tool (`survival::kb`,
+            // self-repair with a growing knowledge base).
             let survival_db = app_handle
                 .path()
                 .app_data_dir()
@@ -1695,7 +1712,43 @@ pub fn run() {
                 .join("survival_kb.db")
                 .to_string_lossy()
                 .to_string();
-            app.manage(survival::SurvivalState::new(&survival_db));
+            app.manage(survival::kb::SurvivalState::new(&survival_db));
+            app.manage(gguf_tokenizer::TokenizerCache::new());
+
+            // Survival System — Bug Database + background scan daemon.
+            // Discovers compile/test/lint bugs across every monitored target
+            // (`survival::bug_hunter`), fuzzing/sandbox findings
+            // (`survival::sns_bridge`), and crash reports
+            // (`survival::crash_ingest`); if Self-Build is also enabled,
+            // routes fixable ones through the self-upgrade pipeline above.
+            // See `survival::daemon` for the cycle this runs on a timer, and
+            // `scan_now`/`list_bugs`/`resolve_bug`/`attempt_fix_now` in
+            // `commands.rs` for the manual/UI-facing side of the same state.
+            {
+                let bug_db_path = app_handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join("bug_db.sqlite")
+                    .to_string_lossy()
+                    .to_string();
+                let bug_db = Arc::new(survival::bug_db::BugDb::new(&bug_db_path));
+
+                let app_state_for_scan = app.state::<AppState>();
+                let f3 = app.state::<fff_commands::F3State>().orchestrator.clone();
+                let sns_supervisor_for_daemon = app.state::<fff_commands::SnsState>().supervisor.clone();
+                let survival_daemon = Arc::new(survival::daemon::SurvivalDaemon::new(
+                    app_handle.clone(),
+                    bug_db,
+                    app_state_for_scan.agent_host.clone(),
+                    app_state_for_scan.orchestrator.clone(),
+                    f3,
+                    sns_supervisor_for_daemon,
+                    self_upgrade::find_repo_root(),
+                ));
+                app.manage(survival_daemon.clone());
+                survival::daemon::spawn(survival_daemon);
+            }
 
             // Close the loop: any sandboxed component that crashes and has no
             // component-specific restart handler falls back to the Survival
@@ -1710,8 +1763,8 @@ pub fn run() {
                         .set_default_crash_handler(std::sync::Arc::new(move |sandbox_id, component, error| {
                             let ah = ah.clone();
                             Box::pin(async move {
-                                if let Some(survival) = ah.try_state::<survival::SurvivalState>() {
-                                    match survival::repair_error(error, survival).await {
+                                if let Some(survival) = ah.try_state::<survival::kb::SurvivalState>() {
+                                    match survival::kb::repair_error(error, survival).await {
                                         Ok(true) => tracing::info!(
                                             "[sns] Survival KB auto-repair fixed crash in {} ({})",
                                             sandbox_id, component
@@ -1734,7 +1787,7 @@ pub fn run() {
             // Crash recovery — check for unclean-exit flag, replay WAL if needed.
             // Moved here (after Survival is managed, not from the earlier
             // Universe block) because `check_and_recover`'s auto-repair step
-            // looks up `survival::SurvivalState` via `app.try_state()` — on a
+            // looks up `survival::kb::SurvivalState` via `app.try_state()` — on a
             // multi-threaded Tokio runtime, a task spawned before that state
             // is `.manage()`'d can start running on another worker thread
             // concurrently with the rest of this synchronous setup() body,
@@ -2346,6 +2399,19 @@ pub fn run() {
             commands::load_model,
             commands::unload_slot,
             commands::get_orchestrator_status,
+            commands::save_opencode_go_api_key,
+            commands::has_opencode_go_api_key,
+            commands::fetch_opencode_go_models,
+            commands::send_opencode_go_test_message,
+            commands::list_self_upgrade_proposals,
+            commands::resolve_self_upgrade_proposal,
+            // ── Survival System — Bug Database ─────────────────────────────────
+            commands::list_survival_targets,
+            gguf_tokenizer::count_tokens_exact,
+            commands::list_bugs,
+            commands::scan_now,
+            commands::resolve_bug,
+            commands::attempt_fix_now,
             commands::get_hardware_info,
             commands::get_api_port,
             commands::get_buddy_api_port,
@@ -2728,13 +2794,13 @@ pub fn run() {
             // ── Brain Metadata ────────────────────────────────────────────────
             brain_metadata::get_brain_metadata,
             brain_metadata::record_lesson_complete,
-            // ── Survival System ───────────────────────────────────────────────
-            survival::repair_error,
-            survival::report_fix,
-            survival::ai_repair_error,
-            survival::list_fixes,
-            survival::export_survival_training_data,
-            survival::sync_watchdog_kb,
+            // ── Survival System — knowledge base tool ──────────────────────────
+            survival::kb::repair_error,
+            survival::kb::report_fix,
+            survival::kb::ai_repair_error,
+            survival::kb::list_fixes,
+            survival::kb::export_survival_training_data,
+            survival::kb::sync_watchdog_kb,
             // ── Knowledge Database (KDB) ──────────────────────────────────────
             kdb_commands::kdb_list_modules,
             kdb_commands::kdb_list_loaded_modules,

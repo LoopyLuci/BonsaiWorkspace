@@ -104,8 +104,8 @@ pub async fn check_and_recover(
             .unwrap_or("")
             .to_string();
         if !message.is_empty() {
-            if let Some(survival) = app.try_state::<crate::survival::SurvivalState>() {
-                let fixed = crate::survival::repair_error(message.clone(), survival).await.unwrap_or(false);
+            if let Some(survival) = app.try_state::<crate::survival::kb::SurvivalState>() {
+                let fixed = crate::survival::kb::repair_error(message.clone(), survival).await.unwrap_or(false);
                 if fixed {
                     info!("[crash_recovery] Survival KB auto-repair matched and ran a fix for the last crash");
                 } else {

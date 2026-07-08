@@ -117,6 +117,42 @@ const WORKSPACE_AI_MODEL: ModelInfo = {
   valid: true,
 };
 
+// ── Cloud provider models (OpenCode Go, etc.) ─────────────────────────────────
+// Distinct from `ModelInfo` (locally-scanned GGUF files): no RAM/download
+// gating, and selection just points `activeModelId` at a `provider:model_id`
+// sentinel rather than loading anything into an orchestrator slot.
+
+export interface CloudModelInfo {
+  id: string;
+  name: string;
+  protocol: 'open_ai_chat' | 'anthropic_messages';
+  context_window?: number;
+}
+
+export const CLOUD_MODEL_ID_PREFIX = 'opencode-go:';
+
+export const cloudModels = writable<CloudModelInfo[]>([]);
+
+export async function refreshCloudModels() {
+  try {
+    cloudModels.set(await invoke<CloudModelInfo[]>('fetch_opencode_go_models'));
+  } catch {
+    // No key saved yet, or the request failed — leave the list as-is.
+  }
+}
+
+export function cloudModelSentinelId(modelId: string): string {
+  return `${CLOUD_MODEL_ID_PREFIX}${modelId}`;
+}
+
+export function isCloudModelId(id: string | null): boolean {
+  return !!id && id.startsWith(CLOUD_MODEL_ID_PREFIX);
+}
+
+export function cloudModelIdFromSentinel(sentinelId: string): string {
+  return sentinelId.slice(CLOUD_MODEL_ID_PREFIX.length);
+}
+
 const CUSTOM_SWARM_MODEL: ModelInfo = {
   id: CUSTOM_SWARM_MODEL_ID,
   name: 'Custom Swarm',
@@ -144,13 +180,30 @@ export const bootstrapError    = writable<string | null>(null);
 
 // Derived: the active model is either the user-selected model or the first Ready slot.
 export const activeModel = derived(
-  [availableModels, orchestratorStatus, activeModelId, swarmEnabled],
-  ([$models, $status, $activeModelId, $swarmEnabled]) => {
+  [availableModels, orchestratorStatus, activeModelId, swarmEnabled, cloudModels],
+  ([$models, $status, $activeModelId, $swarmEnabled, $cloudModels]) => {
     if ($swarmEnabled || $activeModelId === CUSTOM_SWARM_MODEL_ID) {
       return CUSTOM_SWARM_MODEL;
     }
     if ($activeModelId === WORKSPACE_AI_MODEL_ID) {
       return WORKSPACE_AI_MODEL;
+    }
+    if (isCloudModelId($activeModelId)) {
+      const cloudId = cloudModelIdFromSentinel($activeModelId!);
+      const cm = $cloudModels.find(m => m.id === cloudId);
+      if (!cm) return null;
+      return {
+        id: $activeModelId!,
+        name: `${cm.name} (OpenCode Go)`,
+        path: '',
+        architecture: 'cloud',
+        parameter_count: 0,
+        context_length: cm.context_window ?? 0,
+        quant: 'cloud',
+        ram_required_mb: 0,
+        ram_label: 'Cloud',
+        valid: true,
+      } satisfies ModelInfo;
     }
     if ($activeModelId) {
       return $models.find(m => m.id === $activeModelId) ?? null;
@@ -503,6 +556,7 @@ export function initModelStores() {
   refreshTaskQueueStatus();
   refreshModelData();
   refreshDefaultInferenceMode();
+  refreshCloudModels();
 
   window.setInterval(() => {
     refreshTaskQueueStatus();

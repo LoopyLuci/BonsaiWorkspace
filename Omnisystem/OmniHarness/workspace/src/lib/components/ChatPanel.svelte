@@ -52,6 +52,7 @@
   import type { InferenceMode } from '$lib/types/inference_mode';
   import { DEFAULT_INFERENCE_MODE, inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
   import ModelSelector from '$lib/components/ModelSelector.svelte';
+  import TokenCounter from '$lib/components/TokenCounter.svelte';
 
   let input       = '';
   let isRecording = false;
@@ -1502,6 +1503,7 @@
     ></textarea>
     <div class="input-actions">
       <ModelSelector inline={true} />
+      <TokenCounter text={input} />
       {#if $activeModel && !isCustomSwarm}
         <label class="inference-chip" title={`Inference mode: ${inferenceModeLabel(activeInferenceMode)}`}>
           <span>Mode</span>

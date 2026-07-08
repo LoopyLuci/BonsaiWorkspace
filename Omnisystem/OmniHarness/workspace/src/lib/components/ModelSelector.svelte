@@ -24,8 +24,10 @@
     modelDataList,
     CUSTOM_SWARM_MODEL_ID,
     WORKSPACE_AI_MODEL_ID,
+    cloudModels,
+    cloudModelSentinelId,
   } from '$lib/stores/models';
-  import type { ModelInfo } from '$lib/stores/models';
+  import type { ModelInfo, CloudModelInfo } from '$lib/stores/models';
   import type { ModelDataSummary, ModelTier, ModelStrength, ToolCallingSupport } from '$lib/types/model_data';
 
   export let inline = false;
@@ -247,6 +249,12 @@
     activeModelId.set(WORKSPACE_AI_MODEL_ID);
   }
 
+  function pickCloudModel(cm: CloudModelInfo) {
+    open = false; clearDropdownStyle();
+    autoMode.set(false);
+    activeModelId.set(cloudModelSentinelId(cm.id));
+  }
+
   async function download(e: MouseEvent, entry: typeof WORKSPACE_CATALOG[number]) {
     e.stopPropagation();
     await downloadCatalogModel(entry);
@@ -380,6 +388,39 @@
             {/if}
           </div>
         </div>
+
+        {#if $cloudModels.length > 0}
+          <div class="divider"></div>
+          <div class="section-label">Cloud Providers</div>
+          {#each $cloudModels as cm (cm.id)}
+            {@const sentinelId = cloudModelSentinelId(cm.id)}
+            {@const isActive = $activeModelId === sentinelId}
+            <div class="option" class:selected={isActive} role="option" aria-selected={isActive}
+              tabindex="0" on:click={() => pickCloudModel(cm)}
+              on:keydown={(e) => e.key === 'Enter' && pickCloudModel(cm)}>
+              <span class="opt-icon">☁</span>
+              <div class="opt-body">
+                <div class="opt-name-row">
+                  <span class="opt-name">{cm.name}</span>
+                  <span class="tier-badge" style="color: #7dd3fc">OpenCode Go</span>
+                </div>
+                <span class="opt-desc">{cm.protocol === 'anthropic_messages' ? 'Anthropic Messages protocol' : 'OpenAI chat-completions protocol'}</span>
+                {#if cm.context_window}
+                  <div class="capability-row">
+                    <span class="cap-tag ctx-tag">{Math.round(cm.context_window / 1000)}K ctx</span>
+                  </div>
+                {/if}
+              </div>
+              <div class="opt-actions">
+                {#if isActive}
+                  <span class="opt-badge active">Active</span>
+                {:else}
+                  <span class="opt-badge local">Use</span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        {/if}
 
         <div class="divider"></div>
         <div class="section-label">Bonsai Models</div>

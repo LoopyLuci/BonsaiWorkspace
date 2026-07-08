@@ -11,7 +11,10 @@ pub struct CodeWriter;
 // ── Inference ─────────────────────────────────────────────────────────────────
 
 /// POST a chat-completions request to the local llama-server slot.
-async fn call_model(model_url: &str, prompt: &str) -> Result<String, AgentError> {
+///
+/// `pub(crate)` (not private) — reused as-is by `agents::self_upgrader`,
+/// which needs the identical model-calling convention.
+pub(crate) async fn call_model(model_url: &str, prompt: &str) -> Result<String, AgentError> {
     let url = format!("{}/v1/chat/completions", model_url.trim_end_matches('/'));
     let body = json!({
         "messages": [
@@ -62,14 +65,14 @@ async fn call_model(model_url: &str, prompt: &str) -> Result<String, AgentError>
 
 // ── Code block extraction ─────────────────────────────────────────────────────
 
-struct ExtractedFile {
-    path: String,
-    content: String,
+pub(crate) struct ExtractedFile {
+    pub(crate) path: String,
+    pub(crate) content: String,
 }
 
 /// Pull fenced code blocks from model output.
 /// Recognises `// path: <file>` or `# path: <file>` as the first line.
-fn extract_files(text: &str) -> Vec<ExtractedFile> {
+pub(crate) fn extract_files(text: &str) -> Vec<ExtractedFile> {
     let mut files = Vec::new();
     let mut rest = text;
 

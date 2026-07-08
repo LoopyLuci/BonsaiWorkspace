@@ -45,6 +45,21 @@ pub struct FeatureFlags {
     /// Model Trainer GUI — in-app training control panel.
     #[serde(default = "default_true")]
     pub model_trainer_enabled: bool,
+    /// Self-Build — lets the self-upgrade agent (`agents::self_upgrader`)
+    /// propose and, for low-risk sandboxed-and-tested changes, apply
+    /// changes to Omnisystem's own source. Off by default; enabling this
+    /// is a deliberate, explicit decision made in the Self-Build panel, not
+    /// a generic flags-grid checkbox.
+    #[serde(default)]
+    pub self_upgrade_enabled: bool,
+    /// Survival System (`survival`) — background discovery of compile
+    /// errors, test failures, lints, fuzzing/sandbox findings, and runtime
+    /// crashes into the Bug Database. On by default: unlike Self-Build,
+    /// scanning only reads and catalogs, it never changes code (submitting
+    /// a discovered bug to the self-upgrade agent still separately requires
+    /// `self_upgrade_enabled`).
+    #[serde(default = "default_true")]
+    pub survival_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -82,6 +97,8 @@ impl Default for FeatureFlags {
             web_router_enabled: true,
             eternal_workshop_enabled: true,
             model_trainer_enabled: true,
+            self_upgrade_enabled: false,
+            survival_enabled: true,
         }
     }
 }
@@ -168,6 +185,8 @@ impl FeatureFlags {
             "cluster_orchestrator" => f.cluster_orchestrator_enabled,
             "tts" => f.tts_enabled,
             "hybrid_engine_enabled" => f.hybrid_engine_enabled,
+            "self_upgrade" => f.self_upgrade_enabled,
+            "survival" => f.survival_enabled,
             _ => false,
         }
     }

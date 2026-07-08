@@ -20,6 +20,7 @@
     refreshDefaultInferenceMode,
     setDefaultInferenceMode,
     applyInferenceModeToAll,
+    refreshCloudModels,
   } from '$lib/stores/models';
   import type { InferenceMode } from '$lib/types/inference_mode';
   import { inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
@@ -127,6 +128,7 @@
     try { await refreshAndroidUsbDevices(); } catch {}
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
+    try { await refreshOpencodeGoStatus(); } catch {}
     try { await loadFeatureFlags(); } catch {}
     try { gpuCrashFallback = await invoke<boolean>('get_gpu_crash_flag'); } catch {}
     await loadCrashReports();
@@ -1313,6 +1315,58 @@
     }
   }
 
+  // ── Cloud Providers (OpenCode Go) ───────────────────────────────────────────
+
+  interface CloudModel {
+    id: string;
+    name: string;
+    protocol: 'open_ai_chat' | 'anthropic_messages';
+    context_window?: number;
+  }
+
+  let opencodeGoApiKey = '';
+  let opencodeGoHasKey = false;
+  let opencodeGoModels: CloudModel[] = [];
+  let opencodeGoStatusMsg = '';
+  let opencodeGoBusy = false;
+
+  async function refreshOpencodeGoStatus() {
+    try {
+      opencodeGoHasKey = await invoke<boolean>('has_opencode_go_api_key');
+    } catch {
+      opencodeGoHasKey = false;
+    }
+  }
+
+  async function saveOpencodeGoKey() {
+    opencodeGoStatusMsg = '';
+    opencodeGoBusy = true;
+    try {
+      await invoke('save_opencode_go_api_key', { apiKey: opencodeGoApiKey });
+      opencodeGoApiKey = '';
+      opencodeGoStatusMsg = 'API key saved.';
+      await refreshOpencodeGoStatus();
+    } catch (e) {
+      opencodeGoStatusMsg = `Error: ${e}`;
+    } finally {
+      opencodeGoBusy = false;
+    }
+  }
+
+  async function fetchOpencodeGoModels() {
+    opencodeGoStatusMsg = '';
+    opencodeGoBusy = true;
+    try {
+      opencodeGoModels = await invoke<CloudModel[]>('fetch_opencode_go_models');
+      opencodeGoStatusMsg = `Found ${opencodeGoModels.length} model(s).`;
+      await refreshCloudModels();
+    } catch (e) {
+      opencodeGoStatusMsg = `Error: ${e}`;
+    } finally {
+      opencodeGoBusy = false;
+    }
+  }
+
   async function runUsbRegressionSuite() {
     const serial = getSelectedUsbSerial();
     const host = (usbWifiHost || '').trim();
@@ -1785,6 +1839,47 @@
         </button>
         <button class="action-btn" on:click={() => dispatch('openAndroidUsbLab')}>Open Lab (alt)</button>
       </div>
+    </section>
+
+    <!-- ── Cloud Providers ────────────────────────────────────────────────── -->
+    <section class="section bots-section">
+      <h3 class="section-title">
+        Cloud Providers
+        <span class="bot-status-badge" class:connected={opencodeGoHasKey}>
+          {opencodeGoHasKey ? '● key saved' : '○ no key'}
+        </span>
+      </h3>
+      <p class="section-desc">Connect a cloud model provider. Keys are stored in the OS keychain.</p>
+
+      {#if opencodeGoStatusMsg}
+        <div class="bot-save-msg">{opencodeGoStatusMsg}</div>
+      {/if}
+
+      <details class="bot-platform-details">
+        <summary>
+          OpenCode Go
+          {#if opencodeGoHasKey}
+            <span class="platform-badge ok">● Connected</span>
+          {/if}
+        </summary>
+        <div class="bot-form">
+          <label class="bot-label">API Key <span class="secret-hint">(write-only)</span>
+            <input class="bot-input" type="password" style="-webkit-app-region: no-drag;" placeholder="Paste your OpenCode Zen → Go API key" bind:value={opencodeGoApiKey} autocomplete="off"/>
+          </label>
+          <button class="save-btn" on:click={saveOpencodeGoKey} disabled={opencodeGoBusy || !opencodeGoApiKey}>Save Key</button>
+          <button class="save-btn" on:click={fetchOpencodeGoModels} disabled={opencodeGoBusy || !opencodeGoHasKey}>Fetch Models</button>
+          {#if opencodeGoModels.length > 0}
+            <ul class="cloud-model-list">
+              {#each opencodeGoModels as m}
+                <li>
+                  <span>{m.name}</span>
+                  <span class="cloud-model-protocol">{m.protocol === 'anthropic_messages' ? 'Anthropic' : 'OpenAI'}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </details>
     </section>
 
     <!-- ── Messaging Bots ─────────────────────────────────────────────────── -->
@@ -2904,6 +2999,29 @@
     font-size: 12px;
     color: var(--green, #4caf50);
     padding: 4px 0;
+  }
+
+  .cloud-model-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .cloud-model-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 8px;
+    background: var(--bg-input, #1a1a1a);
+    border-radius: 4px;
+  }
+  .cloud-model-protocol {
+    color: var(--text-muted, #888);
+    font-size: 10px;
   }
 
   .feature-flags-toggle {

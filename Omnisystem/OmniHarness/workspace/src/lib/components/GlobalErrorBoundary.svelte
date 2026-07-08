@@ -9,6 +9,7 @@
    * The user sees "Recovering…" for at most a few seconds, never a crash.
    */
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { addToast } from '$lib/stores/toast';
   import SurvivalOverlay from '$lib/components/SurvivalOverlay.svelte';
 
@@ -36,6 +37,8 @@
     if (msg.includes('ResizeObserver loop') || msg.includes('extension')) return;
 
     console.error('[GlobalErrorBoundary]', msg);
+    const kind = (event as PromiseRejectionEvent).reason !== undefined ? 'unhandled_rejection' : 'window_error';
+    invoke('report_frontend_error', { kind, message: msg, details: null }).catch(() => {});
     errorMsg = msg;
     hasError = true;
     scheduleRecovery();

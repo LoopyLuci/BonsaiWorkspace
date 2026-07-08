@@ -1,12 +1,21 @@
-/// Survival Engine — runtime self-repair for the main Tauri process.
-///
-/// Exposes Tauri commands:
-///   - `repair_error`                 — tries KB rules then records outcome
-///   - `report_fix`                   — saves a user/AI fix to the KB
-///   - `ai_repair_error`              — routes error text to OmniAI for diagnosis
-///   - `list_fixes`                   — returns current KB for the UI
-///   - `export_survival_training_data`— dumps KB→JSONL for fine-tuning
-///   - `sync_watchdog_kb`             — merges fixes from the watchdog's separate DB
+//! Survival System — shell-script knowledge base (KB).
+//!
+//! One of the Survival System's tools (see `super` for the others: `bug_db`,
+//! `bug_hunter`, `sns_bridge`, `crash_ingest`, `daemon`). This is the
+//! **fast, synchronous mitigation** path: pattern-match a known failure
+//! signature to a shell script and run it immediately (kill a stuck port,
+//! delete a corrupt config) — distinct from `bug_hunter`/`daemon`'s
+//! proactive scanning and the `self_upgrade` code-level fix pipeline, both
+//! of which are slower (a real build/test cycle) but produce an actual
+//! source-code patch instead of a runtime workaround.
+//!
+//! Exposes Tauri commands:
+//!   - `repair_error`                 — tries KB rules then records outcome
+//!   - `report_fix`                   — saves a user/AI fix to the KB
+//!   - `ai_repair_error`              — routes error text to OmniAI for diagnosis
+//!   - `list_fixes`                   — returns current KB for the UI
+//!   - `export_survival_training_data`— dumps KB→JSONL for fine-tuning
+//!   - `sync_watchdog_kb`             — merges fixes from the watchdog's separate DB
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -260,7 +269,7 @@ pub async fn ai_repair_error(
     Ok(suggestion)
 }
 
-/// Return the full KB for the SurvivalPanel UI.
+/// Return the full KB for the Survival panel's Knowledge Base tab.
 #[command]
 pub async fn list_fixes(state: tauri::State<'_, SurvivalState>) -> Result<Vec<FixEntry>, String> {
     fetch_all(&state.pool).await.map_err(|e| e.to_string())
