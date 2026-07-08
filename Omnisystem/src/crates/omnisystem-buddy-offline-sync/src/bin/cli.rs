@@ -1,6 +1,6 @@
 //! CLI
 
-use bonsai_buddy_crdt::Component;
+use omnisystem_buddy_offline_sync::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
