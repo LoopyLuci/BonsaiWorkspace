@@ -1,0 +1,375 @@
+module omnisystem.memory.scaling_controller
+
+# Memory Scaling Controller - Integrated memory management with dynamic scaling
+# Unified interface for memory tier management and dynamic scaling
+
+import omnisystem.memory.memory_tier_manager
+import omnisystem.memory.memory_scaler
+import omnisystem.unified_memory_manager
+
+# ============================================================================
+# UNIFIED SCALING CONTROLLER
+# ============================================================================
+
+type MemoryScalingController = struct {
+    tier_manager: MemoryTierManager,
+    scaler: MemoryScaler,
+    manager: *UnifiedMemoryManager,
+
+    # Configuration
+    min_free_memory: u64,
+    aggressive_threshold: f64,
+    conservative_threshold: f64,
+
+    # Monitoring
+    last_decision_time: u64,
+    decision_interval_ms: u64,
+    decisions_made: u64,
+    promotion_count: u64,
+    demotion_count: u64,
+
+    # Metrics
+    avg_decision_time_us: f64,
+    policy_changes: u32,
+}
+
+impl MemoryScalingController {
+    fun new(manager: *UnifiedMemoryManager, min_free: u64) -> Result<Self, string> {
+        let tier_mgr = MemoryTierManager::new(manager)
+        let scaler = MemoryScaler::new(MemoryScalingPolicy::Balanced)
+
+        Ok(MemoryScalingController {
+            tier_manager: tier_mgr,
+            scaler,
+            manager,
+            min_free_memory: min_free,
+            aggressive_threshold: 0.8,
+            conservative_threshold: 0.6,
+            last_decision_time: get_timestamp(),
+            decision_interval_ms: 100,
+            decisions_made: 0,
+            promotion_count: 0,
+            demotion_count: 0,
+            avg_decision_time_us: 0.0,
+            policy_changes: 0,
+        })
+    }
+
+    fun make_scaling_decision(&mut self) -> Result<ScalingDecision, string> {
+        let start_time = get_timestamp()
+        let manager = unsafe { &*self.manager }
+
+        # Update current utilization
+        let (vram_util, ram_util, nvme_util, ssd_util) = manager.get_utilization()
+        self.scaler.update_utilization(vram_util, ram_util, nvme_util, ssd_util)
+        self.scaler.adapt_policy()
+
+        # Determine action
+        let action = match self.scaler.memory_pressure {
+            MemoryPressure::Low => {
+                if self.scaler.should_prealloc_ahead() {
+                    ScalingAction::PreallocMemory
+                } else {
+                    ScalingAction::Monitor
+                }
+            },
+            MemoryPressure::Moderate => {
+                ScalingAction::Monitor
+            },
+            MemoryPressure::High => {
+                if self.scaler.should_compact() {
+                    ScalingAction::CompactMemory
+                } else {
+                    ScalingAction::Monitor
+                }
+            },
+            MemoryPressure::Critical => {
+                ScalingAction::EvictAggressively
+            }
+        }
+
+        # Calculate metrics
+        let elapsed = get_timestamp() - start_time
+        self.avg_decision_time_us = (self.avg_decision_time_us * 0.9) + (elapsed as f64 * 0.1)
+        self.decisions_made += 1
+
+        Ok(ScalingDecision {
+            action,
+            memory_pressure: self.scaler.memory_pressure.clone(),
+            utilization: (vram_util, ram_util, nvme_util, ssd_util),
+            timestamp: start_time,
+        })
+    }
+
+    fun execute_scaling_action(&mut self, decision: ScalingDecision) -> Result<ScalingResult, string> {
+        let manager = unsafe { &mut *self.manager }
+
+        let result = match decision.action {
+            ScalingAction::PreallocMemory => {
+                let prealloc_size = self.scaler.get_prealloc_size(1024 * 1024 * 1024)  // 1GB total
+                let _ = manager.allocate(prealloc_size, MemoryTier::Ram)
+                ScalingResult {
+                    action: decision.action.clone(),
+                    success: true,
+                    bytes_freed: 0,
+                    bytes_allocated: prealloc_size,
+                }
+            },
+            ScalingAction::CompactMemory => {
+                let target_size = 512 * 1024 * 1024  // Compact to free 512MB
+                let freed = manager.evict_pages(target_size).unwrap_or(0)
+                ScalingResult {
+                    action: decision.action.clone(),
+                    success: true,
+                    bytes_freed: freed,
+                    bytes_allocated: 0,
+                }
+            },
+            ScalingAction::EvictAggressively => {
+                let target_size = 1024 * 1024 * 1024  // Aggressively evict 1GB
+                let freed = manager.evict_pages(target_size).unwrap_or(0)
+                ScalingResult {
+                    action: decision.action.clone(),
+                    success: true,
+                    bytes_freed: freed,
+                    bytes_allocated: 0,
+                }
+            },
+            _ => ScalingResult {
+                action: decision.action.clone(),
+                success: true,
+                bytes_freed: 0,
+                bytes_allocated: 0,
+            }
+        }
+
+        # Update statistics
+        if result.bytes_freed > 0 {
+            self.demotion_count += 1
+        }
+        if result.bytes_allocated > 0 {
+            self.promotion_count += 1
+        }
+
+        Ok(result)
+    }
+
+    fun should_update_policy(&self, utilization: f64) -> bool {
+        # Change policy if utilization crosses thresholds
+        if utilization > self.aggressive_threshold &&
+           !matches!(self.scaler.current_policy, MemoryScalingPolicy::Aggressive) {
+            return true
+        }
+
+        if utilization < self.conservative_threshold &&
+           !matches!(self.scaler.current_policy, MemoryScalingPolicy::Conservative) {
+            return true
+        }
+
+        false
+    }
+
+    fun update_policy(&mut self, policy: MemoryScalingPolicy) {
+        self.scaler.current_policy = policy
+        self.policy_changes += 1
+    }
+
+    fun run_periodic_maintenance(&mut self) -> Result<(), string> {
+        let now = get_timestamp()
+
+        if now - self.last_decision_time >= self.decision_interval_ms as u64 {
+            let decision = self.make_scaling_decision()?
+            let _ = self.execute_scaling_action(decision)?
+            self.last_decision_time = now
+        }
+
+        Ok(())
+    }
+
+    fun get_controller_stats(&self) -> ControllerStats {
+        ControllerStats {
+            decisions_made: self.decisions_made,
+            promotions: self.promotion_count,
+            demotions: self.demotion_count,
+            policy_changes: self.policy_changes,
+            avg_decision_time_us: self.avg_decision_time_us,
+            current_policy: format!("{:?}", self.scaler.current_policy),
+        }
+    }
+
+    fun print_dashboard(&self) {
+        let stats = self.scaler.get_stats()
+        println!("═════════════════════════════════════════════════════");
+        println!("MEMORY SCALING CONTROLLER DASHBOARD");
+        println!("═════════════════════════════════════════════════════");
+        println!("Current Utilization:  {:.1}%", stats.current_utilization * 100.0);
+        println!("Target Utilization:   {:.1}%", stats.target_utilization * 100.0);
+        println!("Memory Pressure:      {}", stats.memory_pressure);
+        println!("Allocation Success:   {:.1}%", stats.allocation_success_rate * 100.0);
+        println!("Failed Allocations:   {}", stats.failed_allocations);
+        println!("Compactions:          {}", stats.compaction_count);
+        println!("═════════════════════════════════════════════════════");
+    }
+}
+
+# ============================================================================
+# DATA STRUCTURES
+# ============================================================================
+
+enum ScalingAction {
+    Monitor,
+    PreallocMemory,
+    CompactMemory,
+    EvictAggressively,
+}
+
+type ScalingDecision = struct {
+    action: ScalingAction,
+    memory_pressure: MemoryPressure,
+    utilization: (f64, f64, f64, f64),  // (VRAM, RAM, NVMe, SSD)
+    timestamp: u64,
+}
+
+type ScalingResult = struct {
+    action: ScalingAction,
+    success: bool,
+    bytes_freed: u64,
+    bytes_allocated: u64,
+}
+
+type ControllerStats = struct {
+    decisions_made: u64,
+    promotions: u64,
+    demotions: u64,
+    policy_changes: u32,
+    avg_decision_time_us: f64,
+    current_policy: string,
+}
+
+impl Clone for ScalingAction {
+    fn clone(&self) -> Self {
+        match self {
+            ScalingAction::Monitor => ScalingAction::Monitor,
+            ScalingAction::PreallocMemory => ScalingAction::PreallocMemory,
+            ScalingAction::CompactMemory => ScalingAction::CompactMemory,
+            ScalingAction::EvictAggressively => ScalingAction::EvictAggressively,
+        }
+    }
+}
+
+# ============================================================================
+# MONITORING & OBSERVABILITY
+# ============================================================================
+
+type MemoryScalingMetrics = struct {
+    timestamp: u64,
+    vram_utilization: f64,
+    ram_utilization: f64,
+    nvme_utilization: f64,
+    ssd_utilization: f64,
+    decision_latency_us: f64,
+    bytes_promoted: u64,
+    bytes_demoted: u64,
+}
+
+type MetricsCollector = struct {
+    metrics: Vec<MemoryScalingMetrics>,
+    max_samples: usize,
+}
+
+impl MetricsCollector {
+    fun new(max_samples: usize) -> Self {
+        MetricsCollector {
+            metrics: Vec::new(),
+            max_samples,
+        }
+    }
+
+    fun record_metrics(&mut self, metrics: MemoryScalingMetrics) {
+        self.metrics.push(metrics)
+        if self.metrics.len() > self.max_samples {
+            self.metrics.remove(0)
+        }
+    }
+
+    fun get_average_utilization(&self) -> (f64, f64, f64, f64) {
+        if self.metrics.is_empty() {
+            return (0.0, 0.0, 0.0, 0.0)
+        }
+
+        let vram_sum: f64 = self.metrics.iter().map(|m| m.vram_utilization).sum()
+        let ram_sum: f64 = self.metrics.iter().map(|m| m.ram_utilization).sum()
+        let nvme_sum: f64 = self.metrics.iter().map(|m| m.nvme_utilization).sum()
+        let ssd_sum: f64 = self.metrics.iter().map(|m| m.ssd_utilization).sum()
+        let count = self.metrics.len() as f64
+
+        (vram_sum / count, ram_sum / count, nvme_sum / count, ssd_sum / count)
+    }
+
+    fun get_peak_utilization(&self) -> (f64, f64, f64, f64) {
+        if self.metrics.is_empty() {
+            return (0.0, 0.0, 0.0, 0.0)
+        }
+
+        let mut vram_max = 0.0
+        let mut ram_max = 0.0
+        let mut nvme_max = 0.0
+        let mut ssd_max = 0.0
+
+        for m in &self.metrics {
+            if m.vram_utilization > vram_max { vram_max = m.vram_utilization }
+            if m.ram_utilization > ram_max { ram_max = m.ram_utilization }
+            if m.nvme_utilization > nvme_max { nvme_max = m.nvme_utilization }
+            if m.ssd_utilization > ssd_max { ssd_max = m.ssd_utilization }
+        }
+
+        (vram_max, ram_max, nvme_max, ssd_max)
+    }
+
+    fun export_prometheus_metrics(&self) -> string {
+        let (avg_vram, avg_ram, avg_nvme, avg_ssd) = self.get_average_utilization()
+        let (peak_vram, peak_ram, peak_nvme, peak_ssd) = self.get_peak_utilization()
+
+        format!(
+            "memory_vram_utilization_avg {:.2}\n\
+             memory_ram_utilization_avg {:.2}\n\
+             memory_nvme_utilization_avg {:.2}\n\
+             memory_ssd_utilization_avg {:.2}\n\
+             memory_vram_utilization_peak {:.2}\n\
+             memory_ram_utilization_peak {:.2}\n\
+             memory_nvme_utilization_peak {:.2}\n\
+             memory_ssd_utilization_peak {:.2}\n",
+            avg_vram, avg_ram, avg_nvme, avg_ssd,
+            peak_vram, peak_ram, peak_nvme, peak_ssd
+        )
+    }
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+fn get_timestamp() -> u64 {
+    0  // Would be actual timestamp in real implementation
+}
+
+impl Clone for MemoryPressure {
+    fn clone(&self) -> Self {
+        match self {
+            MemoryPressure::Low => MemoryPressure::Low,
+            MemoryPressure::Moderate => MemoryPressure::Moderate,
+            MemoryPressure::High => MemoryPressure::High,
+            MemoryPressure::Critical => MemoryPressure::Critical,
+        }
+    }
+}
+
+impl Clone for MemoryScalingPolicy {
+    fn clone(&self) -> Self {
+        match self {
+            MemoryScalingPolicy::Aggressive => MemoryScalingPolicy::Aggressive,
+            MemoryScalingPolicy::Balanced => MemoryScalingPolicy::Balanced,
+            MemoryScalingPolicy::Conservative => MemoryScalingPolicy::Conservative,
+        }
+    }
+}

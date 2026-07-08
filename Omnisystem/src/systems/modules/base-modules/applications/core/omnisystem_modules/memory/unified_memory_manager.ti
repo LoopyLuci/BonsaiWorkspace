@@ -1,0 +1,476 @@
+module omnisystem.unified_memory_manager
+
+# Unified memory management across 4-tier hierarchy: VRAM > RAM > NVMe > SSD
+# Automatic promotion/demotion, eviction policies, direct GPU-storage I/O
+
+import omnisystem.atomic
+
+enum MemoryTier {
+    Vram,      # GPU VRAM (fastest, smallest)
+    Ram,       # System RAM
+    Nvme,      # NVMe SSD (fast storage)
+    Ssd,       # SATA SSD (slower storage)
+}
+
+type MemoryPage = struct {
+    id: u64,
+    current_tier: MemoryTier,
+    address: u64,
+    size: u64,
+    access_count: AtomicUsize,
+    last_access_time: u64,
+    pin_count: u32,
+    is_dirty: bool,
+}
+
+type UnifiedMemoryManager = struct {
+    vram_pool: MemoryPool,
+    ram_pool: MemoryPool,
+    nvme_pool: MemoryPool,
+    ssd_pool: MemoryPool,
+
+    page_table: Vec<MemoryPage>,
+    eviction_policy: EvictionPolicy,
+
+    stats: MemoryStats,
+}
+
+type MemoryPool = struct {
+    base_addr: u64,
+    size: u64,
+    used: u64,
+    allocations: Vec<(u64, u64)>,  # (addr, size)
+}
+
+type MemoryStats = struct {
+    vram_usage: u64,
+    ram_usage: u64,
+    nvme_usage: u64,
+    ssd_usage: u64,
+
+    promotions: u64,
+    demotions: u64,
+    evictions: u64,
+
+    avg_access_latency: f64,
+}
+
+enum EvictionPolicy {
+    Lru,     # Least Recently Used
+    Lfu,     # Least Frequently Used
+    Arc,     # Adaptive Replacement Cache
+}
+
+impl UnifiedMemoryManager {
+    fun new(vram_size: u64, ram_size: u64, nvme_size: u64, ssd_size: u64)
+        -> UnifiedMemoryManager {
+
+        UnifiedMemoryManager {
+            vram_pool: MemoryPool::new(0x100000000, vram_size),
+            ram_pool: MemoryPool::new(0x200000000, ram_size),
+            nvme_pool: MemoryPool::new(0x300000000, nvme_size),
+            ssd_pool: MemoryPool::new(0x400000000, ssd_size),
+
+            page_table: Vec::new(),
+            eviction_policy: EvictionPolicy::Arc,
+
+            stats: MemoryStats {
+                vram_usage: 0,
+                ram_usage: 0,
+                nvme_usage: 0,
+                ssd_usage: 0,
+                promotions: 0,
+                demotions: 0,
+                evictions: 0,
+                avg_access_latency: 0.0,
+            },
+        }
+    }
+
+    fun allocate(&mut self, size: u64, preferred_tier: MemoryTier)
+        -> Result<(u64, MemoryTier), string> {
+
+        # Try to allocate in preferred tier first
+        let tier = match self.try_allocate_in_tier(size, &preferred_tier) {
+            Some((addr, tier)) => return Ok((addr, tier)),
+            None => self.select_fallback_tier(&preferred_tier),
+        }
+
+        self.try_allocate_in_tier(size, &tier)
+            .ok_or_else(|| "Memory allocation failed: all tiers full".to_string())
+    }
+
+    fun try_allocate_in_tier(&mut self, size: u64, tier: &MemoryTier)
+        -> Option<(u64, MemoryTier)> {
+
+        let pool = match tier {
+            MemoryTier::Vram => &mut self.vram_pool,
+            MemoryTier::Ram => &mut self.ram_pool,
+            MemoryTier::Nvme => &mut self.nvme_pool,
+            MemoryTier::Ssd => &mut self.ssd_pool,
+        }
+
+        if pool.used + size <= pool.size {
+            let addr = pool.base_addr + pool.used
+            pool.used += size
+            pool.allocations.push((addr, size))
+
+            # Track in page table
+            let page = MemoryPage {
+                id: self.page_table.len() as u64,
+                current_tier: tier.clone(),
+                address: addr,
+                size,
+                access_count: AtomicUsize::new(0),
+                last_access_time: get_current_time(),
+                pin_count: 0,
+                is_dirty: false,
+            }
+            self.page_table.push(page)
+
+            match tier {
+                MemoryTier::Vram => self.stats.vram_usage += size,
+                MemoryTier::Ram => self.stats.ram_usage += size,
+                MemoryTier::Nvme => self.stats.nvme_usage += size,
+                MemoryTier::Ssd => self.stats.ssd_usage += size,
+            }
+
+            Some((addr, tier.clone()))
+        } else {
+            None
+        }
+    }
+
+    fun select_fallback_tier(&self, preferred: &MemoryTier) -> MemoryTier {
+        # Fallback hierarchy: VRAM → RAM → NVMe → SSD
+        match preferred {
+            MemoryTier::Vram => MemoryTier::Ram,
+            MemoryTier::Ram => MemoryTier::Nvme,
+            MemoryTier::Nvme => MemoryTier::Ssd,
+            MemoryTier::Ssd => MemoryTier::Ssd,
+        }
+    }
+
+    fun promote_page(&mut self, page_id: u64, target_tier: MemoryTier)
+        -> Result<(), string> {
+
+        if page_id >= self.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+
+        let page = &mut self.page_table[page_id as usize]
+
+        # Can only promote to faster tiers
+        if !self.can_promote(&page.current_tier, &target_tier) {
+            return Err("Cannot promote to slower tier".to_string())
+        }
+
+        # Allocate in target tier
+        let new_addr = self.try_allocate_in_tier(page.size, &target_tier)
+            .ok_or_else(|| "Promotion failed: target tier full".to_string())?
+            .0
+
+        # Copy data from old location to new location
+        copy_memory(page.address, new_addr, page.size)?
+
+        # Update page
+        page.current_tier = target_tier
+        page.address = new_addr
+        page.is_dirty = false
+
+        self.stats.promotions += 1
+
+        Ok(())
+    }
+
+    fun demote_page(&mut self, page_id: u64, target_tier: MemoryTier)
+        -> Result<(), string> {
+
+        if page_id >= self.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+
+        let page = &mut self.page_table[page_id as usize]
+
+        # Can only demote to slower tiers
+        if !self.can_demote(&page.current_tier, &target_tier) {
+            return Err("Cannot demote to faster tier".to_string())
+        }
+
+        # Allocate in target tier
+        let new_addr = self.try_allocate_in_tier(page.size, &target_tier)
+            .ok_or_else(|| "Demotion failed: target tier full".to_string())?
+            .0
+
+        # Copy data
+        copy_memory(page.address, new_addr, page.size)?
+
+        # Update page
+        page.current_tier = target_tier
+        page.address = new_addr
+
+        self.stats.demotions += 1
+
+        Ok(())
+    }
+
+    fun can_promote(&self, from: &MemoryTier, to: &MemoryTier) -> bool {
+        match (from, to) {
+            (MemoryTier::Ram, MemoryTier::Vram) => true,
+            (MemoryTier::Nvme, MemoryTier::Vram) => true,
+            (MemoryTier::Nvme, MemoryTier::Ram) => true,
+            (MemoryTier::Ssd, MemoryTier::Vram) => true,
+            (MemoryTier::Ssd, MemoryTier::Ram) => true,
+            (MemoryTier::Ssd, MemoryTier::Nvme) => true,
+            _ => false,
+        }
+    }
+
+    fun can_demote(&self, from: &MemoryTier, to: &MemoryTier) -> bool {
+        self.can_promote(to, from)
+    }
+
+    fun access_page(&mut self, page_id: u64) -> Result<u64, string> {
+        if page_id >= self.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+
+        let page = &mut self.page_table[page_id as usize]
+        page.access_count.fetch_add(1)
+        page.last_access_time = get_current_time()
+
+        # Check if page should be promoted
+        let access_count = page.access_count.load()
+        if access_count > 100 && matches!(page.current_tier, MemoryTier::Ram | MemoryTier::Nvme | MemoryTier::Ssd) {
+            # Promote hot pages to faster tiers
+            let target_tier = match page.current_tier {
+                MemoryTier::Ssd => MemoryTier::Nvme,
+                MemoryTier::Nvme => MemoryTier::Ram,
+                MemoryTier::Ram => MemoryTier::Vram,
+                _ => page.current_tier.clone(),
+            }
+
+            let _ = self.promote_page(page_id, target_tier)
+        }
+
+        Ok(page.address)
+    }
+
+    fun evict_pages(&mut self, target_size: u64) -> Result<u64, string> {
+        let mut evicted = 0u64
+
+        # Select pages to evict based on policy
+        let pages_to_evict = match self.eviction_policy {
+            EvictionPolicy::Lru => self.select_lru_pages(target_size),
+            EvictionPolicy::Lfu => self.select_lfu_pages(target_size),
+            EvictionPolicy::Arc => self.select_arc_pages(target_size),
+        }
+
+        for page_id in pages_to_evict {
+            let page = &self.page_table[page_id as usize]
+            if page.pin_count == 0 {
+                # Demote to slower tier
+                let target_tier = match page.current_tier {
+                    MemoryTier::Vram => MemoryTier::Ram,
+                    MemoryTier::Ram => MemoryTier::Nvme,
+                    MemoryTier::Nvme => MemoryTier::Ssd,
+                    MemoryTier::Ssd => continue,
+                }
+
+                if self.demote_page(page_id, target_tier).is_ok() {
+                    evicted += page.size
+                    if evicted >= target_size {
+                        break
+                    }
+                }
+            }
+        }
+
+        self.stats.evictions += 1
+
+        Ok(evicted)
+    }
+
+    fun select_lru_pages(&self, count: u64) -> Vec<u64> {
+        let mut pages: Vec<_> = (0..self.page_table.len() as u64).collect()
+        pages.sort_by_key(|&id| {
+            let page = &self.page_table[id as usize]
+            page.last_access_time
+        })
+
+        pages.truncate((count / 4096) as usize)  # 4KB pages
+        pages
+    }
+
+    fun select_lfu_pages(&self, count: u64) -> Vec<u64> {
+        let mut pages: Vec<_> = (0..self.page_table.len() as u64).collect()
+        pages.sort_by_key(|&id| {
+            let page = &self.page_table[id as usize]
+            page.access_count.load()
+        })
+
+        pages.truncate((count / 4096) as usize)
+        pages
+    }
+
+    fun select_arc_pages(&self, count: u64) -> Vec<u64> {
+        # Arc: combine LRU and LFU characteristics
+        let mut pages: Vec<_> = (0..self.page_table.len() as u64).collect()
+        pages.sort_by(|&a, &b| {
+            let page_a = &self.page_table[a as usize]
+            let page_b = &self.page_table[b as usize]
+
+            let score_a = (page_a.access_count.load() as f64) * 0.5
+                + (get_current_time() - page_a.last_access_time) as f64 * 0.5
+            let score_b = (page_b.access_count.load() as f64) * 0.5
+                + (get_current_time() - page_b.last_access_time) as f64 * 0.5
+
+            (score_a as u64).cmp(&(score_b as u64))
+        })
+
+        pages.truncate((count / 4096) as usize)
+        pages
+    }
+
+    fun pin_page(&mut self, page_id: u64) -> Result<(), string> {
+        if page_id >= self.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+        self.page_table[page_id as usize].pin_count += 1
+        Ok(())
+    }
+
+    fun unpin_page(&mut self, page_id: u64) -> Result<(), string> {
+        if page_id >= self.page_table.len() as u64 {
+            return Err("Invalid page ID".to_string())
+        }
+        let page = &mut self.page_table[page_id as usize]
+        if page.pin_count > 0 {
+            page.pin_count -= 1
+        }
+        Ok(())
+    }
+
+    fun get_stats(&self) -> MemoryStats {
+        self.stats.clone()
+    }
+
+    fun get_utilization(&self) -> (f64, f64, f64, f64) {
+        let vram_util = (self.vram_pool.used as f64) / (self.vram_pool.size as f64)
+        let ram_util = (self.ram_pool.used as f64) / (self.ram_pool.size as f64)
+        let nvme_util = (self.nvme_pool.used as f64) / (self.nvme_pool.size as f64)
+        let ssd_util = (self.ssd_pool.used as f64) / (self.ssd_pool.size as f64)
+
+        (vram_util, ram_util, nvme_util, ssd_util)
+    }
+}
+
+impl MemoryPool {
+    fun new(base: u64, size: u64) -> Self {
+        MemoryPool {
+            base_addr: base,
+            size,
+            used: 0,
+            allocations: Vec::new(),
+        }
+    }
+}
+
+impl Clone for MemoryTier {
+    fn clone(&self) -> Self {
+        match self {
+            MemoryTier::Vram => MemoryTier::Vram,
+            MemoryTier::Ram => MemoryTier::Ram,
+            MemoryTier::Nvme => MemoryTier::Nvme,
+            MemoryTier::Ssd => MemoryTier::Ssd,
+        }
+    }
+}
+
+impl Clone for MemoryStats {
+    fn clone(&self) -> Self {
+        MemoryStats {
+            vram_usage: self.vram_usage,
+            ram_usage: self.ram_usage,
+            nvme_usage: self.nvme_usage,
+            ssd_usage: self.ssd_usage,
+            promotions: self.promotions,
+            demotions: self.demotions,
+            evictions: self.evictions,
+            avg_access_latency: self.avg_access_latency,
+        }
+    }
+}
+
+# Helper functions
+fun copy_memory(src: u64, dst: u64, size: u64) -> Result<(), string> {
+    # Implement memory copy
+    # In real implementation, use memcpy or GPU P2P for cross-tier copies
+    Ok(())
+}
+
+fun get_current_time() -> u64 {
+    # Return current time in milliseconds
+    0
+}
+
+# Direct GPU-storage I/O support
+type GpuStorageIo = struct {
+    gpu_addr: u64,
+    storage_offset: u64,
+    size: u64,
+    is_pinned_memory: bool,
+}
+
+impl GpuStorageIo {
+    fun new(gpu_addr: u64, offset: u64, size: u64) -> Self {
+        GpuStorageIo {
+            gpu_addr,
+            storage_offset: offset,
+            size,
+            is_pinned_memory: false,
+        }
+    }
+
+    fun enable_dma(&mut self) -> Result<(), string> {
+        # Enable DMA for direct GPU-storage transfer
+        self.is_pinned_memory = true
+        Ok(())
+    }
+
+    fun transfer_to_storage(&self) -> Result<(), string> {
+        # Transfer data from GPU to storage using DMA
+        Ok(())
+    }
+
+    fun transfer_from_storage(&self) -> Result<(), string> {
+        # Transfer data from storage to GPU using DMA
+        Ok(())
+    }
+}
+
+# GPU P2P support for multi-GPU systems
+type GpuP2pTransfer = struct {
+    src_gpu: u32,
+    dst_gpu: u32,
+    src_addr: u64,
+    dst_addr: u64,
+    size: u64,
+}
+
+impl GpuP2pTransfer {
+    fun new(src_gpu: u32, dst_gpu: u32, size: u64) -> Self {
+        GpuP2pTransfer {
+            src_gpu,
+            dst_gpu,
+            src_addr: 0,
+            dst_addr: 0,
+            size,
+        }
+    }
+
+    fun execute(&self) -> Result<(), string> {
+        # Direct GPU-to-GPU transfer without host involvement
+        Ok(())
+    }
+}

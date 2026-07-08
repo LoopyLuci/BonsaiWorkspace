@@ -29,6 +29,13 @@ const RESET = '\x1b[0m';
 const BOLD  = '\x1b[1m';
 const DIM   = '\x1b[2m';
 
+// Escapes regex metacharacters so user-supplied strings (e.g. package names)
+// can be safely interpolated into `new RegExp(...)` without being
+// interpreted as regex syntax.
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function log(msg)  { process.stdout.write(msg + '\n'); }
@@ -910,7 +917,7 @@ function pmAdd(args) {
 
   if (!text.includes('[dependencies]')) text += '\n\n[dependencies]\n';
   if (text.includes(`dep "${name}"`)) {
-    text = text.replace(new RegExp(`dep "${name}" = "[^"]*"`), `dep "${name}" = "^${resolvedVer}"`);
+    text = text.replace(new RegExp(`dep "${escapeRegExp(name)}" = "[^"]*"`), `dep "${name}" = "^${resolvedVer}"`);
   } else {
     text = text.replace('[dependencies]', `[dependencies]\ndep "${name}" = "^${resolvedVer}"`);
   }
@@ -933,7 +940,7 @@ function pmRemove(args) {
 
   let text = fs.readFileSync(buildPath, 'utf8');
   const before = text;
-  text = text.replace(new RegExp(`\\ndep "${name}" = "[^"]*"`, 'g'), '');
+  text = text.replace(new RegExp(`\\ndep "${escapeRegExp(name)}" = "[^"]*"`, 'g'), '');
   fs.writeFileSync(buildPath, text);
 
   log('');
