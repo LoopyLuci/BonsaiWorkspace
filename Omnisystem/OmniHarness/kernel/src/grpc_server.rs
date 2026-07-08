@@ -32,6 +32,7 @@ use proto::{
 
 // ── Shared state ─────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct HarnessState {
     pub event_store:    Arc<PersistentEventStore>,
     pub model_registry: Arc<ModelRegistry>,

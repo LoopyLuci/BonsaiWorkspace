@@ -73,10 +73,6 @@ async fn main() -> Result<()> {
         .await?;
 
     // ── gRPC server ───────────────────────────────────────────────
-    let grpc_addr = std::env::var("GRPC_ADDR")
-        .unwrap_or_else(|_| "[::1]:50051".to_string())
-        .parse()?;
-
     let grpc_state = grpc_server::HarnessState {
         event_store:    Arc::clone(&event_store),
         model_registry: Arc::clone(&model_registry),
@@ -88,12 +84,28 @@ async fn main() -> Result<()> {
         start_time:     std::time::Instant::now(),
     };
 
-    let grpc_handle = tokio::spawn(async move {
-        info!("[GRPC] Listening on {}", grpc_addr);
-        if let Err(e) = grpc_server::serve(grpc_addr, grpc_state).await {
-            error!("[GRPC] Fatal: {}", e);
-        }
-    });
+    // Bind both loopback address families by default: clients resolving
+    // "localhost" (the Python orchestrator's grpc_client.py, memory/vector.py;
+    // the Tauri workspace's kernel_bridge.rs) don't consistently land on the
+    // same address family as each other on every platform, so a kernel bound
+    // to only one loopback address can be silently unreachable to some
+    // clients while working fine for others on the very same machine.
+    // GRPC_ADDR still overrides to a single explicit address when set.
+    let grpc_addrs: Vec<std::net::SocketAddr> = match std::env::var("GRPC_ADDR") {
+        Ok(addr) => vec![addr.parse()?],
+        Err(_) => vec!["127.0.0.1:50051".parse()?, "[::1]:50051".parse()?],
+    };
+
+    let mut grpc_handles = Vec::with_capacity(grpc_addrs.len());
+    for grpc_addr in grpc_addrs {
+        let grpc_state = grpc_state.clone();
+        grpc_handles.push(tokio::spawn(async move {
+            info!("[GRPC] Listening on {}", grpc_addr);
+            if let Err(e) = grpc_server::serve(grpc_addr, grpc_state).await {
+                error!("[GRPC] Fatal on {}: {}", grpc_addr, e);
+            }
+        }));
+    }
 
     // ── Mesh node ─────────────────────────────────────────────────
     let (mesh_tx, mut mesh_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
@@ -128,7 +140,7 @@ async fn main() -> Result<()> {
         Err(e)  => error!("[SHUTDOWN] Signal error: {}", e),
     }
 
-    grpc_handle.abort();
+    for h in grpc_handles { h.abort(); }
     if let Some(h) = mesh_handle { h.abort(); }
 
     event_store
