@@ -2,6 +2,8 @@
 
 #[derive(Debug, Clone)]
 pub enum Error {
+    /// Requested record does not exist
+    NotFound,
     /// Other error
     Other(String),
 }
@@ -9,6 +11,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::NotFound => write!(f, "record not found"),
             Error::Other(msg) => write!(f, "Error: {}", msg),
         }
     }

@@ -7,9 +7,10 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 /// Supported languages in Omnisystem
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
     /// Rust - systems programming
     Rust,

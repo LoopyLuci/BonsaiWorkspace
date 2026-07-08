@@ -2,8 +2,6 @@
 //!
 //! Demonstrates how to call TITAN code from Rust using the Universal Language Layer.
 
-use std::collections::HashMap;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();

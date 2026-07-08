@@ -223,7 +223,7 @@ impl Value {
 
     /// Check type matches
     pub fn matches_type(&self, expected: &ValueType) -> bool {
-        match (self.value_type.clone(), expected) {
+        match (&self.value_type, expected) {
             (ValueType::Custom(a), ValueType::Custom(b)) => a == b,
             (a, b) => a == b,
         }

@@ -1,15 +1,9 @@
-use universal_language_layer::bridge::LanguageBridge;
+//! Configuration Manager — an in-memory, concurrent record store.
 
-pub fn register_with_ull() -> Result<(), Box<dyn std::error::Error>> {
-    let bridge = LanguageBridge::new();
-    bridge.register_function("MODNAME::operation", vec![], vec![])?;
-    Ok(())
-}
+pub mod error;
+pub mod manager;
+pub mod types;
 
-pub fn operation(param: String) -> Result<String, String> {
-    if param.is_empty() {
-        Err("Parameter required".to_string())
-    } else {
-        Ok(format!("Processed: {}", param))
-    }
-}
+pub use error::{Error, Result};
+pub use manager::Manager;
+pub use types::Record;
