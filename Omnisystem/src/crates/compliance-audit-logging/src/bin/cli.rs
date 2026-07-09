@@ -1,13 +1,13 @@
 //! CLI
 
-use compliance_audit_logging::Operations;
+use compliance_audit_logging::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ops = Operations::new();
-    println!("Operations ready");
+    let c = Component::new();
+    println!("Component ready");
 
-    ops.execute("test").await?;
+    c.execute("test").await?;
     println!("Test executed");
 
     Ok(())
