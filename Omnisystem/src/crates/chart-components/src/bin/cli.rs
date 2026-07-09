@@ -1,12 +1,11 @@
 //! CLI
 
-use chart_components::Component;
+use chart_components::{Component, Props};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let c = Component::new(Props::default());
+    println!("{}", c.render());
+    println!("Props id: {}", c.props().id);
     Ok(())
 }
