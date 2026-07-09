@@ -1,13 +1,13 @@
 //! CLI
 
-use access_control_policy::Operations;
+use access_control_policy::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ops = Operations::new();
-    println!("Operations ready");
+    let c = Component::new();
+    println!("Component ready");
 
-    ops.execute("test").await?;
+    c.execute("test").await?;
     println!("Test executed");
 
     Ok(())
