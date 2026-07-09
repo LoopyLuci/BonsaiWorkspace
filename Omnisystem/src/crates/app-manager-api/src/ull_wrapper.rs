@@ -9,10 +9,7 @@ use universal_language_layer::{
     types::Value,
     error::Result as UllResult,
 };
-use crate::{
-    models::{AppInfo, InstallationInfo},
-    server::ApiState,
-};
+use crate::models::AppInfo;
 use std::collections::HashMap;
 
 /// Initialize app-manager-api with ULL bridge

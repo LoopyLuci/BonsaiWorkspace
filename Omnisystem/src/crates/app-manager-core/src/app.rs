@@ -152,11 +152,11 @@ impl AppManifest {
     }
 
     pub fn from_json(json: &str) -> AppManagerResult<Self> {
-        serde_json::from_str(json).map_err(crate::error::AppManagerError::JsonError)
+        Ok(serde_json::from_str(json)?)
     }
 
     pub fn to_json(&self) -> AppManagerResult<String> {
-        serde_json::to_string_pretty(self).map_err(crate::error::AppManagerError::JsonError)
+        Ok(serde_json::to_string_pretty(self)?)
     }
 }
 
