@@ -1,12 +1,11 @@
 //! CLI
 
-use rbac_authorization_engine::Component;
+use rbac_authorization_engine::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let e = Enterprise::new();
+    let result = e.process("test").await?;
+    println!("Processed: {}", result);
     Ok(())
 }

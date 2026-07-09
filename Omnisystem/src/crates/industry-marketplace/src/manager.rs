@@ -1,5 +1,4 @@
 use crate::{error::Result, types::Record};
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
