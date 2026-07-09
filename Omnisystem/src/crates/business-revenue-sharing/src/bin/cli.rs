@@ -1,6 +1,6 @@
-use business_revenue_sharing::Ecosystem;
+use business_revenue_sharing::Component;
 #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let e = Ecosystem::new();
-    e.execute().await?;
+    let c = Component::new();
+    c.execute("test").await?;
     Ok(())
 }
