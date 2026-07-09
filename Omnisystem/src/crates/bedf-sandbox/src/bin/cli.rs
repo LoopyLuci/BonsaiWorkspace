@@ -1,12 +1,12 @@
 //! CLI
 
-use bedf_sandbox::Component;
+use bedf_sandbox::Core;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
-    Ok(())
+fn main() {
+    let c = Core::new();
+    c.set("key".into(), "value".into());
+    match c.get("key") {
+        Some(v) => println!("Fetched: {}", v),
+        None => println!("Not found"),
+    }
 }
