@@ -1,18 +1,14 @@
 //! CLI
 
-use autonomous_intelligence_core::Analytics;
+use autonomous_intelligence_core::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let analytics = Analytics::new();
-    println!("Analytics initialized");
+    let c = Component::new();
+    println!("Component ready");
 
-    analytics.add_point("metrics", 42.0);
-    let result = analytics.analyze("metrics").await?;
-    println!("Result: {}", result);
-
-    let insights = analytics.get_insights();
-    println!("Insights: {}", insights);
+    c.execute("test").await?;
+    println!("Status: {}", c.status());
 
     Ok(())
 }
