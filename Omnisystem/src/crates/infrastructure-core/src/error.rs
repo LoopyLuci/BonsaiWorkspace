@@ -1,20 +1,20 @@
 //! Error types
 
 #[derive(Debug, Clone)]
-pub enum Error {
+pub enum InfraError {
     /// Other error
     Other(String),
 }
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for InfraError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
+            InfraError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for InfraError {}
 
 /// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type InfraResult<T> = std::result::Result<T, InfraError>;
