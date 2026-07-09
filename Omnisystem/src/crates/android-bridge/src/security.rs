@@ -63,9 +63,14 @@ impl SessionKey {
         let cipher = Aes256Gcm::new(&self.key.into());
         let nonce_slice = aes_gcm::Nonce::from_slice(&nonce);
 
-        cipher
+        let ciphertext = cipher
             .encrypt(nonce_slice, plaintext)
-            .map_err(|e| crate::error::Error::CryptoError(e.to_string()))
+            .map_err(|e| crate::error::Error::CryptoError(e.to_string()))?;
+
+        let mut result = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
     }
 
     /// Decrypt data with AES-256-GCM

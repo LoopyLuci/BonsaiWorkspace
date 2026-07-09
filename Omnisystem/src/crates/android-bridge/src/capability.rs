@@ -132,7 +132,7 @@ impl CapabilityToken {
         };
 
         serde_json::to_vec(&token_without_sig)
-            .map_err(|e| crate::error::Error::SerializationError(e))
+            .map_err(|e| crate::error::Error::SerializationError(e.to_string()))
     }
 
     /// Revoke the token

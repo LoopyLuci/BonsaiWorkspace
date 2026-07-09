@@ -1,20 +1,26 @@
 //! Error types
 
 #[derive(Debug, Clone)]
-pub enum Error {
+pub enum QuotaError {
+    /// Quota not found for the requested tenant
+    QuotaNotFound,
+    /// Tenant not found
+    TenantNotFound,
     /// Other error
     Other(String),
 }
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for QuotaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
+            QuotaError::QuotaNotFound => write!(f, "quota not found"),
+            QuotaError::TenantNotFound => write!(f, "tenant not found"),
+            QuotaError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for QuotaError {}
 
 /// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type QuotaResult<T> = std::result::Result<T, QuotaError>;

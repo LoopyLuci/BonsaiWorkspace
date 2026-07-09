@@ -5,13 +5,14 @@
 
 #[cfg(test)]
 mod tests {
-    use android_bridge::{AndroidBridge, Error, Result};
-    use android_bridge::connection::TelemetryCollector;
+    use android_bridge::{AndroidBridge, Error};
+    use android_bridge::telemetry::TelemetryCollector;
     use std::time::Duration;
 
     /// Initialize a test bridge instance
     fn create_test_bridge() -> AndroidBridge {
-        let telemetry = TelemetryCollector::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let telemetry = TelemetryCollector::new(tx, 100);
         AndroidBridge::new(telemetry, Duration::from_secs(5))
     }
 
@@ -152,7 +153,7 @@ mod tests {
         let bridge = create_test_bridge();
         let pool = bridge.get_device_pool();
         // Should be accessible
-        let device_count = pool.list_devices().len();
+        let device_count = pool.get_all_devices().len();
         assert!(device_count >= 0);
     }
 
@@ -165,7 +166,7 @@ mod tests {
         let pool1 = bridge1.get_device_pool();
         let pool2 = bridge2.get_device_pool();
 
-        assert_eq!(pool1.list_devices().len(), pool2.list_devices().len());
+        assert_eq!(pool1.get_all_devices().len(), pool2.get_all_devices().len());
     }
 
     #[test]
