@@ -1,14 +1,12 @@
 //! CLI
 
-use access_control_delegation::Operations;
+use access_control_delegation::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ops = Operations::new();
-    println!("Operations ready");
-
-    ops.execute("test").await?;
-    println!("Test executed");
-
+    let c = Component::new();
+    println!("Component ready");
+    c.execute("test").await?;
+    println!("Status: {}", c.status());
     Ok(())
 }

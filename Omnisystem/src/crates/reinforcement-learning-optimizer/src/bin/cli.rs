@@ -1,12 +1,14 @@
 //! CLI
 
-use reinforcement_learning_optimizer::Component;
+use reinforcement_learning_optimizer::Advanced;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let a = Advanced::new();
+    println!("Advanced ready");
+    let analyzed = a.analyze("test").await?;
+    println!("{}", analyzed);
+    let predicted = a.predict("test").await?;
+    println!("Prediction: {}", predicted);
     Ok(())
 }
