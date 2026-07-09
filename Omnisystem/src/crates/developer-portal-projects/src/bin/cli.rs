@@ -1,6 +1,6 @@
-use developer_portal_projects::Ecosystem;
+use developer_portal_projects::Component;
 #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let e = Ecosystem::new();
-    e.execute().await?;
+    let c = Component::new();
+    c.execute("test").await?;
     Ok(())
 }
