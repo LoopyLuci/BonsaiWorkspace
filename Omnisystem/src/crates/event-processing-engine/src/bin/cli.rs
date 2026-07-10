@@ -1,12 +1,10 @@
 //! CLI
 
-use event_processing_engine::Component;
+use event_processing_engine::init;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    init().await?;
+    println!("event-processing-engine initialized");
     Ok(())
 }
