@@ -98,6 +98,7 @@ mod gguf;
 mod gguf_tokenizer;
 mod gpu_layer;
 mod gpu_model_loader;
+mod gpu_placement;
 mod gpu_telemetry;
 mod hybrid_engine;
 mod image_generation;
@@ -2674,9 +2675,13 @@ pub fn run() {
             // Tool registry
             tool_registry::list_tools,
             tool_registry::run_tool,
-            // GPU crash flag
+            // GPU crash flag (deprecated global; see gpu_profile commands below)
             commands::get_gpu_crash_flag,
             commands::clear_gpu_crash_flag,
+            // Per-model GPU/CPU hybrid placement
+            commands::get_gpu_profile,
+            commands::reset_gpu_profile,
+            commands::get_tensor_placement_info,
             // Tool composition DSL
             tool_compose::validate_composed_skill,
             // Micro OmniAI model selector

@@ -104,6 +104,22 @@ export interface LocalFileInfo {
   gpu_layers?:       number;
 }
 
+// ── GPU/CPU hybrid placement ──────────────────────────────────────────────────
+
+/// Per-model GPU/CPU placement history — replaces the deprecated global
+/// "GPU crash detected" banner. See `gpu_placement.rs`/`model_orchestrator.rs`
+/// on the backend for how this is computed and updated.
+export interface GpuProfile {
+  dominant_tensor_type?:        string;
+  unsafe_tensor_weight_fraction: number;
+  is_moe:                       boolean;
+  ladder_rung?:                 number;
+  last_safe_gpu_layers?:        number;
+  crash_count:                  number;
+  last_crash_exit_code?:        number;
+  last_crash_at?:               number;
+}
+
 // ── Core ModelData ────────────────────────────────────────────────────────────
 
 export interface ModelData {
@@ -116,6 +132,7 @@ export interface ModelData {
   capabilities:    ModelCapabilities;
   inference:       InferenceProfile;
   inference_mode:  InferenceMode;
+  gpu_profile:     GpuProfile;
   prompt_format:   PromptFormat;
   skill_affinities: SkillAffinity[];
   authors:         string[];

@@ -6457,7 +6457,7 @@ async fn bot_reload(_state: &State<'_, AppState>) -> Result<(), ()> {
 // ─── Model Data ──────────────────────────────────────────────────────────────
 
 use crate::inference_mode::InferenceMode;
-use crate::model_data::{GenerateModelDataInput, ModelData, ModelDataSummary};
+use crate::model_data::{GenerateModelDataInput, GpuProfile, ModelData, ModelDataSummary};
 use crate::model_data_generator::ModelDataGenerator;
 
 /// List all model data entries (summaries — lighter than full records).
@@ -6714,6 +6714,114 @@ pub async fn apply_inference_mode_to_all(
     }
 
     Ok(updated)
+}
+
+// ─── GPU/CPU hybrid placement ─────────────────────────────────────────────────
+
+/// Per-model GPU/CPU placement history (crash count, last known-good layer
+/// count) — the per-model replacement for the deprecated global
+/// `get_gpu_crash_flag`/`clear_gpu_crash_flag` pair, which forced *every*
+/// model to skip GPU after a single crash on any one model.
+#[tauri::command]
+pub async fn get_gpu_profile(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<GpuProfile, String> {
+    Ok(state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|d| d.gpu_profile)
+        .unwrap_or_default())
+}
+
+/// Clears this model's GPU crash history so its next load re-attempts the
+/// full computed placement plan instead of starting from a previously
+/// learned conservative fallback. Reloads the model immediately if it's
+/// currently loaded, mirroring `set_inference_mode`.
+#[tauri::command]
+pub async fn reset_gpu_profile(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<GpuProfile, String> {
+    let mut data = match state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        Some(existing) => existing,
+        None => return Err(format!("model '{model_id}' not found")),
+    };
+
+    data.gpu_profile = GpuProfile::default();
+    data.touch();
+    state
+        .model_data_store
+        .save(&data)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if state.orchestrator.is_model_loaded(&model_id).await {
+        state.orchestrator.unload_model(&model_id).await;
+        let rx = state.orchestrator.load(model_id.clone());
+        rx.await.map_err(|_| "Orchestrator offline".to_string())??;
+    }
+
+    let _ = app_handle.emit(
+        "model-gpu-profile-reset",
+        serde_json::json!({ "model_id": model_id }),
+    );
+
+    Ok(data.gpu_profile)
+}
+
+/// Read-only diagnostic: the real per-tensor type distribution and MoE
+/// detection for a model, parsed fresh from its GGUF file — powers the
+/// "why is this model partially CPU?" UI. Not on any hot path (manual
+/// diagnostic action), so re-parsing per call is an acceptable cost.
+#[tauri::command]
+pub async fn get_tensor_placement_info(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<serde_json::Value, String> {
+    let models = state.orchestrator.list_models().await;
+    let info = models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| format!("model '{model_id}' not found in registry"))?;
+
+    let (metadata, tensors) = crate::gguf::parse_gguf_tensor_info(&info.path)
+        .map_err(|e| format!("failed to parse GGUF tensor info: {e}"))?;
+    let moe = crate::gpu_placement::detect_moe(&metadata, &tensors);
+    let profile = crate::gpu_placement::classify_tensor_types(&tensors);
+
+    let by_type: Vec<serde_json::Value> = profile
+        .by_type
+        .iter()
+        .map(|(ty, count, elements)| {
+            serde_json::json!({
+                "type": ty.label(),
+                "tensor_count": count,
+                "weight_fraction": if profile.total_elements > 0 {
+                    *elements as f64 / profile.total_elements as f64
+                } else {
+                    0.0
+                },
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "model_id": model_id,
+        "tensor_count": tensors.len(),
+        "by_type": by_type,
+        "unsafe_weight_fraction": profile.unsafe_weight_fraction(),
+        "is_moe": moe.is_some(),
+        "moe_expert_count": moe.as_ref().map(|m| m.expert_count),
+    }))
 }
 
 // ─── Model directories ────────────────────────────────────────────────────────

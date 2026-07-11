@@ -22,7 +22,10 @@
     applyInferenceModeToAll,
     refreshCloudModels,
     refreshModelData,
+    getGpuProfile,
+    resetGpuProfile,
   } from '$lib/stores/models';
+  import type { GpuProfile } from '$lib/types/model_data';
   import type { InferenceMode } from '$lib/types/inference_mode';
   import { inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
   import { apiHost, apiPort, apiBaseUrl, loadApiSettings, saveApiSettings } from '$lib/stores/settings';
@@ -58,8 +61,9 @@
   let defaultInferenceModeKey: 'auto' | 'cpu_only' | 'gpu_only' | 'hybrid' = 'hybrid';
   let defaultHybridLayers = 20;
   let inferenceDefaultsMsg = '';
-  let gpuCrashFallback = false;
-  let gpuCrashMsg = '';
+  let gpuProfiles: Record<string, GpuProfile> = {};
+  let gpuProfilesMsg = '';
+  let gpuProfilesLoading = false;
 
   type CrashReport = {
     timestamp: string;
@@ -133,7 +137,7 @@
     try { await refreshKnownProviders(); } catch {}
     try { await refreshModelDirectories(); } catch {}
     try { await loadFeatureFlags(); } catch {}
-    try { gpuCrashFallback = await invoke<boolean>('get_gpu_crash_flag'); } catch {}
+    try { await refreshGpuProfiles(); } catch {}
     await loadCrashReports();
   });
 
@@ -268,13 +272,32 @@
     await refreshStatus();
   }
 
-  async function clearGpuCrashFlag() {
+  /** Fetches each local model's GPU placement history (crash count, last
+   * known-good layer count) — per-model, replacing the old single global
+   * "GPU crash detected" banner. */
+  async function refreshGpuProfiles() {
+    gpuProfilesLoading = true;
     try {
-      await invoke('clear_gpu_crash_flag');
-      gpuCrashFallback = false;
-      gpuCrashMsg = 'GPU re-enabled. Restart the app and reload your model to use GPU acceleration.';
+      const entries = await Promise.all(
+        $availableModels.map(async (m) => [m.id, await getGpuProfile(m.id)] as const),
+      );
+      gpuProfiles = Object.fromEntries(entries);
     } catch (e) {
-      gpuCrashMsg = `Failed: ${e}`;
+      gpuProfilesMsg = `Failed to load GPU placement history: ${e}`;
+    } finally {
+      gpuProfilesLoading = false;
+    }
+  }
+
+  async function resetModelGpuProfile(modelId: string, modelName: string) {
+    try {
+      const reset = await resetGpuProfile(modelId);
+      if (reset) {
+        gpuProfiles = { ...gpuProfiles, [modelId]: reset };
+      }
+      gpuProfilesMsg = `${modelName}: GPU history cleared — next load re-attempts full GPU placement.`;
+    } catch (e) {
+      gpuProfilesMsg = `Failed: ${e}`;
     }
   }
 
@@ -1875,17 +1898,65 @@
       {#if inferenceDefaultsMsg}
         <div class="api-test-result">{inferenceDefaultsMsg}</div>
       {/if}
+    </section>
 
-      {#if gpuCrashFallback}
-        <div class="gpu-crash-banner">
-          <span>⚠ GPU crash detected — running CPU-only mode</span>
-          <button class="action-btn blue" type="button" on:click={clearGpuCrashFlag}>
-            Re-enable GPU
-          </button>
-        </div>
-        {#if gpuCrashMsg}
-          <div class="api-test-result">{gpuCrashMsg}</div>
+    <section class="section">
+      <h3 class="section-title">GPU Placement</h3>
+      <p class="section-desc">
+        Per-model GPU/CPU history. Models with an exotic quantization no longer run fully
+        CPU-only by default — the unsafe tensors are pinned to CPU while the rest offloads
+        to GPU. A model that crashed steps down through a reduced layer count before giving
+        up, and remembers the layer count that worked.
+      </p>
+      {#if gpuProfilesLoading}
+        <div class="api-test-result">Loading GPU placement history…</div>
+      {:else}
+        {@const modelsWithGpuHistory = $availableModels.filter((m) => {
+          const p = gpuProfiles[m.id];
+          return p && (p.crash_count > 0 || p.is_moe || p.unsafe_tensor_weight_fraction > 0);
+        })}
+        {#if modelsWithGpuHistory.length === 0}
+          <div class="api-test-result">No models have GPU crash history or hybrid placement yet.</div>
+        {:else}
+          <div class="gpu-profile-list">
+            {#each modelsWithGpuHistory as m (m.id)}
+              {@const p = gpuProfiles[m.id]}
+              <div class="gpu-profile-row">
+                <div class="gpu-profile-info">
+                  <strong>{m.name}</strong>
+                  {#if p.is_moe}
+                    <span class="gpu-profile-tag">MoE hybrid</span>
+                  {/if}
+                  {#if p.unsafe_tensor_weight_fraction > 0}
+                    <span class="gpu-profile-tag">
+                      {Math.round(p.unsafe_tensor_weight_fraction * 100)}% tensors CPU-pinned
+                    </span>
+                  {/if}
+                  {#if p.crash_count > 0}
+                    <span class="gpu-profile-tag warn">
+                      {p.crash_count} crash{p.crash_count === 1 ? '' : 'es'}
+                      {#if p.last_safe_gpu_layers !== undefined}
+                        — last safe: {p.last_safe_gpu_layers} layer{p.last_safe_gpu_layers === 1 ? '' : 's'}
+                      {/if}
+                    </span>
+                  {/if}
+                </div>
+                {#if p.crash_count > 0}
+                  <button
+                    class="action-btn"
+                    type="button"
+                    on:click={() => resetModelGpuProfile(m.id, m.name)}
+                  >
+                    Reset GPU history
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
+      {/if}
+      {#if gpuProfilesMsg}
+        <div class="api-test-result">{gpuProfilesMsg}</div>
       {/if}
     </section>
 
@@ -2942,22 +3013,48 @@
     color: var(--text-dim);
     background: var(--bg2);
   }
-  .gpu-crash-banner {
+  .gpu-profile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .gpu-profile-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 12px;
+    gap: 12px;
     padding: 10px 14px;
     border-radius: 8px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .gpu-profile-info {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .gpu-profile-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    background: rgba(59,130,246,0.12);
+    border: 1px solid rgba(59,130,246,0.3);
+    color: #93c5fd;
+  }
+  .gpu-profile-tag.warn {
     background: rgba(234,179,8,0.12);
     border: 1px solid rgba(234,179,8,0.35);
     color: #fde68a;
-    font-size: 13px;
   }
-  .gpu-crash-banner .action-btn {
+  .gpu-profile-row .action-btn {
     margin: 0;
     padding: 4px 12px;
     font-size: 12px;
+    flex-shrink: 0;
   }
   .api-test-result {
     margin-top: 10px;

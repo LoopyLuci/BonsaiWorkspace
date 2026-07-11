@@ -31,7 +31,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::bootstrap;
+use crate::gpu_placement::{self, PlacementPlan};
 use crate::inference_mode::InferenceMode;
+use crate::model_data::GpuProfile;
 use crate::model_registry::{ModelInfo, ModelRegistry, Quant};
 use crate::sidecar_supervisor::{SidecarConfig, SidecarStatus, SidecarSupervisor};
 
@@ -51,7 +53,7 @@ const MODEL_LOAD_TIMEOUT_GRACE_SECS: u64 = 120;
 const MODEL_LOAD_MAX_POLLS: u64 = (MODEL_LOAD_TIMEOUT_SECS * 1000) / MODEL_LOAD_POLL_INTERVAL_MS;
 const MODEL_LOAD_GRACE_POLLS: u64 =
     (MODEL_LOAD_TIMEOUT_GRACE_SECS * 1000) / MODEL_LOAD_POLL_INTERVAL_MS;
-const MAX_MODEL_LOAD_ATTEMPTS: u8 = 2; // 1 GPU attempt + 1 CPU fallback
+const MAX_MODEL_LOAD_ATTEMPTS: u8 = 3; // full placement + reduced-layer fallback + CPU-only
 
 // ── Slot state ────────────────────────────────────────────────────────────────
 
@@ -115,6 +117,11 @@ struct Slot {
     cpu_mode: bool,
     inference_mode: InferenceMode,
     fallback_note: Option<String>,
+    /// Remaining rungs of the graduated GPU/CPU retry ladder for the
+    /// current load, index 0 being the currently-active placement. On a
+    /// GPU crash, `poll_loading_slots` pops the front and retries with the
+    /// next rung instead of jumping straight to CPU-only.
+    gpu_ladder: Vec<gpu_placement::PlacementPlan>,
 }
 
 impl Slot {
@@ -145,6 +152,7 @@ impl Slot {
             cpu_mode: false,
             inference_mode: InferenceMode::default(),
             fallback_note: None,
+            gpu_ladder: Vec::new(),
         }
     }
 
@@ -162,6 +170,7 @@ impl Slot {
         self.cpu_mode = false;
         self.inference_mode = InferenceMode::default();
         self.fallback_note = None;
+        self.gpu_ladder.clear();
     }
 }
 
@@ -528,7 +537,7 @@ async fn handle_cmd(
                             drop(reg);
                             let mode = inference_modes.get(&info.id).cloned().unwrap_or_default();
                             let idx = empty_or_evict(slots);
-                            spawn_model(&mut slots[idx], &info, app, &mode);
+                            spawn_model(&mut slots[idx], &info, app, &mode).await;
                         }
                     }
                     None => {}
@@ -575,7 +584,7 @@ async fn handle_cmd(
                 Some(info) => {
                     let idx = empty_or_evict(slots);
                     let mode = inference_modes.get(&model_id).cloned().unwrap_or_default();
-                    spawn_model(&mut slots[idx], &info, app, &mode);
+                    spawn_model(&mut slots[idx], &info, app, &mode).await;
                     let url = slots[idx].base_url.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = resp_tx.send(wait_for_model_health(url).await);
@@ -711,12 +720,165 @@ async fn probe_model_ready(client: &Client, base_url: &str) -> bool {
 
 // ── Slot management ───────────────────────────────────────────────────────────
 
-fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &InferenceMode) {
-    // If a previous session recorded a GPU driver crash, start CPU-only to avoid
-    // immediately crashing again. The user can re-enable GPU from Settings.
-    let gpu_crash_recorded = crate::config::load_config(app)
-        .map(|c| c.gpu_crash_fallback)
-        .unwrap_or(false);
+/// Loads this model's persisted GPU profile (crash history, last
+/// known-good layer count) — the per-model replacement for the previous
+/// global `AppConfig.gpu_crash_fallback` latch, which forced *every* model
+/// on *every* future launch to skip GPU after a single crash on any one
+/// model.
+async fn load_gpu_profile(app: &AppHandle, model_id: &str) -> GpuProfile {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return GpuProfile::default();
+    };
+    state
+        .model_data_store
+        .find_by_registry_id(model_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|d| d.gpu_profile)
+        .unwrap_or_default()
+}
+
+/// Persists an updated GPU profile for this model only — crash history and
+/// placement outcomes never affect any other model's decisions. Self-heals
+/// a missing `model_data` row (e.g. a model loaded before registry sync
+/// completed) by constructing a fresh one rather than silently dropping the
+/// update.
+async fn save_gpu_profile(app: &AppHandle, info: &ModelInfo, profile: GpuProfile) {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return;
+    };
+    let mut data = match state.model_data_store.find_by_registry_id(&info.id).await {
+        Ok(Some(existing)) => existing,
+        Ok(None) => crate::model_data::ModelData::from_registry(info),
+        Err(_) => return,
+    };
+    data.gpu_profile = profile;
+    data.touch();
+    let _ = state.model_data_store.save(&data).await;
+}
+
+/// Human-readable summary of a placement plan for the UI fallback banner —
+/// `None` for a plain, unremarkable full-GPU (or full-CPU-because-no-GPU)
+/// offload that needs no explanation.
+fn placement_plan_note(plan: &PlacementPlan, quant: &Quant) -> Option<String> {
+    match plan {
+        PlacementPlan::FullGpu(_) => None,
+        PlacementPlan::TensorOverride { ot_rules, .. } => Some(format!(
+            "GPU hybrid: {} tensor pattern(s) of this {:?} model kept on CPU, rest offloaded to GPU",
+            ot_rules.len(),
+            quant
+        )),
+        PlacementPlan::CpuMoe { n_cpu_moe, .. } => Some(format!(
+            "GPU hybrid: {n_cpu_moe} MoE expert layer(s) kept on CPU, dense layers offloaded to GPU"
+        )),
+        PlacementPlan::Combined {
+            ot_rules,
+            n_cpu_moe,
+            ..
+        } => Some(format!(
+            "GPU hybrid: {} tensor pattern(s) + {n_cpu_moe} MoE layer(s) kept on CPU, rest offloaded to GPU",
+            ot_rules.len()
+        )),
+        PlacementPlan::CpuOnly => Some(format!(
+            "GPU disabled: {quant:?} quantization has no safe partial-GPU placement for this model — running on CPU"
+        )),
+    }
+}
+
+/// Applies an explicit `InferenceMode` override on top of the computed
+/// placement plan — matches the pre-existing precedent that a user's
+/// explicit `CpuOnly`/`GpuOnly`/`Hybrid{n}` choice always wins over the
+/// automatic decision, even overriding a confirmed-unsafe finding for
+/// `GpuOnly`/`Hybrid` (the same escape hatch `mode.gpu_layers()` provided
+/// before this system existed).
+fn apply_mode_override(plan: PlacementPlan, mode: &InferenceMode) -> PlacementPlan {
+    match mode {
+        InferenceMode::Auto => plan,
+        InferenceMode::CpuOnly => PlacementPlan::FullGpu(0),
+        InferenceMode::GpuOnly => match plan {
+            PlacementPlan::FullGpu(n) => PlacementPlan::FullGpu(n.max(1)),
+            PlacementPlan::TensorOverride { ot_rules, gpu_layers } => PlacementPlan::TensorOverride {
+                ot_rules,
+                gpu_layers: gpu_layers.max(1),
+            },
+            PlacementPlan::CpuMoe { n_cpu_moe, gpu_layers } => PlacementPlan::CpuMoe {
+                n_cpu_moe,
+                gpu_layers: gpu_layers.max(1),
+            },
+            PlacementPlan::Combined { ot_rules, n_cpu_moe, gpu_layers } => PlacementPlan::Combined {
+                ot_rules,
+                n_cpu_moe,
+                gpu_layers: gpu_layers.max(1),
+            },
+            PlacementPlan::CpuOnly => PlacementPlan::FullGpu(1),
+        },
+        InferenceMode::Hybrid { gpu_layers } => match plan {
+            PlacementPlan::FullGpu(_) => PlacementPlan::FullGpu(*gpu_layers),
+            PlacementPlan::TensorOverride { ot_rules, .. } => PlacementPlan::TensorOverride {
+                ot_rules,
+                gpu_layers: *gpu_layers,
+            },
+            PlacementPlan::CpuMoe { n_cpu_moe, .. } => PlacementPlan::CpuMoe {
+                n_cpu_moe,
+                gpu_layers: *gpu_layers,
+            },
+            PlacementPlan::Combined { ot_rules, n_cpu_moe, .. } => PlacementPlan::Combined {
+                ot_rules,
+                n_cpu_moe,
+                gpu_layers: *gpu_layers,
+            },
+            PlacementPlan::CpuOnly => PlacementPlan::FullGpu(*gpu_layers),
+        },
+    }
+}
+
+/// Graduated GPU/CPU fallback ladder: on a crash, steps down through a
+/// reduced layer count before giving up entirely, instead of the previous
+/// single retry that jumped straight from the full plan to CPU-only.
+/// Gated by `mode.allows_cpu_fallback()` exactly as the single-retry
+/// behavior was before (`GpuOnly` never falls back).
+fn build_gpu_ladder(plan: PlacementPlan, mode: &InferenceMode) -> Vec<PlacementPlan> {
+    let mut ladder = vec![plan.clone()];
+    if !mode.allows_cpu_fallback() {
+        return ladder;
+    }
+    let gpu_layers = match &plan {
+        PlacementPlan::FullGpu(n) => *n,
+        PlacementPlan::TensorOverride { gpu_layers, .. }
+        | PlacementPlan::CpuMoe { gpu_layers, .. }
+        | PlacementPlan::Combined { gpu_layers, .. } => *gpu_layers,
+        PlacementPlan::CpuOnly => 0,
+    };
+    if gpu_layers > 1 {
+        ladder.push(PlacementPlan::FullGpu(gpu_layers / 2));
+    }
+    if gpu_layers != 0 {
+        ladder.push(PlacementPlan::FullGpu(0));
+    }
+    ladder
+}
+
+/// Resolves a placement plan into the concrete `llama-server` CLI values:
+/// `(--n-gpu-layers, --override-tensor rules, --n-cpu-moe)`.
+fn placement_plan_cli(plan: &PlacementPlan) -> (u32, Vec<String>, Option<u32>) {
+    match plan {
+        PlacementPlan::FullGpu(n) => (*n, vec![], None),
+        PlacementPlan::TensorOverride { ot_rules, gpu_layers } => {
+            (*gpu_layers, ot_rules.clone(), None)
+        }
+        PlacementPlan::CpuMoe { n_cpu_moe, gpu_layers } => (*gpu_layers, vec![], Some(*n_cpu_moe)),
+        PlacementPlan::Combined {
+            ot_rules,
+            n_cpu_moe,
+            gpu_layers,
+        } => (*gpu_layers, ot_rules.clone(), Some(*n_cpu_moe)),
+        PlacementPlan::CpuOnly => (0, vec![], None),
+    }
+}
+
+async fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &InferenceMode) {
+    let gpu_profile = load_gpu_profile(app, &info.id).await;
 
     let exe = bootstrap::llama_exe(app);
     let exe_name = exe
@@ -724,33 +886,82 @@ fn spawn_model(slot: &mut Slot, info: &ModelInfo, app: &AppHandle, mode: &Infere
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let (gpu_preferred_layers, skip_reason) = if gpu_crash_recorded {
-        (0, Some("GPU disabled: a previous session hit a GPU driver crash — re-enable from Settings".to_string()))
-    } else if is_gpu_unsafe_quant(&info.quant) {
-        (0, Some(format!(
-            "GPU disabled: {:?} quantization is known to crash this GPU's Vulkan backend — running on CPU",
-            info.quant
-        )))
-    } else if exe_name.contains("vulkan") || has_discrete_gpu() {
-        (estimate_safe_gpu_layers(&info.path), None)
+    let has_gpu = exe_name.contains("vulkan") || has_discrete_gpu();
+
+    let (mut plan, mut note) = if !has_gpu {
+        (
+            PlacementPlan::FullGpu(0),
+            Some("GPU disabled: no compatible discrete GPU detected".to_string()),
+        )
     } else {
-        (0, Some("GPU disabled: no compatible discrete GPU detected".to_string()))
+        let preferred_layers = estimate_safe_gpu_layers(&info.path);
+        let vram_mb = query_dedicated_vram_mb().unwrap_or(4096);
+
+        // Real per-tensor placement: instead of forcing the whole model
+        // CPU-only when it contains a confirmed-unsafe quant, pin just
+        // those tensors to CPU via `-ot` and offload the rest normally.
+        match crate::gguf::parse_gguf_tensor_info(&info.path) {
+            Ok((metadata, tensors)) => {
+                let moe = gpu_placement::detect_moe(&metadata, &tensors);
+                let plan = gpu_placement::build_placement_plan(
+                    &tensors,
+                    moe.as_ref(),
+                    vram_mb,
+                    preferred_layers,
+                );
+                let note = placement_plan_note(&plan, &info.quant);
+                (plan, note)
+            }
+            Err(e) => {
+                // Can't read real tensor data (corrupt file, permissions,
+                // truncated download) — degrade to the previous
+                // label-based heuristic rather than failing outright.
+                tracing::warn!(
+                    model_id = %info.id,
+                    error = %e,
+                    "[model-load] tensor_info parse failed, falling back to quant-label heuristic"
+                );
+                if is_gpu_unsafe_quant(&info.quant) {
+                    (
+                        PlacementPlan::CpuOnly,
+                        Some(format!(
+                            "GPU disabled: {:?} quantization is known to crash this GPU's Vulkan backend — running on CPU",
+                            info.quant
+                        )),
+                    )
+                } else {
+                    (PlacementPlan::FullGpu(preferred_layers), None)
+                }
+            }
+        }
     };
-    let initial_gpu_layers = mode.gpu_layers(gpu_preferred_layers);
-    // `mode` (e.g. an explicit CpuOnly override) can still force 0 layers even
-    // when the quant/GPU checks above found no problem; don't attach a
-    // "GPU disabled" reason in that case since none of those checks fired.
-    let fallback_note = if initial_gpu_layers == 0 { skip_reason } else { None };
+
+    // A previous crash on THIS specific model (not any other model) already
+    // found a working layer count — start there directly instead of
+    // re-attempting a plan already known to be unstable for this model.
+    if gpu_profile.crash_count > 0 {
+        if let Some(last_safe) = gpu_profile.last_safe_gpu_layers {
+            plan = PlacementPlan::FullGpu(last_safe);
+            note = Some(format!(
+                "GPU: using last known-good layer count ({last_safe}) after {} previous crash(es) on this model",
+                gpu_profile.crash_count
+            ));
+        }
+    }
+
+    let plan = apply_mode_override(plan, mode);
+
     tracing::debug!(
-        model_id=%info.id,
-        quant=?info.quant,
-        gpu_crash_recorded,
-        gpu_preferred_layers,
-        mode=?mode,
-        initial_gpu_layers,
-        "[model-load] layer decision"
+        model_id = %info.id,
+        quant = ?info.quant,
+        plan = ?plan,
+        crash_count = gpu_profile.crash_count,
+        mode = ?mode,
+        "[model-load] placement decision"
     );
-    spawn_model_with_layers(slot, info, app, initial_gpu_layers, 1, mode.clone(), fallback_note);
+
+    let ladder = build_gpu_ladder(plan, mode);
+    spawn_from_ladder(slot, info, app, ladder, 1, mode.clone(), note).await;
 }
 
 /// Returns true for quantization formats verified to crash the Vulkan backend
@@ -855,22 +1066,37 @@ fn query_dedicated_vram_mb() -> Option<u64> {
     None
 }
 
-fn spawn_model_with_layers(
+/// Spawns the model using the front of `ladder` as the placement to attempt
+/// now, storing the remainder in `slot.gpu_ladder` for `poll_loading_slots`
+/// to step through on a crash. Replaces the previous `spawn_model_with_layers`
+/// (flat `gpu_layers: u32`) — the whole point of the graduated ladder is that
+/// a crash steps down through progressively more conservative *placements*
+/// (which may include `-ot`/`-ncmoe` args, not just a layer count) rather
+/// than jumping straight to CPU-only in one retry.
+async fn spawn_from_ladder(
     slot: &mut Slot,
     info: &ModelInfo,
     app: &AppHandle,
-    gpu_layers: u32,
+    mut ladder: Vec<PlacementPlan>,
     attempt: u8,
     mode: InferenceMode,
     fallback_note: Option<String>,
 ) {
     slot.kill();
+    let plan = if ladder.is_empty() {
+        PlacementPlan::FullGpu(0)
+    } else {
+        ladder.remove(0)
+    };
+    let (gpu_layers, ot_rules, n_cpu_moe) = placement_plan_cli(&plan);
+
     slot.current_model = Some(info.clone());
     slot.load_attempt = attempt;
     slot.gpu_layers = gpu_layers;
-    slot.cpu_mode = gpu_layers == 0;
+    slot.cpu_mode = gpu_layers == 0 && ot_rules.is_empty() && n_cpu_moe.is_none();
     slot.inference_mode = mode;
     slot.fallback_note = fallback_note;
+    slot.gpu_ladder = ladder;
     slot.state = SlotState::Loading {
         model_id: info.id.clone(),
         load_pct: None,
@@ -891,6 +1117,14 @@ fn spawn_model_with_layers(
     let ctx = info.context_length.clamp(512, 4096).to_string();
     let threads = thread_count().to_string();
     let gpu_layers_str = gpu_layers.to_string();
+    // `-ot`/`--override-tensor` accepts comma-separated `<pattern>=<buffer>`
+    // pairs within a single flag invocation (confirmed via `--help`).
+    let ot_arg = if ot_rules.is_empty() {
+        None
+    } else {
+        Some(ot_rules.join(","))
+    };
+    let n_cpu_moe_str = n_cpu_moe.map(|n| n.to_string());
 
     // Pipe stderr to a per-slot log file so crash reasons are diagnosable.
     let log_dir = app
@@ -931,6 +1165,23 @@ fn spawn_model_with_layers(
         "off",
         "--no-warmup",
     ]);
+
+    if let Some(ref ot) = ot_arg {
+        cmd.args(["--override-tensor", ot]);
+        tracing::info!(
+            model_id = %info.id,
+            ot_arg = %ot,
+            "[orchestrator] tensor-level GPU/CPU hybrid placement active"
+        );
+    }
+    if let Some(ref ncmoe) = n_cpu_moe_str {
+        cmd.args(["--n-cpu-moe", ncmoe]);
+        tracing::info!(
+            model_id = %info.id,
+            n_cpu_moe = %ncmoe,
+            "[orchestrator] MoE expert weights kept on CPU"
+        );
+    }
 
     // Speculative decoding: wire in draft model when configured and available.
     // Yields 1.5–2.5× token throughput with identical output quality.
@@ -1036,7 +1287,7 @@ async fn maybe_start_load(
         drop(reg);
         let idx = empty_or_evict(slots);
         let mode = inference_modes.get(&model_id).cloned().unwrap_or_default();
-        spawn_model(&mut slots[idx], &info, app, &mode);
+        spawn_model(&mut slots[idx], &info, app, &mode).await;
     }
 }
 
@@ -1072,19 +1323,34 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 
                 if should_retry_cpu_fallback(slot, code, &detail) {
                     let exit_code = code.unwrap_or_default();
-                    let note = format!(
-                        "GPU unstable (exit code {exit_code:#010X}) — switching to CPU mode"
-                    );
+                    let next_gpu_layers = slot
+                        .gpu_ladder
+                        .first()
+                        .map(|p| placement_plan_cli(p).0)
+                        .unwrap_or(0);
+                    let note = if next_gpu_layers == 0 {
+                        format!("GPU unstable (exit code {exit_code:#010X}) — switching to CPU mode")
+                    } else {
+                        format!(
+                            "GPU unstable (exit code {exit_code:#010X}) — stepping down to {next_gpu_layers} GPU layer(s)"
+                        )
+                    };
                     tracing::warn!(
                         slot=%slot.index,
                         exit_code=%format!("{exit_code:#010X}"),
-                        "[orchestrator] GPU crash detected, retrying with CPU-only"
+                        next_gpu_layers,
+                        "[orchestrator] GPU crash detected, stepping down the placement ladder"
                     );
 
-                    // Persist flag so next launch skips GPU automatically
-                    if let Ok(mut cfg) = crate::config::load_config(app) {
-                        cfg.gpu_crash_fallback = true;
-                        let _ = crate::config::save_config(app, &cfg);
+                    // Per-model crash isolation: persist this model's own
+                    // crash history, not a global flag that would force
+                    // every other model to skip GPU too.
+                    if let Some(info) = slot.current_model.clone() {
+                        let mut profile = load_gpu_profile(app, &info.id).await;
+                        profile.crash_count += 1;
+                        profile.last_crash_exit_code = Some(exit_code as u32);
+                        profile.last_crash_at = Some(chrono::Utc::now().timestamp_millis());
+                        save_gpu_profile(app, &info, profile).await;
                     }
 
                     let _ = app.emit(
@@ -1099,15 +1365,17 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 
                     if let Some(info) = slot.current_model.clone() {
                         let next_attempt = (slot.load_attempt + 1).min(MAX_MODEL_LOAD_ATTEMPTS);
-                        spawn_model_with_layers(
+                        let remaining_ladder = std::mem::take(&mut slot.gpu_ladder);
+                        spawn_from_ladder(
                             slot,
                             &info,
                             app,
-                            0,
+                            remaining_ladder,
                             next_attempt,
                             slot.inference_mode.clone(),
                             Some(note),
-                        );
+                        )
+                        .await;
                         continue;
                     }
                 }
@@ -1168,6 +1436,15 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
                     cfg.last_model_id = Some(model_id.clone());
                     let _ = crate::config::save_config(app, &cfg);
                 }
+                // Remember the layer count that actually worked for THIS
+                // model, so the next launch starts there directly instead
+                // of re-discovering it via a fresh crash every time.
+                if let Some(info) = slot.current_model.clone() {
+                    let gpu_layers = slot.gpu_layers;
+                    let mut profile = load_gpu_profile(app, &info.id).await;
+                    profile.last_safe_gpu_layers = Some(gpu_layers);
+                    save_gpu_profile(app, &info, profile).await;
+                }
                 let _ = app.emit(
                     "model-ready",
                     json!({
@@ -1184,14 +1461,29 @@ async fn poll_loading_slots(slots: &mut Vec<Slot>, client: &Client, app: &AppHan
 }
 
 fn should_retry_cpu_fallback(slot: &Slot, code: Option<i32>, detail: &str) -> bool {
-    if slot.cpu_mode
+    if slot.gpu_ladder.is_empty()
         || slot.load_attempt >= MAX_MODEL_LOAD_ATTEMPTS
         || !slot.inference_mode.allows_cpu_fallback()
     {
         return false;
     }
 
-    code.is_some_and(is_gpu_memory_crash) || is_gpu_memory_log(detail)
+    is_gpu_crash_with_context(code, detail)
+}
+
+/// True for a confirmed GPU-crash code (`is_gpu_memory_crash`) on its own,
+/// or for any other Windows `STATUS_*` code in the broader
+/// `0xC0000000..=0xC0000FFF` range *only if* corroborated by GPU-specific
+/// log text. That broad range covers hundreds of unrelated exceptions
+/// (divide-by-zero, illegal instruction, etc.) — previously any code in it
+/// was treated as a GPU crash unconditionally, which could misclassify an
+/// unrelated crash as a GPU issue.
+fn is_gpu_crash_with_context(code: Option<i32>, detail: &str) -> bool {
+    if code.is_some_and(is_gpu_memory_crash) {
+        return true;
+    }
+    let in_broad_status_range = code.is_some_and(|c| (0xC0000000..=0xC0000FFF).contains(&(c as u32)));
+    in_broad_status_range && is_gpu_memory_log(detail)
 }
 
 fn is_gpu_memory_log(detail: &str) -> bool {
@@ -1242,8 +1534,14 @@ fn is_model_file_error(detail: &str) -> bool {
         || d.contains("corrupt")
 }
 
+/// Windows NTSTATUS codes confirmed, via real crash reproduction on this
+/// app's GPU backend, to indicate a GPU driver/Vulkan fault:
+/// `STATUS_ACCESS_VIOLATION` and `STATUS_STACK_BUFFER_OVERRUN`. Trusted on
+/// their own, without needing log-text corroboration — see
+/// `is_gpu_crash_with_context` for the broader, corroboration-gated check
+/// used by the actual retry decision.
 fn is_gpu_memory_crash(code: i32) -> bool {
-    (0xC0000000..=0xC0000FFF).contains(&(code as u32))
+    matches!(code as u32, 0xC0000005 | 0xC0000409)
 }
 
 // ── Queue drain ───────────────────────────────────────────────────────────────
@@ -1697,6 +1995,8 @@ mod tests {
         slot.cpu_mode = false;
         slot.load_attempt = 1;
         slot.inference_mode = InferenceMode::Auto;
+        // A non-empty ladder means there's a fallback rung left to try.
+        slot.gpu_ladder = vec![PlacementPlan::FullGpu(0)];
         assert!(should_retry_cpu_fallback(
             &slot,
             Some(0xC0000409u32 as i32),
@@ -1717,6 +2017,95 @@ mod tests {
             Some(0xC0000409u32 as i32),
             "STATUS_STACK_BUFFER_OVERRUN"
         ));
+
+        // Empty ladder (no fallback rung left) — must not retry even with
+        // attempts remaining.
+        slot.load_attempt = 1;
+        slot.gpu_ladder = vec![];
+        assert!(!should_retry_cpu_fallback(
+            &slot,
+            Some(0xC0000409u32 as i32),
+            "STATUS_STACK_BUFFER_OVERRUN"
+        ));
+    }
+
+    #[test]
+    fn is_gpu_crash_with_context_requires_corroboration_outside_confirmed_codes() {
+        // Confirmed codes are trusted on their own.
+        assert!(is_gpu_crash_with_context(Some(0xC0000409u32 as i32), ""));
+        assert!(is_gpu_crash_with_context(Some(0xC0000005u32 as i32), ""));
+
+        // Codes elsewhere in the broad STATUS_* range (divide-by-zero,
+        // illegal instruction) must NOT be misclassified as GPU crashes
+        // without log corroboration.
+        assert!(!is_gpu_crash_with_context(Some(0xC0000094u32 as i32), ""));
+        assert!(!is_gpu_crash_with_context(Some(0xC000001Du32 as i32), ""));
+
+        // But corroborated by GPU-specific log text, they count.
+        assert!(is_gpu_crash_with_context(
+            Some(0xC0000094u32 as i32),
+            "ErrorOutOfDeviceMemory: vk::Device::allocateMemory failed"
+        ));
+    }
+
+    #[test]
+    fn build_gpu_ladder_steps_down_before_giving_up() {
+        let ladder = build_gpu_ladder(PlacementPlan::FullGpu(20), &InferenceMode::Auto);
+        assert_eq!(
+            ladder,
+            vec![
+                PlacementPlan::FullGpu(20),
+                PlacementPlan::FullGpu(10),
+                PlacementPlan::FullGpu(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_gpu_ladder_respects_gpu_only_no_fallback() {
+        let ladder = build_gpu_ladder(PlacementPlan::FullGpu(20), &InferenceMode::GpuOnly);
+        assert_eq!(ladder, vec![PlacementPlan::FullGpu(20)]);
+    }
+
+    #[test]
+    fn build_gpu_ladder_preserves_tensor_override_then_falls_back() {
+        let plan = PlacementPlan::TensorOverride {
+            ot_rules: vec!["blk\\.\\d+\\.ffn_gate$=CPU".to_string()],
+            gpu_layers: 24,
+        };
+        let ladder = build_gpu_ladder(plan.clone(), &InferenceMode::Auto);
+        assert_eq!(ladder[0], plan);
+        assert_eq!(ladder[1], PlacementPlan::FullGpu(12));
+        assert_eq!(ladder[2], PlacementPlan::FullGpu(0));
+    }
+
+    #[test]
+    fn placement_plan_cli_resolves_expected_args() {
+        assert_eq!(placement_plan_cli(&PlacementPlan::FullGpu(10)), (10, vec![], None));
+        assert_eq!(placement_plan_cli(&PlacementPlan::CpuOnly), (0, vec![], None));
+        assert_eq!(
+            placement_plan_cli(&PlacementPlan::CpuMoe {
+                n_cpu_moe: 4,
+                gpu_layers: 20
+            }),
+            (20, vec![], Some(4))
+        );
+    }
+
+    #[test]
+    fn apply_mode_override_lets_explicit_choice_win() {
+        assert_eq!(
+            apply_mode_override(PlacementPlan::FullGpu(20), &InferenceMode::CpuOnly),
+            PlacementPlan::FullGpu(0)
+        );
+        assert_eq!(
+            apply_mode_override(PlacementPlan::CpuOnly, &InferenceMode::GpuOnly),
+            PlacementPlan::FullGpu(1)
+        );
+        assert_eq!(
+            apply_mode_override(PlacementPlan::FullGpu(20), &InferenceMode::Hybrid { gpu_layers: 7 }),
+            PlacementPlan::FullGpu(7)
+        );
     }
 
     #[test]

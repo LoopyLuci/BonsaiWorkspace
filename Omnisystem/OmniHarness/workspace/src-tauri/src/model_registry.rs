@@ -34,40 +34,57 @@ pub enum Quant {
     IQ2_XXS,
     IQ2_XS,
     IQ2_S,
+    IQ2_M,
     IQ3_XXS,
+    IQ3_XS,
     IQ3_S,
+    IQ3_M,
     IQ4_NL,
     IQ4_XS,
+    TQ1_0,
+    TQ2_0,
     Unknown(u32),
 }
 
 impl Quant {
+    /// Decodes the GGUF metadata key `general.file_type`, which stores
+    /// `enum llama_ftype` (see `llama.h`) — a *different* enum from the
+    /// per-tensor `ggml_type` (see `gguf.rs`/`gpu_placement.rs`). The two
+    /// only coincide for values 0-3 and by coincidence at 10; past that they
+    /// diverge completely. Confirmed empirically against real on-disk GGUF
+    /// files: two independently-produced "IQ1_S"-named files both report
+    /// `general.file_type=24`, which decodes correctly to `IQ1_S` here (the
+    /// previous table wrongly read this as `ggml_type`'s IQ1_M).
     fn from_file_type(n: u32) -> Self {
         match n {
             0 => Self::F32,
             1 => Self::F16,
             2 => Self::Q4_0,
             3 => Self::Q4_1,
-            6 => Self::Q5_0,
-            7 => Self::Q5_1,
-            8 => Self::Q8_0,
-            9 => Self::Q8_1,
+            7 => Self::Q8_0,
+            8 => Self::Q5_0,
+            9 => Self::Q5_1,
             10 => Self::Q2_K,
-            11 => Self::Q3_K,
-            12 => Self::Q4_K,
-            13 => Self::Q5_K,
-            14 => Self::Q6_K,
-            15 => Self::Q8_K,
-            16 => Self::IQ2_XXS,
-            17 => Self::IQ2_XS,
-            18 => Self::IQ3_XXS,
-            19 => Self::IQ1_S,
-            20 => Self::IQ4_NL,
-            21 => Self::IQ3_S,
-            22 => Self::IQ2_S,
-            23 => Self::IQ4_XS,
-            24 => Self::IQ1_M,
-            30 => Self::BF16,
+            11 | 12 | 13 => Self::Q3_K,   // Q3_K_S / Q3_K_M / Q3_K_L
+            14 | 15 => Self::Q4_K,        // Q4_K_S / Q4_K_M
+            16 | 17 => Self::Q5_K,        // Q5_K_S / Q5_K_M
+            18 => Self::Q6_K,
+            19 => Self::IQ2_XXS,
+            20 => Self::IQ2_XS,
+            21 => Self::Q2_K,             // Q2_K_S
+            22 => Self::IQ3_XS,
+            23 => Self::IQ3_XXS,
+            24 => Self::IQ1_S,
+            25 => Self::IQ4_NL,
+            26 => Self::IQ3_S,
+            27 => Self::IQ3_M,
+            28 => Self::IQ2_S,
+            29 => Self::IQ2_M,
+            30 => Self::IQ4_XS,
+            31 => Self::IQ1_M,
+            32 => Self::BF16,
+            36 => Self::TQ1_0,
+            37 => Self::TQ2_0,
             n => Self::Unknown(n),
         }
     }
@@ -94,10 +111,15 @@ impl Quant {
             Self::IQ2_XXS => "IQ2_XXS",
             Self::IQ2_XS => "IQ2_XS",
             Self::IQ2_S => "IQ2_S",
+            Self::IQ2_M => "IQ2_M",
             Self::IQ3_XXS => "IQ3_XXS",
+            Self::IQ3_XS => "IQ3_XS",
             Self::IQ3_S => "IQ3_S",
+            Self::IQ3_M => "IQ3_M",
             Self::IQ4_NL => "IQ4_NL",
             Self::IQ4_XS => "IQ4_XS",
+            Self::TQ1_0 => "TQ1_0",
+            Self::TQ2_0 => "TQ2_0",
             Self::Unknown(_) => "?",
         }
     }
@@ -111,9 +133,14 @@ impl Quant {
             Self::Q6_K => 6.6,
             Self::Q5_0 | Self::Q5_1 | Self::Q5_K => 5.6,
             Self::Q4_0 | Self::Q4_1 | Self::Q4_K | Self::IQ4_NL | Self::IQ4_XS => 4.6,
-            Self::Q3_K | Self::IQ3_XXS | Self::IQ3_S => 3.6,
+            Self::Q3_K | Self::IQ3_M => 3.7,
+            Self::IQ3_XXS | Self::IQ3_S => 3.6,
+            Self::IQ3_XS => 3.3,
             Self::Q2_K | Self::IQ2_XXS | Self::IQ2_XS | Self::IQ2_S => 2.6,
+            Self::IQ2_M => 2.7,
+            Self::TQ2_0 => 2.06,
             Self::IQ1_S | Self::IQ1_M => 1.6,
+            Self::TQ1_0 => 1.69,
             Self::Unknown(_) => 8.0,
         }
     }
@@ -389,8 +416,16 @@ fn parse_header(path: &Path) -> anyhow::Result<Header> {
     // orchestrator) when the key is truly absent.
     let mut file_type: Option<u32> = None;
 
-    // Parse up to 512 KV pairs; stop early on any read error.
-    for _ in 0..n_kv.min(512) {
+    // Parse every metadata KV pair (bounded only by a large corruption
+    // guard, matching `gguf.rs`'s convention), stopping early on any read
+    // error. Previously capped at an arbitrary 512 entries — real files
+    // with verbose metadata (custom sampling defaults, per-layer info,
+    // etc.) can exceed that easily, silently truncating before reaching
+    // keys like `general.file_type` that appear later in the KV section.
+    // Confirmed empirically: `Bonsai-1.7B-IQ1_S.gguf` has `general.file_type`
+    // present in the raw file bytes, but the old 512-entry cap missed it,
+    // making the model report as `Unknown` instead of its real quant.
+    for _ in 0..n_kv.min(1_000_000) {
         let key = match rd_str(&mut f) {
             Ok(k) => k,
             Err(_) => break,
@@ -429,6 +464,16 @@ fn rd_u8(f: &mut impl Read) -> anyhow::Result<u8> {
     let mut b = [0u8; 1];
     f.read_exact(&mut b)?;
     Ok(b[0])
+}
+fn rd_i8(f: &mut impl Read) -> anyhow::Result<i8> {
+    let mut b = [0u8; 1];
+    f.read_exact(&mut b)?;
+    Ok(b[0] as i8)
+}
+fn rd_u16(f: &mut impl Read) -> anyhow::Result<u16> {
+    let mut b = [0u8; 2];
+    f.read_exact(&mut b)?;
+    Ok(u16::from_le_bytes(b))
 }
 fn rd_i16(f: &mut impl Read) -> anyhow::Result<i16> {
     let mut b = [0u8; 2];
@@ -474,29 +519,51 @@ fn rd_str(f: &mut impl Read) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// GGUF metadata value-type enum, per spec:
+/// https://github.com/ggerganov/ggml/blob/master/docs/gguf.md — the same
+/// table `gguf.rs::read_gguf_value` already implements correctly. This
+/// function previously used a completely different, incorrect numbering
+/// (its `7`/`8` were swapped relative to the real `BOOL`/`STRING` values,
+/// among other mismatches), which silently desynchronized the byte stream
+/// as soon as a file's metadata contained a value of one of the
+/// misidentified types — confirmed empirically: `Bonsai-1.7B-IQ1_S.gguf`'s
+/// `general.sampling.*` keys (F32-valued) triggered exactly this, causing
+/// `general.file_type` (which appears later in the same file) to never be
+/// reached.
 fn rd_val(f: &mut impl Read, vt: u32) -> anyhow::Result<serde_json::Value> {
     use serde_json::{Number, Value};
     Ok(match vt {
-        0 => Value::Bool(rd_u8(f)? != 0),
-        1 => Value::Number(rd_u8(f)?.into()),
-        2 => Value::Number(rd_i16(f)?.into()),
-        3 => Value::Number(rd_u32(f)?.into()),
-        4 => Value::Number(rd_i32(f)?.into()),
-        5 => Value::Number(Number::from_f64(rd_f32(f)? as f64).unwrap_or(Number::from(0))),
-        6 => Value::Bool(rd_u8(f)? != 0),
-        7 => Value::String(rd_str(f)?),
-        8 => {
-            // array — consume all elements, return empty placeholder
+        0 => Value::Number(rd_u8(f)?.into()),
+        1 => Value::Number(rd_i8(f)?.into()),
+        2 => Value::Number(rd_u16(f)?.into()),
+        3 => Value::Number(rd_i16(f)?.into()),
+        4 => Value::Number(rd_u32(f)?.into()),
+        5 => Value::Number(rd_i32(f)?.into()),
+        6 => Value::Number(Number::from_f64(rd_f32(f)? as f64).unwrap_or(Number::from(0))),
+        7 => Value::Bool(rd_u8(f)? != 0),
+        8 => Value::String(rd_str(f)?),
+        9 => {
+            // Array — must consume every element to keep the byte stream
+            // aligned for whatever key follows, so the skip count itself
+            // needs a large corruption-guard bound (matching gguf.rs's
+            // `count > 10_000_000` convention), NOT a small silent-truncate
+            // cap: capping at e.g. 65536 for a real large array (tokenizer
+            // vocabularies routinely exceed 100k entries) leaves the
+            // remaining elements unread, desynchronizing every subsequent
+            // key/value read in the file — confirmed empirically as the
+            // actual cause of `general.file_type` (positioned after
+            // `tokenizer.ggml.tokens`) never being reached.
             let elem_vt = rd_u32(f)?;
             let count = rd_u64(f)?;
-            for _ in 0..count.min(65536) {
+            anyhow::ensure!(count <= 10_000_000, "GGUF array length implausibly large: {count}");
+            for _ in 0..count {
                 rd_val(f, elem_vt)?;
             }
             Value::Array(vec![])
         }
-        9 => Value::Number(rd_u64(f)?.into()),
-        10 => Value::Number(rd_i64(f)?.into()),
-        11 => Value::Number(Number::from_f64(rd_f64(f)?).unwrap_or(Number::from(0))),
+        10 => Value::Number(rd_u64(f)?.into()),
+        11 => Value::Number(rd_i64(f)?.into()),
+        12 => Value::Number(Number::from_f64(rd_f64(f)?).unwrap_or(Number::from(0))),
         t => anyhow::bail!("unknown GGUF value type {t}"),
     })
 }
@@ -580,4 +647,78 @@ pub fn scan_adapters(adapter_dir: &Path) -> Vec<AdapterInfo> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `general.file_type` decodes `llama_ftype`, not `ggml_type` — these
+    /// values are the ones empirically confirmed against real on-disk GGUF
+    /// files (see `parse_gguf_file_type_matches_real_files` below).
+    #[test]
+    fn from_file_type_uses_llama_ftype_not_ggml_type() {
+        assert_eq!(Quant::from_file_type(0), Quant::F32);
+        assert_eq!(Quant::from_file_type(10), Quant::Q2_K);
+        // file_type=24 is LLAMA_FTYPE_MOSTLY_IQ1_S, not ggml_type's IQ1_M —
+        // this is the bug this phase fixes.
+        assert_eq!(Quant::from_file_type(24), Quant::IQ1_S);
+        assert_eq!(Quant::from_file_type(31), Quant::IQ1_M);
+        assert_eq!(Quant::from_file_type(36), Quant::TQ1_0);
+        assert_eq!(Quant::from_file_type(37), Quant::TQ2_0);
+        assert_eq!(Quant::from_file_type(9999), Quant::Unknown(9999));
+    }
+
+    #[test]
+    fn bits_per_weight_orders_monotonically_with_precision() {
+        assert!(Quant::F32.bits_per_weight() > Quant::Q8_0.bits_per_weight());
+        assert!(Quant::Q8_0.bits_per_weight() > Quant::Q4_K.bits_per_weight());
+        assert!(Quant::Q4_K.bits_per_weight() > Quant::Q2_K.bits_per_weight());
+        assert!(Quant::Q2_K.bits_per_weight() > Quant::IQ1_S.bits_per_weight());
+        assert!(Quant::TQ2_0.bits_per_weight() > Quant::TQ1_0.bits_per_weight());
+    }
+
+    /// Cross-checks the corrected `from_file_type` table against real
+    /// on-disk GGUF files parsed end-to-end via `parse_header`. Gated behind
+    /// `#[ignore]` since these files only exist on the machine that owns the
+    /// local model library, not in CI: `cargo test -- --ignored` to run
+    /// locally.
+    #[test]
+    #[ignore]
+    fn parse_gguf_file_type_matches_real_files() {
+        let cases: &[(&str, Quant)] = &[
+            (
+                r"D:\Models\general\Bonsai-1.7B-IQ1_S\Bonsai-1.7B-IQ1_S.gguf",
+                Quant::IQ1_S,
+            ),
+            (
+                r"D:\Models\general\Gliese-Qwen3.5-0.8B-Abliterated-Caption.i1-IQ1_S.gguf",
+                Quant::IQ1_S,
+            ),
+            (
+                r"D:\Models\general\Bonsai-1.7B-TQ1_0\Bonsai-1.7B-TQ1_0.gguf",
+                Quant::TQ1_0,
+            ),
+            (
+                r"D:\Models\general\Bonsai-1.7B-TQ2_0\Bonsai-1.7B-TQ2_0.gguf",
+                Quant::TQ2_0,
+            ),
+            (
+                r"D:\Models\general\Bonsai-1.7B-Q2_K\Bonsai-1.7B-Q2_K.gguf",
+                Quant::Q2_K,
+            ),
+        ];
+        for (path, expected) in cases {
+            let path = Path::new(path);
+            if !path.exists() {
+                continue; // machine-specific fixture; skip rather than fail if absent
+            }
+            let header = parse_header(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            assert_eq!(
+                header.quant, *expected,
+                "{path:?}: expected {expected:?}, got {:?}",
+                header.quant
+            );
+        }
+    }
 }

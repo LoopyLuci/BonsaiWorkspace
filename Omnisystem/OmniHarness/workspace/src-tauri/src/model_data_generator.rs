@@ -453,6 +453,7 @@ impl ModelDataGenerator {
             },
             inference: InferenceProfile::default(),
             inference_mode: crate::inference_mode::InferenceMode::default(),
+            gpu_profile: crate::model_data::GpuProfile::default(),
             prompt_format: PromptFormat::OpenAIMessages,
             skill_affinities: vec![],
             authors: vec![],
