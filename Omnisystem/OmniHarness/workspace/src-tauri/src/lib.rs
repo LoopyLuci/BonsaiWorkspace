@@ -2413,6 +2413,7 @@ pub fn run() {
             commands::resolve_bug,
             commands::attempt_fix_now,
             commands::get_hardware_info,
+            commands::get_system_stats,
             commands::get_api_port,
             commands::get_buddy_api_port,
             commands::get_mcp_port,

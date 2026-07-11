@@ -2881,6 +2881,15 @@ pub async fn get_hardware_info() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+pub async fn get_system_stats() -> Result<serde_json::Value, String> {
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let total_mb = sys.total_memory() / 1024 / 1024;
+    let used_mb = total_mb.saturating_sub(sys.available_memory() / 1024 / 1024);
+    Ok(serde_json::json!({ "used_mb": used_mb, "total_mb": total_mb }))
+}
+
+#[tauri::command]
 pub async fn prompt_gguf_import(app_handle: AppHandle) -> Result<String, String> {
     let path = app_handle
         .dialog()

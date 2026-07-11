@@ -14,11 +14,21 @@
   let result: unknown = null;
   let error = '';
 
+  // There is no `rpc` Tauri command registered on the backend — SQL/APL
+  // execution was never wired up server-side. Surface that plainly instead
+  // of the raw "Command rpc not found" string.
+  function friendlyRpcError(e: unknown): string {
+    const msg = String(e);
+    return /rpc/i.test(msg) && /not found/i.test(msg)
+      ? 'Data Workbench execution is not implemented in this build yet.'
+      : msg;
+  }
+
   async function runSql() {
     running = true; error = ''; result = null;
     try {
       result = await invoke('rpc', { method: 'data.execute_sql', params: { query: sqlQuery } });
-    } catch (e) { error = String(e); }
+    } catch (e) { error = friendlyRpcError(e); }
     finally { running = false; }
   }
 
@@ -26,7 +36,7 @@
     running = true; error = ''; result = null;
     try {
       result = await invoke('rpc', { method: 'data.eval_apl', params: { expr: aplExpr } });
-    } catch (e) { error = String(e); }
+    } catch (e) { error = friendlyRpcError(e); }
     finally { running = false; }
   }
 

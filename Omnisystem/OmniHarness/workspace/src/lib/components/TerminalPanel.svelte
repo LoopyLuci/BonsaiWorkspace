@@ -65,9 +65,13 @@
   // (activeTabId starts as 'activity') `container` is still undefined, and a
   // single onMount-time `term.open(container)` would never actually attach
   // xterm.js to anything.
+  let ro: ResizeObserver;
+
   $: if (container && term) {
     term.open(container);
     fit?.fit();
+    ro?.disconnect();
+    ro?.observe(container);
   }
   let unlistenPty: (() => void) | null = null;
   let unlistenToolTerminal: (() => void) | null = null;
@@ -701,7 +705,7 @@
 
     await spawnTabSession('default');
 
-    const ro = new ResizeObserver(() => {
+    ro = new ResizeObserver(() => {
       if (resizer) clearTimeout(resizer);
       resizer = setTimeout(() => {
         fit.fit();
@@ -717,10 +721,12 @@
         }
       }, 100);
     });
-    ro.observe(container);
+    // Actual .observe(container) happens in the reactive statement above,
+    // once a real container element exists — same reasoning as term.open().
   });
 
   onDestroy(() => {
+    ro?.disconnect();
     unlistenPty?.();
     unlistenToolTerminal?.();
     unlistenToolUsed?.();

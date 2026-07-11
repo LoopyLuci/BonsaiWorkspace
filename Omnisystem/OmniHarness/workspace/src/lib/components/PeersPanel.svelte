@@ -15,6 +15,18 @@
   let loading = false;
   let error = '';
 
+  // There is no `rpc` Tauri command registered on the backend — P2P lane
+  // management (list/close/start_webrtc/start_swarm/start_onion) was never
+  // wired up server-side. Rather than surface the raw "Command rpc not
+  // found" string (which reads like something broke), say plainly that
+  // this feature isn't available yet.
+  function friendlyRpcError(e: unknown): string {
+    const msg = String(e);
+    return /rpc/i.test(msg) && /not found/i.test(msg)
+      ? 'P2P peer networking is not implemented in this build yet.'
+      : msg;
+  }
+
   async function refresh() {
     loading = true;
     error = '';
@@ -22,7 +34,7 @@
       const resp = await invoke<{ lanes: Lane[] }>('rpc', { method: 'p2p.list_lanes', params: {} });
       lanes = resp.lanes ?? [];
     } catch (e) {
-      error = String(e);
+      error = friendlyRpcError(e);
     } finally {
       loading = false;
     }
@@ -33,7 +45,7 @@
       await invoke('rpc', { method: 'p2p.close_lane', params: { name } });
       await refresh();
     } catch (e) {
-      error = String(e);
+      error = friendlyRpcError(e);
     }
   }
 
