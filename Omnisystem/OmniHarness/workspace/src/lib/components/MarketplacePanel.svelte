@@ -1,13 +1,19 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { addToast } from '$lib/stores/toast';
   let query = '';
   let results: any[] = [];
   let loading = false;
 
   async function search() {
     loading = true;
-    results = await invoke('search_marketplace', { query });
-    loading = false;
+    try {
+      results = await invoke('search_marketplace', { query });
+    } catch (err) {
+      addToast(typeof err === 'string' ? err : 'Marketplace search failed', 'error');
+    } finally {
+      loading = false;
+    }
   }
 </script>
 
@@ -25,7 +31,9 @@
     <div class="bg-gray-800 p-2 rounded mb-2 text-sm">
       <span class="text-white">{a.name} v{a.version}</span>
       <span class="text-gray-500 ml-2">{a.tags?.join(', ')}</span>
-      <button class="float-right px-2 py-1 bg-green-600 text-white rounded text-xs" on:click={() => invoke('install_asset', { cid: a.cid })}>Install</button>
+      <button class="float-right px-2 py-1 bg-green-600 text-white rounded text-xs" on:click={() => invoke('install_asset', { cid: a.cid })
+        .then(() => addToast(`Installed ${a.name}`, 'success'))
+        .catch((err) => addToast(typeof err === 'string' ? err : `Failed to install ${a.name}`, 'error'))}>Install</button>
     </div>
   {/each}
 </div>

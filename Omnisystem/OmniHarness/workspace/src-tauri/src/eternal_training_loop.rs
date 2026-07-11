@@ -792,7 +792,13 @@ pub struct TrainingPreferences {
 impl Default for TrainingPreferences {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Opt-in: this loop runs real chess/go MCTS self-play and LLM
+            // inference every cycle starting immediately at launch, unconditionally.
+            // `idle_seconds_needed` below is not currently enforced anywhere,
+            // so defaulting to enabled meant every fresh install burned real
+            // CPU/RAM at idle with no user action. Users who want continuous
+            // background training can flip this on via the training settings UI.
+            enabled: false,
             train_on_battery: false,
             min_battery_pct: 20,
             idle_seconds_needed: 300,

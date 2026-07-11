@@ -459,22 +459,11 @@ async fn event_loop(
         .build()
         .unwrap_or_default();
 
-    // Auto-load the last-used model on startup (falls back to first in registry)
-    {
-        let last_id = crate::config::load_config(&app)
-            .ok()
-            .and_then(|c| c.last_model_id);
-        let reg = registry.lock().await;
-        let info = last_id
-            .as_deref()
-            .and_then(|id| reg.models.iter().find(|m| m.id == id).cloned())
-            .or_else(|| reg.models.first().cloned());
-        if let Some(info) = info {
-            drop(reg);
-            let mode = inference_modes.get(&info.id).cloned().unwrap_or_default();
-            spawn_model(&mut slots[0], &info, &app, &mode);
-        }
-    }
+    // No eager model pre-load here: spawning a llama-server process holds its
+    // full weights + KV cache resident in RAM for as long as the app runs,
+    // even if the user never opens chat. `Cmd::Infer`/`Cmd::Load` already
+    // lazy-load on first real use (see `maybe_start_load` below), so idle
+    // sessions no longer pay for a model nobody asked for.
 
     loop {
         tokio::select! {
@@ -482,11 +471,18 @@ async fn event_loop(
                 None => break,
                 Some(c) => handle_cmd(c, &mut slots, &mut queue, &mut inference_modes, &cmd_tx, &registry, &client, &app).await,
             },
-            // Periodic: advance queue + poll Loading slots for readiness
+            // Periodic: advance queue + poll Loading slots for readiness.
+            // Skipped when the pool is fully idle (no slots doing anything,
+            // nothing queued) — `build_status` queries system memory on every
+            // call, so ticking this 4x/sec forever with nothing to report was
+            // pure overhead for a status display nobody was looking at.
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                poll_loading_slots(&mut slots, &client, &app).await;
-                drain_queue(&mut queue, &mut slots, &cmd_tx, &client, &app).await;
-                emit_status(&slots, &queue, &app);
+                let pool_idle = queue.is_empty() && slots.iter().all(|s| s.state.is_empty());
+                if !pool_idle {
+                    poll_loading_slots(&mut slots, &client, &app).await;
+                    drain_queue(&mut queue, &mut slots, &cmd_tx, &client, &app).await;
+                    emit_status(&slots, &queue, &app);
+                }
             }
         }
     }
@@ -508,9 +504,34 @@ async fn handle_cmd(
             if let Some(idx) = best_ready_slot(slots, mid) {
                 dispatch(idx, req, slots, cmd_tx, client, app);
             } else {
-                // No ready slot — if a suitable model isn't loading, start it
-                if let Some(mid_owned) = req.model_id.clone() {
-                    maybe_start_load(mid_owned, slots, registry, inference_modes, app).await;
+                // No ready slot — if a suitable model isn't loading, start it.
+                // This is the *only* place a model gets spawned on a request
+                // with no explicit model_id (e.g. `infer_simple` callers) —
+                // deliberately lazy, so nothing loads until real work needs it.
+                match req.model_id.clone() {
+                    Some(mid_owned) => {
+                        maybe_start_load(mid_owned, slots, registry, inference_modes, app).await;
+                    }
+                    None if slots
+                        .iter()
+                        .all(|s| matches!(s.state, SlotState::Empty | SlotState::Crashed { .. })) =>
+                    {
+                        let last_id = crate::config::load_config(app)
+                            .ok()
+                            .and_then(|c| c.last_model_id);
+                        let reg = registry.lock().await;
+                        let info = last_id
+                            .as_deref()
+                            .and_then(|id| reg.models.iter().find(|m| m.id == id).cloned())
+                            .or_else(|| reg.models.first().cloned());
+                        if let Some(info) = info {
+                            drop(reg);
+                            let mode = inference_modes.get(&info.id).cloned().unwrap_or_default();
+                            let idx = empty_or_evict(slots);
+                            spawn_model(&mut slots[idx], &info, app, &mode);
+                        }
+                    }
+                    None => {}
                 }
                 queue.push_back(req);
             }
@@ -588,18 +609,12 @@ async fn handle_cmd(
                 reg.refresh();
             }
             let _ = app.emit("registry-updated", ());
-            // If all slots are empty/crashed, try to auto-load the first model
-            let all_idle = slots
-                .iter()
-                .all(|s| matches!(s.state, SlotState::Empty | SlotState::Crashed { .. }));
-            if all_idle {
-                let reg = registry.lock().await;
-                if let Some(info) = reg.models.first().cloned() {
-                    drop(reg);
-                    let mode = inference_modes.get(&info.id).cloned().unwrap_or_default();
-                    spawn_model(&mut slots[0], &info, app, &mode);
-                }
-            }
+            // Deliberately no "all slots idle -> auto-load first model" fallback
+            // here: this handler fires on the very first startup registry scan
+            // too, which used to eagerly spawn a llama-server process (holding
+            // a model's full weights + KV cache resident) before the user ever
+            // opened chat. `Cmd::Infer` already lazy-loads on first real request
+            // via `maybe_start_load`, so idle sessions no longer pay for it.
         }
 
         Cmd::SlotFreed(idx) => {

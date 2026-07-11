@@ -245,11 +245,19 @@ fn walk_gguf_in(dir: &Path) -> Vec<ModelInfo> {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("gguf"))
-                .unwrap_or(false)
+            // Some downloader/extraction tools leave a directory behind with
+            // the same name as the model file it contains (e.g. `foo.gguf/`
+            // wrapping the real `foo.gguf/foo.gguf`). WalkDir recurses into
+            // it regardless, so without this check that wrapper directory
+            // matches the extension filter too — it then fails to parse as
+            // a model (permission-denied opening a directory as a file) and
+            // shows up as a bogus duplicate entry alongside the real file.
+            e.file_type().is_file()
+                && e.path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("gguf"))
+                    .unwrap_or(false)
         })
         .map(|e| probe(e.path()))
         .collect()

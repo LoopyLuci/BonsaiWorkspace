@@ -28,6 +28,7 @@
   import { loadApiSettings } from '$lib/stores/settings';
   import { onboardingDone, showOnboarding, restartOnboarding } from '$lib/stores/onboarding';
   import { instrumentAll } from '$lib/activity';
+  import { addToast } from '$lib/stores/toast';
   import Toasts from '$lib/components/Toast.svelte';
 
   // ── Layout toggles ────────────────────────────────────────────────────────
@@ -402,7 +403,8 @@
       <button class="btn-icon" title="Toggle Terminal (Ctrl+`)"
         on:click={toggleTerminal}>Terminal</button>
       <button class="btn-icon" title="Workspace Terminal Interface (Ctrl+Alt+T)"
-        on:click={() => invoke('launch_workspace_terminal', { panel: null, workspace: null })}>🖥 BTI</button>
+        on:click={() => invoke('launch_workspace_terminal', { panel: null, workspace: null })
+          .catch((e) => addToast(typeof e === 'string' ? e : 'Failed to launch BTI', 'error'))}>🖥 BTI</button>
       <button class="btn-icon" title="Toggle Chat"
         on:click={() => (showChat = !showChat)}>Chat</button>
       <button class="btn-icon" class:active={showCanvas} title="Spatial Code Canvas"
