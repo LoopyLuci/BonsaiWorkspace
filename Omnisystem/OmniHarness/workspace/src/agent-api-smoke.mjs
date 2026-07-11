@@ -268,6 +268,11 @@ function buildTauriMockInitScript() {
     let cbId = 1;
     let eventId = 1;
 
+    // These scenarios exercise the returning-user shell, not first-run setup —
+    // without this, App.svelte's onboarding wizard modal covers the whole
+    // screen on every fresh page load and blocks every subsequent click.
+    try { localStorage.setItem('workspace_onboarding_done', '1'); } catch {}
+
     function browserSleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -330,6 +335,14 @@ function buildTauriMockInitScript() {
           const arr = listeners.get(eventName) || [];
           arr.push({ id, handlerId: args.handler });
           listeners.set(eventName, arr);
+          // App.svelte gates the entire UI behind a launch splash until it
+          // receives 'workspace:services-ready' from the real Rust supervisor.
+          // This mock has no real supervisor, so it must fire the same event
+          // itself, once App.svelte has actually registered its listener —
+          // otherwise every UI scenario hangs forever behind the splash screen.
+          if (eventName === 'workspace:services-ready') {
+            setTimeout(() => emitTauriEvent('workspace:services-ready', undefined), 0);
+          }
           return id;
         }
 
@@ -346,8 +359,38 @@ function buildTauriMockInitScript() {
         if (cmd === 'save_chat_session') return { id: 'mock-session-id' };
         if (cmd === 'load_chat_session') return { id: 'mock-session-id', title: 'Mock', messages: [] };
         if (cmd === 'list_chat_sessions') return [];
+        if (cmd === 'get_api_config') return { api_host: '127.0.0.1', api_port: 11369 };
+        if (cmd === 'get_api_port') return 11369;
         if (cmd === 'list_models_registry') return [];
-        if (cmd === 'get_orchestrator_status') return { slots: [], queue_depth: 0, total_ram_mb: 0, free_ram_mb: 0 };
+        // ChatPanel's send() blocks (never calls submit_chat) unless it finds
+        // at least one 'ready' slot in orchestrator status — an empty slots
+        // array here means every scripted chat scenario silently no-ops.
+        if (cmd === 'get_orchestrator_status') {
+          return {
+            slots: [{ index: 0, port: 15000, state: { state: 'ready', model_id: 'workspace-1' }, requests: 0, idle_secs: 0 }],
+            queue_depth: 0,
+            total_ram_mb: 16384,
+            free_ram_mb: 8192,
+          };
+        }
+        // initModelStores() calls these unconditionally on every services-ready
+        // transition — unmocked, they resolve to `null` and crash an
+        // always-mounted component (ChatPanel reads `$defaultInferenceMode.mode`),
+        // caught by GlobalErrorBoundary and failing every UI scenario.
+        if (cmd === 'get_default_inference_mode') return { mode: 'hybrid', gpu_layers: 20 };
+        if (cmd === 'get_inference_mode') return { mode: 'hybrid', gpu_layers: 20 };
+        if (cmd === 'get_task_queue_status') {
+          return { pending_total: 0, active_total: 0, max_parallel_inference: 1, free_ram_mb: 8192, cpu_pct: 0, sources: {}, active_tasks: [] };
+        }
+        if (cmd === 'list_model_data') return [];
+        if (cmd === 'fetch_opencode_go_models') return [];
+        if (cmd === 'list_known_providers') return [];
+        if (cmd === 'cluster_list_nodes') return [];
+        if (cmd === 'cluster_get_policy') return null;
+        if (cmd === 'list_crash_reports') return [];
+        if (cmd === 'kernel_status') {
+          return { connected: false, version: null, uptime_secs: null, events_stored: null, tip_hash: null };
+        }
         if (cmd === 'list_available_chat_tools') {
           return [
             { name: 'read_file', description: 'Read files', requires_approval: false, is_custom: false },
@@ -467,6 +510,8 @@ function buildTauriMockInitScript() {
         if (cmd === 'read_file') return '';
         if (cmd === 'write_file') return null;
         if (cmd === 'open_workspace') return 'C:/mock';
+        if (cmd === 'get_git_branch') return 'main';
+        if (cmd === 'get_git_status') return [];
         if (cmd === 'list_project_files') {
           return [
             { path: 'C:/mock/README.md', rel: 'README.md', name: 'README.md', is_dir: false },
@@ -507,7 +552,13 @@ async function runUiHitlSmoke() {
     if (msg.type() === 'error') {
       consoleErrors.push(msg.text());
     }
+    if (process.env.WORKSPACE_DEBUG_CONSOLE === '1') {
+      log(`[console:${msg.type()}] ${msg.text()}`);
+    }
   });
+  if (process.env.WORKSPACE_DEBUG_CONSOLE === '1') {
+    page.on('pageerror', (err) => log(`[pageerror] ${err.stack || err.message}`));
+  }
 
   await page.addInitScript(buildTauriMockInitScript(), {
     liveMode: UI_LIVE,

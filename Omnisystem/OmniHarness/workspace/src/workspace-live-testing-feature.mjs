@@ -39,6 +39,7 @@ const FEATURE_CATALOG = [
   ['settings.api', 'Settings API controls'],
   ['settings.remote', 'Remote session controls'],
   ['settings.pairing', 'Pairing QR/token flow'],
+  ['model.library', 'Model Folders + Cloud Providers catalog in Settings'],
   ['agent.connect', 'Agent Connect session lifecycle'],
   ['chat.streaming', 'Chat streaming response UI'],
   ['chat.hitl', 'HITL approval flow'],
@@ -733,6 +734,14 @@ function buildMockInitScript() {
           const arr = state.eventsByName.get(name) || [];
           arr.push({ id, handlerId: args.handler });
           state.eventsByName.set(name, arr);
+          // App.svelte gates the entire UI behind a launch splash until it
+          // receives 'workspace:services-ready' from the real Rust supervisor.
+          // This mock has no real supervisor, so it must fire the same event
+          // itself, once App.svelte has actually registered its listener —
+          // otherwise every scenario hangs forever behind the splash screen.
+          if (name === 'workspace:services-ready') {
+            setTimeout(() => emitTauriEvent('workspace:services-ready', undefined), 0);
+          }
           return id;
         }
 
@@ -754,6 +763,7 @@ function buildMockInitScript() {
 
         if (cmd === 'open_workspace') return window.__workspaceWorkspacePath;
         if (cmd === 'get_git_branch') return 'main';
+        if (cmd === 'get_git_status') return [];
         if (cmd === 'list_project_files') return listMockFiles();
 
         if (cmd === 'list_models_registry') {
@@ -879,6 +889,41 @@ function buildMockInitScript() {
 
         if (cmd === 'load_model') return null;
         if (cmd === 'switch_model') return 'Switched model.';
+
+        // initModelStores() calls these unconditionally on every services-ready
+        // transition (i.e. on every scenario page load) — leaving any of them
+        // unmocked means the frontend gets `null` where it expects an object
+        // or array, which throws in an always-mounted component (ChatPanel
+        // reads `$defaultInferenceMode.mode`) and is caught by
+        // GlobalErrorBoundary, failing every single scenario.
+        if (cmd === 'get_default_inference_mode') return { mode: 'hybrid', gpu_layers: 20 };
+        if (cmd === 'get_inference_mode') return { mode: 'hybrid', gpu_layers: 20 };
+        if (cmd === 'get_task_queue_status') {
+          return {
+            pending_total: 0,
+            active_total: 0,
+            max_parallel_inference: 1,
+            free_ram_mb: 8192,
+            cpu_pct: 0,
+            sources: {},
+            active_tasks: [],
+          };
+        }
+        if (cmd === 'list_model_data') return [];
+        if (cmd === 'fetch_opencode_go_models') return [];
+        if (cmd === 'list_known_providers') {
+          return [
+            { id: 'anthropic', display_name: 'Anthropic (Claude)', has_key: false },
+            { id: 'openai', display_name: 'OpenAI (ChatGPT)', has_key: false },
+            { id: 'gemini', display_name: 'Google Gemini', has_key: false },
+          ];
+        }
+        if (cmd === 'cluster_list_nodes') return [];
+        if (cmd === 'cluster_get_policy') return null;
+        if (cmd === 'list_crash_reports') return [];
+        if (cmd === 'kernel_status') {
+          return { connected: false, version: null, uptime_secs: null, events_stored: null, tip_hash: null };
+        }
 
         if (cmd === 'get_hardware_info') {
           return {
@@ -1105,9 +1150,18 @@ async function installPageHarness(page) {
     });
   });
 
-  await page.addInitScript(() => {
-    window.__workspaceWorkspacePath = 'z:/Projects/WorkspaceWorkspace';
+  await page.addInitScript((config) => {
+    // Must match the real WORKSPACE_ROOT on the Node side (passed via config) —
+    // the deterministic HITL scenario writes real files through this path via
+    // exposeFunction('__liveToolExec', ...) and then asserts on their content
+    // using path.join(WORKSPACE_ROOT, ...). A mismatch here means the write
+    // silently succeeds at the wrong location and the assertion always fails.
+    window.__workspaceWorkspacePath = config.workspaceRoot || 'z:/Projects/WorkspaceWorkspace';
     window.__mockApiBase = 'http://127.0.0.1:11369';
+    // These scenarios exercise the returning-user shell, not first-run setup —
+    // without this, App.svelte's onboarding wizard modal covers the whole
+    // screen on every fresh page load and blocks every subsequent click.
+    try { localStorage.setItem('workspace_onboarding_done', '1'); } catch {}
 
     class MockEventSource {
       constructor(url) {
@@ -1128,7 +1182,7 @@ async function installPageHarness(page) {
     }
 
     window.EventSource = MockEventSource;
-  });
+  }, { workspaceRoot: WORKSPACE_ROOT.replace(/\\/g, '/') });
   await page.addInitScript(buildMockInitScript(), {
     liveMode: LIVE_MODE,
     tokenDelayMs: LIVE_MODE ? 70 : 0,
@@ -1144,7 +1198,13 @@ async function runScenario(browser, name, fn) {
     if (msg.type() === 'error') {
       consoleErrors.push(msg.text());
     }
+    if (process.env.WORKSPACE_DEBUG_CONSOLE === '1') {
+      log(`[console:${msg.type()}] ${msg.text()}`);
+    }
   });
+  if (process.env.WORKSPACE_DEBUG_CONSOLE === '1') {
+    page.on('pageerror', (err) => log(`[pageerror] ${err.stack || err.message}`));
+  }
 
   try {
     await installPageHarness(page);
@@ -1163,6 +1223,16 @@ async function runScenario(browser, name, fn) {
     }
   } catch (err) {
     fail(name, String(err));
+    if (process.env.WORKSPACE_DEBUG_CONSOLE === '1') {
+      try {
+        const bodyText = await page.locator('body').innerText({ timeout: 2000 });
+        const flat = bodyText.replace(/\s+/g, ' ');
+        const idx = flat.indexOf('CLOUD PROVIDERS');
+        log(`[debug-body] ${name}: ${idx >= 0 ? flat.slice(idx, idx + 800) : flat.slice(0, 500)}`);
+      } catch (e) {
+        log(`[debug-body] ${name}: failed to read body — ${e}`);
+      }
+    }
     if (SCENARIO_PAUSE_MS > 0) {
       await sleep(SCENARIO_PAUSE_MS);
     }
@@ -1336,6 +1406,38 @@ async function scenarioSettingsRemotePairing(page) {
   } else {
     partial('settings.pairing', 'Pairing controls were opened but did not fully complete in current environment.');
   }
+}
+
+async function scenarioModelLibrary(page) {
+  await page.goto(UI_BASE, { waitUntil: 'domcontentloaded', timeout: STEP_TIMEOUT_MS });
+  await page.click('button[title="Settings"]', { timeout: 12000 });
+  await page.waitForSelector('.settings-panel', { timeout: 12000 });
+
+  // .section-title is styled text-transform: uppercase — innerText reflects
+  // the rendered (uppercased) text, not the literal template string.
+  await waitForBodyText(page, 'MODEL FOLDERS', STEP_TIMEOUT_MS);
+  if (!await page.locator('button', { hasText: 'Add Folder' }).first().isVisible().catch(() => false)) {
+    throw new Error('Model Folders "Add Folder" control did not render');
+  }
+
+  await waitForBodyText(page, 'CLOUD PROVIDERS', STEP_TIMEOUT_MS);
+  const anthropicDetails = page.locator('details', { hasText: 'Anthropic' }).first();
+  const providerSummary = anthropicDetails.locator('summary').first();
+  if (!await providerSummary.isVisible({ timeout: 8000 }).catch(() => false)) {
+    throw new Error('Cloud Providers list did not render a known provider entry');
+  }
+  await providerSummary.click();
+
+  if (!await anthropicDetails.locator('button', { hasText: 'Save Key' }).first().isVisible({ timeout: 8000 }).catch(() => false)) {
+    throw new Error('Provider "Save Key" control did not appear after expanding');
+  }
+  if (!await anthropicDetails.locator('button', { hasText: 'Sync to Library' }).first().isVisible({ timeout: 8000 }).catch(() => false)) {
+    throw new Error('Provider "Sync to Library" control did not appear after expanding');
+  }
+
+  await page.click('button[aria-label="Close settings"]').catch(() => {});
+
+  cover('model.library', 'Opened Settings, verified Model Folders + Cloud Providers sections render, expanded a provider entry.');
 }
 
 async function scenarioAgentConnect(page) {
@@ -1606,6 +1708,7 @@ async function main() {
         ['Shell Layout and Toggles', scenarioShell],
         ['Command Palette Session', scenarioCommandPalette],
         ['Settings Remote Pairing Session', scenarioSettingsRemotePairing],
+        ['Model Library Session', scenarioModelLibrary],
         ['Agent Connect Timeline Session', scenarioAgentConnect],
         ['Chat HITL Tooling Session', scenarioChatHitlTooling],
         ['Tools and Skills Modal Session', scenarioToolsSkillsModal],
@@ -1622,6 +1725,7 @@ async function main() {
         'Shell Layout and Toggles',
         'Command Palette Session',
         'Settings Remote Pairing Session',
+        'Model Library Session',
         'Chat HITL Tooling Session',
         'Agents Panel and Settings Session',
         'Swarm Ordering and Sanitization Session',

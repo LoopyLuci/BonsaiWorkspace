@@ -464,7 +464,7 @@ export async function setDefaultInferenceMode(mode: InferenceMode): Promise<Infe
 
 export async function getModelInferenceMode(modelId: string): Promise<InferenceMode> {
   try {
-    return await invoke<InferenceMode>('get_inference_mode', { modelId });
+    return (await invoke<InferenceMode>('get_inference_mode', { modelId })) ?? get(defaultInferenceMode);
   } catch {
     return get(defaultInferenceMode);
   }

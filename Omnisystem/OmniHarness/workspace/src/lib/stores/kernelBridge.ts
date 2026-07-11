@@ -23,12 +23,14 @@ export const kernelStatus = writable<KernelStatus>({
   tip_hash: null,
 });
 
+const DISCONNECTED_STATUS: KernelStatus = { connected: false, version: null, uptime_secs: null, events_stored: null, tip_hash: null };
+
 export async function refreshKernelStatus(): Promise<void> {
   try {
     const result = await invoke<KernelStatus>('kernel_status');
-    kernelStatus.set(result);
+    kernelStatus.set(result ?? DISCONNECTED_STATUS);
   } catch (e) {
     console.error('[kernelBridge] kernel_status error:', e);
-    kernelStatus.set({ connected: false, version: null, uptime_secs: null, events_stored: null, tip_hash: null });
+    kernelStatus.set(DISCONNECTED_STATUS);
   }
 }
