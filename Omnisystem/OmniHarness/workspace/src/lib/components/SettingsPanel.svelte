@@ -21,6 +21,7 @@
     setDefaultInferenceMode,
     applyInferenceModeToAll,
     refreshCloudModels,
+    refreshModelData,
   } from '$lib/stores/models';
   import type { InferenceMode } from '$lib/types/inference_mode';
   import { inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
@@ -75,7 +76,7 @@
   async function loadCrashReports() {
     crashReportsLoading = true;
     try {
-      crashReports = await invoke<CrashReport[]>('list_crash_reports');
+      crashReports = (await invoke<CrashReport[]>('list_crash_reports')) ?? [];
     } catch (e) {
       console.warn('Failed to load crash reports', e);
     } finally {
@@ -129,6 +130,8 @@
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
     try { await refreshOpencodeGoStatus(); } catch {}
+    try { await refreshKnownProviders(); } catch {}
+    try { await refreshModelDirectories(); } catch {}
     try { await loadFeatureFlags(); } catch {}
     try { gpuCrashFallback = await invoke<boolean>('get_gpu_crash_flag'); } catch {}
     await loadCrashReports();
@@ -1374,6 +1377,125 @@
     }
   }
 
+  // ── Model Folders (local GGUF auto-scan) ──────────────────────────────────
+
+  let modelDirectories: string[] = [];
+  let modelDirBusy = false;
+  let modelDirStatusMsg = '';
+
+  async function refreshModelDirectories() {
+    try {
+      modelDirectories = (await invoke<string[]>('list_model_directories')) ?? [];
+    } catch (e) {
+      console.warn('[settings] list_model_directories failed:', e);
+    }
+  }
+
+  async function addModelDirectory() {
+    modelDirStatusMsg = '';
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ title: 'Select a folder to scan for models', directory: true, multiple: false });
+      const path = typeof selected === 'string' ? selected : null;
+      if (!path) return;
+      modelDirBusy = true;
+      await invoke('add_model_directory', { path });
+      await refreshModelDirectories();
+      modelDirStatusMsg = `Added — scanning "${path}" for models.`;
+    } catch (e) {
+      modelDirStatusMsg = `Error: ${e}`;
+    } finally {
+      modelDirBusy = false;
+    }
+  }
+
+  async function removeModelDirectory(path: string) {
+    modelDirStatusMsg = '';
+    modelDirBusy = true;
+    try {
+      await invoke('remove_model_directory', { path });
+      await refreshModelDirectories();
+    } catch (e) {
+      modelDirStatusMsg = `Error: ${e}`;
+    } finally {
+      modelDirBusy = false;
+    }
+  }
+
+  // ── Cloud Providers (generic — Anthropic, OpenAI, Gemini, DeepSeek, etc.) ──
+
+  interface ProviderMeta {
+    id: string;
+    display_name: string;
+    has_key: boolean;
+  }
+  interface ProviderModel {
+    id: string;
+    name: string;
+    context_window?: number;
+    max_output_tokens?: number;
+  }
+
+  let knownProviders: ProviderMeta[] = [];
+  let providerApiKeyInput: Record<string, string> = {};
+  let providerModels: Record<string, ProviderModel[]> = {};
+  let providerStatusMsg: Record<string, string> = {};
+  let providerBusy: Record<string, boolean> = {};
+
+  async function refreshKnownProviders() {
+    try {
+      knownProviders = (await invoke<ProviderMeta[]>('list_known_providers')) ?? [];
+    } catch (e) {
+      console.warn('[settings] list_known_providers failed:', e);
+    }
+  }
+
+  async function saveProviderKey(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      await invoke('save_provider_api_key', { providerId, apiKey: providerApiKeyInput[providerId] ?? '' });
+      providerApiKeyInput = { ...providerApiKeyInput, [providerId]: '' };
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: 'API key saved.' };
+      await refreshKnownProviders();
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
+  async function fetchProviderModelsFor(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      const models = await invoke<ProviderModel[]>('fetch_provider_models', { providerId });
+      providerModels = { ...providerModels, [providerId]: models };
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Found ${models.length} model(s).` };
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
+  async function syncProviderToLibrary(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      const created = await invoke<number>('sync_provider_models_to_library', { providerId });
+      providerStatusMsg = {
+        ...providerStatusMsg,
+        [providerId]: created > 0 ? `Added ${created} new model(s) to the library.` : 'Library already up to date.',
+      };
+      await refreshModelData();
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
   async function runUsbRegressionSuite() {
     const serial = getSelectedUsbSerial();
     const host = (usbWifiHost || '').trim();
@@ -1848,6 +1970,29 @@
       </div>
     </section>
 
+    <!-- ── Model Folders ──────────────────────────────────────────────────── -->
+    <section class="section bots-section">
+      <h3 class="section-title">Model Folders</h3>
+      <p class="section-desc">Folders scanned for local GGUF models. Adding a folder rescans immediately and enriches the Model Library with any new models found.</p>
+
+      {#if modelDirStatusMsg}
+        <div class="bot-save-msg">{modelDirStatusMsg}</div>
+      {/if}
+
+      <ul class="cloud-model-list">
+        {#each modelDirectories as dir, i}
+          <li>
+            <span>{dir}{i === 0 ? ' (default)' : ''}</span>
+            {#if i > 0}
+              <button class="save-btn" on:click={() => removeModelDirectory(dir)} disabled={modelDirBusy}>Remove</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+
+      <button class="save-btn" on:click={addModelDirectory} disabled={modelDirBusy}>📁 Add Folder…</button>
+    </section>
+
     <!-- ── Cloud Providers ────────────────────────────────────────────────── -->
     <section class="section bots-section">
       <h3 class="section-title">
@@ -1887,6 +2032,60 @@
           {/if}
         </div>
       </details>
+
+      {#each knownProviders as provider (provider.id)}
+        <details class="bot-platform-details">
+          <summary>
+            {provider.display_name}
+            {#if provider.has_key}
+              <span class="platform-badge ok">● Connected</span>
+            {/if}
+          </summary>
+          <div class="bot-form">
+            <label class="bot-label">API Key <span class="secret-hint">(write-only)</span>
+              <input
+                class="bot-input"
+                type="password"
+                style="-webkit-app-region: no-drag;"
+                placeholder={`Paste your ${provider.display_name} API key`}
+                bind:value={providerApiKeyInput[provider.id]}
+                autocomplete="off"
+              />
+            </label>
+            <button
+              class="save-btn"
+              on:click={() => saveProviderKey(provider.id)}
+              disabled={providerBusy[provider.id] || !providerApiKeyInput[provider.id]}
+            >Save Key</button>
+            <button
+              class="save-btn"
+              on:click={() => fetchProviderModelsFor(provider.id)}
+              disabled={providerBusy[provider.id] || !provider.has_key}
+            >Fetch Models</button>
+            <button
+              class="save-btn"
+              on:click={() => syncProviderToLibrary(provider.id)}
+              disabled={providerBusy[provider.id] || !provider.has_key}
+              title="Fetch the live catalog and add any new models to the Model Library"
+            >Sync to Library</button>
+            {#if providerStatusMsg[provider.id]}
+              <div class="bot-save-msg">{providerStatusMsg[provider.id]}</div>
+            {/if}
+            {#if (providerModels[provider.id]?.length ?? 0) > 0}
+              <ul class="cloud-model-list">
+                {#each providerModels[provider.id] as m}
+                  <li>
+                    <span>{m.name}</span>
+                    {#if m.context_window}
+                      <span class="cloud-model-protocol">{Math.round(m.context_window / 1000)}K ctx</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        </details>
+      {/each}
     </section>
 
     <!-- ── Messaging Bots ─────────────────────────────────────────────────── -->

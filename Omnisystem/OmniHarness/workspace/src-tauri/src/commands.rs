@@ -2285,6 +2285,122 @@ pub async fn fetch_opencode_go_models(
     crate::opencode_go::fetch_models(&api_key).await
 }
 
+// ─── Generic cloud provider catalog ─────────────────────────────────────────
+// Covers every provider registered in `provider_catalog` (Anthropic, OpenAI,
+// Gemini, DeepSeek, Groq, Mistral, Together, OpenRouter, xAI, OpenCode Zen).
+// Distinct from the OpenCode Go commands above, which predate this and also
+// wire up real chat execution (`opencode_go::send_chat`) — these commands
+// only cover the catalog/model-library concern.
+
+#[derive(serde::Serialize)]
+pub struct ProviderMeta {
+    id: String,
+    display_name: String,
+    has_key: bool,
+}
+
+/// List every known cloud provider and whether an API key is already saved.
+#[tauri::command]
+pub async fn list_known_providers(state: State<'_, AppState>) -> Result<Vec<ProviderMeta>, String> {
+    Ok(crate::provider_catalog::known_providers()
+        .iter()
+        .map(|p| ProviderMeta {
+            id: p.id.to_string(),
+            display_name: p.display_name.to_string(),
+            has_key: state.secrets_store.has(&crate::provider_catalog::secret_account(p.id)),
+        })
+        .collect())
+}
+
+/// Store (or, if empty, clear) a provider's API key in the OS credential vault.
+#[tauri::command]
+pub async fn save_provider_api_key(
+    state: State<'_, AppState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<(), String> {
+    if crate::provider_catalog::find_provider(&provider_id).is_none() {
+        return Err(format!("unknown provider '{provider_id}'"));
+    }
+    let account = crate::provider_catalog::secret_account(&provider_id);
+    if api_key.is_empty() {
+        state.secrets_store.delete(&account)
+    } else {
+        state.secrets_store.store(&account, &api_key)
+    }
+}
+
+#[tauri::command]
+pub async fn has_provider_api_key(state: State<'_, AppState>, provider_id: String) -> Result<bool, String> {
+    Ok(state.secrets_store.has(&crate::provider_catalog::secret_account(&provider_id)))
+}
+
+/// Fetch a provider's live model catalog using its stored API key.
+#[tauri::command]
+pub async fn fetch_provider_models(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<crate::provider_catalog::ProviderModel>, String> {
+    let def = crate::provider_catalog::find_provider(&provider_id)
+        .ok_or_else(|| format!("unknown provider '{provider_id}'"))?;
+    let api_key = state
+        .secrets_store
+        .get(&crate::provider_catalog::secret_account(def.id))?
+        .ok_or_else(|| format!("No {} API key saved yet — add one in Settings first.", def.display_name))?;
+    crate::provider_catalog::fetch_models(def, &api_key).await
+}
+
+/// Fetch a provider's live catalog and create a `ModelData` entry (KB-enriched,
+/// no LLM call — a bulk sync can cover dozens of models) for every model that
+/// doesn't already have one. Returns the count of new entries created. This is
+/// what makes the model library "update itself" for a given cloud provider.
+#[tauri::command]
+pub async fn sync_provider_models_to_library(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<usize, String> {
+    let def = crate::provider_catalog::find_provider(&provider_id)
+        .ok_or_else(|| format!("unknown provider '{provider_id}'"))?;
+    let api_key = state
+        .secrets_store
+        .get(&crate::provider_catalog::secret_account(def.id))?
+        .ok_or_else(|| format!("No {} API key saved yet — add one in Settings first.", def.display_name))?;
+    let live_models = crate::provider_catalog::fetch_models(def, &api_key).await?;
+
+    let existing = state.model_data_store.list().await.map_err(|e| e.to_string())?;
+    let already_present = |model_id: &str| {
+        existing.iter().any(|d| {
+            matches!(
+                &d.source,
+                crate::model_data::ModelSource::OpenAICompatible { model_id: existing_id, provider_name, .. }
+                    if existing_id == model_id && provider_name.eq_ignore_ascii_case(def.display_name)
+            )
+        })
+    };
+
+    let generator = crate::model_data_generator::ModelDataGenerator::new(state.orchestrator.clone());
+    let mut created = 0usize;
+    for m in live_models {
+        if already_present(&m.id) {
+            continue;
+        }
+        let mut data = generator.from_provider_fast(def.id, &m.id, Some(def.base_url));
+        // Prefer the provider's own reported limits over the KB/heuristic guess.
+        if let Some(ctx) = m.context_window {
+            data.capabilities.context_window = ctx.min(u32::MAX as u64) as u32;
+        }
+        if let Some(out) = m.max_output_tokens {
+            data.capabilities.max_output_tokens = out.min(u32::MAX as u64) as u32;
+        }
+        if data.name == m.id && data.name != m.name {
+            data.name = m.name;
+        }
+        state.model_data_store.save(&data).await.map_err(|e| e.to_string())?;
+        created += 1;
+    }
+    Ok(created)
+}
+
 // ─── Self-upgrade proposal queue ─────────────────────────────────────────────
 // Triggering a proposal reuses the generic `send_agent_message` command
 // with `agent_id: "self-upgrader"` — no dedicated "trigger" command needed.

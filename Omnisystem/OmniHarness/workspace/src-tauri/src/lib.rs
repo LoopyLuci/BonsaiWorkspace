@@ -117,6 +117,7 @@ mod plugin_host;
 pub mod port_daemon;
 mod plugin_loader;
 mod plugin_manifest;
+mod provider_catalog;
 pub mod rag_store;
 mod remote;
 mod remote_input;
@@ -2403,6 +2404,11 @@ pub fn run() {
             commands::has_opencode_go_api_key,
             commands::fetch_opencode_go_models,
             commands::send_opencode_go_test_message,
+            commands::list_known_providers,
+            commands::save_provider_api_key,
+            commands::has_provider_api_key,
+            commands::fetch_provider_models,
+            commands::sync_provider_models_to_library,
             commands::list_self_upgrade_proposals,
             commands::resolve_self_upgrade_proposal,
             // ── Survival System — Bug Database ─────────────────────────────────
