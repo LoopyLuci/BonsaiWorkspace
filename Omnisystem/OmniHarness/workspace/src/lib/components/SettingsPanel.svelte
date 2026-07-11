@@ -21,7 +21,11 @@
     setDefaultInferenceMode,
     applyInferenceModeToAll,
     refreshCloudModels,
+    refreshModelData,
+    getGpuProfile,
+    resetGpuProfile,
   } from '$lib/stores/models';
+  import type { GpuProfile } from '$lib/types/model_data';
   import type { InferenceMode } from '$lib/types/inference_mode';
   import { inferenceModeLabel, toInferenceMode } from '$lib/types/inference_mode';
   import { apiHost, apiPort, apiBaseUrl, loadApiSettings, saveApiSettings } from '$lib/stores/settings';
@@ -57,8 +61,9 @@
   let defaultInferenceModeKey: 'auto' | 'cpu_only' | 'gpu_only' | 'hybrid' = 'hybrid';
   let defaultHybridLayers = 20;
   let inferenceDefaultsMsg = '';
-  let gpuCrashFallback = false;
-  let gpuCrashMsg = '';
+  let gpuProfiles: Record<string, GpuProfile> = {};
+  let gpuProfilesMsg = '';
+  let gpuProfilesLoading = false;
 
   type CrashReport = {
     timestamp: string;
@@ -75,7 +80,7 @@
   async function loadCrashReports() {
     crashReportsLoading = true;
     try {
-      crashReports = await invoke<CrashReport[]>('list_crash_reports');
+      crashReports = (await invoke<CrashReport[]>('list_crash_reports')) ?? [];
     } catch (e) {
       console.warn('Failed to load crash reports', e);
     } finally {
@@ -129,8 +134,10 @@
     refreshBotStatus();
     botStatusInterval = setInterval(refreshBotStatus, 30_000);
     try { await refreshOpencodeGoStatus(); } catch {}
+    try { await refreshKnownProviders(); } catch {}
+    try { await refreshModelDirectories(); } catch {}
     try { await loadFeatureFlags(); } catch {}
-    try { gpuCrashFallback = await invoke<boolean>('get_gpu_crash_flag'); } catch {}
+    try { await refreshGpuProfiles(); } catch {}
     await loadCrashReports();
   });
 
@@ -265,13 +272,32 @@
     await refreshStatus();
   }
 
-  async function clearGpuCrashFlag() {
+  /** Fetches each local model's GPU placement history (crash count, last
+   * known-good layer count) — per-model, replacing the old single global
+   * "GPU crash detected" banner. */
+  async function refreshGpuProfiles() {
+    gpuProfilesLoading = true;
     try {
-      await invoke('clear_gpu_crash_flag');
-      gpuCrashFallback = false;
-      gpuCrashMsg = 'GPU re-enabled. Restart the app and reload your model to use GPU acceleration.';
+      const entries = await Promise.all(
+        $availableModels.map(async (m) => [m.id, await getGpuProfile(m.id)] as const),
+      );
+      gpuProfiles = Object.fromEntries(entries);
     } catch (e) {
-      gpuCrashMsg = `Failed: ${e}`;
+      gpuProfilesMsg = `Failed to load GPU placement history: ${e}`;
+    } finally {
+      gpuProfilesLoading = false;
+    }
+  }
+
+  async function resetModelGpuProfile(modelId: string, modelName: string) {
+    try {
+      const reset = await resetGpuProfile(modelId);
+      if (reset) {
+        gpuProfiles = { ...gpuProfiles, [modelId]: reset };
+      }
+      gpuProfilesMsg = `${modelName}: GPU history cleared — next load re-attempts full GPU placement.`;
+    } catch (e) {
+      gpuProfilesMsg = `Failed: ${e}`;
     }
   }
 
@@ -641,9 +667,16 @@
 
   async function toggleFlag(key: string, value: boolean) {
     const flags = $featureFlags as unknown as Record<string, boolean>;
+    const previous = flags[key];
     flags[key] = value;
     featureFlags.set($featureFlags);
-    await invoke('set_feature_flags', { flags: $featureFlags });
+    try {
+      await invoke('set_feature_flags', { flags: $featureFlags });
+    } catch (e) {
+      flags[key] = previous;
+      featureFlags.set($featureFlags);
+      console.error('set_feature_flags failed:', e);
+    }
   }
 
   onDestroy(() => {
@@ -1367,6 +1400,125 @@
     }
   }
 
+  // ── Model Folders (local GGUF auto-scan) ──────────────────────────────────
+
+  let modelDirectories: string[] = [];
+  let modelDirBusy = false;
+  let modelDirStatusMsg = '';
+
+  async function refreshModelDirectories() {
+    try {
+      modelDirectories = (await invoke<string[]>('list_model_directories')) ?? [];
+    } catch (e) {
+      console.warn('[settings] list_model_directories failed:', e);
+    }
+  }
+
+  async function addModelDirectory() {
+    modelDirStatusMsg = '';
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ title: 'Select a folder to scan for models', directory: true, multiple: false });
+      const path = typeof selected === 'string' ? selected : null;
+      if (!path) return;
+      modelDirBusy = true;
+      await invoke('add_model_directory', { path });
+      await refreshModelDirectories();
+      modelDirStatusMsg = `Added — scanning "${path}" for models.`;
+    } catch (e) {
+      modelDirStatusMsg = `Error: ${e}`;
+    } finally {
+      modelDirBusy = false;
+    }
+  }
+
+  async function removeModelDirectory(path: string) {
+    modelDirStatusMsg = '';
+    modelDirBusy = true;
+    try {
+      await invoke('remove_model_directory', { path });
+      await refreshModelDirectories();
+    } catch (e) {
+      modelDirStatusMsg = `Error: ${e}`;
+    } finally {
+      modelDirBusy = false;
+    }
+  }
+
+  // ── Cloud Providers (generic — Anthropic, OpenAI, Gemini, DeepSeek, etc.) ──
+
+  interface ProviderMeta {
+    id: string;
+    display_name: string;
+    has_key: boolean;
+  }
+  interface ProviderModel {
+    id: string;
+    name: string;
+    context_window?: number;
+    max_output_tokens?: number;
+  }
+
+  let knownProviders: ProviderMeta[] = [];
+  let providerApiKeyInput: Record<string, string> = {};
+  let providerModels: Record<string, ProviderModel[]> = {};
+  let providerStatusMsg: Record<string, string> = {};
+  let providerBusy: Record<string, boolean> = {};
+
+  async function refreshKnownProviders() {
+    try {
+      knownProviders = (await invoke<ProviderMeta[]>('list_known_providers')) ?? [];
+    } catch (e) {
+      console.warn('[settings] list_known_providers failed:', e);
+    }
+  }
+
+  async function saveProviderKey(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      await invoke('save_provider_api_key', { providerId, apiKey: providerApiKeyInput[providerId] ?? '' });
+      providerApiKeyInput = { ...providerApiKeyInput, [providerId]: '' };
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: 'API key saved.' };
+      await refreshKnownProviders();
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
+  async function fetchProviderModelsFor(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      const models = await invoke<ProviderModel[]>('fetch_provider_models', { providerId });
+      providerModels = { ...providerModels, [providerId]: models };
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Found ${models.length} model(s).` };
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
+  async function syncProviderToLibrary(providerId: string) {
+    providerStatusMsg = { ...providerStatusMsg, [providerId]: '' };
+    providerBusy = { ...providerBusy, [providerId]: true };
+    try {
+      const created = await invoke<number>('sync_provider_models_to_library', { providerId });
+      providerStatusMsg = {
+        ...providerStatusMsg,
+        [providerId]: created > 0 ? `Added ${created} new model(s) to the library.` : 'Library already up to date.',
+      };
+      await refreshModelData();
+    } catch (e) {
+      providerStatusMsg = { ...providerStatusMsg, [providerId]: `Error: ${e}` };
+    } finally {
+      providerBusy = { ...providerBusy, [providerId]: false };
+    }
+  }
+
   async function runUsbRegressionSuite() {
     const serial = getSelectedUsbSerial();
     const host = (usbWifiHost || '').trim();
@@ -1746,17 +1898,65 @@
       {#if inferenceDefaultsMsg}
         <div class="api-test-result">{inferenceDefaultsMsg}</div>
       {/if}
+    </section>
 
-      {#if gpuCrashFallback}
-        <div class="gpu-crash-banner">
-          <span>⚠ GPU crash detected — running CPU-only mode</span>
-          <button class="action-btn blue" type="button" on:click={clearGpuCrashFlag}>
-            Re-enable GPU
-          </button>
-        </div>
-        {#if gpuCrashMsg}
-          <div class="api-test-result">{gpuCrashMsg}</div>
+    <section class="section">
+      <h3 class="section-title">GPU Placement</h3>
+      <p class="section-desc">
+        Per-model GPU/CPU history. Models with an exotic quantization no longer run fully
+        CPU-only by default — the unsafe tensors are pinned to CPU while the rest offloads
+        to GPU. A model that crashed steps down through a reduced layer count before giving
+        up, and remembers the layer count that worked.
+      </p>
+      {#if gpuProfilesLoading}
+        <div class="api-test-result">Loading GPU placement history…</div>
+      {:else}
+        {@const modelsWithGpuHistory = $availableModels.filter((m) => {
+          const p = gpuProfiles[m.id];
+          return p && (p.crash_count > 0 || p.is_moe || p.unsafe_tensor_weight_fraction > 0);
+        })}
+        {#if modelsWithGpuHistory.length === 0}
+          <div class="api-test-result">No models have GPU crash history or hybrid placement yet.</div>
+        {:else}
+          <div class="gpu-profile-list">
+            {#each modelsWithGpuHistory as m (m.id)}
+              {@const p = gpuProfiles[m.id]}
+              <div class="gpu-profile-row">
+                <div class="gpu-profile-info">
+                  <strong>{m.name}</strong>
+                  {#if p.is_moe}
+                    <span class="gpu-profile-tag">MoE hybrid</span>
+                  {/if}
+                  {#if p.unsafe_tensor_weight_fraction > 0}
+                    <span class="gpu-profile-tag">
+                      {Math.round(p.unsafe_tensor_weight_fraction * 100)}% tensors CPU-pinned
+                    </span>
+                  {/if}
+                  {#if p.crash_count > 0}
+                    <span class="gpu-profile-tag warn">
+                      {p.crash_count} crash{p.crash_count === 1 ? '' : 'es'}
+                      {#if p.last_safe_gpu_layers !== undefined}
+                        — last safe: {p.last_safe_gpu_layers} layer{p.last_safe_gpu_layers === 1 ? '' : 's'}
+                      {/if}
+                    </span>
+                  {/if}
+                </div>
+                {#if p.crash_count > 0}
+                  <button
+                    class="action-btn"
+                    type="button"
+                    on:click={() => resetModelGpuProfile(m.id, m.name)}
+                  >
+                    Reset GPU history
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
+      {/if}
+      {#if gpuProfilesMsg}
+        <div class="api-test-result">{gpuProfilesMsg}</div>
       {/if}
     </section>
 
@@ -1841,6 +2041,29 @@
       </div>
     </section>
 
+    <!-- ── Model Folders ──────────────────────────────────────────────────── -->
+    <section class="section bots-section">
+      <h3 class="section-title">Model Folders</h3>
+      <p class="section-desc">Folders scanned for local GGUF models. Adding a folder rescans immediately and enriches the Model Library with any new models found.</p>
+
+      {#if modelDirStatusMsg}
+        <div class="bot-save-msg">{modelDirStatusMsg}</div>
+      {/if}
+
+      <ul class="cloud-model-list">
+        {#each modelDirectories as dir, i}
+          <li>
+            <span>{dir}{i === 0 ? ' (default)' : ''}</span>
+            {#if i > 0}
+              <button class="save-btn" on:click={() => removeModelDirectory(dir)} disabled={modelDirBusy}>Remove</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+
+      <button class="save-btn" on:click={addModelDirectory} disabled={modelDirBusy}>📁 Add Folder…</button>
+    </section>
+
     <!-- ── Cloud Providers ────────────────────────────────────────────────── -->
     <section class="section bots-section">
       <h3 class="section-title">
@@ -1880,6 +2103,60 @@
           {/if}
         </div>
       </details>
+
+      {#each knownProviders as provider (provider.id)}
+        <details class="bot-platform-details">
+          <summary>
+            {provider.display_name}
+            {#if provider.has_key}
+              <span class="platform-badge ok">● Connected</span>
+            {/if}
+          </summary>
+          <div class="bot-form">
+            <label class="bot-label">API Key <span class="secret-hint">(write-only)</span>
+              <input
+                class="bot-input"
+                type="password"
+                style="-webkit-app-region: no-drag;"
+                placeholder={`Paste your ${provider.display_name} API key`}
+                bind:value={providerApiKeyInput[provider.id]}
+                autocomplete="off"
+              />
+            </label>
+            <button
+              class="save-btn"
+              on:click={() => saveProviderKey(provider.id)}
+              disabled={providerBusy[provider.id] || !providerApiKeyInput[provider.id]}
+            >Save Key</button>
+            <button
+              class="save-btn"
+              on:click={() => fetchProviderModelsFor(provider.id)}
+              disabled={providerBusy[provider.id] || !provider.has_key}
+            >Fetch Models</button>
+            <button
+              class="save-btn"
+              on:click={() => syncProviderToLibrary(provider.id)}
+              disabled={providerBusy[provider.id] || !provider.has_key}
+              title="Fetch the live catalog and add any new models to the Model Library"
+            >Sync to Library</button>
+            {#if providerStatusMsg[provider.id]}
+              <div class="bot-save-msg">{providerStatusMsg[provider.id]}</div>
+            {/if}
+            {#if (providerModels[provider.id]?.length ?? 0) > 0}
+              <ul class="cloud-model-list">
+                {#each providerModels[provider.id] as m}
+                  <li>
+                    <span>{m.name}</span>
+                    {#if m.context_window}
+                      <span class="cloud-model-protocol">{Math.round(m.context_window / 1000)}K ctx</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        </details>
+      {/each}
     </section>
 
     <!-- ── Messaging Bots ─────────────────────────────────────────────────── -->
@@ -2736,22 +3013,48 @@
     color: var(--text-dim);
     background: var(--bg2);
   }
-  .gpu-crash-banner {
+  .gpu-profile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .gpu-profile-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 12px;
+    gap: 12px;
     padding: 10px 14px;
     border-radius: 8px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .gpu-profile-info {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .gpu-profile-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    background: rgba(59,130,246,0.12);
+    border: 1px solid rgba(59,130,246,0.3);
+    color: #93c5fd;
+  }
+  .gpu-profile-tag.warn {
     background: rgba(234,179,8,0.12);
     border: 1px solid rgba(234,179,8,0.35);
     color: #fde68a;
-    font-size: 13px;
   }
-  .gpu-crash-banner .action-btn {
+  .gpu-profile-row .action-btn {
     margin: 0;
     padding: 4px 12px;
     font-size: 12px;
+    flex-shrink: 0;
   }
   .api-test-result {
     margin-top: 10px;

@@ -1,20 +1,26 @@
 //! Error types
 
 #[derive(Debug, Clone)]
-pub enum Error {
+pub enum ObservabilityError {
+    /// Trace not found
+    TraceNotFound,
+    /// Span not found
+    SpanNotFound,
     /// Other error
     Other(String),
 }
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for ObservabilityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
+            ObservabilityError::TraceNotFound => write!(f, "trace not found"),
+            ObservabilityError::SpanNotFound => write!(f, "span not found"),
+            ObservabilityError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for ObservabilityError {}
 
 /// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type ObservabilityResult<T> = std::result::Result<T, ObservabilityError>;

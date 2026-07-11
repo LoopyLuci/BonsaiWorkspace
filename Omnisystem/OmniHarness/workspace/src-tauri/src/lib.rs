@@ -98,6 +98,7 @@ mod gguf;
 mod gguf_tokenizer;
 mod gpu_layer;
 mod gpu_model_loader;
+mod gpu_placement;
 mod gpu_telemetry;
 mod hybrid_engine;
 mod image_generation;
@@ -117,6 +118,7 @@ mod plugin_host;
 pub mod port_daemon;
 mod plugin_loader;
 mod plugin_manifest;
+mod provider_catalog;
 pub mod rag_store;
 mod remote;
 mod remote_input;
@@ -2403,6 +2405,11 @@ pub fn run() {
             commands::has_opencode_go_api_key,
             commands::fetch_opencode_go_models,
             commands::send_opencode_go_test_message,
+            commands::list_known_providers,
+            commands::save_provider_api_key,
+            commands::has_provider_api_key,
+            commands::fetch_provider_models,
+            commands::sync_provider_models_to_library,
             commands::list_self_upgrade_proposals,
             commands::resolve_self_upgrade_proposal,
             // ── Survival System — Bug Database ─────────────────────────────────
@@ -2413,6 +2420,7 @@ pub fn run() {
             commands::resolve_bug,
             commands::attempt_fix_now,
             commands::get_hardware_info,
+            commands::get_system_stats,
             commands::get_api_port,
             commands::get_buddy_api_port,
             commands::get_mcp_port,
@@ -2667,9 +2675,13 @@ pub fn run() {
             // Tool registry
             tool_registry::list_tools,
             tool_registry::run_tool,
-            // GPU crash flag
+            // GPU crash flag (deprecated global; see gpu_profile commands below)
             commands::get_gpu_crash_flag,
             commands::clear_gpu_crash_flag,
+            // Per-model GPU/CPU hybrid placement
+            commands::get_gpu_profile,
+            commands::reset_gpu_profile,
+            commands::get_tensor_placement_info,
             // Tool composition DSL
             tool_compose::validate_composed_skill,
             // Micro OmniAI model selector

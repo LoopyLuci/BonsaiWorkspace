@@ -19,13 +19,14 @@
     error = '';
     result = null;
     try {
-      result = await invoke<GenResult>('generate_image', {
-        prompt: prompt.trim(),
-        negativePrompt: negativePrompt.trim() || undefined,
-        steps,
-        width,
-        height,
-        seed: seed < 0 ? undefined : seed,
+      result = await invoke<GenResult>('generate_image_command', {
+        request: {
+          prompt: prompt.trim(),
+          negative_prompt: negativePrompt.trim() || undefined,
+          steps,
+          width,
+          height,
+        },
       });
       if (result?.error) {
         error = result.error;

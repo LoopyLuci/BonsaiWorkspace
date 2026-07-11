@@ -1,6 +1,6 @@
 //! CLI
 
-use bonsai_buddy_backend::Component;
+use omnisystem_buddy_backend::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

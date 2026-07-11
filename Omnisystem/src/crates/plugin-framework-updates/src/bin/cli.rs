@@ -1,6 +1,12 @@
-use plugin_framework_updates::Ecosystem;
-#[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let e = Ecosystem::new();
-    e.execute().await?;
+//! CLI
+
+use plugin_framework_updates::Component;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let c = Component::new();
+    println!("Component ready");
+    c.execute("test").await?;
+    println!("Status: {}", c.status());
     Ok(())
 }

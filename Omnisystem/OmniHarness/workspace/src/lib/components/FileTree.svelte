@@ -54,6 +54,7 @@
       const [raw, statuses] = await Promise.all([
         invoke<FileEntry[]>('list_project_files', { workspacePath: $currentWorkspace.path }),
         invoke<{ path: string; status: string }[]>('get_git_status', { workspacePath: $currentWorkspace.path })
+          .then((s) => s ?? [])
           .catch(() => [] as { path: string; status: string }[]),
       ]);
 

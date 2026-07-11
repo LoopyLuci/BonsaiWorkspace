@@ -1,12 +1,11 @@
 //! CLI
 
-use api_gateway_enterprise::Component;
+use api_gateway_enterprise::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let enterprise = Enterprise::new();
+    let result = enterprise.process("test").await?;
+    println!("Processed: {}", result);
     Ok(())
 }

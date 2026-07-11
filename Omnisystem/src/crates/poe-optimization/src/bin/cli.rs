@@ -1,12 +1,12 @@
 //! CLI
 
-use poe_optimization::Component;
+use poe_optimization::C;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
-    Ok(())
+fn main() {
+    let c = C::new();
+    c.add("key".into(), "value".into());
+    match c.get("key") {
+        Some(v) => println!("Fetched: {}", v),
+        None => println!("Not found"),
+    }
 }

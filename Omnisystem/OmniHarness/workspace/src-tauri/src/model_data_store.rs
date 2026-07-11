@@ -31,7 +31,8 @@ impl ModelDataStore {
                 source_json          TEXT    NOT NULL,
                 capabilities_json    TEXT    NOT NULL,
                 inference_json       TEXT    NOT NULL,
-                inference_mode_json  TEXT    NOT NULL DEFAULT '{"mode":"hybrid","gpu_layers":20}',
+                inference_mode_json  TEXT    NOT NULL DEFAULT '{"mode":"auto"}',
+                gpu_profile_json     TEXT    NOT NULL DEFAULT '{}',
                 prompt_format_json   TEXT    NOT NULL,
                 skill_affinities_json TEXT   NOT NULL DEFAULT '[]',
                 authors_json         TEXT    NOT NULL DEFAULT '[]',
@@ -57,7 +58,27 @@ impl ModelDataStore {
 
         // Backward-compatible migration for existing databases.
         let _ = sqlx::query(
-            "ALTER TABLE model_data ADD COLUMN inference_mode_json TEXT NOT NULL DEFAULT '{\"mode\":\"hybrid\",\"gpu_layers\":20}'",
+            "ALTER TABLE model_data ADD COLUMN inference_mode_json TEXT NOT NULL DEFAULT '{\"mode\":\"auto\"}'",
+        )
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query(
+            "ALTER TABLE model_data ADD COLUMN gpu_profile_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(&pool)
+        .await;
+
+        // One-time backfill: earlier releases wrote the unsafe
+        // `Hybrid{gpu_layers:20}` default (a fixed layer count that bypassed
+        // GPU-safety checks) into both the CREATE TABLE and ALTER TABLE
+        // defaults above. Only rows that still hold that exact literal value
+        // are touched — this converges after the first run and never
+        // overwrites a value a user set to something else in the meantime,
+        // including a deliberate re-selection of Hybrid{20} after this fix
+        // ships.
+        let _ = sqlx::query(
+            "UPDATE model_data SET inference_mode_json = '{\"mode\":\"auto\"}' \
+             WHERE inference_mode_json = '{\"mode\":\"hybrid\",\"gpu_layers\":20}'",
         )
         .execute(&pool)
         .await;
@@ -97,6 +118,7 @@ impl ModelDataStore {
         let capabilities_json = serde_json::to_string(&data.capabilities)?;
         let inference_json = serde_json::to_string(&data.inference)?;
         let inference_mode_json = serde_json::to_string(&data.inference_mode)?;
+        let gpu_profile_json = serde_json::to_string(&data.gpu_profile)?;
         let prompt_format_json = serde_json::to_string(&data.prompt_format)?;
         let skill_affinities_json = serde_json::to_string(&data.skill_affinities)?;
         let authors_json = serde_json::to_string(&data.authors)?;
@@ -110,11 +132,11 @@ impl ModelDataStore {
         sqlx::query(r#"
             INSERT INTO model_data (
                 id, name, family, version, description,
-                source_json, capabilities_json, inference_json, inference_mode_json, prompt_format_json,
+                source_json, capabilities_json, inference_json, inference_mode_json, gpu_profile_json, prompt_format_json,
                 skill_affinities_json, authors_json, organization, license,
                 homepage_url, training_cutoff, parameter_count, architecture,
                 tags_json, notes, local_file_json, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 name                  = excluded.name,
                 family                = excluded.family,
@@ -124,6 +146,7 @@ impl ModelDataStore {
                 capabilities_json     = excluded.capabilities_json,
                 inference_json        = excluded.inference_json,
                 inference_mode_json   = excluded.inference_mode_json,
+                gpu_profile_json      = excluded.gpu_profile_json,
                 prompt_format_json    = excluded.prompt_format_json,
                 skill_affinities_json = excluded.skill_affinities_json,
                 authors_json          = excluded.authors_json,
@@ -147,6 +170,7 @@ impl ModelDataStore {
         .bind(&capabilities_json)
         .bind(&inference_json)
         .bind(&inference_mode_json)
+        .bind(&gpu_profile_json)
         .bind(&prompt_format_json)
         .bind(&skill_affinities_json)
         .bind(&authors_json)
@@ -282,6 +306,7 @@ struct ModelDataRow {
     capabilities_json: String,
     inference_json: String,
     inference_mode_json: Option<String>,
+    gpu_profile_json: Option<String>,
     prompt_format_json: String,
     skill_affinities_json: String,
     authors_json: String,
@@ -311,6 +336,12 @@ impl ModelDataRow {
             inference: serde_json::from_str(&self.inference_json)?,
             inference_mode: self
                 .inference_mode_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?
+                .unwrap_or_default(),
+            gpu_profile: self
+                .gpu_profile_json
                 .as_deref()
                 .map(serde_json::from_str)
                 .transpose()?

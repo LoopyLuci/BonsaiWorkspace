@@ -1,12 +1,12 @@
 //! CLI
 
-use omnisystem_lexer_core::Component;
+use omnisystem_lexer_core::Core;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
-    Ok(())
+fn main() {
+    let c = Core::new();
+    c.add("key".into(), "value".into());
+    match c.get("key") {
+        Some(v) => println!("Fetched: {}", v),
+        None => println!("Not found"),
+    }
 }

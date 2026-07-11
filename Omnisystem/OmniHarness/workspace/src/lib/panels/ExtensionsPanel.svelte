@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
+  import { addToast } from '$lib/stores/toast';
 
   // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -414,16 +415,21 @@
                       class="config-input"
                       value={ext.config[key] ?? schema.default ?? ''}
                       on:change={async (e) => {
-                        await invoke('ext_set_config', {
-                          extensionId: ext.extension_id,
-                          key,
-                          value: inputValue(e)
-                        });
+                        try {
+                          await invoke('ext_set_config', {
+                            extensionId: ext.extension_id,
+                            key,
+                            value: inputValue(e)
+                          });
+                        } catch (err) {
+                          addToast(typeof err === 'string' ? err : `Failed to update ${key}`, 'error');
+                        }
                       }}
                     />
                   </div>
                 {/each}
-                <button class="btn-sm" on:click={() => invoke('ext_reset_config', { extensionId: ext.extension_id })}>
+                <button class="btn-sm" on:click={() => invoke('ext_reset_config', { extensionId: ext.extension_id })
+                  .catch((err) => addToast(typeof err === 'string' ? err : 'Failed to reset extension config', 'error'))}>
                   Reset to Defaults
                 </button>
               </div>

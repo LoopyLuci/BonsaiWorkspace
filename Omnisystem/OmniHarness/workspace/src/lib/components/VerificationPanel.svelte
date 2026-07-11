@@ -30,6 +30,16 @@
     error = '';
   }
 
+  // There is no `rpc` Tauri command registered on the backend — none of the
+  // verify.check_* provers are wired up server-side. Surface that plainly
+  // instead of the raw "Command rpc not found" string.
+  function friendlyRpcError(e: unknown): string {
+    const msg = String(e);
+    return /rpc/i.test(msg) && /not found/i.test(msg)
+      ? 'Formal verification is not implemented in this build yet.'
+      : msg;
+  }
+
   async function verify() {
     running = true; result = null; error = '';
     try {
@@ -39,7 +49,7 @@
         params: { [paramKey]: source },
       });
     } catch (e) {
-      error = String(e);
+      error = friendlyRpcError(e);
     } finally {
       running = false;
     }

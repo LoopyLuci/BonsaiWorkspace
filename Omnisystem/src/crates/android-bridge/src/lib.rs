@@ -1,4 +1,14 @@
-pub mod core;
+pub mod capability;
+pub mod connection;
+pub mod device;
+pub mod discovery;
+pub mod error;
+pub mod file_sync;
+pub mod input;
+pub mod security;
+pub mod streaming;
+pub mod telemetry;
+pub mod types;
 
-#[doc = "Core module"]
-pub use core::*;
+pub use connection::{AndroidBridge, ConnectionHandle};
+pub use error::{Error, Result};

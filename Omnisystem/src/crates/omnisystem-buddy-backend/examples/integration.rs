@@ -8,13 +8,13 @@
 //! - Offline-first operation
 //! - Cache and sync statistics
 
-use bonsai_buddy_backend::*;
+use omnisystem_buddy_backend::*;
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
-    bonsai_buddy_backend::init()?;
+    omnisystem_buddy_backend::init()?;
 
     println!("=== Bonsai Buddy Backend Integration Example ===\n");
 

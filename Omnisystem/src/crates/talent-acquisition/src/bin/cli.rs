@@ -1,12 +1,16 @@
 //! CLI
 
-use talent_acquisition::Component;
+use talent_acquisition::Manager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let manager = Manager::new();
+    let record = manager.create().await?;
+    println!("Created record: {}", record.id);
+
+    let fetched = manager.get(record.id).await?;
+    println!("Fetched record: {}", fetched.id);
+
+    println!("Total records: {}", manager.count());
     Ok(())
 }

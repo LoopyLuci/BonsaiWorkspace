@@ -288,6 +288,39 @@ pub struct LocalFileInfo {
     pub gpu_layers: Option<i32>,
 }
 
+/// Persisted per-model GPU/CPU placement history. Replaces the previous
+/// global `AppConfig.gpu_crash_fallback` latch, which forced *every* model
+/// on *every* future launch to skip GPU after a single crash on any one
+/// model. See `gpu_placement.rs` for how placement plans are computed and
+/// `model_orchestrator.rs` for how this is read/updated on load/crash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GpuProfile {
+    /// Cached tensor-type summary computed at scan time, so the GGUF
+    /// tensor_info section isn't re-parsed from disk on every load.
+    #[serde(default)]
+    pub dominant_tensor_type: Option<String>,
+    #[serde(default)]
+    pub unsafe_tensor_weight_fraction: f64,
+    #[serde(default)]
+    pub is_moe: bool,
+    /// Current rung in the graduated GPU/CPU retry ladder (0 = full plan as
+    /// computed, increasing = progressively more conservative fallback).
+    /// `None` means this model has never been loaded/profiled yet.
+    #[serde(default)]
+    pub ladder_rung: Option<u8>,
+    /// The GPU layer count (0 for CPU-only) that last loaded successfully —
+    /// the next launch starts here directly instead of re-discovering it
+    /// via a fresh crash every time.
+    #[serde(default)]
+    pub last_safe_gpu_layers: Option<u32>,
+    #[serde(default)]
+    pub crash_count: u32,
+    #[serde(default)]
+    pub last_crash_exit_code: Option<u32>,
+    #[serde(default)]
+    pub last_crash_at: Option<i64>,
+}
+
 // ── Core ModelData ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +344,8 @@ pub struct ModelData {
     pub inference: InferenceProfile,
     #[serde(default)]
     pub inference_mode: InferenceMode,
+    #[serde(default)]
+    pub gpu_profile: GpuProfile,
     pub prompt_format: PromptFormat,
     pub skill_affinities: Vec<SkillAffinity>,
 
@@ -373,6 +408,7 @@ impl ModelData {
             },
             inference: InferenceProfile::default(),
             inference_mode,
+            gpu_profile: GpuProfile::default(),
             prompt_format: prompt_fmt,
             skill_affinities: vec![],
             authors: vec![],

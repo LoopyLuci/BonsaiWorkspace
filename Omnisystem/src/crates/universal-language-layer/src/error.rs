@@ -1,7 +1,6 @@
 //! Universal Language Layer Error Handling
 
 use thiserror::Error;
-use std::fmt;
 
 /// ULL Result type
 pub type Result<T> = std::result::Result<T, UllError>;

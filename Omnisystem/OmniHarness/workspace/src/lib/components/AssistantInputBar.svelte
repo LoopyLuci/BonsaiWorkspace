@@ -21,7 +21,9 @@
   }
 
   async function stopChat() {
-    await invoke('stop_assistant_chat');
+    try {
+      await invoke('stop_assistant_chat');
+    } catch (e) { console.error('stop_assistant_chat failed:', e); }
   }
 
   async function startVoice() {

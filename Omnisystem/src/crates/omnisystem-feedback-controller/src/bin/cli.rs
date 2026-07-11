@@ -1,14 +1,12 @@
 //! CLI for omnisystem-feedback-controller
 
-use omnisystem_feedback_controller::Module;
+use omnisystem_feedback_controller::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let module = Module::new();
-    println!("Module initialized successfully");
-
-    let result = module.execute("test").await?;
-    println!("Result: {}", result);
-
+    let c = Component::new();
+    println!("Component ready");
+    c.execute("test").await?;
+    println!("Status: {}", c.status());
     Ok(())
 }

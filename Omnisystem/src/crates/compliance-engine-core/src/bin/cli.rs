@@ -1,13 +1,13 @@
 //! CLI
 
-use compliance_engine_core::Operations;
+use compliance_engine_core::Component;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ops = Operations::new();
-    println!("Operations ready");
+    let c = Component::new();
+    println!("Component ready");
 
-    ops.execute("test").await?;
+    c.execute("test").await?;
     println!("Test executed");
 
     Ok(())

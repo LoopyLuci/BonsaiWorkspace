@@ -1,12 +1,13 @@
 //! CLI
 
-use infrastructure_core::Component;
+use infrastructure_core::ServiceInstance;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
-    Ok(())
+fn main() {
+    let instance = ServiceInstance::new(
+        infrastructure_core::ServiceId("example-service".to_string()),
+        "localhost".to_string(),
+        8080,
+    );
+    println!("Service instance: {} ({})", instance.service_id.0, instance.address());
+    println!("Healthy: {}", instance.is_healthy());
 }

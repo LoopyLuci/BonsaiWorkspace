@@ -8,6 +8,7 @@ import type {
   ModelData,
   ModelDataSummary,
   GenerateModelDataInput,
+  GpuProfile,
 } from '$lib/types/model_data';
 import type { InferenceMode } from '$lib/types/inference_mode';
 import { DEFAULT_INFERENCE_MODE } from '$lib/types/inference_mode';
@@ -464,7 +465,7 @@ export async function setDefaultInferenceMode(mode: InferenceMode): Promise<Infe
 
 export async function getModelInferenceMode(modelId: string): Promise<InferenceMode> {
   try {
-    return await invoke<InferenceMode>('get_inference_mode', { modelId });
+    return (await invoke<InferenceMode>('get_inference_mode', { modelId })) ?? get(defaultInferenceMode);
   } catch {
     return get(defaultInferenceMode);
   }
@@ -476,6 +477,62 @@ export async function setModelInferenceMode(modelId: string, mode: InferenceMode
     await refreshModelData();
     await refreshStatus();
     return saved;
+  } catch (e) {
+    modelDataError.set(String(e));
+    return null;
+  }
+}
+
+const DEFAULT_GPU_PROFILE: GpuProfile = {
+  unsafe_tensor_weight_fraction: 0,
+  is_moe: false,
+  crash_count: 0,
+};
+
+/** Per-model GPU/CPU placement history — crash count, last known-good layer
+ * count. Replaces the deprecated global "GPU crash detected" banner. */
+export async function getGpuProfile(modelId: string): Promise<GpuProfile> {
+  try {
+    return (await invoke<GpuProfile>('get_gpu_profile', { modelId })) ?? DEFAULT_GPU_PROFILE;
+  } catch {
+    return DEFAULT_GPU_PROFILE;
+  }
+}
+
+/** Clears this model's GPU crash history so its next load re-attempts the
+ * full computed placement plan. Reloads the model immediately if loaded. */
+export async function resetGpuProfile(modelId: string): Promise<GpuProfile | null> {
+  try {
+    const reset = await invoke<GpuProfile>('reset_gpu_profile', { modelId });
+    await refreshModelData();
+    await refreshStatus();
+    return reset;
+  } catch (e) {
+    modelDataError.set(String(e));
+    return null;
+  }
+}
+
+export interface TensorTypeBucket {
+  type: string;
+  tensor_count: number;
+  weight_fraction: number;
+}
+
+export interface TensorPlacementInfo {
+  model_id: string;
+  tensor_count: number;
+  by_type: TensorTypeBucket[];
+  unsafe_weight_fraction: number;
+  is_moe: boolean;
+  moe_expert_count?: number;
+}
+
+/** Real per-tensor type distribution + MoE detection for a model, parsed
+ * fresh from its GGUF file — powers "why is this model partially CPU?". */
+export async function getTensorPlacementInfo(modelId: string): Promise<TensorPlacementInfo | null> {
+  try {
+    return await invoke<TensorPlacementInfo>('get_tensor_placement_info', { modelId });
   } catch (e) {
     modelDataError.set(String(e));
     return null;

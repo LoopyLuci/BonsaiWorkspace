@@ -2285,6 +2285,122 @@ pub async fn fetch_opencode_go_models(
     crate::opencode_go::fetch_models(&api_key).await
 }
 
+// ─── Generic cloud provider catalog ─────────────────────────────────────────
+// Covers every provider registered in `provider_catalog` (Anthropic, OpenAI,
+// Gemini, DeepSeek, Groq, Mistral, Together, OpenRouter, xAI, OpenCode Zen).
+// Distinct from the OpenCode Go commands above, which predate this and also
+// wire up real chat execution (`opencode_go::send_chat`) — these commands
+// only cover the catalog/model-library concern.
+
+#[derive(serde::Serialize)]
+pub struct ProviderMeta {
+    id: String,
+    display_name: String,
+    has_key: bool,
+}
+
+/// List every known cloud provider and whether an API key is already saved.
+#[tauri::command]
+pub async fn list_known_providers(state: State<'_, AppState>) -> Result<Vec<ProviderMeta>, String> {
+    Ok(crate::provider_catalog::known_providers()
+        .iter()
+        .map(|p| ProviderMeta {
+            id: p.id.to_string(),
+            display_name: p.display_name.to_string(),
+            has_key: state.secrets_store.has(&crate::provider_catalog::secret_account(p.id)),
+        })
+        .collect())
+}
+
+/// Store (or, if empty, clear) a provider's API key in the OS credential vault.
+#[tauri::command]
+pub async fn save_provider_api_key(
+    state: State<'_, AppState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<(), String> {
+    if crate::provider_catalog::find_provider(&provider_id).is_none() {
+        return Err(format!("unknown provider '{provider_id}'"));
+    }
+    let account = crate::provider_catalog::secret_account(&provider_id);
+    if api_key.is_empty() {
+        state.secrets_store.delete(&account)
+    } else {
+        state.secrets_store.store(&account, &api_key)
+    }
+}
+
+#[tauri::command]
+pub async fn has_provider_api_key(state: State<'_, AppState>, provider_id: String) -> Result<bool, String> {
+    Ok(state.secrets_store.has(&crate::provider_catalog::secret_account(&provider_id)))
+}
+
+/// Fetch a provider's live model catalog using its stored API key.
+#[tauri::command]
+pub async fn fetch_provider_models(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<Vec<crate::provider_catalog::ProviderModel>, String> {
+    let def = crate::provider_catalog::find_provider(&provider_id)
+        .ok_or_else(|| format!("unknown provider '{provider_id}'"))?;
+    let api_key = state
+        .secrets_store
+        .get(&crate::provider_catalog::secret_account(def.id))?
+        .ok_or_else(|| format!("No {} API key saved yet — add one in Settings first.", def.display_name))?;
+    crate::provider_catalog::fetch_models(def, &api_key).await
+}
+
+/// Fetch a provider's live catalog and create a `ModelData` entry (KB-enriched,
+/// no LLM call — a bulk sync can cover dozens of models) for every model that
+/// doesn't already have one. Returns the count of new entries created. This is
+/// what makes the model library "update itself" for a given cloud provider.
+#[tauri::command]
+pub async fn sync_provider_models_to_library(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> Result<usize, String> {
+    let def = crate::provider_catalog::find_provider(&provider_id)
+        .ok_or_else(|| format!("unknown provider '{provider_id}'"))?;
+    let api_key = state
+        .secrets_store
+        .get(&crate::provider_catalog::secret_account(def.id))?
+        .ok_or_else(|| format!("No {} API key saved yet — add one in Settings first.", def.display_name))?;
+    let live_models = crate::provider_catalog::fetch_models(def, &api_key).await?;
+
+    let existing = state.model_data_store.list().await.map_err(|e| e.to_string())?;
+    let already_present = |model_id: &str| {
+        existing.iter().any(|d| {
+            matches!(
+                &d.source,
+                crate::model_data::ModelSource::OpenAICompatible { model_id: existing_id, provider_name, .. }
+                    if existing_id == model_id && provider_name.eq_ignore_ascii_case(def.display_name)
+            )
+        })
+    };
+
+    let generator = crate::model_data_generator::ModelDataGenerator::new(state.orchestrator.clone());
+    let mut created = 0usize;
+    for m in live_models {
+        if already_present(&m.id) {
+            continue;
+        }
+        let mut data = generator.from_provider_fast(def.id, &m.id, Some(def.base_url));
+        // Prefer the provider's own reported limits over the KB/heuristic guess.
+        if let Some(ctx) = m.context_window {
+            data.capabilities.context_window = ctx.min(u32::MAX as u64) as u32;
+        }
+        if let Some(out) = m.max_output_tokens {
+            data.capabilities.max_output_tokens = out.min(u32::MAX as u64) as u32;
+        }
+        if data.name == m.id && data.name != m.name {
+            data.name = m.name;
+        }
+        state.model_data_store.save(&data).await.map_err(|e| e.to_string())?;
+        created += 1;
+    }
+    Ok(created)
+}
+
 // ─── Self-upgrade proposal queue ─────────────────────────────────────────────
 // Triggering a proposal reuses the generic `send_agent_message` command
 // with `agent_id: "self-upgrader"` — no dedicated "trigger" command needed.
@@ -2878,6 +2994,15 @@ pub async fn get_hardware_info() -> Result<serde_json::Value, String> {
         "backend":          unique_backends.join(" / "),
         "gpu_names":        gpu_names,
     }))
+}
+
+#[tauri::command]
+pub async fn get_system_stats() -> Result<serde_json::Value, String> {
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let total_mb = sys.total_memory() / 1024 / 1024;
+    let used_mb = total_mb.saturating_sub(sys.available_memory() / 1024 / 1024);
+    Ok(serde_json::json!({ "used_mb": used_mb, "total_mb": total_mb }))
 }
 
 #[tauri::command]
@@ -6332,7 +6457,7 @@ async fn bot_reload(_state: &State<'_, AppState>) -> Result<(), ()> {
 // ─── Model Data ──────────────────────────────────────────────────────────────
 
 use crate::inference_mode::InferenceMode;
-use crate::model_data::{GenerateModelDataInput, ModelData, ModelDataSummary};
+use crate::model_data::{GenerateModelDataInput, GpuProfile, ModelData, ModelDataSummary};
 use crate::model_data_generator::ModelDataGenerator;
 
 /// List all model data entries (summaries — lighter than full records).
@@ -6589,6 +6714,114 @@ pub async fn apply_inference_mode_to_all(
     }
 
     Ok(updated)
+}
+
+// ─── GPU/CPU hybrid placement ─────────────────────────────────────────────────
+
+/// Per-model GPU/CPU placement history (crash count, last known-good layer
+/// count) — the per-model replacement for the deprecated global
+/// `get_gpu_crash_flag`/`clear_gpu_crash_flag` pair, which forced *every*
+/// model to skip GPU after a single crash on any one model.
+#[tauri::command]
+pub async fn get_gpu_profile(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<GpuProfile, String> {
+    Ok(state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|d| d.gpu_profile)
+        .unwrap_or_default())
+}
+
+/// Clears this model's GPU crash history so its next load re-attempts the
+/// full computed placement plan instead of starting from a previously
+/// learned conservative fallback. Reloads the model immediately if it's
+/// currently loaded, mirroring `set_inference_mode`.
+#[tauri::command]
+pub async fn reset_gpu_profile(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<GpuProfile, String> {
+    let mut data = match state
+        .model_data_store
+        .find_by_registry_id(&model_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        Some(existing) => existing,
+        None => return Err(format!("model '{model_id}' not found")),
+    };
+
+    data.gpu_profile = GpuProfile::default();
+    data.touch();
+    state
+        .model_data_store
+        .save(&data)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if state.orchestrator.is_model_loaded(&model_id).await {
+        state.orchestrator.unload_model(&model_id).await;
+        let rx = state.orchestrator.load(model_id.clone());
+        rx.await.map_err(|_| "Orchestrator offline".to_string())??;
+    }
+
+    let _ = app_handle.emit(
+        "model-gpu-profile-reset",
+        serde_json::json!({ "model_id": model_id }),
+    );
+
+    Ok(data.gpu_profile)
+}
+
+/// Read-only diagnostic: the real per-tensor type distribution and MoE
+/// detection for a model, parsed fresh from its GGUF file — powers the
+/// "why is this model partially CPU?" UI. Not on any hot path (manual
+/// diagnostic action), so re-parsing per call is an acceptable cost.
+#[tauri::command]
+pub async fn get_tensor_placement_info(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<serde_json::Value, String> {
+    let models = state.orchestrator.list_models().await;
+    let info = models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| format!("model '{model_id}' not found in registry"))?;
+
+    let (metadata, tensors) = crate::gguf::parse_gguf_tensor_info(&info.path)
+        .map_err(|e| format!("failed to parse GGUF tensor info: {e}"))?;
+    let moe = crate::gpu_placement::detect_moe(&metadata, &tensors);
+    let profile = crate::gpu_placement::classify_tensor_types(&tensors);
+
+    let by_type: Vec<serde_json::Value> = profile
+        .by_type
+        .iter()
+        .map(|(ty, count, elements)| {
+            serde_json::json!({
+                "type": ty.label(),
+                "tensor_count": count,
+                "weight_fraction": if profile.total_elements > 0 {
+                    *elements as f64 / profile.total_elements as f64
+                } else {
+                    0.0
+                },
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "model_id": model_id,
+        "tensor_count": tensors.len(),
+        "by_type": by_type,
+        "unsafe_weight_fraction": profile.unsafe_weight_fraction(),
+        "is_moe": moe.is_some(),
+        "moe_expert_count": moe.as_ref().map(|m| m.expert_count),
+    }))
 }
 
 // ─── Model directories ────────────────────────────────────────────────────────

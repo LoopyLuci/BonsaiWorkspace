@@ -116,8 +116,10 @@ workspace.log(workspace.json_encode(result))
   }
 
   async function clearHistory() {
-    await invoke('sylva_clear_history');
-    history = [];
+    try {
+      await invoke('sylva_clear_history');
+      history = [];
+    } catch (e) { output = `Clear history failed: ${e}`; outputError = true; }
   }
 
   function formatTime(ts: number): string {

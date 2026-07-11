@@ -63,13 +63,13 @@ export const clusterPolicy = writable<ClusterPolicy | null>(null);
 export const clusterLastPlan = writable<ClusterDispatchPlan | null>(null);
 
 export async function refreshClusterNodes() {
-  const nodes = await invoke<ClusterNode[]>('cluster_list_nodes');
+  const nodes = (await invoke<ClusterNode[]>('cluster_list_nodes')) ?? [];
   clusterNodes.set(nodes);
   return nodes;
 }
 
 export async function refreshClusterPolicy() {
-  const policy = await invoke<ClusterPolicy>('cluster_get_policy');
+  const policy = (await invoke<ClusterPolicy | null>('cluster_get_policy')) ?? null;
   clusterPolicy.set(policy);
   return policy;
 }

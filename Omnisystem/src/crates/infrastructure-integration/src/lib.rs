@@ -1,7 +1,6 @@
-pub mod integration_tests;
-pub mod performance;
-pub mod scenarios;
-
-pub use integration_tests::*;
-pub use performance::*;
-pub use scenarios::*;
+#[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
+mod performance;
+#[cfg(test)]
+mod scenarios;

@@ -1,12 +1,12 @@
 //! CLI
 
-use integration_tests::Component;
+use integration_tests::C;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
-    Ok(())
+fn main() {
+    let c = C::new();
+    c.s("key".into(), "value".into());
+    match c.g("key") {
+        Some(v) => println!("Fetched: {}", v),
+        None => println!("Not found"),
+    }
 }

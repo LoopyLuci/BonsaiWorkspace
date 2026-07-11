@@ -1,12 +1,11 @@
 //! CLI
 
-use data_serialization::Component;
+use data_serialization::{init, Metadata};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    init().await?;
+    let metadata = Metadata::new();
+    println!("Created metadata: {} (v{})", metadata.id, metadata.version);
     Ok(())
 }

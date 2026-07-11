@@ -397,13 +397,31 @@ impl ModelDataGenerator {
         Ok(data)
     }
 
-    /// Auto-generate ModelData for a cloud / API model.
+    /// Auto-generate ModelData for a cloud / API model (KB + LLM enrichment).
+    /// Suitable for one-off, interactive generation where the user is
+    /// waiting on a single result.
     pub async fn from_provider(
         &self,
         provider: &str,
         model_id: &str,
         base_url: Option<&str>,
     ) -> Result<ModelData> {
+        let mut data = self.from_provider_fast(provider, model_id, base_url);
+
+        if let Err(e) = self.enrich_via_llm(&mut data).await {
+            tracing::warn!("[model-data-gen] LLM enrichment failed for '{model_id}': {e}");
+        }
+
+        data.touch();
+        Ok(data)
+    }
+
+    /// Build a ModelData draft for a cloud / API model from the knowledge
+    /// base and known-model heuristics only — no LLM call. Used for bulk
+    /// provider-catalog syncs (potentially dozens/hundreds of models) where
+    /// running a local-model inference pass per model would be far too slow
+    /// and would contend with the user's actual inference workload.
+    pub fn from_provider_fast(&self, provider: &str, model_id: &str, base_url: Option<&str>) -> ModelData {
         let now = chrono::Utc::now().timestamp_millis();
         let provider_lower = provider.to_lowercase();
         let model_lower = model_id.to_lowercase();
@@ -411,7 +429,9 @@ impl ModelDataGenerator {
         // Infer a human-readable name from the model_id.
         let name = model_id_to_display_name(model_id);
 
-        let base = base_url.unwrap_or_else(|| default_base_url(&provider_lower));
+        let base = base_url
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| default_base_url(&provider_lower).to_string());
 
         let mut data = ModelData {
             id: uuid::Uuid::new_v4().to_string(),
@@ -420,7 +440,7 @@ impl ModelDataGenerator {
             version: None,
             description: String::new(),
             source: ModelSource::OpenAICompatible {
-                base_url: base.to_string(),
+                base_url: base,
                 model_id: model_id.to_string(),
                 provider_name: capitalise(&provider_lower),
                 api_key_secret_name: Some(format!("{}_api_key", provider_lower)),
@@ -433,6 +453,7 @@ impl ModelDataGenerator {
             },
             inference: InferenceProfile::default(),
             inference_mode: crate::inference_mode::InferenceMode::default(),
+            gpu_profile: crate::model_data::GpuProfile::default(),
             prompt_format: PromptFormat::OpenAIMessages,
             skill_affinities: vec![],
             authors: vec![],
@@ -455,12 +476,7 @@ impl ModelDataGenerator {
         // Refine context window for well-known model IDs.
         apply_known_context_overrides(&mut data, model_id);
 
-        if let Err(e) = self.enrich_via_llm(&mut data).await {
-            tracing::warn!("[model-data-gen] LLM enrichment failed for '{model_id}': {e}");
-        }
-
-        data.touch();
-        Ok(data)
+        data
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
@@ -762,14 +778,13 @@ fn capitalise(s: &str) -> String {
 }
 
 fn default_base_url(provider: &str) -> &'static str {
+    // Providers with a standard list-models endpoint are registered once in
+    // `provider_catalog` — consult it first so the two modules can't drift.
+    if let Some(def) = crate::provider_catalog::find_provider(provider) {
+        return def.base_url;
+    }
     match provider {
-        "anthropic" => "https://api.anthropic.com/v1",
-        "openai" => "https://api.openai.com/v1",
-        "groq" => "https://api.groq.com/openai/v1",
-        "mistral" => "https://api.mistral.ai/v1",
         "ollama" => "http://127.0.0.1:11434/v1",
-        "together" => "https://api.together.xyz/v1",
-        "deepseek" => "https://api.deepseek.com/v1",
         "opencode-go" => crate::opencode_go::BASE_URL,
         _ => "https://api.openai.com/v1",
     }

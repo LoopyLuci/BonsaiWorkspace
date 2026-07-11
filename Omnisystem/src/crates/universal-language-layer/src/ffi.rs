@@ -153,7 +153,7 @@ pub mod conversions {
         // This is a simplified version - real implementation would handle all types
         match &value.data {
             serde_json::Value::Null => Ok(std::ptr::null()),
-            serde_json::Value::Bool(b) => Ok(*b as *const libc::c_void),
+            serde_json::Value::Bool(b) => Ok((*b as i64) as *const libc::c_void),
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Ok(i as *const libc::c_void)

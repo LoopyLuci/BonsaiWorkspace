@@ -4,7 +4,7 @@ export type InferenceMode =
   | { mode: 'gpu_only' }
   | { mode: 'hybrid'; gpu_layers: number };
 
-export const DEFAULT_INFERENCE_MODE: InferenceMode = { mode: 'hybrid', gpu_layers: 20 };
+export const DEFAULT_INFERENCE_MODE: InferenceMode = { mode: 'auto' };
 
 export function inferenceModeLabel(mode: InferenceMode): string {
   switch (mode.mode) {

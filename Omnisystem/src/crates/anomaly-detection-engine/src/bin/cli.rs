@@ -1,12 +1,13 @@
 //! CLI
 
-use anomaly_detection_engine::Component;
+use anomaly_detection_engine::Service;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let s = Service::new();
+    let processed = s.process("test").await?;
+    println!("{}", processed);
+    let analyzed = s.analyze("data").await?;
+    println!("{}", analyzed);
     Ok(())
 }

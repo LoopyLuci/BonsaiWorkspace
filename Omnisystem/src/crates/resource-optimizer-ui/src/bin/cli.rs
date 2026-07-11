@@ -1,12 +1,13 @@
 //! CLI
 
-use resource_optimizer_ui::Component;
+use resource_optimizer_ui::UI;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let mut ui = UI::new();
+    ui.update("hello".to_string())?;
+    println!("{}", ui.render());
+    ui.toggle();
+    println!("Visible after toggle: {}", ui.render().is_empty());
     Ok(())
 }
