@@ -56,6 +56,19 @@
   let activityScrollEl: HTMLDivElement;
   let term: Terminal;
   let fit: FitAddon;
+
+  // `container` is bound inside the terminal-panel's `{:else}` branch (see
+  // markup below), which only exists in the DOM once the user leaves the
+  // default "Activity Log" tab. Svelte destroys and recreates that div each
+  // time the tab toggles, so `term.open()` has to be re-run against whatever
+  // the current `container` is rather than once in onMount — at mount time
+  // (activeTabId starts as 'activity') `container` is still undefined, and a
+  // single onMount-time `term.open(container)` would never actually attach
+  // xterm.js to anything.
+  $: if (container && term) {
+    term.open(container);
+    fit?.fit();
+  }
   let unlistenPty: (() => void) | null = null;
   let unlistenToolTerminal: (() => void) | null = null;
   let unlistenToolUsed: (() => void) | null = null;
@@ -583,8 +596,6 @@
     });
     fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(container);
-    fit.fit();
     renderActiveBuffer();
 
     unlistenPty = await listen<TerminalEventPayload>('pty-output', (e) => {
