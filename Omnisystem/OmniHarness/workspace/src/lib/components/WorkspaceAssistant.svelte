@@ -24,8 +24,10 @@
   let showHistory = false;
 
   async function loadSession(id: string) {
-    await invoke('load_assistant_session', { sessionId: id });
-    currentSessionId.set(id);
+    try {
+      await invoke('load_assistant_session', { sessionId: id });
+      currentSessionId.set(id);
+    } catch (e) { console.error('load_assistant_session failed:', e); }
   }
 
   onMount(async () => {

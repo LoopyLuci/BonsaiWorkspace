@@ -10,7 +10,12 @@
 
   async function togglePin() {
     pinned = !pinned;
-    await invoke('set_assistant_always_on_top', { onTop: pinned });
+    try {
+      await invoke('set_assistant_always_on_top', { onTop: pinned });
+    } catch (e) {
+      pinned = !pinned;
+      console.error('set_assistant_always_on_top failed:', e);
+    }
   }
 
   async function close() {

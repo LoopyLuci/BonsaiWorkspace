@@ -82,7 +82,9 @@
   }
 
   async function addReaction(messageId: string, emoji: string) {
-    await invoke('add_chat_reaction', { sessionId, messageId, emoji, peerId });
+    try {
+      await invoke('add_chat_reaction', { sessionId, messageId, emoji, peerId });
+    } catch (e) { console.error('add_chat_reaction failed:', e); }
   }
 
   function startReply(msg: ChatMessage) {

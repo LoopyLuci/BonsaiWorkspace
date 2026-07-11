@@ -641,9 +641,16 @@
 
   async function toggleFlag(key: string, value: boolean) {
     const flags = $featureFlags as unknown as Record<string, boolean>;
+    const previous = flags[key];
     flags[key] = value;
     featureFlags.set($featureFlags);
-    await invoke('set_feature_flags', { flags: $featureFlags });
+    try {
+      await invoke('set_feature_flags', { flags: $featureFlags });
+    } catch (e) {
+      flags[key] = previous;
+      featureFlags.set($featureFlags);
+      console.error('set_feature_flags failed:', e);
+    }
   }
 
   onDestroy(() => {

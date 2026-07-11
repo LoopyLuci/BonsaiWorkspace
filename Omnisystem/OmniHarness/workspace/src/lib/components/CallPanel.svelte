@@ -29,33 +29,57 @@
 
   onDestroy(() => unlisteners.forEach(fn => fn()));
 
+  let callError = '';
+
   async function startCall() {
-    await invoke('start_voice_call', { sessionId, initiatorId: peerId });
-    inCall = true;
+    try {
+      await invoke('start_voice_call', { sessionId, initiatorId: peerId });
+      inCall = true;
+    } catch (e) { callError = 'Failed to start call: ' + e; }
   }
 
   async function endCall() {
-    await invoke('end_voice_call', { sessionId });
-    inCall = false;
+    try {
+      await invoke('end_voice_call', { sessionId });
+      inCall = false;
+    } catch (e) { callError = 'Failed to end call: ' + e; }
   }
 
   async function toggleMic() {
     micMuted = !micMuted;
-    await invoke('set_media_mute', { sessionId, track: 'audio', muted: micMuted });
+    try {
+      await invoke('set_media_mute', { sessionId, track: 'audio', muted: micMuted });
+    } catch (e) {
+      micMuted = !micMuted;
+      callError = 'Failed to toggle mic: ' + e;
+    }
   }
 
   async function toggleCam() {
     camOff = !camOff;
-    await invoke('set_media_mute', { sessionId, track: 'video', muted: camOff });
+    try {
+      await invoke('set_media_mute', { sessionId, track: 'video', muted: camOff });
+    } catch (e) {
+      camOff = !camOff;
+      callError = 'Failed to toggle camera: ' + e;
+    }
   }
 
   async function toggleScreen() {
     screenSharing = !screenSharing;
-    await invoke('toggle_screen_share', { sessionId });
+    try {
+      await invoke('toggle_screen_share', { sessionId });
+    } catch (e) {
+      screenSharing = !screenSharing;
+      callError = 'Failed to toggle screen share: ' + e;
+    }
   }
 </script>
 
 <div class="call-panel" data-workspace-action="Collaboration:CallPanel">
+  {#if callError}
+    <p class="call-error">{callError}</p>
+  {/if}
   {#if !inCall}
     <div class="idle">
       <p class="idle-hint">No active call</p>
@@ -91,6 +115,7 @@
   .call-panel { display: flex; flex-direction: column; height: 100%; align-items: center; justify-content: center; gap: 1rem; padding: 1rem; }
 
   .idle { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+  .call-error { color: #f87171; font-size: 0.8rem; margin: 0 0 0.5rem; }
   .idle-hint { color: var(--text-secondary, #888); font-size: 0.875rem; }
   .start-btn { padding: 0.6rem 1.4rem; border-radius: 8px; border: none; background: #22c55e; color: #fff; font-size: 0.95rem; cursor: pointer; }
   .start-btn:hover { filter: brightness(1.1); }

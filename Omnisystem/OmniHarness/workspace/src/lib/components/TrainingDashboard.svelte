@@ -121,42 +121,52 @@
   }
 
   async function deleteExample(id: string) {
-    await invoke('delete_training_example', { exampleId: id });
-    showToast('Example deleted');
-    await loadExamples();
+    try {
+      await invoke('delete_training_example', { exampleId: id });
+      showToast('Example deleted');
+      await loadExamples();
+    } catch (e) { showToast('Delete failed: ' + e); }
   }
 
   async function boostExample(id: string) {
-    await invoke('boost_training_example', { exampleId: id });
-    showToast('Example boosted to max priority');
-    await loadExamples();
+    try {
+      await invoke('boost_training_example', { exampleId: id });
+      showToast('Example boosted to max priority');
+      await loadExamples();
+    } catch (e) { showToast('Boost failed: ' + e); }
   }
 
   async function bulkDelete() {
-    const removed: number = await invoke('bulk_delete_training_data', {
-      request: {
-        from_timestamp: bulkDeleteFrom ? new Date(bulkDeleteFrom).getTime() * 1000 : null,
-        to_timestamp:   bulkDeleteTo   ? new Date(bulkDeleteTo).getTime()   * 1000 : null,
-        source_filter:  null,
-        domain_filter:  exampleDomain || null,
-      },
-    });
-    showToast(`Deleted ${removed} examples`);
-    await loadExamples();
+    try {
+      const removed: number = await invoke('bulk_delete_training_data', {
+        request: {
+          from_timestamp: bulkDeleteFrom ? new Date(bulkDeleteFrom).getTime() * 1000 : null,
+          to_timestamp:   bulkDeleteTo   ? new Date(bulkDeleteTo).getTime()   * 1000 : null,
+          source_filter:  null,
+          domain_filter:  exampleDomain || null,
+        },
+      });
+      showToast(`Deleted ${removed} examples`);
+      await loadExamples();
+    } catch (e) { showToast('Bulk delete failed: ' + e); }
   }
 
   async function exportData() {
     if (!exportPath) return showToast('Enter an export path first');
-    const count: number = await invoke('export_training_data', { outputPath: exportPath });
-    showToast(`Exported ${count} examples to ${exportPath}`);
+    try {
+      const count: number = await invoke('export_training_data', { outputPath: exportPath });
+      showToast(`Exported ${count} examples to ${exportPath}`);
+    } catch (e) { showToast('Export failed: ' + e); }
   }
 
   async function wipeDatabase() {
     if (!confirm('Wipe ALL training data? This cannot be undone.')) return;
-    await invoke('wipe_training_database');
-    showToast('Training database wiped');
-    await loadAll();
-    await loadExamples();
+    try {
+      await invoke('wipe_training_database');
+      showToast('Training database wiped');
+      await loadAll();
+      await loadExamples();
+    } catch (e) { showToast('Wipe failed: ' + e); }
   }
 
   async function rollback() {
@@ -169,8 +179,10 @@
   }
 
   async function savePreferences() {
-    await invoke('set_training_preferences', { prefs: preferences });
-    showToast('Preferences saved');
+    try {
+      await invoke('set_training_preferences', { prefs: preferences });
+      showToast('Preferences saved');
+    } catch (e) { showToast('Save failed: ' + e); }
   }
 
   // ── CIQ colour ────────────────────────────────────────────────────────────

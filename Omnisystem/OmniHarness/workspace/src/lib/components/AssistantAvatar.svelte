@@ -106,7 +106,9 @@
       u.onend = () => stopLipSync();
       speechSynthesis.speak(u);
     } else {
-      await invoke('speak_text', { text });
+      try {
+        await invoke('speak_text', { text });
+      } catch (e) { console.error('speak_text failed:', e); }
     }
   }
 

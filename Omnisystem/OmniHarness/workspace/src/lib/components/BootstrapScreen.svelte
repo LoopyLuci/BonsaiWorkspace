@@ -27,12 +27,21 @@
     cancelling = false;
     bootstrapError.set(null);
     isBootstrapping.set(true);
-    await invoke('run_bootstrap');
+    try {
+      await invoke('run_bootstrap');
+    } catch (e) {
+      bootstrapError.set(typeof e === 'string' ? e : 'Failed to start bootstrap.');
+      isBootstrapping.set(false);
+    }
   }
 
   async function cancel() {
     cancelling = true;
-    await invoke('cancel_bootstrap');
+    try {
+      await invoke('cancel_bootstrap');
+    } catch (e) {
+      bootstrapError.set(typeof e === 'string' ? e : 'Failed to cancel bootstrap.');
+    }
   }
 
   onMount(() => {

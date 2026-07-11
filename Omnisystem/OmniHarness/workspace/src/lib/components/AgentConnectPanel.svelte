@@ -52,12 +52,14 @@
   }
 
   async function refreshSessions() {
-    sessions = await invoke<AgentConnectSession[]>('agent_connect_list_sessions');
-    activeSession = await invoke<AgentConnectSession | null>('agent_connect_get_active_session');
-    if (!selectedSessionId) selectedSessionId = activeSession?.id ?? '';
-    if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
-      selectedSessionId = activeSession?.id ?? '';
-    }
+    try {
+      sessions = await invoke<AgentConnectSession[]>('agent_connect_list_sessions');
+      activeSession = await invoke<AgentConnectSession | null>('agent_connect_get_active_session');
+      if (!selectedSessionId) selectedSessionId = activeSession?.id ?? '';
+      if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
+        selectedSessionId = activeSession?.id ?? '';
+      }
+    } catch (e) { console.error('refreshSessions failed:', e); }
   }
 
   async function refreshTimeline(afterSeq?: number) {
@@ -67,17 +69,19 @@
       return;
     }
 
-    const events = await invoke<AgentConnectEvent[]>('agent_connect_get_timeline', {
-      sessionId,
-      afterSeq,
-      limit: 300,
-    });
+    try {
+      const events = await invoke<AgentConnectEvent[]>('agent_connect_get_timeline', {
+        sessionId,
+        afterSeq,
+        limit: 300,
+      });
 
-    if (afterSeq && events.length > 0) {
-      timeline = [...timeline, ...events].slice(-300);
-      return;
-    }
-    timeline = events;
+      if (afterSeq && events.length > 0) {
+        timeline = [...timeline, ...events].slice(-300);
+        return;
+      }
+      timeline = events;
+    } catch (e) { console.error('refreshTimeline failed:', e); }
   }
 
   async function startSession() {
