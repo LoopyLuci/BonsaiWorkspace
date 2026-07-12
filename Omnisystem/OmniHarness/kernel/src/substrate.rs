@@ -97,7 +97,7 @@ impl AuditChain {
         h.update(ts.to_string().as_bytes());
         h.update(kind.as_bytes());
         h.update(payload.as_bytes());
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     }
 
     pub fn append(&mut self, kind: &str, payload: &str) -> String {

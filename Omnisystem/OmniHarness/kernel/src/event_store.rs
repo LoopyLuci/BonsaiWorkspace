@@ -38,7 +38,7 @@ impl SystemEvent {
         h.update(payload.as_bytes());
         h.update(b"|");
         h.update(prev.as_bytes());
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     }
 }
 

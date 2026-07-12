@@ -101,7 +101,7 @@ impl AuthStore {
     fn hash_key(key: &str) -> String {
         let mut h = Sha256::new();
         h.update(key.as_bytes());
-        format!("{:x}", h.finalize())
+        hex::encode(h.finalize())
     }
 
     fn random_key() -> String {
