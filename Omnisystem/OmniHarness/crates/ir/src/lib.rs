@@ -17,6 +17,7 @@ pub use codegen::{Codegen, CodegenError, RustCodegen};
 pub use core::Core;
 pub use effects::{BonsaiEffect, EffectPolicy, TrustGuard, TrustLevel};
 pub use error::{Error, Result};
+pub use ir_repr::Ir;
 pub use ops::{IrFunction, IrModule, IrOp, IrType};
 pub use parser::{parse, parse_expr, ParseError};
 pub use types::State;
