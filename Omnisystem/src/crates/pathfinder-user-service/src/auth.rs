@@ -1,10 +1,30 @@
 // Authentication utilities for PATHFINDER User Service
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
 use serde::{Deserialize, Serialize};
 use chrono::{Duration, Utc};
+use std::sync::OnceLock;
+
+const MIN_JWT_SECRET_LEN: usize = 32;
+static JWT_SECRET: OnceLock<String> = OnceLock::new();
+
+/// Load the JWT signing secret from the `JWT_SECRET` environment variable.
+/// Fails closed: no hardcoded fallback, and a too-short secret is rejected.
+fn jwt_secret() -> Result<&'static str> {
+    if let Some(secret) = JWT_SECRET.get() {
+        return Ok(secret.as_str());
+    }
+    let secret = std::env::var("JWT_SECRET")
+        .map_err(|_| anyhow!("JWT_SECRET environment variable is not set"))?;
+    if secret.len() < MIN_JWT_SECRET_LEN {
+        return Err(anyhow!(
+            "JWT_SECRET must be at least {MIN_JWT_SECRET_LEN} characters"
+        ));
+    }
+    Ok(JWT_SECRET.get_or_init(|| secret).as_str())
+}
 
 /// JWT Claims
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,7 +53,7 @@ pub fn verify_password(password: &str, hash: &str) -> Result<()> {
 
 /// Generate JWT token
 pub fn generate_jwt(user_id: &str) -> Result<String> {
-    let secret = "your-secret-key-for-jwt"; // In production, use environment variable
+    let secret = jwt_secret()?;
     let now = Utc::now();
     let expires_at = now + Duration::days(1);
 
@@ -55,7 +75,7 @@ pub fn generate_jwt(user_id: &str) -> Result<String> {
 
 /// Validate JWT token
 pub fn validate_jwt(token: &str) -> Result<Claims> {
-    let secret = "your-secret-key-for-jwt";
+    let secret = jwt_secret()?;
 
     let data = decode::<Claims>(
         token,

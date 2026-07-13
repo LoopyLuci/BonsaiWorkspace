@@ -2,11 +2,27 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Claims, User};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use std::sync::OnceLock;
 use uuid::Uuid;
 
-const JWT_SECRET: &str = "your-secret-key-min-32-chars-long!"; // Use env var in production
 const TOKEN_EXPIRATION_HOURS: i64 = 24;
 const REFRESH_TOKEN_EXPIRATION_DAYS: i64 = 30;
+const MIN_JWT_SECRET_LEN: usize = 32;
+
+static JWT_SECRET: OnceLock<String> = OnceLock::new();
+
+/// Load the JWT signing secret from the `JWT_SECRET` environment variable.
+/// Fails closed: no hardcoded fallback, and a too-short secret is rejected.
+fn jwt_secret() -> AppResult<&'static str> {
+    if let Some(secret) = JWT_SECRET.get() {
+        return Ok(secret.as_str());
+    }
+    let secret = std::env::var("JWT_SECRET").map_err(|_| AppError::InternalServerError)?;
+    if secret.len() < MIN_JWT_SECRET_LEN {
+        return Err(AppError::InternalServerError);
+    }
+    Ok(JWT_SECRET.get_or_init(|| secret).as_str())
+}
 
 pub struct TokenManager;
 
@@ -27,7 +43,7 @@ impl TokenManager {
             roles: vec!["user".to_string()],
         };
 
-        let key = EncodingKey::from_secret(JWT_SECRET.as_ref());
+        let key = EncodingKey::from_secret(jwt_secret()?.as_bytes());
         encode(&Header::default(), &claims, &key)
             .map_err(|_| AppError::InternalServerError)
     }
@@ -48,14 +64,14 @@ impl TokenManager {
             roles: vec!["refresh".to_string()],
         };
 
-        let key = EncodingKey::from_secret(JWT_SECRET.as_ref());
+        let key = EncodingKey::from_secret(jwt_secret()?.as_bytes());
         encode(&Header::default(), &claims, &key)
             .map_err(|_| AppError::InternalServerError)
     }
 
     /// Verify and decode a token
     pub fn verify_token(token: &str) -> AppResult<Claims> {
-        let key = DecodingKey::from_secret(JWT_SECRET.as_ref());
+        let key = DecodingKey::from_secret(jwt_secret()?.as_bytes());
         let validation = Validation::default();
 
         decode::<Claims>(token, &key, &validation)
@@ -102,8 +118,15 @@ impl PasswordManager {
 mod tests {
     use super::*;
 
+    fn ensure_test_secret() {
+        if std::env::var("JWT_SECRET").is_err() {
+            std::env::set_var("JWT_SECRET", "test-only-secret-key-min-32-chars!!");
+        }
+    }
+
     #[test]
     fn test_generate_token() {
+        ensure_test_secret();
         let user = User {
             id: Uuid::new_v4(),
             email: "test@example.com".to_string(),
@@ -122,6 +145,7 @@ mod tests {
 
     #[test]
     fn test_verify_token() {
+        ensure_test_secret();
         let user = User {
             id: Uuid::new_v4(),
             email: "test@example.com".to_string(),
@@ -141,6 +165,7 @@ mod tests {
 
     #[test]
     fn test_invalid_token() {
+        ensure_test_secret();
         let result = TokenManager::verify_token("invalid.token.here");
         assert!(result.is_err());
     }
