@@ -219,6 +219,18 @@ pub struct InstallationResult {
 // Detector Functions
 // ============================================================================
 
+/// Build a `Command` for launching a possibly-shimmed executable (e.g. `npm.cmd`
+/// on Windows), which `Command::new` cannot spawn directly.
+fn shim_command(command: &str) -> Command {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd");
+        cmd.args(&["/C", command]);
+        cmd
+    } else {
+        Command::new(command)
+    }
+}
+
 fn detect_rust() -> DependencyStatus {
     match Command::new("rustc").arg("--version").output() {
         Ok(output) => {
@@ -261,7 +273,7 @@ fn detect_node() -> DependencyStatus {
 }
 
 fn detect_npm() -> DependencyStatus {
-    match Command::new("npm").arg("--version").output() {
+    match shim_command("npm").arg("--version").output() {
         Ok(output) => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             DependencyStatus::Installed(version)

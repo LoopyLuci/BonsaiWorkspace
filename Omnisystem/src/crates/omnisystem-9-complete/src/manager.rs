@@ -35,13 +35,13 @@ impl Manager {
                 record.updated_at = chrono::Utc::now();
                 record.clone()
             })
-            .ok_or_else(|| Error::NotFound(id.to_string()))
+            .ok_or_else(|| Error::Other(format!("record not found: {}", id)))
     }
 
     pub fn delete(&self, id: Uuid) -> Result<()> {
         self.store
             .remove(&id)
-            .ok_or_else(|| Error::NotFound(id.to_string()))?;
+            .ok_or_else(|| Error::Other(format!("record not found: {}", id)))?;
         Ok(())
     }
 

@@ -4,7 +4,7 @@ mod integration {
 
     #[tokio::test]
     async fn test_full_bootstrap_sequence() {
-        let result = bootstrap::Bootstrap::run().await;
+        let result = bootstrap::Bootstrap::run().await.expect("bootstrap should succeed");
         assert!(result.initialized);
     }
 }
