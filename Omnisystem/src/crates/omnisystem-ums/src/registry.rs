@@ -219,3 +219,78 @@ impl Default for ModuleRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::module::ModuleInfo;
+    use std::collections::HashMap;
+
+    fn test_info(name: &str) -> ModuleInfo {
+        ModuleInfo {
+            id: ModuleId::from_name(name),
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            description: String::new(),
+            author: "test".to_string(),
+            dependencies: vec![],
+            capabilities: vec!["demo".to_string()],
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            interface_version: "1.0".to_string(),
+            phase: 1,
+            source_path: String::new(),
+            canonical_path: String::new(),
+            spec_path: String::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_register_and_lookup() {
+        let registry = ModuleRegistry::new();
+        let info = test_info("alpha");
+        let id = info.id;
+
+        registry.register(info).unwrap();
+
+        assert_eq!(registry.count(), 1);
+        assert!(registry.exists("alpha"));
+        assert!(registry.get(id).is_some());
+        assert_eq!(registry.get_by_name("alpha").unwrap().info.name, "alpha");
+    }
+
+    #[test]
+    fn test_register_duplicate_name_fails() {
+        let registry = ModuleRegistry::new();
+        registry.register(test_info("alpha")).unwrap();
+        assert!(registry.register(test_info("alpha")).is_err());
+    }
+
+    #[test]
+    fn test_update_state_and_query_by_state() {
+        let registry = ModuleRegistry::new();
+        let info = test_info("alpha");
+        let id = info.id;
+        registry.register(info).unwrap();
+
+        assert_eq!(registry.count_by_state(ModuleState::Registered), 1);
+
+        registry.update_state(id, ModuleState::Running).unwrap();
+
+        assert_eq!(registry.count_by_state(ModuleState::Registered), 0);
+        assert_eq!(registry.count_by_state(ModuleState::Running), 1);
+        assert_eq!(registry.get(id).unwrap().state, ModuleState::Running);
+    }
+
+    #[test]
+    fn test_by_phase_and_capability() {
+        let registry = ModuleRegistry::new();
+        registry.register(test_info("alpha")).unwrap();
+        registry.register(test_info("beta")).unwrap();
+
+        assert_eq!(registry.by_phase(1).len(), 2);
+        assert_eq!(registry.by_capability("demo").len(), 2);
+        assert_eq!(registry.by_capability("nonexistent").len(), 0);
+    }
+}

@@ -271,15 +271,16 @@ impl ModuleRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::module::ModuleInfo;
+    
 
     #[tokio::test]
     async fn test_runtime_creation() {
+        // Use a real temp dir rather than a fixed relative path so tests
+        // don't leave "./test-omnisystem" artifacts in the repo.
+        let temp_dir = tempfile::tempdir().unwrap();
         let registry = ModuleRegistry::new();
         let resolver = ModuleResolver::new(registry.clone());
-        let data_manager = DataLayerManager::new(std::path::Path::new("./test-omnisystem"))
-            .await
-            .unwrap();
+        let data_manager = DataLayerManager::new(temp_dir.path()).await.unwrap();
 
         let runtime = ModuleRuntime::new(registry, resolver, data_manager)
             .await
