@@ -232,11 +232,73 @@ fn parse_event_type(s: &str) -> Option<crate::events::FeedbackEventType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::FeedbackEventType;
+
+    /// Build a SqlxStorage backed by a fresh temp-file SQLite database
+    /// (not `sqlite::memory:`, since the pool's multiple connections
+    /// would each see a separate, empty in-memory database).
+    async fn test_storage() -> (SqlxStorage, tempfile::TempPath) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.into_temp_path();
+        let url = format!("sqlite://{}?mode=rwc", path.to_str().unwrap());
+        let storage = SqlxStorage::new(&url).await.unwrap();
+        (storage, path)
+    }
 
     #[tokio::test]
     async fn test_sqlx_storage_creation() {
-        // This test would require a real SQLite database
-        // For now, just verify the module compiles
-        assert!(true);
+        let (_storage, _path) = test_storage().await;
+    }
+
+    #[tokio::test]
+    async fn test_sqlx_store_and_retrieve_feedback() {
+        let (storage, _path) = test_storage().await;
+
+        let event = FeedbackEvent {
+            event_id: "evt-1".to_string(),
+            event_type: FeedbackEventType::DiagnosticAccepted,
+            rule_id: "rule-1".to_string(),
+            file: "test.rs".to_string(),
+            line: 42,
+            timestamp: Utc::now(),
+            user_id: "user-1".to_string(),
+            action: Some("apply".to_string()),
+            outcome: Some("success".to_string()),
+            explanation: None,
+            dismissal_count: None,
+        };
+
+        storage.store_feedback_event(&event).await.unwrap();
+
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let events = storage.get_feedback_events_since(since).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].rule_id, "rule-1");
+        assert_eq!(events[0].event_type, FeedbackEventType::DiagnosticAccepted);
+    }
+
+    #[tokio::test]
+    async fn test_sqlx_store_and_retrieve_metrics() {
+        let (storage, _path) = test_storage().await;
+
+        let mut metrics = HashMap::new();
+        metrics.insert(
+            "rule-1".to_string(),
+            RuleConfidenceMetrics {
+                rule_id: "rule-1".to_string(),
+                true_positives: 90,
+                false_positives: 10,
+                dismissed_count: 0,
+                applied_fixes: 90,
+                fix_success_rate: 0.95,
+                last_updated: Utc::now(),
+            },
+        );
+
+        storage.store_metrics(&metrics).await.unwrap();
+
+        let retrieved = storage.get_metrics("rule-1").await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().true_positives, 90);
     }
 }

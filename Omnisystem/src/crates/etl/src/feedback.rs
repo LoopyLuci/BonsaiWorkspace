@@ -129,10 +129,27 @@ impl FeedbackCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::FeedbackEventType;
 
     #[tokio::test]
     async fn test_feedback_collection() {
-        // Integration tests in storage module
-        assert!(true);
+        let storage = Arc::new(ETLStorage::new());
+        let collector = FeedbackCollector::new(storage.clone());
+
+        collector
+            .on_fix_applied(
+                "rule-1".to_string(),
+                "test.rs".to_string(),
+                10,
+                "user-1".to_string(),
+                "success".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let events = storage.get_feedback_events_since(since).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, FeedbackEventType::DiagnosticAccepted);
     }
 }

@@ -3,7 +3,6 @@ use crate::refiner::RuleMutationProposal;
 use crate::RuleConfidenceUpdate;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum FeedbackEventType {
