@@ -25,6 +25,34 @@ pub enum MaterialType {
     Plastic,
     Metal,
     Glass,
+    Custom,
+}
+
+/// CNC machine sub-technology, used by [`crate::adapters::CNCAdapter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CNCTech {
+    Milling,
+    Turning,
+    Router,
+    Plasma,
+}
+
+/// Laser sub-technology, used by [`crate::adapters::LaserAdapter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LaserTech {
+    CO2,
+    Fiber,
+    Diode,
+    YAG,
+}
+
+/// 3D printer sub-technology, used by [`crate::adapters::PrinterAdapter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Printer3DTech {
+    FDM,
+    SLA,
+    SLS,
+    DLP,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

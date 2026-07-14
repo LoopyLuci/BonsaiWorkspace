@@ -1,4 +1,6 @@
-use crate::{Device, Job, JobState, Result, FabricationError, DeviceRegistry, MaterialDatabase};
+use crate::device::DeviceRegistry;
+use crate::material::MaterialDatabase;
+use crate::{Device, Job, JobState, Result, FabricationError};
 use dashmap::DashMap;
 use std::sync::Arc;
 

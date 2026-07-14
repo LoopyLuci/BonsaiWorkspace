@@ -1,4 +1,3 @@
-use crate::Result;
 
 pub struct PathGenerator {
     resolution: f32,

@@ -1,4 +1,4 @@
-use crate::{Device, Result};
+use crate::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
 

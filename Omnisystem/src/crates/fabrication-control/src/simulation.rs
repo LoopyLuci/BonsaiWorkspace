@@ -260,9 +260,4 @@ mod tests {
         let sim = SensorSimulator::new("sim1".to_string());
         assert_eq!(sim.noise_level, 0.1);
     }
-
-    #[test]
-    fn test_math() {
-        assert_eq!(2 + 2, 4);
-    }
 }
