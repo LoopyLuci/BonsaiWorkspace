@@ -6,14 +6,18 @@
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Node in the mesh network
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// Neither `Serialize` nor `Deserialize` is derived: `last_seen` is an
+/// `Arc<AtomicU64>` for lock-free concurrent heartbeat updates, which
+/// has no meaningful serde impl. Nothing in this crate actually
+/// (de)serializes a `MeshNode` today.
+#[derive(Clone, Debug)]
 pub struct MeshNode {
     pub node_id: Vec<u8>,               // Public key = identity
     pub name: String,                   // Human-readable name
@@ -187,7 +191,7 @@ impl NetworkState {
         &self,
         src: &[u8],
         dst: &[u8],
-        protocols: &[&str],
+        _protocols: &[&str],
     ) -> Result<bool, String> {
         let mut allowed = false;
 

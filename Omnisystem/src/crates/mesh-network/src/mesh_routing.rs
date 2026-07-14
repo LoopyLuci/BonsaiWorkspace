@@ -3,10 +3,10 @@
 //! Distributed routing with shortest path discovery and
 //! automatic relay fallback for unreachable peers.
 
-use crate::coordination::{MeshNode, NetworkState};
+use crate::coordination::NetworkState;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -76,7 +76,7 @@ impl MeshRouter {
                         .unwrap_or(u32::MAX);
 
                     if dist_i_k.saturating_add(dist_k_j) < dist_i_j {
-                        if let Some(mut m) = distances.get_mut(&i.node_id) {
+                        if let Some(m) = distances.get_mut(&i.node_id) {
                             m.insert(j.node_id.clone(), dist_i_k + dist_k_j);
                         }
                     }
@@ -123,7 +123,7 @@ impl MeshRouter {
 
     /// Find next hop via relay if direct unreachable
     pub fn find_relay_path(&self, dest_ip: IpAddr) -> Option<Vec<IpAddr>> {
-        if let Some(route) = self.find_route(dest_ip) {
+        if let Some(_route) = self.find_route(dest_ip) {
             // Direct route available
             return Some(vec![dest_ip]);
         }
@@ -198,23 +198,31 @@ impl PacketRouter {
     }
 
     /// Decide where to forward a packet
-    pub fn decide_forwarding(&self, src_ip: IpAddr, dest_ip: IpAddr) -> ForwardingDecision {
+    pub fn decide_forwarding(&self, _src_ip: IpAddr, dest_ip: IpAddr) -> ForwardingDecision {
         match self.mesh_router.find_route(dest_ip) {
-            Some(route) => ForwardingDecision {
-                should_forward: true,
-                next_hop: Some(route.next_hop_node),
-                relay_path: None,
-                reason: format!("Direct route via {} ({} hops)",
-                    hex::encode(&route.next_hop_node[..4]),
-                    route.hops),
-            },
+            Some(route) => {
+                let reason = format!(
+                    "Direct route via {} ({} hops)",
+                    hex::encode(&route.next_hop_node[..route.next_hop_node.len().min(4)]),
+                    route.hops
+                );
+                ForwardingDecision {
+                    should_forward: true,
+                    next_hop: Some(route.next_hop_node),
+                    relay_path: None,
+                    reason,
+                }
+            }
             None => {
                 match self.mesh_router.find_relay_path(dest_ip) {
-                    Some(relay_path) => ForwardingDecision {
-                        should_forward: true,
-                        next_hop: None,
-                        relay_path: Some(relay_path),
-                        reason: format!("Relay path via {} hops", relay_path.len()),
+                    Some(relay_path) => {
+                        let reason = format!("Relay path via {} hops", relay_path.len());
+                        ForwardingDecision {
+                            should_forward: true,
+                            next_hop: None,
+                            relay_path: Some(relay_path),
+                            reason,
+                        }
                     },
                     None => ForwardingDecision {
                         should_forward: false,
@@ -252,8 +260,8 @@ mod tests {
     #[test]
     fn test_routing_table_computation() {
         let state = Arc::new(crate::coordination::NetworkState::new(vec![0u8; 32]));
-        let node1 = MeshNode::new(vec![1u8; 32], "node1".to_string());
-        let node2 = MeshNode::new(vec![2u8; 32], "node2".to_string());
+        let node1 = crate::coordination::MeshNode::new(vec![1u8; 32], "node1".to_string());
+        let node2 = crate::coordination::MeshNode::new(vec![2u8; 32], "node2".to_string());
 
         state.register_node(node1).unwrap();
         state.register_node(node2).unwrap();

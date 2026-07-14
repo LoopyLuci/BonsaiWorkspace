@@ -4,7 +4,7 @@
 //! Handles NAT traversal fallback and geographic distribution.
 
 use dashmap::DashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 

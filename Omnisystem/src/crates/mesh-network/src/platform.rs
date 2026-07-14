@@ -3,7 +3,7 @@
 //! Complete platform combining coordination, routing, DNS, and relay services.
 //! This is the user-facing API for the mesh network.
 
-use crate::coordination::{MeshNode, NetworkState, ACLRule, ACLAction, MeshStats};
+use crate::coordination::{MeshNode, NetworkState, ACLRule, ACLAction};
 use crate::mesh_routing::PacketRouter;
 use crate::dns::MagicDNS;
 use crate::relay::RelayNetwork;
