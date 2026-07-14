@@ -30,7 +30,7 @@ impl CoordinationManager {
         self.agents.get(id).map(|ref_| ref_.value().clone())
     }
 
-    pub fn broadcast_message(&self, message: &str) -> Result<()> {
+    pub fn broadcast_message(&self, _message: &str) -> Result<()> {
         tracing::info!("Broadcasting message to {} agents", self.agents.len());
         Ok(())
     }

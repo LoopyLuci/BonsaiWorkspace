@@ -15,7 +15,7 @@ impl ForagingBehavior {
 
     pub fn explore(&mut self) -> Result<Vec<f32>> {
         if self.energy <= 0.0 {
-            return Err(crate::AgentError::AgentError("No energy".to_string()));
+            return Err(crate::AgentError::Other("No energy".to_string()));
         }
         
         self.energy -= 1.0;

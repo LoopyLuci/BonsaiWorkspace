@@ -1,4 +1,5 @@
-use crate::{AgentConfig, AgentState, Perception, Action, AgentMetrics, Result, AgentError};
+use crate::decision::DecisionEngine;
+use crate::{AgentConfig, AgentState, Perception, Action, AgentMetrics, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -8,10 +9,12 @@ pub struct Agent {
     perceptions: Arc<DashMap<u64, Perception>>,
     actions: Arc<DashMap<String, Action>>,
     metrics: Arc<std::sync::Mutex<AgentMetrics>>,
+    decision_engine: DecisionEngine,
 }
 
 impl Agent {
     pub fn new(config: AgentConfig) -> Self {
+        let decision_engine = DecisionEngine::new(config.agent_type);
         Self {
             config,
             state: Arc::new(std::sync::Mutex::new(AgentState::Idle)),
@@ -23,6 +26,7 @@ impl Agent {
                 success_rate: 1.0,
                 learning_progress: 0.0,
             })),
+            decision_engine,
         }
     }
 
@@ -32,19 +36,30 @@ impl Agent {
         Ok(())
     }
 
+    /// Decide on the next action using this agent's DecisionEngine,
+    /// driven by the most recently perceived sensor reading (or a
+    /// neutral default perception if nothing has been perceived yet).
     pub fn decide(&self) -> Result<Action> {
+        let latest_perception = self
+            .perceptions
+            .iter()
+            .max_by_key(|entry| *entry.key())
+            .map(|entry| entry.value().clone())
+            .unwrap_or(Perception {
+                sensor_data: Vec::new(),
+                timestamp: 0,
+                confidence: 0.0,
+            });
+
+        let action = self.decision_engine.decide(&latest_perception)?;
+
         let mut metrics = self.metrics.lock().unwrap();
         metrics.decisions_made += 1;
 
-        Ok(Action {
-            id: uuid::Uuid::new_v4().to_string(),
-            action_type: "default".to_string(),
-            parameters: std::collections::HashMap::new(),
-            priority: 5,
-        })
+        Ok(action)
     }
 
-    pub fn execute(&self, action: &Action) -> Result<()> {
+    pub fn execute(&self, _action: &Action) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         *state = AgentState::Executing;
 
@@ -120,6 +135,39 @@ mod tests {
         };
         let agent = Agent::new(config);
         let action = agent.decide().unwrap();
+        // decide() should route through the DecisionEngine matching the
+        // agent's configured decision type, not a hardcoded action.
+        assert_eq!(action.action_type, "deliberative");
         assert!(agent.execute(&action).is_ok());
+        assert_eq!(agent.get_metrics().decisions_made, 1);
+    }
+
+    #[test]
+    fn test_decide_uses_latest_perception_and_agent_type() {
+        let config = AgentConfig {
+            id: "a1".to_string(),
+            name: "Agent1".to_string(),
+            agent_type: crate::DecisionType::Reactive,
+            learning_enabled: true,
+            coordination_enabled: true,
+        };
+        let agent = Agent::new(config);
+        agent
+            .perceive(Perception {
+                sensor_data: vec![0.1],
+                timestamp: 1,
+                confidence: 0.5,
+            })
+            .unwrap();
+        agent
+            .perceive(Perception {
+                sensor_data: vec![0.9],
+                timestamp: 2,
+                confidence: 0.9,
+            })
+            .unwrap();
+
+        let action = agent.decide().unwrap();
+        assert_eq!(action.action_type, "reactive");
     }
 }

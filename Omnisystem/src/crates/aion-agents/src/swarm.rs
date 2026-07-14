@@ -1,4 +1,5 @@
-use crate::{Agent, Result};
+use crate::agent::Agent;
+use crate::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
 

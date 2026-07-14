@@ -11,7 +11,7 @@ pub struct ReactiveBehavior;
 
 #[async_trait]
 impl Behavior for ReactiveBehavior {
-    async fn execute(&self, perception: &Perception) -> Result<Action> {
+    async fn execute(&self, _perception: &Perception) -> Result<Action> {
         tracing::info!("Executing reactive behavior");
         Ok(Action {
             id: uuid::Uuid::new_v4().to_string(),

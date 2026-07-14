@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentState {
@@ -58,7 +57,7 @@ mod tests {
     #[test]
     fn test_agent_config() {
         let config = AgentConfig {
-            id: Uuid::new_v4().to_string(),
+            id: uuid::Uuid::new_v4().to_string(),
             name: "Agent1".to_string(),
             agent_type: DecisionType::Adaptive,
             learning_enabled: true,
