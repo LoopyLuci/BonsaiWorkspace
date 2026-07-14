@@ -89,7 +89,7 @@ impl QualityScorer {
         // - Long enough (>50 chars) -> relevant
         // - Contains proper nouns -> relevant
 
-        let mut score = 0.5; // baseline
+        let mut score: f32 = 0.5; // baseline
 
         if content.len() > 50 {
             score += 0.2;
@@ -117,7 +117,7 @@ impl QualityScorer {
         // - Well-formed sentences -> 0.7+
         // - Contains citations/references -> 0.8+
 
-        let mut score = 0.6; // baseline
+        let mut score: f32 = 0.6; // baseline
 
         // Check sentence structure
         let sentences: Vec<&str> = content.split(|c| c == '.' || c == '!' || c == '?').collect();
@@ -144,7 +144,7 @@ impl QualityScorer {
         // - Moderate length (100-500 chars) -> 0.8+
         // - Common vocabulary -> 0.7+
 
-        let mut score = 0.5; // baseline
+        let mut score: f32 = 0.5; // baseline
 
         let len = content.len();
         if len > 100 && len < 500 {

@@ -247,7 +247,7 @@ impl ModelScanner {
     }
 
     /// Scan a safetensors model
-    fn scan_safetensors(path: &Path) -> Result<ModelReport> {
+    fn scan_safetensors(_path: &Path) -> Result<ModelReport> {
         // safetensors header: JSON metadata
         let mut report = ModelReport::new(ModelType::Embedding);
         report.file_format = "safetensors".to_string();
@@ -257,7 +257,7 @@ impl ModelScanner {
     }
 
     /// Scan a PyTorch model
-    fn scan_pytorch(path: &Path) -> Result<ModelReport> {
+    fn scan_pytorch(_path: &Path) -> Result<ModelReport> {
         let mut report = ModelReport::new(ModelType::Other);
         report.file_format = "pytorch".to_string();
 
@@ -265,7 +265,7 @@ impl ModelScanner {
     }
 
     /// Scan an ONNX model
-    fn scan_onnx(path: &Path) -> Result<ModelReport> {
+    fn scan_onnx(_path: &Path) -> Result<ModelReport> {
         let mut report = ModelReport::new(ModelType::Embedding);
         report.file_format = "onnx".to_string();
 

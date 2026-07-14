@@ -2,14 +2,13 @@
 
 use crate::{
     activation_extractor::{ActivationExtractor, ActivationExtractorConfig},
-    attention_extractor::{AttentionExtractor, AttentionExtractorConfig},
+    attention_extractor::AttentionExtractor,
     curator::{Curator, CuratorConfig},
     ingestion::{KnowledgeIngestionPipeline, IngestionConfig, DummyEmbeddingProvider},
     membership_inference::{MembershipInference, MembershipInferenceConfig},
     model_scanner::ModelScanner,
-    quality_scorer::QualityScorer,
     synthetic_generator::{SyntheticDataGenerator, SyntheticGeneratorConfig},
-    CuratedChunk, ExtractionMethod, ExtractionReport, KefError, KmodPackage, Result,
+    CuratedChunk, ExtractionMethod, ExtractionReport, KefError, Result,
 };
 use crossbeam_channel::bounded;
 use std::path::Path;
@@ -217,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_service_creation() {
-        let service = KefService::new();
+        let _service = KefService::new();
         // Should not panic
     }
 

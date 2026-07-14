@@ -1,7 +1,6 @@
 //! Ingestion pipeline: convert curated chunks into KDB modules
 
 use crate::{CuratedChunk, KefError, KmodPackage, Result};
-use hnsw::{HnswIndex, HnswIndexBuilder, Distance};
 use chrono::Utc;
 use serde_json::json;
 use std::path::Path;
@@ -13,9 +12,6 @@ use zstd::Encoder;
 pub struct IngestionConfig {
     /// Embedding dimension (typically 384, 768, or 1536)
     pub embedding_dim: usize,
-    /// HNSW construction parameters
-    pub hnsw_m: usize,
-    pub hnsw_ef_construction: usize,
     /// Compression: use zstd for values.txt
     pub compress_values: bool,
     /// Batch size for embedding
@@ -26,11 +22,78 @@ impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
             embedding_dim: 768,
-            hnsw_m: 16,
-            hnsw_ef_construction: 200,
             compress_values: true,
             batch_size: 32,
         }
+    }
+}
+
+/// A brute-force, in-memory nearest-neighbor index over embedding vectors.
+///
+/// This is a flat (exact) index rather than an approximate one (e.g. HNSW):
+/// it trades scalability for simplicity and zero external dependencies,
+/// which is adequate for the module sizes KDB packages are built from.
+#[derive(Debug, Clone, Default)]
+pub struct VectorIndex {
+    dim: usize,
+    points: Vec<(usize, Vec<f32>)>,
+}
+
+impl VectorIndex {
+    /// Build an index from a list of embeddings (point id = position in slice).
+    pub fn build(dim: usize, embeddings: &[Vec<f32>]) -> Result<Self> {
+        if embeddings.is_empty() {
+            return Err(KefError::IngestionFailed(
+                "cannot build index from empty embeddings".to_string(),
+            ));
+        }
+
+        let points: Vec<(usize, Vec<f32>)> = embeddings
+            .iter()
+            .enumerate()
+            .map(|(id, v)| (id, v.clone()))
+            .collect();
+
+        Ok(Self { dim, points })
+    }
+
+    /// Number of indexed points.
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Cosine similarity between two vectors.
+    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm_a == 0.0 || norm_b == 0.0 {
+            0.0
+        } else {
+            dot / (norm_a * norm_b)
+        }
+    }
+
+    /// Find the `k` nearest neighbors to `query` by cosine similarity,
+    /// returning `(point_id, similarity)` pairs sorted descending.
+    pub fn search(&self, query: &[f32], k: usize) -> Vec<(usize, f32)> {
+        let mut scored: Vec<(usize, f32)> = self
+            .points
+            .iter()
+            .map(|(id, v)| (*id, Self::cosine_similarity(query, v)))
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        scored
     }
 }
 
@@ -63,7 +126,7 @@ impl DummyEmbeddingProvider {
     }
 }
 
-/// Ingestion pipeline: chunks -> embeddings -> HNSW -> KDB module
+/// Ingestion pipeline: chunks -> embeddings -> vector index -> KDB module
 pub struct KnowledgeIngestionPipeline {
     config: IngestionConfig,
     embedder: DummyEmbeddingProvider,
@@ -100,8 +163,9 @@ impl KnowledgeIngestionPipeline {
             });
         }
 
-        // Build HNSW index
-        let index = self.build_hnsw(&embeddings)?;
+        // Build a vector index over the embeddings (verifies searchability)
+        let index = VectorIndex::build(self.config.embedding_dim, &embeddings)?;
+        debug_assert_eq!(index.len(), embeddings.len());
 
         // Create module package
         let module = KmodPackage {
@@ -142,26 +206,6 @@ impl KnowledgeIngestionPipeline {
         }
 
         Ok(embeddings)
-    }
-
-    /// Build HNSW index from embeddings
-    fn build_hnsw(&self, embeddings: &[Vec<f32>]) -> Result<HnswIndex> {
-        if embeddings.is_empty() {
-            return Err(KefError::IngestionFailed(
-                "cannot build index from empty embeddings".to_string(),
-            ));
-        }
-
-        let mut builder = HnswIndexBuilder::new(self.config.embedding_dim, Distance::Cosine);
-        builder.ef_construction = self.config.hnsw_ef_construction;
-        builder.m = self.config.hnsw_m;
-
-        for (id, embedding) in embeddings.iter().enumerate() {
-            builder.add_point(id, embedding)?;
-        }
-
-        let index = builder.build()?;
-        Ok(index)
     }
 
     /// Save module to disk
@@ -208,7 +252,7 @@ impl KnowledgeIngestionPipeline {
             let values_path = module_dir.join("values.txt.zst");
             let file = std::fs::File::create(&values_path)
                 .map_err(|e| KefError::Io(e))?;
-            let mut encoder = Encoder::new(file)
+            let mut encoder = Encoder::new(file, 0)
                 .map_err(|e| KefError::Compression(e.to_string()))?;
             use std::io::Write;
             encoder.write_all(values_content.as_bytes())
@@ -254,6 +298,29 @@ impl KnowledgeIngestionPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_vector_index_search() {
+        let embeddings = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.9, 0.1, 0.0],
+        ];
+        let index = VectorIndex::build(3, &embeddings).unwrap();
+        assert_eq!(index.len(), 3);
+
+        let results = index.search(&[1.0, 0.0, 0.0], 2);
+        assert_eq!(results.len(), 2);
+        // Point 0 is an exact match, point 2 is closer than point 1.
+        assert_eq!(results[0].0, 0);
+        assert_eq!(results[1].0, 2);
+    }
+
+    #[test]
+    fn test_vector_index_empty_rejected() {
+        let result = VectorIndex::build(3, &[]);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_dummy_embedder() {

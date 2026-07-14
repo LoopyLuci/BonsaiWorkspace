@@ -1,8 +1,7 @@
 //! Synthetic data generation from model outputs
 
-use crate::{KefError, Result};
+use crate::Result;
 use rand::Rng;
-use std::path::Path;
 
 /// Configuration for synthetic data generation
 #[derive(Debug, Clone)]

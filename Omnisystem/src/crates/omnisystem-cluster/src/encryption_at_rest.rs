@@ -144,14 +144,17 @@ impl EncryptionAtRestManager {
     pub fn encrypt_field(&self, field_name: &str, value: &str) -> Result<String> {
         info!("Encrypting field: {}", field_name);
         let encrypted = self.encrypt_at_rest(value.as_bytes())?;
-        let encoded = base64::encode(&encrypted);
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&encrypted);
         Ok(encoded)
     }
 
     /// Decrypt sensitive field
     pub fn decrypt_field(&self, field_name: &str, encrypted: &str) -> Result<String> {
         info!("Decrypting field: {}", field_name);
-        let decoded = base64::decode(encrypted)
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encrypted)
             .map_err(|e| crate::ClusterError::Network(format!("Decode error: {}", e)))?;
         let plaintext = self.decrypt_at_rest(&decoded)?;
         Ok(String::from_utf8(plaintext).map_err(|e| {

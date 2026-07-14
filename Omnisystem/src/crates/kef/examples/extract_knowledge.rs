@@ -17,11 +17,6 @@ use std::path::Path;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
     // Configuration
     let model_path = Path::new("models/bonsai-8b.gguf");
     let output_dir = Path::new("./extracted_knowledge");
@@ -48,8 +43,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure ingestion for 768-dim embeddings (common size)
     let ingestion_config = IngestionConfig {
         embedding_dim: 768,
-        hnsw_m: 16,
-        hnsw_ef_construction: 200,
         compress_values: true,
         batch_size: 32,
     };

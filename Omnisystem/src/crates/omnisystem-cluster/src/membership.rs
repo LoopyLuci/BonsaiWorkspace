@@ -4,6 +4,7 @@ use crate::Result;
 use tracing::info;
 
 /// Membership manager
+#[derive(Clone)]
 pub struct MembershipManager {
     nodes: std::sync::Arc<tokio::sync::RwLock<Vec<String>>>,
 }

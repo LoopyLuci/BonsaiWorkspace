@@ -1,9 +1,7 @@
 //! Activation vector extraction and clustering
 
 use crate::{KefError, Result};
-use ndarray::{Array1, Array2};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Configuration for activation extraction
 #[derive(Debug, Clone, Serialize, Deserialize)]

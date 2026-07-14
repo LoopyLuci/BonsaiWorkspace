@@ -66,9 +66,10 @@ impl AdvancedScheduler {
             return None;
         }
 
-        // Sort by priority (higher priority first)
+        // Sort by priority ascending so the highest-priority task ends up
+        // last, ready to be popped off in O(1).
         let mut tasks: Vec<_> = self.task_queue.drain(..).collect();
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by(|a, b| a.priority.cmp(&b.priority));
 
         // Schedule highest priority task
         if let Some(task) = tasks.pop() {

@@ -1,6 +1,5 @@
 //! PII (Personally Identifiable Information) detection and redaction
 
-use crate::Result;
 use regex::Regex;
 use std::collections::HashSet;
 

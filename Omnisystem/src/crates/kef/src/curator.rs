@@ -1,6 +1,6 @@
 //! Multi-stage deduplication and curation of extracted knowledge
 
-use crate::{CuratedChunk, KefError, QualityScores, Result};
+use crate::{CuratedChunk, Result};
 use blake3::Hash;
 use std::collections::HashSet;
 
