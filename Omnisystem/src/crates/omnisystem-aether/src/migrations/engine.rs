@@ -47,12 +47,18 @@ impl MigrationEngine {
         let mut sorted: Vec<_> = self.migrations.iter().collect();
         sorted.sort_by_key(|m| m.version);
 
+        // A dependency is satisfied if it's already applied, or if it
+        // will be applied earlier in this same plan (versions are
+        // processed in ascending order above).
+        let mut satisfied: std::collections::HashSet<u32> =
+            self.applied.keys().copied().collect();
+
         let mut planned = Vec::new();
         for migration in sorted {
             if self.applied.get(&migration.version).is_none() {
                 // Check dependencies
                 if let Some(dep) = migration.depends_on {
-                    if self.applied.get(&dep).is_none() {
+                    if !satisfied.contains(&dep) {
                         return Err(format!(
                             "Migration {} depends on {}, which has not been applied",
                             migration.version, dep
@@ -60,6 +66,7 @@ impl MigrationEngine {
                     }
                 }
                 planned.push(migration);
+                satisfied.insert(migration.version);
             }
         }
 
@@ -130,5 +137,23 @@ mod tests {
         engine.register_applied(1);
         let plan = engine.plan().unwrap();
         assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn test_migration_planning_missing_dependency_errors() {
+        let mut engine = MigrationEngine::new();
+
+        // Depends on version 1, which is never registered at all.
+        let m2 = Migration {
+            name: "v2_add_email".to_string(),
+            version: 2,
+            depends_on: Some(1),
+            up_sql: "ALTER TABLE users ADD COLUMN email STRING".to_string(),
+            down_sql: "ALTER TABLE users DROP COLUMN email".to_string(),
+        };
+        engine.add_migration(m2);
+
+        let result = engine.plan();
+        assert!(result.is_err());
     }
 }
