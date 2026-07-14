@@ -1,10 +1,9 @@
 //! Trusted Arbiter – orchestrates graceful degradation ladder
 
-use alloc::vec::Vec;
-use alloc::collections::VecDeque;
+use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
 use crate::{
-    Error, Result, SovereignService, ExecutionTier, ExecutionResult, AdvisoryOutput,
+    SovereignService, ExecutionTier, ExecutionResult, AdvisoryOutput,
     AdvisoryHealth, ConsistencyWindow,
 };
 

@@ -1,6 +1,5 @@
 //! Advisory domain output and health monitoring
 
-use alloc::vec::Vec;
 use serde::{Serialize, Deserialize};
 
 /// Output from the AI advisory domain
@@ -80,7 +79,7 @@ impl ConsistencyWindow {
             return false;
         }
 
-        let first = &self.recent_advice[0].data.len() as f32;
+        let first = self.recent_advice[0].data.len() as f32;
         let mut min = first;
         let mut max = first;
 
@@ -130,5 +129,54 @@ impl AdvisoryDomain for DisabledAdvisory {
 
     fn model_hash(&self) -> [u8; 32] {
         [0u8; 32]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_advisory_output_confidence_and_timeliness() {
+        let out = AdvisoryOutput::new(vec![1, 2, 3], 0.9, 100);
+        assert!(out.is_confident(0.8));
+        assert!(!out.is_confident(0.95));
+        assert!(out.is_timely(200));
+        assert!(!out.is_timely(50));
+    }
+
+    #[test]
+    fn test_consistency_window_needs_two_samples() {
+        let mut window = ConsistencyWindow::new(8);
+        assert!(!window.is_consistent(0.1));
+        window.push(AdvisoryOutput::new(vec![0; 10], 0.9, 100));
+        assert!(!window.is_consistent(0.1));
+    }
+
+    #[test]
+    fn test_consistency_window_detects_consistent_sizes() {
+        let mut window = ConsistencyWindow::new(8);
+        window.push(AdvisoryOutput::new(vec![0; 10], 0.9, 100));
+        window.push(AdvisoryOutput::new(vec![0; 11], 0.9, 100));
+        // 1-element deviation out of 10 => 10% which is within a 20% epsilon.
+        assert!(window.is_consistent(0.2));
+    }
+
+    #[test]
+    fn test_consistency_window_detects_inconsistent_sizes() {
+        let mut window = ConsistencyWindow::new(8);
+        window.push(AdvisoryOutput::new(vec![0; 10], 0.9, 100));
+        window.push(AdvisoryOutput::new(vec![0; 100], 0.9, 100));
+        // 90-element deviation out of 10 baseline => way beyond a 20% epsilon.
+        assert!(!window.is_consistent(0.2));
+    }
+
+    #[test]
+    fn test_consistency_window_evicts_oldest() {
+        let mut window = ConsistencyWindow::new(2);
+        window.push(AdvisoryOutput::new(vec![0; 1], 0.9, 100));
+        window.push(AdvisoryOutput::new(vec![0; 2], 0.9, 100));
+        window.push(AdvisoryOutput::new(vec![0; 3], 0.9, 100));
+        assert_eq!(window.recent_advice.len(), 2);
     }
 }

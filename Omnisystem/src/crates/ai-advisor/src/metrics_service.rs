@@ -62,8 +62,8 @@ impl MetricsService {
 
     pub async fn record_advisor_success(&self, advisor_id: String, accuracy: f32, response_time_ms: f32) -> Result<()> {
         let mut metrics = self.advisor_metrics.write().await;
-        let entry = metrics.entry(advisor_id).or_insert(AdvisorMetrics {
-            advisor_id: "".to_string(),
+        let entry = metrics.entry(advisor_id.clone()).or_insert(AdvisorMetrics {
+            advisor_id,
             accuracy: 0.0,
             response_time_ms: 0.0,
             success_count: 0,
@@ -81,7 +81,7 @@ impl MetricsService {
         let mut quality = self.service_quality.write().await;
         quality.successful_requests += 1;
         quality.total_requests += 1;
-        quality.last_updated = chrono::Utc::now().timestamp();
+        quality.timestamp = chrono::Utc::now().timestamp();
 
         let mut times = self.request_times.write().await;
         times.push(response_time_ms);
@@ -92,8 +92,8 @@ impl MetricsService {
 
     pub async fn record_advisor_failure(&self, advisor_id: String) -> Result<()> {
         let mut metrics = self.advisor_metrics.write().await;
-        let entry = metrics.entry(advisor_id).or_insert(AdvisorMetrics {
-            advisor_id: "".to_string(),
+        let entry = metrics.entry(advisor_id.clone()).or_insert(AdvisorMetrics {
+            advisor_id,
             accuracy: 0.0,
             response_time_ms: 0.0,
             success_count: 0,
@@ -266,6 +266,7 @@ mod tests {
 
         let metrics = service.get_advisor_metrics("advisor-1").await.unwrap();
         assert!(metrics.is_some());
+        assert_eq!(metrics.unwrap().advisor_id, "advisor-1");
     }
 
     #[tokio::test]

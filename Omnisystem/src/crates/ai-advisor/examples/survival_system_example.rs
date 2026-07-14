@@ -3,7 +3,7 @@
 //! Demonstrates how the self-healing system detects crashes deterministically,
 //! applies repair rules, and optionally uses AI for predictive failure detection.
 
-use ai_fallback::{
+use ai_advisor::{
     SovereignService, Arbiter, ArbiterConfig, AdvisoryOutput, Result,
 };
 

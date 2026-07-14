@@ -38,6 +38,7 @@ pub struct ArbitrationDecision {
     pub conflict_analysis: ConflictAnalysis,
     pub user_preference_applied: bool,
     pub timestamp: i64,
+    pub feedback: Option<String>,
 }
 
 pub struct Arbiter {
@@ -133,6 +134,7 @@ impl Arbiter {
             conflict_analysis: conflict,
             user_preference_applied,
             timestamp: chrono::Utc::now().timestamp(),
+            feedback: None,
         };
 
         let mut decisions = self.decisions.write().await;
@@ -168,13 +170,14 @@ impl Arbiter {
     pub async fn get_feedback(&self, decision_id: &str) -> Result<Option<String>> {
         let decisions = self.decisions.read().await;
         let decision = decisions.iter().find(|d| d.decision_id == decision_id);
-        Ok(decision.map(|d| format!("Decision: {} with confidence: {}", d.selected_recommendation, d.final_confidence)))
+        Ok(decision.and_then(|d| d.feedback.clone()))
     }
 
     pub async fn record_feedback(&self, decision_id: String, feedback: String) -> Result<()> {
         let mut decisions = self.decisions.write().await;
         if let Some(decision) = decisions.iter_mut().find(|d| d.decision_id == decision_id) {
             tracing::info!("Recorded feedback for decision: {}", feedback);
+            decision.feedback = Some(feedback);
         }
         Ok(())
     }
@@ -297,5 +300,29 @@ mod tests {
 
         assert!(!decision.selected_recommendation.is_empty());
         assert!(decision.final_confidence > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_record_and_get_feedback() {
+        let arbiter = Arbiter::new();
+        let rec = AdvisorRecommendation {
+            advisor_id: "advisor-1".to_string(),
+            recommendation: "Option A".to_string(),
+            confidence: 0.85,
+            weight: 1.0,
+        };
+
+        arbiter.submit_recommendation("ctx-1".to_string(), rec).await.unwrap();
+        let decision = arbiter.arbitrate("ctx-1").await.unwrap();
+
+        assert!(arbiter.get_feedback(&decision.decision_id).await.unwrap().is_none());
+
+        arbiter
+            .record_feedback(decision.decision_id.clone(), "great choice".to_string())
+            .await
+            .unwrap();
+
+        let feedback = arbiter.get_feedback(&decision.decision_id).await.unwrap();
+        assert_eq!(feedback, Some("great choice".to_string()));
     }
 }

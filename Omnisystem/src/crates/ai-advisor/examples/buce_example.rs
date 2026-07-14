@@ -3,8 +3,8 @@
 //! Shows how BUCE uses SovereignService to provide deterministic compression,
 //! heuristic strategy selection, and optional AI codec selection.
 
-use ai_fallback::{
-    SovereignService, Arbiter, ArbiterConfig, ExecutionTier, AdvisoryOutput, Result,
+use ai_advisor::{
+    SovereignService, Arbiter, ArbiterConfig, AdvisoryOutput, Result,
 };
 
 /// Supported compression codecs (deterministic tier)

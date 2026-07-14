@@ -1,8 +1,7 @@
 //! Core service trait and execution tier definitions
 
-use alloc::vec::Vec;
 use serde::{Serialize, Deserialize};
-use crate::{Error, Result, AdvisoryOutput};
+use crate::{Result, AdvisoryOutput};
 
 /// Execution tier in the graceful degradation ladder
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,14 +45,14 @@ pub trait SovereignService {
     /// Heuristic layer: rule-based fallback.
     /// Optional if the core covers all cases.
     /// Returns None if not applicable.
-    fn heuristic(&self, input: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn heuristic(&self, _input: &[u8]) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
 
     /// Advisory domain: optional AI/ML enhancement.
     /// Returns None if AI is disabled or unavailable.
     /// Must be sandboxed; errors are treated as "AI failure" not service failure.
-    fn ai_suggestion(&self, input: &[u8]) -> Option<AdvisoryOutput> {
+    fn ai_suggestion(&self, _input: &[u8]) -> Option<AdvisoryOutput> {
         None
     }
 

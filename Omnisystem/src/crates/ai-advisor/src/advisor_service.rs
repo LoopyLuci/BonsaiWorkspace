@@ -187,11 +187,10 @@ impl AdvisorService {
         let mut history = self.request_history.write().await;
         history.push(request.clone());
 
-        let responses = self.pool.route_request(&request).await?;
-
-        for response in responses {
-            self.pool.cache_response(response).await?;
-        }
+        // route_request() already populates the response cache for this
+        // request id, so there's no need to separately cache_response()
+        // each entry here (doing so previously double-counted responses).
+        self.pool.route_request(&request).await?;
 
         let aggregated = self.pool.aggregate_responses(&request.request_id).await?;
         tracing::info!("Processed request: {} with {} advisors", request.request_id, aggregated.responses.len());
@@ -291,5 +290,25 @@ mod tests {
 
         let result = service.process_request(request).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_process_request_does_not_duplicate_responses() {
+        let pool = Arc::new(AdvisorPool::new());
+        pool.register_advisor("advisor-1".to_string(), "type-1".to_string()).await.unwrap();
+        pool.register_advisor("advisor-2".to_string(), "type-2".to_string()).await.unwrap();
+
+        let service = AdvisorService::new(pool);
+        let request = AdvisorRequest {
+            request_id: "req-1".to_string(),
+            query: "test".to_string(),
+            context: HashMap::new(),
+            priority: 5,
+            timestamp: chrono::Utc::now().timestamp(),
+        };
+
+        let aggregated = service.process_request(request).await.unwrap();
+        // 2 registered advisors should yield exactly 2 responses, not 4.
+        assert_eq!(aggregated.responses.len(), 2);
     }
 }

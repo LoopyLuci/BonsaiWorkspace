@@ -3,8 +3,8 @@
 //! Demonstrates how TransferDaemon integrates the SovereignService trait
 //! and Arbiter orchestration for deterministic-first, AI-optional messaging.
 
-use ai_fallback::{
-    SovereignService, Arbiter, ArbiterConfig, ExecutionTier, AdvisoryOutput, Error, Result,
+use ai_advisor::{
+    SovereignService, Arbiter, ArbiterConfig, AdvisoryOutput, Error, Result,
 };
 
 /// TransferDaemon v2 service: multi-path P2P messaging with AI-optional routing
@@ -85,7 +85,7 @@ impl SovereignService for TransferDaemonService {
         // Select lowest-RTT path (deterministic, no AI)
         let path = self
             .select_path_heuristic()
-            .ok_or(Error::CoreFailed)?;
+            .ok_or_else(|| Error::Other("no path available for deterministic core".to_string()))?;
 
         // Encode decision: path ID + congestion window
         let mut decision = Vec::new();
@@ -108,7 +108,7 @@ impl SovereignService for TransferDaemonService {
             .iter()
             .max_by_key(|p| p.bandwidth_mbps)
             .cloned()
-            .ok_or(Error::HeuristicFailed)?;
+            .ok_or_else(|| Error::Other("no path available for heuristic".to_string()))?;
 
         // Encode path selection
         let mut decision = Vec::new();
@@ -120,15 +120,15 @@ impl SovereignService for TransferDaemonService {
     }
 
     /// AI enhancement: predict best path via learned model
-    fn ai_suggestion(&self, input: &[u8]) -> Option<AdvisoryOutput> {
+    fn ai_suggestion(&self, _input: &[u8]) -> Option<AdvisoryOutput> {
         if !self.ai_enabled || self.paths.is_empty() {
             return None;
         }
 
         // In production, call a lightweight ML model here
         // For this example, we simulate AI suggesting a balanced path
-        let suggested_cwnd = 10_000;
-        let suggested_rate = 250;
+        let suggested_cwnd: i32 = 10_000;
+        let suggested_rate: i32 = 250;
 
         let mut data = Vec::new();
         data.extend_from_slice(&self.paths[0].peer_id); // Simplified: choose first path
@@ -251,7 +251,7 @@ fn main() {
     );
 
     // Create a new Arbiter with AI enabled (would be used after security review)
-    let mut arbiter_ai_enabled = Arbiter::new(ArbiterConfig {
+    let arbiter_ai_enabled = Arbiter::new(ArbiterConfig {
         ai_enabled: true,
         min_confidence: 0.9,
         ai_latency_limit_us: 5_000,
