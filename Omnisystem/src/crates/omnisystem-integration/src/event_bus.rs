@@ -40,6 +40,17 @@ impl EventBus {
     pub fn get_event(&self, event_id: &str) -> Option<Event> {
         self.events.get(event_id).map(|e| e.clone())
     }
+
+    /// Total number of events published so far.
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -65,5 +76,18 @@ mod tests {
         eb.subscribe("search_query", "omni-bot".to_string());
         let subs = eb.get_subscribers("search_query");
         assert_eq!(subs.len(), 1);
+    }
+
+    #[test]
+    fn test_event_count() {
+        let eb = EventBus::new();
+        assert_eq!(eb.event_count(), 0);
+        eb.publish(Event {
+            event_id: "evt_1".to_string(),
+            source_system: "buddy".to_string(),
+            event_type: "file_updated".to_string(),
+            payload: "{}".to_string(),
+        });
+        assert_eq!(eb.event_count(), 1);
     }
 }
