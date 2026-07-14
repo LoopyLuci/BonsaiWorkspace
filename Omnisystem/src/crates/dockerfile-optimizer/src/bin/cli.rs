@@ -1,12 +1,11 @@
-//! CLI
+//! CLI demo: process a sample Dockerfile through the module.
 
-use dockerfile_optimizer::Component;
+use dockerfile_optimizer::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let module = Enterprise::new();
+    let processed = module.process("FROM scratch\nCOPY . /app").await?;
+    println!("Processed: {}", processed);
     Ok(())
 }
