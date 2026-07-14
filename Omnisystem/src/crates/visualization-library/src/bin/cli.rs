@@ -1,12 +1,12 @@
-//! CLI
+//! CLI demo: render a visualization component and handle sample data.
 
-use visualization_library::Component;
+use visualization_library::WebComponent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let viz = WebComponent::new();
+    println!("{}", viz.render().await);
+    let handled = viz.handle("{\"series\":[1,2,3]}").await?;
+    println!("Handled: {}", handled);
     Ok(())
 }

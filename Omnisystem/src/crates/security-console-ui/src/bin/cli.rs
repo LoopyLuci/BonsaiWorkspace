@@ -1,12 +1,13 @@
-//! CLI
+//! CLI demo: update and toggle a security-console UI panel.
 
-use security_console_ui::Component;
+use security_console_ui::UI;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let mut ui = UI::new();
+    ui.update("alert=intrusion-detected".to_string())?;
+    println!("{}", ui.render());
+    ui.toggle();
+    println!("After toggle: {:?}", ui.render());
     Ok(())
 }
