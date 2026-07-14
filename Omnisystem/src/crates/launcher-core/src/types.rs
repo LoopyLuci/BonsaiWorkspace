@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstance {
     pub instance_id: Uuid,
     pub app_id: String,
@@ -14,7 +14,7 @@ pub struct AppInstance {
     pub resource_usage: ResourceMetrics,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMetrics {
     pub cpu_percent: f64,
     pub memory_mb: u64,

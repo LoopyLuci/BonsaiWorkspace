@@ -1,12 +1,12 @@
-//! CLI
+//! CLI demo: render a form and handle a submission.
 
-use form_builder::Component;
+use form_builder::WebComponent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let form = WebComponent::new();
+    println!("{}", form.render().await);
+    let handled = form.handle("field=value").await?;
+    println!("Handled: {}", handled);
     Ok(())
 }

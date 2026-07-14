@@ -1,20 +1,12 @@
-//! Error types
+//! Launcher-specific error types.
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+use thiserror::Error;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Error)]
+pub enum LauncherError {
+    #[error("session not found: {0}")]
+    SessionNotFound(Uuid),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type LauncherResult<T> = std::result::Result<T, LauncherError>;
