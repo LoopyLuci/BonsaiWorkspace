@@ -2,7 +2,7 @@ use parking_lot::RwLock;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use crate::KernelError;
-use crate::process::{ProcessId, ThreadId, Thread, ThreadState};
+use crate::process::{ThreadId, Thread, ThreadState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SchedulingPolicy {
@@ -175,7 +175,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::ProcessManager;
+    
 
     #[test]
     fn test_scheduler_creation() {

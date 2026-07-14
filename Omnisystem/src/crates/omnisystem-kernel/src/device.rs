@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_get_devices_by_type() {
-        let dm = DeviceManager::new();
+        let _dm = DeviceManager::new();
         // Test would be async in practice
     }
 }

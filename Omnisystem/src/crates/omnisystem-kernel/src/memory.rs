@@ -1,7 +1,6 @@
 use crate::KernelError;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use tracing::info;
 
 pub const PAGE_SIZE: usize = 4096;

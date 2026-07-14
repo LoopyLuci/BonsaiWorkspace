@@ -1,5 +1,4 @@
 use parking_lot::{Mutex, RwLock};
-use std::sync::Arc;
 
 /// Simple spinlock (busy-wait)
 pub struct SpinLock {

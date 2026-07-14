@@ -1,6 +1,5 @@
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use crate::KernelError;
 
 pub type CapabilityId = u64;
