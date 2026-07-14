@@ -7,9 +7,9 @@ use std::path::Path;
 /// Convert BKP to safetensors format
 ///
 /// Extracts the base model (GGUF) from BKP, then converts to safetensors.
-pub async fn convert_bkp_to_safetensors<P: AsRef<Path>>(
-    bkp_path: P,
-    output_path: P,
+pub async fn convert_bkp_to_safetensors<P1: AsRef<Path>, P2: AsRef<Path>>(
+    bkp_path: P1,
+    output_path: P2,
     config: ConversionConfig,
 ) -> ConverterResult<()> {
     let bkp_path = bkp_path.as_ref();

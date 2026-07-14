@@ -8,10 +8,10 @@ use std::process::Command;
 /// Convert safetensors to GGUF format
 ///
 /// Uses llama.cpp's convert.py script in reverse to perform the conversion.
-pub async fn convert_safetensors_to_gguf<P: AsRef<Path>>(
-    safetensors_path: P,
-    output_path: P,
-    config: ConversionConfig,
+pub async fn convert_safetensors_to_gguf<P1: AsRef<Path>, P2: AsRef<Path>>(
+    safetensors_path: P1,
+    output_path: P2,
+    _config: ConversionConfig,
 ) -> ConverterResult<()> {
     let safetensors_path = safetensors_path.as_ref();
     let output_path = output_path.as_ref();

@@ -9,10 +9,10 @@ use std::process::Command;
 ///
 /// Uses llama.cpp's convert.py script to perform the conversion.
 /// Requires llama.cpp to be installed and in PATH.
-pub async fn convert_gguf_to_safetensors<P: AsRef<Path>>(
-    gguf_path: P,
-    output_path: P,
-    config: ConversionConfig,
+pub async fn convert_gguf_to_safetensors<P1: AsRef<Path>, P2: AsRef<Path>>(
+    gguf_path: P1,
+    output_path: P2,
+    _config: ConversionConfig,
 ) -> ConverterResult<()> {
     let gguf_path = gguf_path.as_ref();
     let output_path = output_path.as_ref();

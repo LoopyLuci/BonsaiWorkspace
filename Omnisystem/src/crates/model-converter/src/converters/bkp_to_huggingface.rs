@@ -125,14 +125,14 @@ async fn upload_to_hf_hub(
         .map_err(|e| ConverterError::HuggingFaceApi(format!("Upload failed: {}", e)))?;
 
     if !response.status().is_success() {
+        let status = response.status();
         let error_text = response
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
         return Err(ConverterError::HuggingFaceApi(format!(
             "Upload failed: {} - {}",
-            response.status(),
-            error_text
+            status, error_text
         )));
     }
 
@@ -142,7 +142,7 @@ async fn upload_to_hf_hub(
 }
 
 async fn create_hf_repo(repo_id: &str, token: &str) -> ConverterResult<()> {
-    let (org, name) = repo_id
+    let (_org, _name) = repo_id
         .split_once('/')
         .ok_or_else(|| ConverterError::invalid_model("Invalid repo_id format"))?;
 

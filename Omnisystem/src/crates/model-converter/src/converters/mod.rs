@@ -60,7 +60,8 @@ pub async fn convert(
         }
         (ModelFormat::Bkp, ModelFormat::HuggingFace) => {
             let repo_id = output_path.as_ref().to_string_lossy().to_string();
-            convert_bkp_to_huggingface(input_path, &repo_id, None, config).await
+            let token = config.hf_token.clone();
+            convert_bkp_to_huggingface(input_path, &repo_id, token, config).await
         }
         _ => Err(ConverterError::ConversionNotSupported {
             from: from.to_string(),

@@ -172,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 compress_bkp: !no_compression,
                 parallel_jobs,
                 timeout_secs,
+                hf_token,
                 ..Default::default()
             };
 
@@ -246,6 +247,10 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Validate { path, check_signature } => {
             println!("Validating {}...", path.display());
+
+            if check_signature {
+                println!("(note: package signature verification is not yet implemented; skipping)");
+            }
 
             let result = validation::validate_model(&path);
 

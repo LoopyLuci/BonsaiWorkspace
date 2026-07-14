@@ -44,7 +44,8 @@ pub async fn convert_batch(
         });
     }
 
-    tracing::info!("Found {} files to convert", files.len());
+    let total_files = files.len();
+    tracing::info!("Found {} files to convert", total_files);
 
     let mut tasks = JoinSet::new();
     let mut file_iter = files.into_iter();
@@ -61,7 +62,7 @@ pub async fn convert_batch(
     }
 
     let mut result = BatchConversionResult {
-        total: files.len(),
+        total: total_files,
         successful: 0,
         failed: 0,
         errors: Vec::new(),

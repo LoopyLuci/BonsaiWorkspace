@@ -3,7 +3,6 @@
 use crate::error::{ConverterError, ConverterResult};
 use crate::ConversionConfig;
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
 
 /// Download a model from HuggingFace Hub and convert to BKP
 ///
@@ -126,7 +125,7 @@ async fn download_hf_file(
     }
 
     // Create temporary file
-    let mut temp_file = tempfile::NamedTempFile::new()
+    let temp_file = tempfile::NamedTempFile::new()
         .map_err(|e| ConverterError::Io(e))?;
 
     let content = response

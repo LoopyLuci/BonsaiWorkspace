@@ -133,7 +133,7 @@ fn validate_gguf(path: &Path, issues: &mut Vec<String>, warnings: &mut Vec<Strin
 fn validate_safetensors(
     path: &Path,
     issues: &mut Vec<String>,
-    warnings: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
 ) -> ConverterResult<()> {
     use std::io::Read;
 

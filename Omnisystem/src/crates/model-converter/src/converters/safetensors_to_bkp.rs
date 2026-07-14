@@ -7,9 +7,9 @@ use std::path::Path;
 /// Convert safetensors to BKP format
 ///
 /// Converts safetensors to GGUF first, then packages into .bkp.
-pub async fn convert_safetensors_to_bkp<P: AsRef<Path>>(
-    safetensors_path: P,
-    output_path: P,
+pub async fn convert_safetensors_to_bkp<P1: AsRef<Path>, P2: AsRef<Path>>(
+    safetensors_path: P1,
+    output_path: P2,
     config: ConversionConfig,
 ) -> ConverterResult<()> {
     let safetensors_path = safetensors_path.as_ref();

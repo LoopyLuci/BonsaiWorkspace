@@ -1,7 +1,6 @@
 //! Integration tests for model conversion
 
 use model_converter::*;
-use std::path::Path;
 
 #[test]
 fn test_format_detection_by_extension() {
@@ -24,9 +23,11 @@ fn test_format_detection_by_extension() {
 
 #[test]
 fn test_huggingface_id_detection() {
+    // detect_huggingface_id() only recognizes the "owner/model-name" shape
+    // (see format.rs); bare top-level names like "gpt2" are intentionally
+    // rejected there and covered by format::tests::test_huggingface_id_detection.
     let valid_ids = vec![
         "meta-llama/Llama-2-7b",
-        "gpt2",
         "stabilityai/stable-diffusion-2",
         "openai-community/gpt2",
     ];
@@ -36,6 +37,9 @@ fn test_huggingface_id_detection() {
         assert!(detected.is_ok(), "Failed to detect HF ID: {}", id);
         assert_eq!(detected.unwrap(), ModelFormat::HuggingFace);
     }
+
+    // Bare names without an owner prefix are not detected as HF ids.
+    assert!(format::FormatDetector::detect_huggingface_id("gpt2").is_err());
 }
 
 #[test]
@@ -57,9 +61,9 @@ fn test_validation_empty_file() {
 
 #[test]
 fn test_progress_reporting() {
-    use tokio::sync::mpsc;
+    
 
-    let (reporter, mut rx) = progress::ProgressReporter::new("test-op");
+    let (reporter, _rx) = progress::ProgressReporter::new("test-op");
 
     let progress = progress::ConversionProgress::new("test-op")
         .with_stage("reading")

@@ -1,7 +1,6 @@
 //! Progress reporting for long-running conversion operations
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Progress update for a conversion operation
