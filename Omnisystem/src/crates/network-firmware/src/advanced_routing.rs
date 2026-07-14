@@ -1,4 +1,4 @@
-use crate::{Route, Result};
+use crate::Result;
 use dashmap::DashMap;
 use std::sync::Arc;
 
