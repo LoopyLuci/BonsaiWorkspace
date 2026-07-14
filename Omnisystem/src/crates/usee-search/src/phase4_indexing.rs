@@ -11,6 +11,7 @@ pub struct TermEntry {
     pub df: u32,
 }
 
+#[derive(Clone)]
 pub struct Posting {
     pub doc_id: String,
     pub positions: Vec<u32>,

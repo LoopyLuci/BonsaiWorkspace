@@ -252,9 +252,4 @@ mod tests {
         let retriever = DenseRetriever::new("ret1".to_string(), ModelFormat::ONNX, QuantizationType::FP16);
         assert_eq!(retriever.quantization, QuantizationType::FP16);
     }
-
-    #[test]
-    fn test_math() {
-        assert_eq!(2 + 2, 4);
-    }
 }
