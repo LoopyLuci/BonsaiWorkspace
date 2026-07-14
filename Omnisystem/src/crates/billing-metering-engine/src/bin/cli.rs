@@ -1,12 +1,11 @@
-//! CLI
+//! CLI demo: process a sample billing event through the module.
 
-use billing_metering_engine::Component;
+use billing_metering_engine::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let module = Enterprise::new();
+    let processed = module.process("sample-usage-event").await?;
+    println!("Processed: {}", processed);
     Ok(())
 }

@@ -1,12 +1,13 @@
-//! CLI
+//! CLI demo: analyze and predict on a sample conversation turn.
 
-use ai_conversation_memory::Component;
+use ai_conversation_memory::Advanced;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let engine = Advanced::new();
+    let analysis = engine.analyze("sample-conversation-turn").await?;
+    println!("{}", analysis);
+    let confidence = engine.predict("sample-conversation-turn").await?;
+    println!("Prediction confidence: {}", confidence);
     Ok(())
 }

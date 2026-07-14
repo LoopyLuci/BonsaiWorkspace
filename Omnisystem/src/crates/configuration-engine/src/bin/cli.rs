@@ -1,12 +1,8 @@
-//! CLI
-
-use configuration_engine::Component;
+//! CLI demo: initialize the configuration-engine module.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    configuration_engine::init().await?;
+    println!("configuration-engine initialized");
     Ok(())
 }

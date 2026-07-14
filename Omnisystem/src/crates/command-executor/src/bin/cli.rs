@@ -1,12 +1,8 @@
-//! CLI
-
-use command_executor::Component;
+//! CLI demo: initialize the command-executor module.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    command_executor::init().await?;
+    println!("command-executor initialized");
     Ok(())
 }
