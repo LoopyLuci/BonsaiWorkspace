@@ -70,3 +70,62 @@ impl GenerativeTool for FluxDiTTool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        // Leak the tempdir so it survives for the duration of the test.
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_generate_produces_valid_png() {
+        let tool = FluxDiTTool::new(test_cas().await);
+        let params = GenerateParams {
+            prompt: "a red barn".to_string(),
+            width: 64,
+            height: 64,
+            seed: Some(42),
+            ..Default::default()
+        };
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["seed"], 42);
+        assert_eq!(result.metadata["width"], 64);
+
+        let bytes = tool
+            .cas
+            .get(&result.cas_key)
+            .await
+            .unwrap()
+            .expect("generated blob should be in CAS");
+        // PNG magic bytes
+        assert_eq!(&bytes[0..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    }
+
+    #[tokio::test]
+    async fn test_generate_is_deterministic_for_same_seed() {
+        let tool = FluxDiTTool::new(test_cas().await);
+        let params = |seed| GenerateParams {
+            prompt: "same prompt".to_string(),
+            width: 32,
+            height: 32,
+            seed: Some(seed),
+            ..Default::default()
+        };
+
+        let r1 = tool.generate(params(7)).await.unwrap();
+        let r2 = tool.generate(params(7)).await.unwrap();
+        assert_eq!(r1.cas_key, r2.cas_key, "same prompt+seed should produce identical bytes");
+
+        let r3 = tool.generate(params(8)).await.unwrap();
+        assert_ne!(r1.cas_key, r3.cas_key, "different seed should produce different bytes");
+    }
+}

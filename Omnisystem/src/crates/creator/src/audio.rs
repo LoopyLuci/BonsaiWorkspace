@@ -123,3 +123,59 @@ fn wav_header(num_samples: u32, channels: u16, sample_rate: u32, bits: u16) -> V
     h.extend_from_slice(&data_size.to_le_bytes());
     h
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[test]
+    fn test_wav_header_is_well_formed() {
+        let header = wav_header(44100, 1, 44100, 16);
+        assert_eq!(header.len(), 44);
+        assert_eq!(&header[0..4], b"RIFF");
+        assert_eq!(&header[8..12], b"WAVE");
+        assert_eq!(&header[12..16], b"fmt ");
+        assert_eq!(&header[36..40], b"data");
+
+        let data_size = u32::from_le_bytes(header[40..44].try_into().unwrap());
+        assert_eq!(data_size, 44100 * 2); // 16-bit mono samples
+    }
+
+    #[tokio::test]
+    async fn test_musicgen_duration_scales_output_size() {
+        let tool = MusicGenTool::new(test_cas().await);
+        let mut params = GenerateParams {
+            prompt: "lofi beats".to_string(),
+            ..Default::default()
+        };
+        params.extra = serde_json::json!({ "duration_sec": 2 });
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["duration_sec"], 2);
+
+        let bytes = tool.cas.get(&result.cas_key).await.unwrap().unwrap();
+        // 44 byte header + 2 sec * 44100 Hz * 2 bytes/sample
+        assert_eq!(bytes.len(), 44 + 2 * 44100 * 2);
+    }
+
+    #[tokio::test]
+    async fn test_bark_tts_estimates_duration_from_text_length() {
+        let tool = BarkTtsTool::new(test_cas().await);
+        let params = GenerateParams {
+            prompt: "a".repeat(150), // ~10 seconds at 15 chars/sec
+            ..Default::default()
+        };
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["duration_sec"], 11);
+    }
+}

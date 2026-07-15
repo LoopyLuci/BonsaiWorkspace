@@ -116,3 +116,80 @@ impl FineTuningActor {
         Ok(adapter_key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_rejects_empty_dataset() {
+        let actor = FineTuningActor::new(test_cas().await);
+        let result = actor.start_lora_job("flux.1-dev".to_string(), vec![], 1).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rejects_invalid_epoch_count() {
+        let cas = test_cas().await;
+        let key = cas.put(b"preference data", "application/octet-stream").await.unwrap();
+        let actor = FineTuningActor::new(cas);
+
+        assert!(actor
+            .start_lora_job("flux.1-dev".to_string(), vec![key.clone()], 0)
+            .await
+            .is_err());
+        assert!(actor
+            .start_lora_job("flux.1-dev".to_string(), vec![key], 51)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rejects_missing_dataset_key() {
+        let cas = test_cas().await;
+        let actor = FineTuningActor::new(cas.clone());
+        let bogus_key = CasKey([0xAB; 32]);
+
+        let result = actor
+            .start_lora_job("flux.1-dev".to_string(), vec![bogus_key], 1)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lora_job_produces_adapter_in_cas() {
+        let cas = test_cas().await;
+        let dataset_key = cas.put(b"preference data", "application/octet-stream").await.unwrap();
+        let actor = FineTuningActor::new(cas.clone());
+
+        let adapter_key = actor
+            .start_lora_job("flux.1-dev".to_string(), vec![dataset_key], 1)
+            .await
+            .unwrap();
+
+        assert!(cas.exists(&adapter_key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_dpo_job_wraps_single_dataset() {
+        let cas = test_cas().await;
+        let dataset_key = cas.put(b"dpo pairs", "application/octet-stream").await.unwrap();
+        let actor = FineTuningActor::new(cas.clone());
+
+        let adapter_key = actor
+            .start_dpo_job("flux.1-dev".to_string(), dataset_key, 1)
+            .await
+            .unwrap();
+
+        assert!(cas.exists(&adapter_key).await.unwrap());
+    }
+}

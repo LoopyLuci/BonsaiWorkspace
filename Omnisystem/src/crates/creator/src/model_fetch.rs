@@ -59,3 +59,55 @@ pub async fn list_cached(cache: &Path) -> Result<Vec<String>> {
     }
     Ok(names)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_fetch_blocked_without_user_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = fetch_model(
+            "model.bin",
+            "https://example.invalid/model.bin",
+            dir.path(),
+            false,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("user_confirmed"));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_returns_cached_file_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("model.bin"), b"cached weights")
+            .await
+            .unwrap();
+
+        // Bogus URL: if this were actually hit, the test would fail on
+        // network error rather than returning the cached path.
+        let result = fetch_model(
+            "model.bin",
+            "https://example.invalid/does-not-exist",
+            dir.path(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, dir.path().join("model.bin"));
+    }
+
+    #[tokio::test]
+    async fn test_list_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("a.bin"), b"1").await.unwrap();
+        tokio::fs::write(dir.path().join("b.bin"), b"2").await.unwrap();
+
+        let mut names = list_cached(dir.path()).await.unwrap();
+        names.sort();
+        assert_eq!(names, vec!["a.bin".to_string(), "b.bin".to_string()]);
+    }
+}

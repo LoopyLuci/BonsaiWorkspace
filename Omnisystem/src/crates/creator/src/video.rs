@@ -61,3 +61,42 @@ impl GenerativeTool for SvdVideoTool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_requires_existing_input_image() {
+        let cas = test_cas().await;
+        let tool = SvdVideoTool::new(cas.clone());
+
+        let mut params = GenerateParams::default();
+        params.extra = serde_json::json!({ "input_image_key": "ab".repeat(32) });
+
+        assert!(tool.generate(params).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_default_frame_count() {
+        let cas = test_cas().await;
+        let input_key = cas.put(b"input frame", "image/png").await.unwrap();
+        let tool = SvdVideoTool::new(cas.clone());
+
+        let mut params = GenerateParams::default();
+        params.extra = serde_json::json!({ "input_image_key": input_key.hex() });
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["num_frames"], 25);
+        assert!(cas.exists(&result.cas_key).await.unwrap());
+    }
+}

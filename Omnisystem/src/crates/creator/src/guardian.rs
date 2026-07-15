@@ -42,3 +42,22 @@ impl Guardian {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_prompt_blocks_disallowed_terms() {
+        let guardian = Guardian::default();
+        assert!(guardian.check_prompt("a photo of a mountain").is_ok());
+        assert!(guardian.check_prompt("a photo of a MINOR").is_err());
+        assert!(guardian.check_prompt("a child playing").is_err());
+    }
+
+    #[test]
+    fn test_default_threshold() {
+        assert_eq!(Guardian::default().threshold, 0.8);
+        assert_eq!(Guardian::new(0.5).threshold, 0.5);
+    }
+}

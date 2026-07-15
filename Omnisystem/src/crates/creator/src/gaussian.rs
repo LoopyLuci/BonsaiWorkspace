@@ -67,3 +67,41 @@ impl GenerativeTool for GaussianSplattingTool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_requires_existing_input_asset() {
+        let tool = GaussianSplattingTool::new(test_cas().await);
+        let mut params = GenerateParams::default();
+        params.extra = serde_json::json!({ "input_image_key": "cd".repeat(32) });
+
+        assert!(tool.generate(params).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_default_point_count_and_format() {
+        let cas = test_cas().await;
+        let input_key = cas.put(b"scan frames", "video/mp4").await.unwrap();
+        let tool = GaussianSplattingTool::new(cas.clone());
+
+        let mut params = GenerateParams::default();
+        params.extra = serde_json::json!({ "input_image_key": input_key.hex() });
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["num_points"], 500_000);
+        assert_eq!(result.metadata["output_format"], "ply");
+        assert!(cas.exists(&result.cas_key).await.unwrap());
+    }
+}

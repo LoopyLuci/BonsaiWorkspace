@@ -95,3 +95,51 @@ impl ProgressStreamer {
         &self.task_id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_event_status_and_clamping() {
+        let running = ProgressEvent::new("task-1", 0.5, "halfway");
+        assert_eq!(running.status, "running");
+        assert_eq!(running.progress, 0.5);
+
+        let completed = ProgressEvent::new("task-1", 1.0, "done");
+        assert_eq!(completed.status, "completed");
+
+        let clamped = ProgressEvent::new("task-1", 1.5, "overshoot");
+        assert_eq!(clamped.progress, 1.0);
+    }
+
+    #[test]
+    fn test_progress_event_failed() {
+        let failed = ProgressEvent::failed("task-1", "oom");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.progress, 0.0);
+        assert_eq!(failed.message, "oom");
+    }
+
+    #[tokio::test]
+    async fn test_streamer_emits_events() {
+        let (streamer, mut rx) = ProgressStreamer::new("task-1", 4);
+        assert_eq!(streamer.task_id(), "task-1");
+
+        assert!(streamer.emit(0.3, "working").await);
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.progress, 0.3);
+        assert_eq!(event.task_id, "task-1");
+
+        assert!(streamer.fail("crashed").await);
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn test_streamer_emit_fails_after_receiver_dropped() {
+        let (streamer, rx) = ProgressStreamer::new("task-1", 4);
+        drop(rx);
+        assert!(!streamer.emit(0.5, "still going").await);
+    }
+}

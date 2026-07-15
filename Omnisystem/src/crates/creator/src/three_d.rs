@@ -62,3 +62,45 @@ impl GenerativeTool for Trellis3DTool {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_cas() -> Arc<CasStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CasStore::open(&dir.path().join("cas.db"), &dir.path().join("blobs"))
+            .await
+            .unwrap();
+        std::mem::forget(dir);
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_requires_input_image_key() {
+        let tool = Trellis3DTool::new(test_cas().await);
+        let params = GenerateParams {
+            prompt: "a chair".to_string(),
+            ..Default::default()
+        };
+
+        assert!(tool.generate(params).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_generates_glb_by_default() {
+        let cas = test_cas().await;
+        let input_key = cas.put(b"input image", "image/png").await.unwrap();
+        let tool = Trellis3DTool::new(cas.clone());
+
+        let mut params = GenerateParams {
+            prompt: "a chair".to_string(),
+            ..Default::default()
+        };
+        params.extra = serde_json::json!({ "input_image_key": input_key.hex() });
+
+        let result = tool.generate(params).await.unwrap();
+        assert_eq!(result.metadata["format"], "glb");
+        assert!(cas.exists(&result.cas_key).await.unwrap());
+    }
+}
