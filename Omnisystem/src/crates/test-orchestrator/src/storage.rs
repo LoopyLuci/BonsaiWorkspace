@@ -145,67 +145,80 @@ pub async fn store_artifact_hash(hash: &str, _content: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_result_store() {
-        let mut store = ResultStore::new();
-        let result = StoredResult {
-            run_id: uuid::Uuid::new_v4().to_string(),
-            spec_name: "TestSpec".to_string(),
-            test_case_name: "case1".to_string(),
-            language: "rust".to_string(),
-            passed: true,
-            fidelity: 1.0,
-            actual_output: "5".to_string(),
-            expected_output: "5".to_string(),
-            execution_time_ms: 10,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        };
-        store.store(result).await.unwrap();
-        assert_eq!(store.results.len(), 1);
-    }
-
-    #[test]
-    fn test_stats_computation() {
-        let mut store = ResultStore::new();
-        for i in 0..3 {
-            let result = StoredResult {
-                run_id: format!("run-{}", i),
-                spec_name: "TestSpec".to_string(),
-                test_case_name: format!("case{}", i),
-                language: "rust".to_string(),
-                passed: i < 2,
-                fidelity: 1.0,
-                actual_output: "out".to_string(),
-                expected_output: "out".to_string(),
-                execution_time_ms: 10,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            };
-            store.results.push(result);
+    fn sample_result(test_id: &str, name: &str, status: TestStatus) -> TestResult {
+        TestResult {
+            test_id: test_id.to_string(),
+            test_name: name.to_string(),
+            result: status,
+            duration_ms: 10,
+            output: "5".to_string(),
+            timestamp: chrono::Utc::now().timestamp(),
         }
-        let stats = store.compute_stats("TestSpec");
-        assert_eq!(stats.total_tests, 3);
-        assert_eq!(stats.passed, 2);
-        assert_eq!(stats.failed, 1);
     }
 
-    #[test]
-    fn test_csv_export() {
-        let mut store = ResultStore::new();
-        let result = StoredResult {
-            run_id: "run1".to_string(),
-            spec_name: "TestSpec".to_string(),
-            test_case_name: "case1".to_string(),
-            language: "rust".to_string(),
-            passed: true,
-            fidelity: 1.0,
-            actual_output: "5".to_string(),
-            expected_output: "5".to_string(),
-            execution_time_ms: 10,
-            timestamp: "2026-06-04T00:00:00Z".to_string(),
-        };
-        store.results.push(result);
-        let csv = store.export_csv();
-        assert!(csv.contains("run1"));
-        assert!(csv.contains("TestSpec"));
+    #[tokio::test]
+    async fn test_store_and_retrieve_result() {
+        let storage = TestStorage::new("./test_storage_tmp".to_string());
+        let result = sample_result("t1", "case1", TestStatus::Passed);
+
+        let hash = storage.store_result(result.clone()).await.unwrap();
+        let retrieved = storage.retrieve_result(&hash).await.unwrap();
+
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().test_name, "case1");
+    }
+
+    #[tokio::test]
+    async fn test_get_all_results() {
+        let storage = TestStorage::new("./test_storage_tmp".to_string());
+        storage
+            .store_result(sample_result("t1", "case1", TestStatus::Passed))
+            .await
+            .unwrap();
+
+        let all = storage.get_all_results().await.unwrap();
+        assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_results_by_status() {
+        let storage = TestStorage::new("./test_storage_tmp".to_string());
+        storage
+            .store_result(sample_result("t1", "case1", TestStatus::Passed))
+            .await
+            .unwrap();
+        storage
+            .store_result(sample_result("t2", "case2", TestStatus::Failed))
+            .await
+            .unwrap();
+        storage
+            .store_result(sample_result("t3", "case3", TestStatus::Passed))
+            .await
+            .unwrap();
+
+        let passed = storage.get_results_by_status(TestStatus::Passed).await.unwrap();
+        assert_eq!(passed.len(), 2);
+
+        let failed = storage.get_results_by_status(TestStatus::Failed).await.unwrap();
+        assert_eq!(failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_result() {
+        let storage = TestStorage::new("./test_storage_tmp".to_string());
+        let hash = storage
+            .store_result(sample_result("t1", "case1", TestStatus::Passed))
+            .await
+            .unwrap();
+
+        storage.delete_result(&hash).await.unwrap();
+        let retrieved = storage.retrieve_result(&hash).await.unwrap();
+        assert!(retrieved.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_log_event_and_store_artifact_hash_do_not_error() {
+        log_event_to_universe("test event").await.unwrap();
+        store_artifact_hash("abc123", b"content").await.unwrap();
     }
 }
