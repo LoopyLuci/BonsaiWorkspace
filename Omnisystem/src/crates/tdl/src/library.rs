@@ -52,6 +52,12 @@ impl TrainingDataLibrary {
         Ok(TrainingDataLibrary { db, data_dir })
     }
 
+    /// The directory containing this library's database file — the default
+    /// base directory for relative export paths.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     /// Create a new version with optional tags.
     pub async fn create_version(
         &self,
@@ -245,5 +251,143 @@ impl TrainingDataLibrary {
         writer.finish()?;
 
         Ok(output_path.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn temp_library() -> (TrainingDataLibrary, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let db_path = dir.path().join("tdl_library_test.sqlite3");
+        let library = TrainingDataLibrary::new(&db_path)
+            .await
+            .expect("open fresh library");
+        (library, dir)
+    }
+
+    #[tokio::test]
+    async fn export_format_parses_from_str() {
+        assert!(matches!(
+            "jsonl".parse::<ExportFormat>().unwrap(),
+            ExportFormat::Jsonl
+        ));
+        assert!(matches!(
+            "PARQUET".parse::<ExportFormat>().unwrap(),
+            ExportFormat::Parquet
+        ));
+        let err = "csv".parse::<ExportFormat>().unwrap_err();
+        assert!(matches!(err, crate::TdlError::InvalidFormat(_)));
+    }
+
+    #[tokio::test]
+    async fn export_jsonl_round_trip() {
+        let (library, dir) = temp_library().await;
+
+        let version_id = library
+            .create_version("1.0.0", "tester", "desc", vec![])
+            .await
+            .unwrap();
+
+        let metadata = Metadata::new().with_tag("t1").with_source("unit-test");
+        library
+            .add_example(version_id, "row one".to_string(), metadata.clone(), 0.8)
+            .await
+            .unwrap();
+        library
+            .add_example(version_id, "row two".to_string(), metadata, 0.6)
+            .await
+            .unwrap();
+
+        let out_path = dir.path().join("export.jsonl");
+        let written = library
+            .export_dataset(version_id, ExportFormat::Jsonl, &out_path)
+            .await
+            .expect("export_dataset(Jsonl) should succeed");
+        assert_eq!(written, out_path);
+
+        let contents = std::fs::read_to_string(&out_path).expect("read exported jsonl");
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2);
+
+        // Each line must be a valid, independently-parseable JSON object
+        // that round-trips the content we wrote.
+        let mut seen_contents: Vec<String> = Vec::new();
+        for line in &lines {
+            let value: serde_json::Value = serde_json::from_str(line).expect("valid json line");
+            seen_contents.push(value["content"].as_str().unwrap().to_string());
+            assert!(value["quality_score"].is_number());
+        }
+        assert!(seen_contents.contains(&"row one".to_string()));
+        assert!(seen_contents.contains(&"row two".to_string()));
+    }
+
+    #[tokio::test]
+    async fn export_parquet_round_trip() {
+        let (library, dir) = temp_library().await;
+
+        let version_id = library
+            .create_version("1.0.0", "tester", "desc", vec![])
+            .await
+            .unwrap();
+        library
+            .add_example(version_id, "parquet row".to_string(), Metadata::new(), 0.42)
+            .await
+            .unwrap();
+
+        let out_path = dir.path().join("export.parquet");
+        let written = library
+            .export_dataset(version_id, ExportFormat::Parquet, &out_path)
+            .await
+            .expect("export_dataset(Parquet) should succeed");
+        assert_eq!(written, out_path);
+
+        let metadata = std::fs::metadata(&out_path).expect("parquet file must exist");
+        assert!(metadata.len() > 0, "parquet file must not be empty");
+    }
+
+    #[tokio::test]
+    async fn merge_versions_combines_examples() {
+        let (library, _dir) = temp_library().await;
+
+        let v1 = library
+            .create_version("1.0.0", "tester", "v1", vec![])
+            .await
+            .unwrap();
+        let v2 = library
+            .create_version("2.0.0", "tester", "v2", vec![])
+            .await
+            .unwrap();
+
+        library
+            .add_example(v1, "from v1".to_string(), Metadata::new(), 0.5)
+            .await
+            .unwrap();
+        library
+            .add_example(v2, "from v2".to_string(), Metadata::new(), 0.5)
+            .await
+            .unwrap();
+
+        let merged_id = library.merge_versions(v1, v2, "tester").await.unwrap();
+        let merged = library.get_version(merged_id).await.unwrap().unwrap();
+        assert_eq!(merged.example_count, 2);
+        assert_eq!(merged.version_string, "1.0.0+2.0.0");
+    }
+
+    #[tokio::test]
+    async fn merge_versions_fails_for_unknown_version() {
+        let (library, _dir) = temp_library().await;
+        let v1 = library
+            .create_version("1.0.0", "tester", "v1", vec![])
+            .await
+            .unwrap();
+        let bogus = Uuid::new_v4();
+
+        let err = library
+            .merge_versions(v1, bogus, "tester")
+            .await
+            .expect_err("merging with an unknown version id must fail");
+        assert!(matches!(err, crate::TdlError::VersionNotFound(_)));
     }
 }

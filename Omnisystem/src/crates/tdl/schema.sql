@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS versions (
 
 -- Table: examples
 -- Individual training examples with metadata
+-- content_hash is unique per-version (not globally) so that
+-- TrainingDataLibrary::merge_versions can copy an example's content into a
+-- new version without colliding with the content_hash of the source row.
 CREATE TABLE IF NOT EXISTS examples (
     id TEXT PRIMARY KEY,
     version_id TEXT NOT NULL,
@@ -28,9 +31,10 @@ CREATE TABLE IF NOT EXISTS examples (
     quality_score REAL NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    content_hash TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
     content_size_bytes INTEGER NOT NULL,
-    FOREIGN KEY (version_id) REFERENCES versions(id) ON DELETE CASCADE
+    FOREIGN KEY (version_id) REFERENCES versions(id) ON DELETE CASCADE,
+    UNIQUE (version_id, content_hash)
 );
 
 -- Table: version_examples

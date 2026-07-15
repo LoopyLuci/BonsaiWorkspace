@@ -8,6 +8,14 @@ use sqlx::{Row, Transaction};
 use std::path::Path;
 use uuid::Uuid;
 
+// Note: `examples.content_hash` is unique per-version (`UNIQUE(version_id,
+// content_hash)`), not globally unique. A global unique constraint would
+// make `TrainingDataLibrary::merge_versions` (which duplicates each source
+// example's content into a new version via `add_example`) impossible: the
+// very first copied example would always collide with the content_hash of
+// its original row. Scoping the constraint to `(version_id, content_hash)`
+// still prevents duplicate content *within* a single version while
+// allowing the same content to be shared across versions.
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS versions (
     id TEXT PRIMARY KEY,
@@ -31,9 +39,10 @@ CREATE TABLE IF NOT EXISTS examples (
     quality_score REAL NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    content_hash TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
     content_size_bytes INTEGER NOT NULL,
-    FOREIGN KEY (version_id) REFERENCES versions(id)
+    FOREIGN KEY (version_id) REFERENCES versions(id),
+    UNIQUE (version_id, content_hash)
 );
 
 CREATE TABLE IF NOT EXISTS version_examples (
@@ -72,7 +81,9 @@ pub struct TrainingDataDb {
 impl TrainingDataDb {
     /// Create or open a training data database at the given path.
     pub async fn new(db_path: &Path) -> Result<Self> {
-        let connection_string = format!("sqlite://{}", db_path.display());
+        // `?mode=rwc` tells sqlx to create the database file if it doesn't
+        // already exist — without it, opening a brand-new path fails.
+        let connection_string = format!("sqlite://{}?mode=rwc", db_path.display());
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&connection_string)
@@ -465,5 +476,117 @@ impl TrainingDataDb {
         .await?;
 
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TdlError;
+
+    async fn temp_db() -> (TrainingDataDb, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let db_path = dir.path().join("tdl_test.sqlite3");
+        let db = TrainingDataDb::new(&db_path)
+            .await
+            .expect("open fresh sqlite db (mode=rwc create)");
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn create_version_and_fetch_history() {
+        let (db, _dir) = temp_db().await;
+
+        let version_id = db
+            .create_version("1.0.0", "tester", "first version", vec!["alpha".into()])
+            .await
+            .expect("create_version should succeed");
+
+        let history = db.get_version_history().await.expect("get_version_history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, version_id);
+        assert_eq!(history[0].version_string, "1.0.0");
+        assert_eq!(history[0].example_count, 0);
+
+        let version = db
+            .get_version(version_id)
+            .await
+            .expect("get_version")
+            .expect("version should exist");
+        assert_eq!(version.created_by, "tester");
+        assert_eq!(version.tags, vec!["alpha".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn add_example_updates_version_stats() {
+        let (db, _dir) = temp_db().await;
+        let version_id = db
+            .create_version("1.0.0", "tester", "desc", vec![])
+            .await
+            .unwrap();
+
+        let metadata = Metadata::new().with_tag("greeting").with_domain("nlp");
+        let example_id = db
+            .add_example(version_id, "hello world".to_string(), metadata, 0.75)
+            .await
+            .expect("add_example should succeed");
+
+        let version = db.get_version(version_id).await.unwrap().unwrap();
+        assert_eq!(version.example_count, 1);
+        assert!((version.avg_quality_score - 0.75).abs() < f32::EPSILON);
+        assert_eq!(version.total_size_bytes, "hello world".len() as i64);
+
+        let examples = db.get_version_examples(version_id).await.unwrap();
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].id, example_id);
+        assert_eq!(examples[0].content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn add_example_rejects_out_of_range_quality_score() {
+        let (db, _dir) = temp_db().await;
+        let version_id = db
+            .create_version("1.0.0", "tester", "desc", vec![])
+            .await
+            .unwrap();
+
+        let err = db
+            .add_example(version_id, "bad".to_string(), Metadata::new(), 1.5)
+            .await
+            .expect_err("quality score of 1.5 must be rejected");
+
+        match err {
+            TdlError::InvalidQualityScore(score) => assert_eq!(score, 1.5),
+            other => panic!("expected InvalidQualityScore, got {other:?}"),
+        }
+
+        // The rejected example must not have polluted version stats.
+        let version = db.get_version(version_id).await.unwrap().unwrap();
+        assert_eq!(version.example_count, 0);
+    }
+
+    #[tokio::test]
+    async fn get_examples_by_quality_filters_and_orders() {
+        let (db, _dir) = temp_db().await;
+        let version_id = db
+            .create_version("1.0.0", "tester", "desc", vec![])
+            .await
+            .unwrap();
+
+        db.add_example(version_id, "low".to_string(), Metadata::new(), 0.2)
+            .await
+            .unwrap();
+        db.add_example(version_id, "high".to_string(), Metadata::new(), 0.9)
+            .await
+            .unwrap();
+        db.add_example(version_id, "mid".to_string(), Metadata::new(), 0.5)
+            .await
+            .unwrap();
+
+        let results = db.get_examples_by_quality(0.5, 10, 0).await.unwrap();
+        assert_eq!(results.len(), 2);
+        // ORDER BY quality_score DESC
+        assert_eq!(results[0].content, "high");
+        assert_eq!(results[1].content, "mid");
     }
 }
