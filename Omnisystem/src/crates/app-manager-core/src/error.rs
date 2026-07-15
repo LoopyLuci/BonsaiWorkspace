@@ -12,6 +12,10 @@ pub enum AppManagerError {
     AppNotFound(String),
     /// Module not found in the registry
     ModuleNotFound(String),
+    /// Invalid app id
+    InvalidAppId(String),
+    /// Invalid version string
+    InvalidVersion(String),
     /// Other error
     Other(String),
 }
@@ -24,6 +28,8 @@ impl std::fmt::Display for AppManagerError {
             AppManagerError::SemverError(msg) => write!(f, "version parse error: {}", msg),
             AppManagerError::AppNotFound(id) => write!(f, "app not found: {}", id),
             AppManagerError::ModuleNotFound(id) => write!(f, "module not found: {}", id),
+            AppManagerError::InvalidAppId(id) => write!(f, "invalid app id: {}", id),
+            AppManagerError::InvalidVersion(s) => write!(f, "invalid version: {}", s),
             AppManagerError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
