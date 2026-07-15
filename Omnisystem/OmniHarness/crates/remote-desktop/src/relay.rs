@@ -3,13 +3,12 @@
 //! The RelayService forwards encrypted traffic between peers, maintaining
 //! zero-trust authentication and comprehensive network statistics.
 
-use crate::{PeerId, SessionId, StreamStats};
+use crate::{PeerId, SessionId};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use chrono::Utc;
 
 /// Errors that can occur during relay operations.
 #[derive(Debug, Error)]
@@ -37,7 +36,7 @@ pub enum RelayError {
 }
 
 /// Relay session for a peer-to-peer connection.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct RelaySession {
     /// Session ID.
     pub session_id: SessionId,

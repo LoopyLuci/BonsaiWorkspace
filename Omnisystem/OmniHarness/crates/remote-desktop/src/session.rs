@@ -3,6 +3,7 @@
 //! The SessionManager handles creation, tracking, and termination of remote
 //! desktop sessions, including permission management and state tracking.
 
+use crate::types::State;
 use crate::{PeerId, SessionId, RemoteDesktopToken};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -298,6 +299,11 @@ impl SessionManager {
     /// Set maximum concurrent sessions.
     pub fn set_max_sessions(&mut self, max: usize) {
         self.max_sessions = max;
+    }
+
+    /// Status snapshot — active session count plus a timestamp.
+    pub fn health(&self) -> State {
+        State::now(format!("ok: {} active sessions", self.active_session_count()))
     }
 }
 

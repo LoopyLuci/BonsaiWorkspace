@@ -60,16 +60,19 @@ impl CodecType {
         }
     }
 
-    /// Get typical bitrate for given resolution.
+    /// Get typical bitrate for given resolution, scaled from the 1080p
+    /// reference bitrate by pixel count.
     pub fn typical_bitrate_mbps(&self, width: u32, height: u32) -> f64 {
+        const REFERENCE_PIXELS: f64 = 1920.0 * 1080.0;
         let pixels = (width as f64) * (height as f64);
-        match self {
-            CodecType::H264 => pixels * 0.05,    // 1920x1080: ~5 Mbps
-            CodecType::H265 => pixels * 0.025,   // 1920x1080: ~2.5 Mbps (50% reduction)
-            CodecType::VP8 => pixels * 0.045,    // 1920x1080: ~4.5 Mbps
-            CodecType::VP9 => pixels * 0.02,     // 1920x1080: ~2 Mbps
-            CodecType::AV1 => pixels * 0.015,    // 1920x1080: ~1.5 Mbps (best)
-        }
+        let reference_mbps = match self {
+            CodecType::H264 => 5.0,
+            CodecType::H265 => 2.5,  // 50% reduction vs H264
+            CodecType::VP8 => 4.5,
+            CodecType::VP9 => 2.0,
+            CodecType::AV1 => 1.5,   // best compression
+        };
+        reference_mbps * (pixels / REFERENCE_PIXELS)
     }
 }
 

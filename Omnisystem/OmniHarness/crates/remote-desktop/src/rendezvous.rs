@@ -3,6 +3,7 @@
 //! The RendezvousService coordinates peer discovery through multicast DNS (mDNS),
 //! registration in a central registry, and NAT hole punching for direct peer connections.
 
+use crate::core::Core;
 use crate::PeerId;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,9 @@ pub struct RendezvousService {
 
     /// mDNS listener active flag.
     mdns_active: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Cache of resolved hole-punch addresses, keyed by hex-encoded PeerId.
+    hole_punch_cache: Core,
 }
 
 impl RendezvousService {
@@ -116,6 +120,7 @@ impl RendezvousService {
         RendezvousService {
             peers: Arc::new(DashMap::new()),
             mdns_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hole_punch_cache: Core::new(),
         }
     }
 
@@ -180,34 +185,47 @@ impl RendezvousService {
             })
     }
 
-    /// Perform NAT hole punching for a peer.
+    /// Perform NAT hole punching for a peer. Resolved addresses are cached
+    /// per peer so repeat calls skip re-resolution.
     pub async fn hole_punch(&self, peer_id: PeerId) -> Result<SocketAddr, DiscoveryError> {
-        let peer = self.find_peer(peer_id).await?;
-
-        if !peer.behind_nat {
-            // No hole punching needed
-            return peer.addresses.first().cloned()
-                .ok_or(DiscoveryError::InvalidAddress);
+        let cache_key = peer_id.to_string();
+        if let Some(cached) = self.hole_punch_cache.get(&cache_key) {
+            if let Ok(addr) = cached.parse() {
+                return Ok(addr);
+            }
         }
 
-        // In production: perform STUN-based hole punching
-        // For now: return the first address
-        peer.addresses
-            .first()
-            .cloned()
-            .ok_or(DiscoveryError::HolePunchingFailed {
-                reason: "No addresses available".to_string(),
-            })
+        let peer = self.find_peer(peer_id).await?;
+
+        let addr = if !peer.behind_nat {
+            // No hole punching needed
+            peer.addresses.first().cloned()
+                .ok_or(DiscoveryError::InvalidAddress)?
+        } else {
+            // In production: perform STUN-based hole punching
+            // For now: return the first address
+            peer.addresses
+                .first()
+                .cloned()
+                .ok_or(DiscoveryError::HolePunchingFailed {
+                    reason: "No addresses available".to_string(),
+                })?
+        };
+
+        self.hole_punch_cache.set(cache_key, addr.to_string());
+        Ok(addr)
     }
 
     /// Update peer info (last seen, online status, etc.).
     pub async fn update_peer(&self, peer_id: PeerId, info: PeerInfo) -> Result<(), DiscoveryError> {
+        self.hole_punch_cache.remove(&peer_id.to_string());
         self.peers.insert(peer_id, info);
         Ok(())
     }
 
     /// Mark a peer as offline.
     pub async fn mark_offline(&self, peer_id: PeerId) -> Result<(), DiscoveryError> {
+        self.hole_punch_cache.remove(&peer_id.to_string());
         if let Some(mut entry) = self.peers.get_mut(&peer_id) {
             entry.online = false;
             Ok(())

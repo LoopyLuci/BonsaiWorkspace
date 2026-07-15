@@ -118,8 +118,15 @@ impl TransferProgress {
         }
     }
 
-    /// Update progress.
+    /// Update progress. A `total_bytes` of 0 means the total size isn't
+    /// known yet (e.g. metadata wasn't available), so bytes transferred
+    /// aren't clamped and percent/complete stay unknown rather than being
+    /// forced to zero.
     pub fn update(&mut self, bytes_transferred: u64) {
+        if self.total_bytes == 0 {
+            self.bytes_transferred = bytes_transferred;
+            return;
+        }
         self.bytes_transferred = bytes_transferred.min(self.total_bytes);
         self.percent = (self.bytes_transferred as f64 / self.total_bytes as f64) * 100.0;
         self.complete = self.bytes_transferred >= self.total_bytes;

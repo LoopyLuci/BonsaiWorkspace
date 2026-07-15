@@ -10,6 +10,16 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use thiserror::Error;
 
+/// `IpAddr` has no stable `is_private`; dispatch to `Ipv4Addr::is_private`
+/// and treat all IPv6 addresses as non-private (unique local addresses
+/// aside, which aren't relevant for a local port-forward allowlist).
+fn is_private_addr(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(_) => false,
+    }
+}
+
 /// Errors that can occur during tunnel operations.
 #[derive(Debug, Error)]
 pub enum TunnelError {
@@ -143,7 +153,7 @@ impl TunnelService {
         if config.local_addr.ip() == IpAddr::from([0, 0, 0, 0]) {
             // Allow any interface
         } else if !config.local_addr.ip().is_loopback()
-            && !config.local_addr.ip().is_private()
+            && !is_private_addr(&config.local_addr.ip())
         {
             return Err(TunnelError::InvalidAddress);
         }

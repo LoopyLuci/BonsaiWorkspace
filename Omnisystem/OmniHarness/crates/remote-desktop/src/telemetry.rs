@@ -20,7 +20,7 @@ pub enum TelemetryError {
 }
 
 /// Event types for remote desktop operations.
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RemoteDesktopEvent {
     /// Peer discovered.
     PeerDiscovered { peer_id: PeerId, name: String },

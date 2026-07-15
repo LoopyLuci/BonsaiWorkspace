@@ -5,7 +5,7 @@
 //! signed and includes temporal and capability-specific constraints.
 
 use chrono::{DateTime, Duration, Utc};
-use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
