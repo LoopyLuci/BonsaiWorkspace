@@ -52,7 +52,7 @@ impl Agent for ChurnPredictionAgent {
 
         AgentDecision {
             action: if risk > 0.7 { AgentAction::Reach } else { AgentAction::Skip },
-            confidence: risk,
+            confidence: risk as f64,
             reasoning: format!("Churn risk: {}", risk),
         }
     }

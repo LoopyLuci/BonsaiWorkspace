@@ -153,7 +153,7 @@ impl Customer {
 
     /// Get customer health score (0.0 - 1.0)
     pub fn health_score(&self) -> f32 {
-        let mut score = 0.5;
+        let mut score: f32 = 0.5;
 
         // Boost for high LTV
         if self.lifetime_value > 1000.0 {
