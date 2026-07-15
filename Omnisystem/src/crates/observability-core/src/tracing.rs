@@ -1,4 +1,5 @@
 use crate::{ObservabilityError, ObservabilityResult, Span, SpanId, SpanKind, SpanStatus, Trace, TraceId, SpanEvent};
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -145,6 +146,11 @@ impl DistributedTracer {
             .ok_or_else(|| ObservabilityError::TraceNotFound(trace_id.0.clone()))
     }
 
+    /// List every span recorded for a trace
+    pub async fn list_spans(&self, trace_id: &TraceId) -> ObservabilityResult<Vec<Span>> {
+        self.get_trace(trace_id).await.map(|trace| trace.spans)
+    }
+
     pub fn span_count(&self) -> usize {
         self.spans.len()
     }
@@ -157,6 +163,58 @@ impl DistributedTracer {
 impl Default for DistributedTracer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl crate::traits::TracingBackend for DistributedTracer {
+    async fn start_span(
+        &self,
+        trace_id: &TraceId,
+        span_id: &SpanId,
+        parent_span_id: Option<&SpanId>,
+        name: &str,
+        kind: SpanKind,
+    ) -> ObservabilityResult<()> {
+        DistributedTracer::start_span(self, trace_id, span_id, parent_span_id, name, kind).await
+    }
+
+    async fn end_span(&self, span_id: &SpanId) -> ObservabilityResult<()> {
+        DistributedTracer::end_span(self, span_id).await
+    }
+
+    async fn add_event(
+        &self,
+        span_id: &SpanId,
+        event_name: &str,
+        attributes: HashMap<String, String>,
+    ) -> ObservabilityResult<()> {
+        DistributedTracer::add_event(self, span_id, event_name, attributes).await
+    }
+
+    async fn set_attribute(
+        &self,
+        span_id: &SpanId,
+        key: &str,
+        value: &str,
+    ) -> ObservabilityResult<()> {
+        DistributedTracer::set_attribute(self, span_id, key, value).await
+    }
+
+    async fn record_exception(&self, span_id: &SpanId, error: &str) -> ObservabilityResult<()> {
+        DistributedTracer::record_exception(self, span_id, error).await
+    }
+
+    async fn get_span(&self, span_id: &SpanId) -> ObservabilityResult<Span> {
+        DistributedTracer::get_span(self, span_id).await
+    }
+
+    async fn get_trace(&self, trace_id: &TraceId) -> ObservabilityResult<Trace> {
+        DistributedTracer::get_trace(self, trace_id).await
+    }
+
+    async fn list_spans(&self, trace_id: &TraceId) -> ObservabilityResult<Vec<Span>> {
+        DistributedTracer::list_spans(self, trace_id).await
     }
 }
 
@@ -225,5 +283,22 @@ mod tests {
 
         let span = tracer.get_span(&span_id).await.unwrap();
         assert_eq!(span.status, SpanStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn test_list_spans() {
+        let tracer = DistributedTracer::new();
+        let trace_id = TraceId(uuid::Uuid::new_v4().to_string());
+        let root_span = SpanId(uuid::Uuid::new_v4().to_string());
+        let child_span = SpanId(uuid::Uuid::new_v4().to_string());
+
+        tracer.start_trace(&trace_id, &root_span, "root").await.unwrap();
+        tracer
+            .start_span(&trace_id, &child_span, Some(&root_span), "child", SpanKind::Internal)
+            .await
+            .unwrap();
+
+        let spans = tracer.list_spans(&trace_id).await.unwrap();
+        assert_eq!(spans.len(), 2);
     }
 }

@@ -1,4 +1,5 @@
 use crate::{CorrelationContext, CorrelationId, ObservabilityError, ObservabilityResult, SpanId, TraceId};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,6 +76,41 @@ impl CorrelationManager {
 impl Default for CorrelationManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl crate::traits::CorrelationManager for CorrelationManager {
+    async fn create_context(
+        &self,
+        trace_id: &TraceId,
+        span_id: &SpanId,
+    ) -> ObservabilityResult<CorrelationId> {
+        CorrelationManager::create_context(self, trace_id, span_id).await
+    }
+
+    async fn get_context(
+        &self,
+        correlation_id: &CorrelationId,
+    ) -> ObservabilityResult<CorrelationContext> {
+        CorrelationManager::get_context(self, correlation_id).await
+    }
+
+    async fn set_baggage(
+        &self,
+        correlation_id: &CorrelationId,
+        key: &str,
+        value: &str,
+    ) -> ObservabilityResult<()> {
+        CorrelationManager::set_baggage(self, correlation_id, key, value).await
+    }
+
+    async fn get_baggage(
+        &self,
+        correlation_id: &CorrelationId,
+        key: &str,
+    ) -> ObservabilityResult<Option<String>> {
+        CorrelationManager::get_baggage(self, correlation_id, key).await
     }
 }
 

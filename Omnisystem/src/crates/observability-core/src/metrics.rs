@@ -1,4 +1,5 @@
 use crate::{AggregatedMetrics, MetricValue, ObservabilityError, ObservabilityResult};
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -101,6 +102,30 @@ impl MetricsAggregator {
 impl Default for MetricsAggregator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl crate::traits::MetricsBackend for MetricsAggregator {
+    async fn record_metric(
+        &self,
+        name: &str,
+        value: f64,
+        labels: HashMap<String, String>,
+    ) -> ObservabilityResult<()> {
+        MetricsAggregator::record_metric(self, name, value, labels).await
+    }
+
+    async fn get_metrics(&self, name: &str) -> ObservabilityResult<Vec<MetricValue>> {
+        MetricsAggregator::get_metrics(self, name).await
+    }
+
+    async fn aggregate_metrics(&self, name: &str) -> ObservabilityResult<AggregatedMetrics> {
+        MetricsAggregator::aggregate_metrics(self, name).await
+    }
+
+    async fn flush_metrics(&self) -> ObservabilityResult<()> {
+        MetricsAggregator::flush_metrics(self).await
     }
 }
 

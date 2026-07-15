@@ -1,4 +1,5 @@
 use crate::{LogEntry, LogLevel, ObservabilityError, ObservabilityResult, TraceId};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -100,6 +101,34 @@ impl LogCollector {
 impl Default for LogCollector {
     fn default() -> Self {
         Self::new(100)
+    }
+}
+
+#[async_trait]
+impl crate::traits::LoggingBackend for LogCollector {
+    async fn write_log(&self, entry: &LogEntry) -> ObservabilityResult<()> {
+        LogCollector::write_log(self, entry).await
+    }
+
+    async fn write_batch(&self, entries: Vec<LogEntry>) -> ObservabilityResult<()> {
+        LogCollector::write_batch(self, entries).await
+    }
+
+    async fn query_logs(
+        &self,
+        trace_id: Option<&TraceId>,
+        level: Option<LogLevel>,
+        limit: usize,
+    ) -> ObservabilityResult<Vec<LogEntry>> {
+        LogCollector::query_logs(self, trace_id, level, limit).await
+    }
+
+    async fn get_logs_for_trace(&self, trace_id: &TraceId) -> ObservabilityResult<Vec<LogEntry>> {
+        LogCollector::get_logs_for_trace(self, trace_id).await
+    }
+
+    async fn flush(&self) -> ObservabilityResult<()> {
+        LogCollector::flush(self).await
     }
 }
 
