@@ -1,4 +1,5 @@
 use crate::{EndpointId, MeshError, MeshResult, ServiceEndpoint, ServiceId, ServiceInstance, ServiceStatus};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -98,6 +99,37 @@ impl ServiceRegistry {
 impl Default for ServiceRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Wire the concrete in-memory registry up to the abstract mesh-management
+/// contract in [`crate::traits::ServiceRegistry`] so callers can depend on
+/// the trait object instead of this specific implementation.
+#[async_trait]
+impl crate::traits::ServiceRegistry for ServiceRegistry {
+    async fn register_service(&self, service: &ServiceInstance) -> MeshResult<()> {
+        ServiceRegistry::register_service(self, service).await
+    }
+
+    async fn deregister_service(&self, service_id: &ServiceId) -> MeshResult<()> {
+        ServiceRegistry::deregister_service(self, service_id).await
+    }
+
+    async fn get_service(&self, service_id: &ServiceId) -> MeshResult<ServiceInstance> {
+        ServiceRegistry::get_service(self, service_id).await
+    }
+
+    async fn list_services(&self) -> MeshResult<Vec<ServiceInstance>> {
+        ServiceRegistry::list_services(self).await
+    }
+
+    async fn update_endpoint_status(
+        &self,
+        service_id: &ServiceId,
+        endpoint_id: &EndpointId,
+        healthy: bool,
+    ) -> MeshResult<()> {
+        ServiceRegistry::update_endpoint_status(self, service_id, endpoint_id, healthy).await
     }
 }
 

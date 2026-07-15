@@ -1,4 +1,5 @@
 use crate::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState, MeshError, MeshResult, ServiceId};
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -119,6 +120,29 @@ impl CircuitBreakerManager {
 impl Default for CircuitBreakerManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl crate::traits::CircuitBreakerManager for CircuitBreakerManager {
+    async fn check_circuit(&self, service_id: &ServiceId) -> MeshResult<bool> {
+        CircuitBreakerManager::check_circuit(self, service_id).await
+    }
+
+    async fn record_success(&self, service_id: &ServiceId) -> MeshResult<()> {
+        CircuitBreakerManager::record_success(self, service_id).await
+    }
+
+    async fn record_failure(&self, service_id: &ServiceId) -> MeshResult<()> {
+        CircuitBreakerManager::record_failure(self, service_id).await
+    }
+
+    async fn get_circuit_state(&self, service_id: &ServiceId) -> MeshResult<CircuitBreaker> {
+        CircuitBreakerManager::get_circuit_state(self, service_id).await
+    }
+
+    async fn reset_circuit(&self, service_id: &ServiceId) -> MeshResult<()> {
+        CircuitBreakerManager::reset_circuit(self, service_id).await
     }
 }
 

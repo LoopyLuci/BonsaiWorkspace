@@ -1,4 +1,5 @@
 use crate::{MeshResult, RateLimitConfig, ServiceId};
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -79,6 +80,21 @@ impl RateLimiter {
 impl Default for RateLimiter {
     fn default() -> Self {
         Self::new(RateLimitConfig::default())
+    }
+}
+
+#[async_trait]
+impl crate::traits::RateLimiter for RateLimiter {
+    async fn check_rate_limit(&self, service_id: &ServiceId) -> MeshResult<bool> {
+        RateLimiter::check_rate_limit(self, service_id).await
+    }
+
+    async fn acquire_token(&self, service_id: &ServiceId, count: u32) -> MeshResult<bool> {
+        RateLimiter::acquire_token(self, service_id, count).await
+    }
+
+    async fn reset_limits(&self, service_id: &ServiceId) -> MeshResult<()> {
+        RateLimiter::reset_limits(self, service_id).await
     }
 }
 

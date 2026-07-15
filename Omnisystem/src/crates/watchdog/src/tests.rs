@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::kb::KnowledgeBase;
     use crate::repair::{attempt_launch_repair, run_script};
 
@@ -44,7 +43,7 @@ mod tests {
     fn export_jsonl_only_includes_successful() {
         let kb = make_kb();
         let id1 = kb.insert_fix("error a", "rule", "fix a", 0.9, "test").unwrap();
-        let id2 = kb.insert_fix("error b", "rule", "fix b", 0.9, "test").unwrap();
+        let _id2 = kb.insert_fix("error b", "rule", "fix b", 0.9, "test").unwrap();
         kb.record_outcome(id1, true).unwrap();
         // id2 never succeeds
         let jsonl = kb.export_jsonl();

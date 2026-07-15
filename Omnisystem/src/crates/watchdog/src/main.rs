@@ -18,12 +18,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-mod kb;
-mod repair;
-#[cfg(test)]
-mod tests;
-
-use kb::KnowledgeBase;
+use watchdog::kb::KnowledgeBase;
+use watchdog::repair;
 
 // ── EternalWorkshop sidecar ───────────────────────────────────────────────────
 

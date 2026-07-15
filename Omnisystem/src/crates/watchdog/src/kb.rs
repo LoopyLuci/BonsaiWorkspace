@@ -386,11 +386,13 @@ impl KnowledgeBase {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Increment usage counter; increment success counter if `success` is true.
+    /// Increment usage counter; increment success counter and mark the fix
+    /// `verified` if `success` is true (a fix that has actually worked at
+    /// least once in practice is no longer just a hypothesis).
     pub fn record_outcome(&self, id: i64, success: bool) -> Result<()> {
         if success {
             self.conn.execute(
-                "UPDATE fixes SET usage_count = usage_count + 1, success_count = success_count + 1 WHERE id = ?1",
+                "UPDATE fixes SET usage_count = usage_count + 1, success_count = success_count + 1, verified = 1 WHERE id = ?1",
                 params![id],
             )?;
         } else {
@@ -492,8 +494,32 @@ impl KnowledgeBase {
         .collect()
     }
 
-    /// Legacy export (backwards compatible).
+    /// Legacy export (backwards compatible). Unlike [`Self::export_sft`],
+    /// which dumps every rule (including ones never confirmed to work),
+    /// this only includes fixes with at least one recorded success — the
+    /// original historical training-data export only ever shipped verified
+    /// fixes to avoid teaching the model unproven repairs.
     pub fn export_jsonl(&self) -> Vec<serde_json::Value> {
-        self.export_sft()
+        let mut stmt = self.conn.prepare(
+            "SELECT error_pattern, solution_script, category FROM fixes WHERE success_count > 0 ORDER BY success_count DESC"
+        ).unwrap();
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|(pattern, script, category)| serde_json::json!({
+            "messages": [
+                {"role": "system", "content": format!(
+                    "You are BonsAI, an expert debugging assistant for the Bonsai Ecosystem. \
+                     Category: {}. Given an error log, output the exact fix.",
+                    category
+                )},
+                {"role": "user", "content": &pattern},
+                {"role": "assistant", "content": &script},
+            ],
+            "metadata": {"category": category, "source": "survival_kb"}
+        }))
+        .collect()
     }
 }

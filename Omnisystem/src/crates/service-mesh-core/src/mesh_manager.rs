@@ -1,4 +1,4 @@
-use crate::{MeshService, SidecarProxy, ServiceEndpoint, MeshConfig, MeshError, MeshResult, ProxyStatus};
+use crate::{MeshEndpoint, MeshError, MeshResult, MeshService, ProxyStatus, SidecarProxy};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub struct MeshManager {
     services: Arc<DashMap<Uuid, MeshService>>,
     sidecars: Arc<DashMap<Uuid, SidecarProxy>>,
-    endpoints: Arc<DashMap<Uuid, ServiceEndpoint>>,
+    endpoints: Arc<DashMap<Uuid, MeshEndpoint>>,
 }
 
 impl MeshManager {
@@ -27,7 +27,7 @@ impl MeshManager {
         self.services
             .get(&service_id)
             .map(|s| s.clone())
-            .ok_or(MeshError::ServiceNotFound)
+            .ok_or_else(|| MeshError::ServiceNotFound(service_id.to_string()))
     }
 
     pub async fn register_sidecar(&self, sidecar: &SidecarProxy) -> MeshResult<()> {
@@ -40,16 +40,16 @@ impl MeshManager {
             sidecar.status = status;
             Ok(())
         } else {
-            Err(MeshError::SidecarNotFound)
+            Err(MeshError::SidecarNotFound(proxy_id.to_string()))
         }
     }
 
-    pub async fn register_endpoint(&self, endpoint: &ServiceEndpoint) -> MeshResult<()> {
+    pub async fn register_endpoint(&self, endpoint: &MeshEndpoint) -> MeshResult<()> {
         self.endpoints.insert(endpoint.endpoint_id, endpoint.clone());
         Ok(())
     }
 
-    pub async fn get_service_endpoints(&self, service_id: Uuid) -> MeshResult<Vec<ServiceEndpoint>> {
+    pub async fn get_service_endpoints(&self, service_id: Uuid) -> MeshResult<Vec<MeshEndpoint>> {
         let mut endpoints = Vec::new();
 
         for entry in self.endpoints.iter() {
@@ -148,7 +148,7 @@ mod tests {
     async fn test_register_endpoint() {
         let manager = MeshManager::new();
         let service_id = Uuid::new_v4();
-        let endpoint = ServiceEndpoint {
+        let endpoint = MeshEndpoint {
             endpoint_id: Uuid::new_v4(),
             service_id,
             address: "10.0.0.2".to_string(),

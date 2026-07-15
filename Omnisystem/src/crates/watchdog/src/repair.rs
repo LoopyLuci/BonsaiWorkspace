@@ -1,7 +1,6 @@
 /// Repair engine — deterministic rule-based fixes + AI fallback.
 
 use std::time::Duration;
-use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use crate::kb::KnowledgeBase;
