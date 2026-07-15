@@ -195,3 +195,87 @@ fn append_learnings_to_bonsai_md(path: &std::path::Path, learnings: &str) {
     let _ = std::fs::write(path, new_content);
     info!("[dream] BONSAI.md updated at {}", path.display());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &str, content: &str) -> MemoryNode {
+        MemoryNode {
+            id: id.to_string(),
+            timestamp_ms: 0,
+            node_type: "edit".to_string(),
+            source: "editor".to_string(),
+            content: content.to_string(),
+            tags: vec![],
+            consolidated: false,
+        }
+    }
+
+    #[test]
+    fn heuristic_consolidate_dedups_by_content_prefix_keeping_most_recent() {
+        let nodes = vec![
+            node("n1", "fixed the same bug"),
+            node("n2", "wrote a new test"),
+            node("n3", "fixed the same bug"), // duplicate of n1's content
+        ];
+
+        let result = heuristic_consolidate(&nodes);
+
+        // n1 is a duplicate of n3 (same 100-char prefix); the *most recent*
+        // occurrence (last in the list) should win, i.e. n3 survives, n1 does not.
+        let ids: Vec<&str> = result.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["n2", "n3"]);
+    }
+
+    #[test]
+    fn heuristic_consolidate_preserves_chronological_order() {
+        let nodes = vec![node("a", "alpha"), node("b", "beta"), node("c", "gamma")];
+        let result = heuristic_consolidate(&nodes);
+        let ids: Vec<&str> = result.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn heuristic_consolidate_caps_at_200_nodes() {
+        let nodes: Vec<MemoryNode> = (0..250)
+            .map(|i| node(&format!("n{i}"), &format!("unique content {i}")))
+            .collect();
+        let result = heuristic_consolidate(&nodes);
+        assert_eq!(result.len(), 200);
+    }
+
+    #[test]
+    fn nodes_to_learnings_truncates_after_twenty_and_notes_remainder() {
+        let nodes: Vec<MemoryNode> = (0..25).map(|i| node(&format!("n{i}"), "insight")).collect();
+        let learnings = nodes_to_learnings(&nodes);
+        assert_eq!(learnings.lines().count(), 21); // 20 items + "+N more" line
+        assert!(learnings.contains("+5 more"));
+    }
+
+    #[test]
+    fn append_learnings_creates_marker_section_in_new_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("BONSAI.md");
+
+        append_learnings_to_bonsai_md(&path, "- did a thing");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("## Active Context"));
+        assert!(content.contains("- did a thing"));
+    }
+
+    #[test]
+    fn append_learnings_replaces_existing_marker_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("BONSAI.md");
+        std::fs::write(&path, "# My Project\n\n## Active Context\n*(Updated: old)*\n\n- stale insight\n").unwrap();
+
+        append_learnings_to_bonsai_md(&path, "- fresh insight");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("# My Project"));
+        assert!(content.contains("- fresh insight"));
+        assert!(!content.contains("stale insight"));
+    }
+}

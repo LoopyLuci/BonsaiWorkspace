@@ -13,11 +13,7 @@
 //! Usage:
 //!   eternal-workshop [--db-path <path>] [--api-port <port>] [--dream-agent-port <port>]
 
-mod config;
-mod dream_executor;
-mod memory_nodes;
-mod scheduler;
-
+use eternal_workshop::{config, memory_nodes, scheduler};
 use log::{error, info};
 use tokio::signal;
 
