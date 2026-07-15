@@ -1,6 +1,6 @@
+use crate::error::{Error, Result};
 use crate::types::*;
 use sysinfo::System;
-use anyhow::Result;
 
 /// Detect all available hardware on this system.
 pub fn detect_hardware() -> Result<HardwareProfile> {
@@ -28,7 +28,7 @@ pub fn detect_hardware() -> Result<HardwareProfile> {
 
 fn detect_cpu(sys: &System) -> Result<CpuProfile> {
     let cpu = sys.cpus().first()
-        .ok_or_else(|| anyhow::anyhow!("No CPU detected"))?;
+        .ok_or(Error::NoCpuDetected)?;
 
     let physical_cores = sys.physical_core_count().unwrap_or(1) as u32;
     let logical_cores = sys.cpus().len() as u32;
