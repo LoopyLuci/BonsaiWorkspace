@@ -111,3 +111,50 @@ impl BweRequest {
         serde_json::from_slice(&self.body)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_methods_set_headers_and_query() {
+        let req = BweRequest::new(HttpMethod::Post, "/x", Bytes::from_static(b"{}"), "1.2.3.4".to_string())
+            .with_header("X-Test", "value")
+            .with_query("q", "rust");
+
+        assert_eq!(req.header("X-Test"), Some("value"));
+        assert_eq!(req.query_param("q"), Some("rust"));
+        assert_eq!(req.header("missing"), None);
+    }
+
+    #[test]
+    fn body_as_str_decodes_utf8() {
+        let req = BweRequest::new(HttpMethod::Get, "/", Bytes::from_static(b"hello"), "127.0.0.1".to_string());
+        assert_eq!(req.body_as_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn body_as_json_deserializes() {
+        #[derive(serde::Deserialize)]
+        struct Payload {
+            n: u32,
+        }
+        let req = BweRequest::new(HttpMethod::Post, "/", Bytes::from_static(b"{\"n\": 7}"), "127.0.0.1".to_string());
+        let payload: Payload = req.body_as_json().unwrap();
+        assert_eq!(payload.n, 7);
+    }
+
+    #[test]
+    fn request_ids_are_unique() {
+        let a = RequestId::new();
+        let b = RequestId::new();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn http_method_as_str_matches_standard_verbs() {
+        assert_eq!(HttpMethod::Get.as_str(), "GET");
+        assert_eq!(HttpMethod::Post.as_str(), "POST");
+        assert_eq!(HttpMethod::Delete.as_str(), "DELETE");
+    }
+}

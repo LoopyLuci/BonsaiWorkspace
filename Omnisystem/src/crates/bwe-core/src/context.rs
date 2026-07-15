@@ -1,5 +1,4 @@
 use serde::{Serialize, Deserialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// Capability token for fine-grained access control
@@ -102,5 +101,67 @@ impl RequestContext {
 
     pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.metadata.insert(key.into(), value.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_permission_grants_everything() {
+        let token = CapabilityToken::new("test", vec!["*".to_string()], "user-1", None);
+        assert!(token.has_permission("anything"));
+    }
+
+    #[test]
+    fn specific_permission_must_match() {
+        let token = CapabilityToken::new("test", vec!["read".to_string()], "user-1", None);
+        assert!(token.has_permission("read"));
+        assert!(!token.has_permission("write"));
+    }
+
+    #[test]
+    fn token_without_expiry_never_expires() {
+        let token = CapabilityToken::new("test", vec![], "user-1", None);
+        assert!(!token.is_expired());
+    }
+
+    #[test]
+    fn token_with_past_expiry_is_expired() {
+        let token = CapabilityToken::new("test", vec![], "user-1", Some(1));
+        assert!(token.is_expired());
+    }
+
+    #[test]
+    fn token_with_future_expiry_is_not_expired() {
+        let far_future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let token = CapabilityToken::new("test", vec![], "user-1", Some(far_future));
+        assert!(!token.is_expired());
+    }
+
+    #[test]
+    fn check_permission_fails_without_token() {
+        let ctx = RequestContext::new("svc");
+        assert!(ctx.check_permission("read").is_err());
+    }
+
+    #[test]
+    fn check_permission_succeeds_with_valid_token() {
+        let token = CapabilityToken::new("test", vec!["read".to_string()], "user-1", None);
+        let ctx = RequestContext::new("svc").with_token(token);
+        assert!(ctx.check_permission("read").is_ok());
+        assert!(ctx.check_permission("write").is_err());
+    }
+
+    #[test]
+    fn check_permission_fails_with_expired_token() {
+        let token = CapabilityToken::new("test", vec!["*".to_string()], "user-1", Some(1));
+        let ctx = RequestContext::new("svc").with_token(token);
+        assert!(ctx.check_permission("read").is_err());
     }
 }

@@ -1,4 +1,8 @@
 use bwe_core::{BweBuilder, BweConfig, BweRequest, BweResponse, Result};
+use std::future::Future;
+use std::pin::Pin;
+
+type HandlerFuture = Pin<Box<dyn Future<Output = Result<BweResponse>> + Send>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,7 +18,7 @@ async fn main() -> Result<()> {
     let mut builder = BweBuilder::new(config);
 
     // Register a simple JSON endpoint
-    builder = builder.with_handler("/api/hello", |req: BweRequest| {
+    builder = builder.with_handler("/api/hello", |req: BweRequest| -> HandlerFuture {
         Box::pin(async move {
             let response = serde_json::json!({
                 "message": "Hello from Bonsai Web Engine!",
@@ -28,7 +32,7 @@ async fn main() -> Result<()> {
     });
 
     // Register a health check endpoint
-    builder = builder.with_handler("/health", |_req: BweRequest| {
+    builder = builder.with_handler("/health", |_req: BweRequest| -> HandlerFuture {
         Box::pin(async move {
             let response = serde_json::json!({
                 "status": "healthy",
