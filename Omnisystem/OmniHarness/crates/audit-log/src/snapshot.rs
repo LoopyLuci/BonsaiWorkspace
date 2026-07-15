@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::event::{EventCategory, EventSource, SubsystemHashes, UniverseEvent, UniverseSnapshot};
 use crate::emitter::UniverseEmitter;
 use crate::store::UniverseStore;
@@ -118,7 +119,7 @@ impl SnapshotEngine {
         &self,
         label: Option<String>,
         trigger_event_id: impl Into<String>,
-    ) -> Result<UniverseSnapshot, String> {
+    ) -> Result<UniverseSnapshot> {
         let count = self.store.event_count().await;
         let state_hashes = self.collect_state_hashes().await;
         let trigger = trigger_event_id.into();
