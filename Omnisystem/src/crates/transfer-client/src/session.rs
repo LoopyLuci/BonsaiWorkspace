@@ -33,3 +33,23 @@ impl PeerSession {
         self.active
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_session_is_active_with_a_recent_timestamp() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let session = PeerSession::new("alice-phone");
+
+        assert_eq!(session.peer_id, "alice-phone");
+        assert!(session.is_active());
+        assert!(session.transport_hints.is_empty());
+        assert!(session.connected_at >= before);
+    }
+}

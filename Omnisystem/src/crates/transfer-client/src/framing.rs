@@ -106,3 +106,90 @@ impl Default for FrameCodec {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn write_then_read_round_trips() {
+        let codec = FrameCodec::new();
+        let mut buf = Vec::new();
+        codec.write_frame(&mut buf, b"hello world").await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let mut read_codec = FrameCodec::new();
+        let frame = read_codec.read_frame(&mut cursor).await.unwrap();
+        assert_eq!(frame, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn read_frame_handles_partial_reads() {
+        // Simulate a stream that delivers the frame across multiple small
+        // chunks rather than all at once, which is the whole reason
+        // FrameCodec buffers instead of doing a single read_exact.
+        let mut codec = FrameCodec::new();
+        let mut full = Vec::new();
+        FrameCodec::new().write_frame(&mut full, b"chunked-payload").await.unwrap();
+
+        // A reader that yields 3 bytes at a time.
+        struct ChunkedReader {
+            data: Vec<u8>,
+            pos: usize,
+        }
+        impl tokio::io::AsyncRead for ChunkedReader {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                let remaining = &self.data[self.pos..];
+                let n = remaining.len().min(3);
+                buf.put_slice(&remaining[..n]);
+                self.pos += n;
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        let mut reader = ChunkedReader { data: full, pos: 0 };
+
+        let frame = codec.read_frame(&mut reader).await.unwrap();
+        assert_eq!(frame, b"chunked-payload");
+    }
+
+    #[tokio::test]
+    async fn read_frame_rejects_oversized_length_prefix() {
+        let mut codec = FrameCodec::new();
+        let mut buf = Vec::new();
+        // A length prefix bigger than MAX_FRAME_SIZE.
+        buf.extend_from_slice(&(MAX_FRAME_SIZE as u32 + 1).to_be_bytes());
+        let mut cursor = Cursor::new(buf);
+
+        let err = codec.read_frame(&mut cursor).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn exchange_json_round_trips_through_a_pipe() {
+        let (mut client_reader, mut server_writer) = tokio::io::duplex(1024);
+        let (mut server_reader, mut client_writer) = tokio::io::duplex(1024);
+
+        let server = tokio::spawn(async move {
+            let mut codec = FrameCodec::new();
+            let req = codec.read_frame(&mut server_reader).await.unwrap();
+            let req: serde_json::Value = serde_json::from_slice(&req).unwrap();
+            assert_eq!(req["ping"], true);
+            let resp = serde_json::json!({"pong": true});
+            codec.write_frame(&mut server_writer, &serde_json::to_vec(&resp).unwrap()).await.unwrap();
+        });
+
+        let mut client_codec = FrameCodec::new();
+        let response = client_codec
+            .exchange_json(&mut client_reader, &mut client_writer, &serde_json::json!({"ping": true}))
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(response["pong"], true);
+    }
+}

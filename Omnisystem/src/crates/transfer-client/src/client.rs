@@ -192,3 +192,83 @@ impl TransferDaemonClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unconfigured() -> TransferDaemonClient {
+        TransferDaemonClient::new(TransferClientConfig {
+            relay_addr: None,
+            relay_token: None,
+            fallback_url: None,
+            stream_timeout_ms: 1_000,
+        })
+    }
+
+    #[tokio::test]
+    async fn connect_without_any_transport_fails_honestly() {
+        let client = unconfigured();
+        let err = client.connect("peer-1").await.unwrap_err();
+        assert!(matches!(err, TransferClientError::TransportUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn open_stream_without_any_transport_fails_honestly() {
+        let client = unconfigured();
+        let session = PeerSession::new("peer-1");
+        match client.open_stream(&session, "data").await {
+            Err(TransferClientError::TransportUnavailable(_)) => {}
+            Err(other) => panic!("expected TransportUnavailable, got {other:?}"),
+            Ok(_) => panic!("expected an error but open_stream succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_configured_but_peer_side_not_deployed_fails_honestly() {
+        // relay_addr/relay_token configured, but open_stream_via_relay
+        // honestly reports that the peer-side consumer isn't deployed yet
+        // rather than pretending to succeed.
+        let client = TransferDaemonClient::new(TransferClientConfig {
+            relay_addr: Some("127.0.0.1:9800".to_string()),
+            relay_token: Some("token".to_string()),
+            fallback_url: None,
+            stream_timeout_ms: 1_000,
+        });
+        let session = client.connect("peer-1").await.unwrap();
+        match client.open_stream(&session, "data").await {
+            Err(TransferClientError::TransportUnavailable(_)) => {}
+            Err(other) => panic!("expected TransportUnavailable, got {other:?}"),
+            Ok(_) => panic!("expected an error but open_stream succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_removes_the_session() {
+        let client = TransferDaemonClient::new(TransferClientConfig {
+            relay_addr: Some("127.0.0.1:9800".to_string()),
+            relay_token: Some("token".to_string()),
+            fallback_url: None,
+            stream_timeout_ms: 1_000,
+        });
+        client.connect("peer-1").await.unwrap();
+        assert_eq!(client.list_sessions().await.len(), 1);
+
+        client.disconnect("peer-1").await.unwrap();
+        assert!(client.list_sessions().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connecting_twice_reuses_the_existing_session() {
+        let client = TransferDaemonClient::new(TransferClientConfig {
+            relay_addr: Some("127.0.0.1:9800".to_string()),
+            relay_token: Some("token".to_string()),
+            fallback_url: None,
+            stream_timeout_ms: 1_000,
+        });
+        let s1 = client.connect("peer-1").await.unwrap();
+        let s2 = client.connect("peer-1").await.unwrap();
+        assert_eq!(s1.connected_at, s2.connected_at);
+        assert_eq!(client.list_sessions().await.len(), 1);
+    }
+}
