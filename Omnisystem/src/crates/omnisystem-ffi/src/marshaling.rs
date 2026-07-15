@@ -1,7 +1,7 @@
 /// Type Marshaling - Converting values between languages
 
 use crate::types::FFIType;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_void, CStr};
 
 /// Marshal result
 pub type MarshalResult<T> = Result<T, MarshalError>;
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_bool_marshaling() {
-        let mut m = BoolMarshaler(true);
+        let m = BoolMarshaler(true);
         let bytes = m.to_ffi().unwrap();
         assert!(!bytes.is_empty());
 
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_int_marshaling() {
-        let mut m = IntMarshaler(42);
+        let m = IntMarshaler(42);
         let bytes = m.to_ffi().unwrap();
 
         let mut m2 = IntMarshaler(0);
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_float_marshaling() {
-        let mut m = FloatMarshaler(3.14);
+        let m = FloatMarshaler(3.14);
         let bytes = m.to_ffi().unwrap();
 
         let mut m2 = FloatMarshaler(0.0);
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_pointer_marshaling() {
         let ptr = 0x12345678 as *mut c_void;
-        let mut m = PointerMarshaler(ptr);
+        let m = PointerMarshaler(ptr);
         let bytes = m.to_ffi().unwrap();
 
         let mut m2 = PointerMarshaler(std::ptr::null_mut());

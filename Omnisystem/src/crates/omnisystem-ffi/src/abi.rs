@@ -3,7 +3,7 @@
 /// This module implements the C ABI calling convention for x86-64 architectures,
 /// enabling interoperability between all programming languages.
 
-use std::ffi::{c_void, c_char};
+use std::ffi::c_char;
 
 /// Language identifier constants
 pub const LANG_C: u32 = 0x00000001;

@@ -30,6 +30,11 @@ impl PerfMonitor {
         Ok(Self { initialized })
     }
 
+    /// Check if perf events are available on this system
+    pub fn is_available(&self) -> bool {
+        self.initialized
+    }
+
     /// Start monitoring an event
     pub fn start_event(&self, event: PerfEvent) -> Result<EventHandle> {
         info!("Starting perf event: {:?}", event);
@@ -128,5 +133,12 @@ mod tests {
 
         let miss_rate = data.cache_miss_rate();
         assert_eq!(miss_rate, 5.0);
+    }
+
+    #[test]
+    fn test_perf_monitor_creation() {
+        // Should never fail to construct, even on systems without perf support.
+        let monitor = PerfMonitor::new();
+        assert!(monitor.is_ok());
     }
 }

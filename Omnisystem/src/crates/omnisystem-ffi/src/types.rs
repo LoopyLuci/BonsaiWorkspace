@@ -1,6 +1,6 @@
 /// FFI Type System - Cross-language type definitions
 
-use std::ffi::{c_char, c_void};
+use std::ffi::c_char;
 
 /// Base FFI type representation
 #[repr(C)]
