@@ -4,7 +4,6 @@
 //! that exposes the extension's tools. This is the highest-ROI export target:
 //! any Claude / Continue / Cursor user gets the extension with zero IDE coupling.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -200,4 +199,79 @@ fn main() {{
         tool_count,
         readme,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{CommandCapability, ExtensionMetadata, SourceFormat, ToolCapability};
+
+    fn sample_ir() -> ExtensionIr {
+        let mut ir = ExtensionIr {
+            metadata: ExtensionMetadata {
+                id: "acme.widget".into(),
+                name: "Widget".into(),
+                version: "1.2.3".into(),
+                description: "A sample extension".into(),
+                author: "Acme".into(),
+                license: "MIT".into(),
+                repository: None,
+                icon: None,
+                tags: vec![],
+                source_format: SourceFormat::VsCode,
+            },
+            ..Default::default()
+        };
+
+        ir.capabilities.push(Capability::Tool(ToolCapability {
+            id: "widget.doThing".into(),
+            title: "Do Thing".into(),
+            description: "Does the thing.".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            handler_ref: None,
+        }));
+        ir.capabilities.push(Capability::Command(CommandCapability {
+            id: "widget.helloWorld".into(),
+            title: "Hello World".into(),
+            category: Some("Widget".into()),
+            keybinding: None,
+            when: None,
+            handler_ref: None,
+        }));
+
+        ir
+    }
+
+    #[tokio::test]
+    async fn export_writes_expected_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ir = sample_ir();
+
+        let result = export_as_mcp(&ir, tmp.path()).await.expect("export ok");
+        assert_eq!(result.tool_count, 2);
+
+        let tools_json = tokio::fs::read_to_string(tmp.path().join("mcp_tools.json"))
+            .await
+            .expect("mcp_tools.json written");
+        assert!(tools_json.contains("widget.doThing"));
+        assert!(tools_json.contains("widget_helloWorld"));
+
+        let cargo_toml = tokio::fs::read_to_string(tmp.path().join("Cargo.toml"))
+            .await
+            .expect("Cargo.toml written");
+        assert!(cargo_toml.contains("acme-widget-mcp"));
+        assert!(cargo_toml.contains("1.2.3"));
+
+        let main_rs = tokio::fs::read_to_string(tmp.path().join("src/main.rs"))
+            .await
+            .expect("src/main.rs written");
+        assert!(main_rs.contains("tools/list"));
+        assert!(main_rs.contains("widget_helloWorld"));
+
+        let readme = tokio::fs::read_to_string(tmp.path().join("README.md"))
+            .await
+            .expect("README.md written");
+        assert!(readme.contains("Widget"));
+        assert!(readme.contains("widget.doThing"));
+    }
 }

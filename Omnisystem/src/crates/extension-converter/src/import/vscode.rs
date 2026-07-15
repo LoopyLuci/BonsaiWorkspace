@@ -3,18 +3,17 @@
 //! Parses a `.vsix` file (ZIP containing `package.json` + sources) and
 //! maps its `contributes` section to the Unified Extension IR.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::ir::{
-    Capability, CapabilitySummary, CodeInfo, CodeLanguage, CommandCapability,
+    Capability, CodeInfo, CodeLanguage, CommandCapability,
     ConversionNote, ConversionTier, ExtensionIr, ExtensionMetadata,
     ExtensionPermissions, KeybindingCapability, LanguageSupportCapability,
     PermissionScope, SnippetCapability, SourceFormat, ThemeCapability,
-    ThemeKind, ViewCapability, ViewLocation,
+    ThemeKind,
 };
 use crate::ConversionError;
 
@@ -328,4 +327,59 @@ fn extract_zip(zip_path: &Path, out_dir: &Path) -> Result<(), ConversionError> {
     archive
         .extract(out_dir)
         .map_err(|e| ConversionError::Io(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build a minimal fake .vsix (a ZIP with `extension/package.json`) for tests.
+    fn build_fake_vsix(path: &Path) {
+        let file = std::fs::File::create(path).expect("create vsix file");
+        let mut zip = zip::ZipWriter::new(file);
+        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+
+        zip.start_file("extension/package.json", options)
+            .expect("start package.json");
+        let package_json = serde_json::json!({
+            "name": "widget",
+            "version": "0.1.0",
+            "publisher": "acme",
+            "description": "A test extension",
+            "license": "MIT",
+            "main": "./out/extension.js",
+            "contributes": {
+                "commands": [
+                    { "command": "widget.sayHello", "title": "Say Hello", "category": "Widget" }
+                ]
+            }
+        });
+        zip.write_all(package_json.to_string().as_bytes())
+            .expect("write package.json");
+
+        zip.finish().expect("finish zip");
+    }
+
+    #[tokio::test]
+    async fn import_vsix_round_trips_commands() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let vsix_path = tmp.path().join("widget.vsix");
+        build_fake_vsix(&vsix_path);
+
+        let ir = import_vsix(&vsix_path).await.expect("import ok");
+
+        assert_eq!(ir.metadata.id, "acme.widget");
+        assert_eq!(ir.metadata.version, "0.1.0");
+        assert_eq!(ir.metadata.source_format, SourceFormat::VsCode);
+
+        let summary = ir.capability_summary();
+        assert_eq!(summary.commands, 1);
+
+        let has_hello = ir.capabilities.iter().any(|c| matches!(
+            c,
+            Capability::Command(cmd) if cmd.id == "widget.sayHello" && cmd.title == "Say Hello"
+        ));
+        assert!(has_hello, "expected widget.sayHello command capability");
+    }
 }
