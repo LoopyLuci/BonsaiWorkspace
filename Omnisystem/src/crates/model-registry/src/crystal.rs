@@ -94,13 +94,12 @@ impl CrystalImage {
     }
 
     fn extract_from_zstd(&self, inner_path: &str) -> Result<Vec<u8>> {
-        // Placeholder: Real implementation would decompress
         let search_dir = self.path.parent().unwrap();
         let candidate = search_dir.join(inner_path);
         if candidate.exists() {
             let compressed = std::fs::read(&candidate)?;
-            // Would use zstd::decode_all here
-            Ok(compressed)
+            zstd::stream::decode_all(&compressed[..])
+                .map_err(|e| anyhow!("Failed to decompress zstd file {}: {}", inner_path, e))
         } else {
             anyhow::bail!("File not found in zstd archive: {}", inner_path)
         }
@@ -121,5 +120,41 @@ impl CrystalImage {
     /// Get path to the crystal image
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_from_zstd_actually_decompresses() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let image_path = tmp.path().join("model.crystal");
+        std::fs::write(&image_path, b"unused top-level image bytes").unwrap();
+
+        let original = b"the quick brown fox jumps over the lazy dog".repeat(64);
+        let compressed = zstd::stream::encode_all(&original[..], 0).expect("compress");
+        // Sanity: compression actually shrank the highly-repetitive input.
+        assert!(compressed.len() < original.len());
+
+        let inner_name = "weights.bin.zst";
+        std::fs::write(tmp.path().join(inner_name), &compressed).unwrap();
+
+        let image = CrystalImage {
+            path: image_path,
+            metadata: Some(CrystalMetadata {
+                format_version: "1".into(),
+                compression: CompressionAlgorithm::Zstd,
+                checksum: String::new(),
+                size_uncompressed: original.len() as u64,
+                size_compressed: compressed.len() as u64,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                components: HashMap::new(),
+            }),
+        };
+
+        let extracted = image.extract_file(inner_name).expect("extract ok");
+        assert_eq!(extracted, original, "decompressed bytes must match the original input");
     }
 }

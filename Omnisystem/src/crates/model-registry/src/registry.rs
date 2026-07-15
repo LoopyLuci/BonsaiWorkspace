@@ -1,4 +1,4 @@
-use crate::{RegisteredModel, ModelVersion, TrainingJob, ModelDeployment, ModelStage, JobStatus, DeploymentStatus, RegistryError, RegistryResult};
+use crate::{RegisteredModel, ModelVersion, TrainingJob, ModelDeployment, ModelStage, JobStatus, RegistryError, RegistryResult};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
