@@ -40,8 +40,16 @@ impl BM25 {
 
         let mut term_map = HashMap::new();
         for term in terms {
-            *term_map.entry(term.clone()).or_insert(0) += 1;
-            *self.doc_freqs.entry(term).or_insert(0) += 1;
+            *term_map.entry(term).or_insert(0) += 1;
+        }
+
+        // doc_freqs counts the number of *documents* containing each term at
+        // least once (standard BM25/IDF document frequency), not the raw
+        // term occurrence count across the corpus -- so each unique term in
+        // this document contributes exactly one to its doc_freqs entry,
+        // regardless of how many times it appears here.
+        for term in term_map.keys() {
+            *self.doc_freqs.entry(term.clone()).or_insert(0) += 1;
         }
 
         self.term_freqs.insert(doc_id, term_map);
