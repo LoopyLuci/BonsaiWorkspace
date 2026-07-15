@@ -9,17 +9,21 @@ use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub struct LruPolicy<K: Hash + Eq + Clone> {
+pub struct LruPolicy<K: Hash + Eq + Clone + Ord> {
     // Track access order: (timestamp, key) -> ()
     access_order: Mutex<BTreeMap<(u64, K), ()>>,
+    // Reverse index so we can find a key's current timestamp in O(log n)
+    // instead of scanning every prior timestamp.
+    key_timestamps: Mutex<std::collections::HashMap<K, u64>>,
     current_time: AtomicUsize,
     capacity: usize,
 }
 
-impl<K: Hash + Eq + Clone> LruPolicy<K> {
+impl<K: Hash + Eq + Clone + Ord> LruPolicy<K> {
     pub fn new(capacity: usize) -> Self {
         Self {
             access_order: Mutex::new(BTreeMap::new()),
+            key_timestamps: Mutex::new(std::collections::HashMap::new()),
             current_time: AtomicUsize::new(0),
             capacity,
         }
@@ -30,29 +34,33 @@ impl<K: Hash + Eq + Clone> LruPolicy<K> {
     }
 }
 
-impl<K: Hash + Eq + Clone + Send + Sync> EvictionPolicy for LruPolicy<K> {
+impl<K: Hash + Eq + Clone + Ord + Send + Sync> EvictionPolicy for LruPolicy<K> {
     type Key = K;
 
     fn record_access(&self, key: &K) {
         let timestamp = self.next_timestamp();
         let mut order = self.access_order.lock();
+        let mut timestamps = self.key_timestamps.lock();
 
-        // Remove old entry if exists
-        for t in 0..self.current_time.load(Ordering::Relaxed) as u64 {
-            if let Some(_) = order.remove(&(t, key.clone())) {
-                break;
-            }
+        // Remove old entry if it exists, using the reverse index instead of
+        // scanning every prior timestamp.
+        if let Some(old_ts) = timestamps.get(key) {
+            order.remove(&(*old_ts, key.clone()));
         }
 
         // Add with new timestamp
         order.insert((timestamp, key.clone()), ());
+        timestamps.insert(key.clone(), timestamp);
     }
 
     fn evict(&self) -> Option<K> {
         let mut order = self.access_order.lock();
-        if let Some(((_, key), _)) = order.iter().next() {
+        let mut timestamps = self.key_timestamps.lock();
+
+        if let Some((&(ts, ref key), _)) = order.iter().next() {
             let key_clone = key.clone();
-            order.remove(&(0, key_clone.clone()));
+            order.remove(&(ts, key_clone.clone()));
+            timestamps.remove(&key_clone);
             Some(key_clone)
         } else {
             None
@@ -61,6 +69,7 @@ impl<K: Hash + Eq + Clone + Send + Sync> EvictionPolicy for LruPolicy<K> {
 
     fn clear(&self) {
         self.access_order.lock().clear();
+        self.key_timestamps.lock().clear();
         self.current_time.store(0, Ordering::Relaxed);
     }
 }

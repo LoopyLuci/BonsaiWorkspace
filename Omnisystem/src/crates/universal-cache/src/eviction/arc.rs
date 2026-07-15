@@ -5,7 +5,7 @@
 
 use super::EvictionPolicy;
 use parking_lot::Mutex;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -67,18 +67,22 @@ impl<K: Hash + Eq + Clone + Send + Sync> EvictionPolicy for ArcPolicy<K> {
         let ghost_hit_b2 = b2.iter().any(|x| x == key);
 
         if ghost_hit_b1 {
-            // Increase T1 target size (recency is valuable)
+            // Increase T1 target size (recency is valuable).
+            // Classic ARC adaptation: delta = max(1, |B2| / |B1|), so a
+            // ghost hit always moves `p` even when the other ghost list is
+            // still empty (a plain floor division would yield 0 here and
+            // adaptation would never happen).
             let b2_len = b2.len();
-            let b1_len = b1.len();
-            let delta = if b1_len > 0 { b2_len / b1_len } else { 1 };
+            let b1_len = b1.len().max(1);
+            let delta = (b2_len / b1_len).max(1);
             let p = self.p.load(Ordering::Relaxed);
             self.p.store((p + delta).min(self.capacity), Ordering::Relaxed);
             b1.retain(|x| x != key);
         } else if ghost_hit_b2 {
             // Decrease T1 target size (frequency is valuable)
             let b1_len = b1.len();
-            let b2_len = b2.len();
-            let delta = if b2_len > 0 { b1_len / b2_len } else { 1 };
+            let b2_len = b2.len().max(1);
+            let delta = (b1_len / b2_len).max(1);
             let p = self.p.load(Ordering::Relaxed);
             self.p.store(p.saturating_sub(delta), Ordering::Relaxed);
             b2.retain(|x| x != key);
@@ -172,15 +176,26 @@ mod tests {
 
     #[test]
     fn test_arc_adaptation() {
-        let policy = ArcPolicy::new(5);
+        // A workload of purely unique, never-repeated keys can never produce
+        // a ghost-list hit, so `p` can never move off its initial value of 0
+        // by construction. To actually exercise ARC's adaptation logic we
+        // need to fill the cache past capacity (pushing an evicted key into
+        // the B1 ghost list) and then re-access that same key, which is
+        // exactly the signal ARC uses to grow its recency target.
+        let policy = ArcPolicy::new(3);
 
-        // Simulate workload preferring recency
-        for i in 0..10 {
-            policy.record_access(&i);
-        }
+        policy.record_access(&0);
+        policy.record_access(&1);
+        policy.record_access(&2);
+        // Cache is now full (t1 = [0, 1, 2]); this access evicts key 0 into B1.
+        policy.record_access(&3);
 
-        // P should have adapted
+        assert_eq!(policy.p.load(Ordering::Relaxed), 0);
+
+        // Re-accessing key 0 is a ghost hit in B1, which should grow `p`.
+        policy.record_access(&0);
+
         let p = policy.p.load(Ordering::Relaxed);
-        assert!(p > 0);
+        assert!(p > 0, "expected p to grow after a B1 ghost hit, got {p}");
     }
 }

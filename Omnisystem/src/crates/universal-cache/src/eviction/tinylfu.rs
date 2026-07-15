@@ -5,10 +5,9 @@
 
 use super::EvictionPolicy;
 use parking_lot::Mutex;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct TinyLfuPolicy<K: Hash + Eq + Clone> {
     // Sketch for frequency estimation (count-min style)

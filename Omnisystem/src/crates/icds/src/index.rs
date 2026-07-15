@@ -4,7 +4,6 @@
 
 use crate::atom::{AtomId, EmbeddingVector, SemanticAtom};
 use crate::error::Result;
-use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -88,7 +87,7 @@ impl HierarchicalIndex {
     }
 
     /// Find the best cluster for an embedding (simple centroid matching)
-    async fn find_best_cluster(&self, embedding: &EmbeddingVector) -> Option<usize> {
+    async fn find_best_cluster(&self, _embedding: &EmbeddingVector) -> Option<usize> {
         // Simplified: return 0 for MVP
         // In production: compute distance to cluster centroids
         if self.clusters.is_empty() {

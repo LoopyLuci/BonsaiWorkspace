@@ -30,33 +30,6 @@ pub struct RetrievedAtom {
     pub resolution: ResolutionLevel,
 }
 
-/// LRU cache for hot atoms
-struct HotCache {
-    atoms: parking_lot::lock_api::RwLock<DashMapMutex, std::collections::VecDeque<AtomId>>,
-    size: usize,
-}
-
-use dashmap::DashMap;
-
-type DashMapMutex = std::sync::Mutex<()>;
-
-impl HotCache {
-    fn new(size: usize) -> Self {
-        Self {
-            atoms: parking_lot::lock_api::RwLock::new(DashMapMutex::default(), std::collections::VecDeque::new()),
-            size,
-        }
-    }
-
-    fn get(&self, id: &AtomId) -> bool {
-        // Simple implementation - just check if in VecDeque
-        false // Placeholder
-    }
-
-    fn put(&self, id: AtomId) {
-        // Simple LRU replacement
-    }
-}
 
 /// Retrieval engine implementing resolution cascade
 pub struct RetrievalEngine {
@@ -117,6 +90,8 @@ impl RetrievalEngine {
                     // Determine which resolution level to return
                     // For now: return full text if available
                     let resolution = ResolutionLevel::Full;
+
+                    self.cache_put(atom_id.clone()).await;
 
                     results.push(RetrievedAtom {
                         atom,

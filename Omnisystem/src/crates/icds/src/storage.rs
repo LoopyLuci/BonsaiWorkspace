@@ -27,7 +27,13 @@ pub trait AtomStore: Send + Sync {
     async fn count(&self) -> Result<u64>;
 
     /// Scan all atoms (for maintenance operations)
-    async fn scan(&self, callback: Box<dyn Fn(&SemanticAtom) + Send + Sync>) -> Result<()>;
+    ///
+    /// Returns a snapshot of every stored atom. Kept as a plain returned
+    /// `Vec` rather than a callback: a `Box<dyn Fn(&SemanticAtom)>` parameter
+    /// cannot be given a satisfiable lifetime once `#[async_trait]` desugars
+    /// this into a boxed future, since the elided reference lifetime in the
+    /// trait object becomes an unconstrained late-bound parameter.
+    async fn scan(&self) -> Result<Vec<SemanticAtom>>;
 }
 
 /// In-memory atom store (MVP implementation)
@@ -77,11 +83,8 @@ impl AtomStore for MemoryAtomStore {
         Ok(self.atoms.len() as u64)
     }
 
-    async fn scan(&self, callback: Box<dyn Fn(&SemanticAtom) + Send + Sync>) -> Result<()> {
-        for entry in self.atoms.iter() {
-            callback(entry.value());
-        }
-        Ok(())
+    async fn scan(&self) -> Result<Vec<SemanticAtom>> {
+        Ok(self.atoms.iter().map(|entry| entry.value().clone()).collect())
     }
 }
 
@@ -161,5 +164,30 @@ mod tests {
 
         store.delete(&id).await.unwrap();
         assert!(!store.exists(&id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_scan() {
+        let store = MemoryAtomStore::new();
+
+        for i in 0..3 {
+            let atom = SemanticAtom::from_text(
+                format!("Scan atom {}", i),
+                AtomMetadata {
+                    source: SourceType::UserInput,
+                    agent_id: Uuid::nil(),
+                    conversation_id: None,
+                    tags: vec![],
+                    importance: 1.0,
+                },
+                3,
+            )
+            .unwrap();
+
+            store.store(&atom).await.unwrap();
+        }
+
+        let scanned = store.scan().await.unwrap();
+        assert_eq!(scanned.len(), 3);
     }
 }

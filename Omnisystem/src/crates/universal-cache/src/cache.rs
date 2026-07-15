@@ -3,10 +3,11 @@
 //! Provides concurrent, thread-safe caching with configurable eviction policies,
 //! tiered storage, and distributed clustering support.
 
+use crate::eviction::{ArcPolicy, EvictionPolicy, LfuPolicy, LruPolicy, TinyLfuPolicy};
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::RwLock;
 
 /// Cache configuration
 #[derive(Clone, Debug)]
@@ -31,12 +32,13 @@ impl Default for CacheConfig {
 /// Main Cache structure
 pub struct Cache<K, V>
 where
-    K: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    K: std::hash::Hash + Eq + Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     data: Arc<DashMap<K, CacheEntry<V>>>,
     config: Arc<RwLock<CacheConfig>>,
     stats: Arc<crate::metrics::CacheMetrics>,
+    evictor: Arc<dyn EvictionPolicy<Key = K> + Send + Sync>,
 }
 
 pub struct CacheEntry<V> {
@@ -49,7 +51,7 @@ pub struct CacheEntry<V> {
 
 impl<K, V> Cache<K, V>
 where
-    K: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    K: std::hash::Hash + Eq + Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     pub fn builder() -> CacheBuilder<K, V> {
@@ -67,12 +69,15 @@ where
         };
 
         self.data.insert(key.clone(), entry);
+        self.evictor.record_access(&key);
         self.stats.record_insert();
 
-        // Check capacity and evict if needed
+        // Check capacity and evict via the configured policy if needed
         if self.data.len() > self.config.read().capacity {
-            // Placeholder: would call eviction policy
-            self.stats.record_eviction();
+            if let Some(evict_key) = self.evictor.evict() {
+                self.data.remove(&evict_key);
+                self.stats.record_eviction();
+            }
         }
     }
 
@@ -94,9 +99,13 @@ where
             // Update access metadata
             entry.last_accessed = Instant::now();
             entry.access_count = entry.access_count.saturating_add(1);
+            let value = entry.value.clone();
+            drop(entry_ref);
+
+            self.evictor.record_access(key);
             self.stats.record_hit();
 
-            Some(entry.value.clone())
+            Some(value)
         } else {
             self.stats.record_miss();
             None
@@ -126,12 +135,13 @@ where
     /// Clear all entries
     pub fn clear(&self) {
         self.data.clear();
+        self.evictor.clear();
         self.stats.reset();
     }
 
     /// Get cache statistics
     pub fn stats(&self) -> crate::metrics::CacheMetrics {
-        self.stats.clone()
+        (*self.stats).clone()
     }
 }
 
@@ -143,7 +153,7 @@ pub struct CacheBuilder<K, V> {
 
 impl<K, V> CacheBuilder<K, V>
 where
-    K: std::hash::Hash + Eq + Clone + Send + Sync + 'static,
+    K: std::hash::Hash + Eq + Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     pub fn new() -> Self {
@@ -174,11 +184,32 @@ where
     }
 
     pub fn build(self) -> Cache<K, V> {
+        let evictor: Arc<dyn EvictionPolicy<Key = K> + Send + Sync> = match self
+            .config
+            .eviction_policy
+        {
+            crate::Policy::Lru => Arc::new(LruPolicy::new(self.config.capacity)),
+            crate::Policy::Lfu => Arc::new(LfuPolicy::new(self.config.capacity)),
+            crate::Policy::Arc => Arc::new(ArcPolicy::new(self.config.capacity)),
+            crate::Policy::TinyLfu => Arc::new(TinyLfuPolicy::new(self.config.capacity)),
+        };
+
         Cache {
             data: Arc::new(DashMap::new()),
             config: Arc::new(RwLock::new(self.config)),
             stats: Arc::new(crate::metrics::CacheMetrics::new()),
+            evictor,
         }
+    }
+}
+
+impl<K, V> Default for CacheBuilder<K, V>
+where
+    K: std::hash::Hash + Eq + Ord + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -188,9 +219,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_get() {
-        let cache = Cache::builder::<String, String>()
-            .capacity(100)
-            .build();
+        let cache = Cache::<String, String>::builder().capacity(100).build();
 
         cache.insert("key1".to_string(), "value1".to_string());
         assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
@@ -198,20 +227,19 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let cache = Cache::builder::<String, String>()
-            .capacity(100)
-            .build();
+        let cache = Cache::<String, String>::builder().capacity(100).build();
 
         cache.insert("key1".to_string(), "value1".to_string());
-        assert_eq!(cache.remove(&"key1".to_string()), Some("value1".to_string()));
+        assert_eq!(
+            cache.remove(&"key1".to_string()),
+            Some("value1".to_string())
+        );
         assert_eq!(cache.get(&"key1".to_string()), None);
     }
 
     #[test]
     fn test_clear() {
-        let cache = Cache::builder::<String, String>()
-            .capacity(100)
-            .build();
+        let cache = Cache::<String, String>::builder().capacity(100).build();
 
         cache.insert("key1".to_string(), "value1".to_string());
         cache.insert("key2".to_string(), "value2".to_string());
@@ -219,5 +247,33 @@ mod tests {
 
         cache.clear();
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_eviction_on_overflow() {
+        let cache = Cache::<i32, i32>::builder()
+            .capacity(2)
+            .policy(crate::Policy::Lru)
+            .build();
+
+        cache.insert(1, 1);
+        cache.insert(2, 2);
+        cache.insert(3, 3); // should evict key 1 (least recently used)
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.get(&3), Some(3));
+    }
+
+    #[test]
+    fn test_stats_track_hits_and_misses() {
+        let cache = Cache::<String, String>::builder().capacity(100).build();
+        cache.insert("a".to_string(), "1".to_string());
+
+        let _ = cache.get(&"a".to_string());
+        let _ = cache.get(&"missing".to_string());
+
+        let stats = cache.stats();
+        assert!(stats.hit_rate() > 0.0 && stats.hit_rate() < 1.0);
     }
 }
