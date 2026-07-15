@@ -61,12 +61,8 @@ impl ProtocolManager {
     }
 
     pub fn dequeue_message(&self) -> Option<Message> {
-        self.messages.iter().next().map(|ref_| {
-            let msg = ref_.value().clone();
-            drop(ref_);
-            self.messages.remove(&msg.id);
-            msg
-        })
+        let id = self.messages.iter().next().map(|entry| entry.key().clone())?;
+        self.messages.remove(&id).map(|(_, msg)| msg)
     }
 }
 

@@ -9,8 +9,8 @@
 //!   enclave run <command>
 
 use anyhow::Result;
-use bonsai_enclave::{Enclave, EnclaveConfig};
 use clap::{Parser, Subcommand};
+use sandbox::{Enclave, EnclaveConfig};
 use std::path::PathBuf;
 
 #[derive(Parser)]
