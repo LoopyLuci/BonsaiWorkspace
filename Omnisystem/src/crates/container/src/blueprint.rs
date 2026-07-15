@@ -242,3 +242,162 @@ impl Default for BlueprintManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_container() -> ContainerSpec {
+        ContainerSpec {
+            id: "web-1".to_string(),
+            name: "web".to_string(),
+            image: "bonsai/web:1.0.0".to_string(),
+            replicas: 1,
+            resources: ResourceSpec {
+                cpu_cores: 0.5,
+                cpu_priority: CpuPriority::Normal,
+                memory_mib: 256,
+                memory_swap_mib: None,
+                gpu: None,
+            },
+            storage: StorageSpec { volumes: vec![] },
+            network: NetworkSpec { ports: vec![], policy: "default".to_string(), tls_enabled: false },
+            capability_tokens: vec![],
+            overlay_size_mib: None,
+            deadline: None,
+            period: None,
+            probes: HealthProbes { liveness: None, readiness: None, startup: None },
+            env_vars: HashMap::new(),
+            update_strategy: UpdateStrategy::BlueGreen,
+        }
+    }
+
+    fn valid_blueprint() -> Blueprint {
+        Blueprint {
+            name: "web-app".to_string(),
+            version: "1.0.0".to_string(),
+            containers: vec![valid_container()],
+            services: vec![],
+            volumes: vec![],
+            metadata: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn valid_blueprint_passes() {
+        assert!(valid_blueprint().validate().is_ok());
+    }
+
+    #[test]
+    fn empty_name_is_rejected() {
+        let mut bp = valid_blueprint();
+        bp.name = String::new();
+        assert!(matches!(bp.validate(), Err(BcfError::BlueprintValidation(_))));
+    }
+
+    #[test]
+    fn no_containers_is_rejected() {
+        let mut bp = valid_blueprint();
+        bp.containers.clear();
+        assert!(bp.validate().is_err());
+    }
+
+    #[test]
+    fn zero_replicas_is_rejected() {
+        let mut bp = valid_blueprint();
+        bp.containers[0].replicas = 0;
+        assert!(bp.validate().is_err());
+    }
+
+    #[test]
+    fn zero_cpu_is_rejected() {
+        let mut bp = valid_blueprint();
+        bp.containers[0].resources.cpu_cores = 0.0;
+        assert!(bp.validate().is_err());
+    }
+
+    #[test]
+    fn service_without_ports_is_rejected() {
+        let mut bp = valid_blueprint();
+        bp.services.push(ServiceSpec {
+            name: "svc".to_string(),
+            selector: HashMap::new(),
+            ports: vec![],
+            load_balancing: LoadBalancingPolicy::RoundRobin,
+            session_affinity: false,
+        });
+        assert!(bp.validate().is_err());
+    }
+
+    #[test]
+    fn manager_rejects_storing_an_invalid_blueprint() {
+        let manager = BlueprintManager::new();
+        let mut bp = valid_blueprint();
+        bp.name = String::new();
+        assert!(manager.store(bp).is_err());
+        assert!(manager.list().is_empty());
+    }
+
+    #[test]
+    fn manager_store_get_list_round_trip() {
+        let manager = BlueprintManager::new();
+        manager.store(valid_blueprint()).unwrap();
+
+        assert_eq!(manager.list(), vec!["web-app".to_string()]);
+        let fetched = manager.get("web-app").unwrap();
+        assert_eq!(fetched.containers.len(), 1);
+
+        assert!(manager.get("nonexistent").is_err());
+    }
+
+    #[test]
+    fn json_round_trip_preserves_structure() {
+        let bp = valid_blueprint();
+        let bytes = bp.to_crystal_config();
+        let restored: Blueprint = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.name, bp.name);
+        assert_eq!(restored.containers.len(), bp.containers.len());
+    }
+
+    #[test]
+    fn from_yaml_parses_a_minimal_blueprint() {
+        let yaml = r#"
+name: minimal
+version: "1.0.0"
+containers:
+  - id: c1
+    name: c
+    image: img:latest
+    replicas: 1
+    resources:
+      cpu_cores: 1.0
+      cpu_priority: Normal
+      memory_mib: 128
+      memory_swap_mib: null
+      gpu: null
+    storage:
+      volumes: []
+    network:
+      ports: []
+      policy: default
+      tls_enabled: false
+    capability_tokens: []
+    overlay_size_mib: null
+    deadline: null
+    period: null
+    probes:
+      liveness: null
+      readiness: null
+      startup: null
+    env_vars: {}
+    update_strategy: BlueGreen
+services: []
+volumes: []
+metadata: {}
+"#;
+        let bp = BlueprintManager::from_yaml(yaml).unwrap();
+        assert_eq!(bp.name, "minimal");
+        assert!(bp.validate().is_ok());
+    }
+}

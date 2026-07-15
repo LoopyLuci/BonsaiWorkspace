@@ -35,3 +35,24 @@ impl Default for BcfConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_default_config_gets_a_unique_node_id() {
+        let a = BcfConfig::default();
+        let b = BcfConfig::default();
+        assert_ne!(a.node_id, b.node_id);
+        assert!(a.node_id.starts_with("node-"));
+    }
+
+    #[test]
+    fn default_config_has_sane_values() {
+        let cfg = BcfConfig::default();
+        assert_eq!(cfg.namespace, "default");
+        assert!(cfg.max_containers_per_node > 0);
+        assert!(cfg.default_cpu_cores > 0.0);
+    }
+}
