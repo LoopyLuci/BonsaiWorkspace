@@ -72,3 +72,83 @@ fn estimate_memory(config: &ModelConfig) -> f32 {
     let kv_cache_gb = (config.context_window as f32 * config.parameters.active_params_billion * 0.002) / 1024.0;
     base_gb + kv_cache_gb
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> ModelConfig {
+        ModelConfig {
+            name: "demo".into(),
+            base_model: "base-7b".into(),
+            architecture: "transformer".into(),
+            quantization: "q4_k_m".into(),
+            context_window: 4096,
+            system_prompt: "You are helpful.".into(),
+            temperature: 0.7,
+            kdb_modules: vec![],
+            tools: vec![],
+            parameters: ModelParameters {
+                total_params_billion: 7.0,
+                active_params_billion: 7.0,
+                moe_experts: 1,
+                active_experts: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn valid_config_has_no_errors() {
+        assert!(validate_model_config(&valid_config()).is_empty());
+    }
+
+    #[test]
+    fn empty_name_is_rejected() {
+        let mut config = valid_config();
+        config.name = "".into();
+        let errors = validate_model_config(&config);
+        assert!(errors.iter().any(|e| e.contains("Name")));
+    }
+
+    #[test]
+    fn small_context_window_is_rejected() {
+        let mut config = valid_config();
+        config.context_window = 128;
+        let errors = validate_model_config(&config);
+        assert!(errors.iter().any(|e| e.contains("Context window")));
+    }
+
+    #[test]
+    fn out_of_range_temperature_is_rejected() {
+        let mut config = valid_config();
+        config.temperature = 3.5;
+        let errors = validate_model_config(&config);
+        assert!(errors.iter().any(|e| e.contains("Temperature")));
+    }
+
+    #[test]
+    fn non_positive_params_is_rejected() {
+        let mut config = valid_config();
+        config.parameters.total_params_billion = 0.0;
+        let errors = validate_model_config(&config);
+        assert!(errors.iter().any(|e| e.contains("Total parameters")));
+    }
+
+    #[test]
+    fn q4_quantization_is_roughly_half_size() {
+        let config = valid_config();
+        let mem = estimate_memory(&config);
+        // 7B params at q4_k_m -> ~3.5GB base + small kv cache overhead.
+        assert!(mem > 3.5 && mem < 4.0, "unexpected estimate: {mem}");
+    }
+
+    #[test]
+    fn f32_quantization_is_larger_than_q4() {
+        let mut q4 = valid_config();
+        q4.quantization = "q4_k_m".into();
+        let mut f32_cfg = valid_config();
+        f32_cfg.quantization = "f32".into();
+
+        assert!(estimate_memory(&f32_cfg) > estimate_memory(&q4));
+    }
+}

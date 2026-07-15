@@ -3,23 +3,15 @@ use axum::{
     routing::{get, post, put, delete},
 };
 use model_workshop::{
-    AppState, ModuleInfo, DatasetInfo, TrainingJob, ModelInfo,
+    AppState,
     library, datasets, designer, builder, editor, converter, monitor,
 };
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let state = AppState {
-        modules: Arc::new(RwLock::new(HashMap::new())),
-        datasets: Arc::new(RwLock::new(HashMap::new())),
-        training_jobs: Arc::new(RwLock::new(Vec::new())),
-        models: Arc::new(RwLock::new(HashMap::new())),
-    };
+    let state = AppState::new();
 
     let app = Router::new()
         // Health check

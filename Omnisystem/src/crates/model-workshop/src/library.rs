@@ -146,3 +146,75 @@ pub async fn remove_chunk(
         Json(serde_json::json!({"error": "Module not found"}))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::Path;
+
+    fn sample_request() -> CreateModuleRequest {
+        CreateModuleRequest {
+            name: "Physics Notes".into(),
+            description: "chunks about physics".into(),
+            domains: vec!["science".into()],
+            chunks: vec![ChunkInput {
+                text: "F = ma".into(),
+                domain: Some("science".into()),
+                tags: vec!["mechanics".into()],
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn create_then_list_module() {
+        let state = AppState::new();
+        let created = create_module(State(state.clone()), Json(sample_request())).await;
+        let module_id = created.0["module_id"].as_str().unwrap().to_string();
+        assert!(module_id.starts_with("physics-notes-"));
+
+        let list = list_modules(State(state.clone())).await;
+        assert_eq!(list.0.len(), 1);
+        assert_eq!(list.0[0].id, module_id);
+        assert_eq!(list.0[0].num_chunks, 1);
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_chunk_updates_count() {
+        let state = AppState::new();
+        let created = create_module(State(state.clone()), Json(sample_request())).await;
+        let module_id = created.0["module_id"].as_str().unwrap().to_string();
+
+        let added = add_chunk(
+            State(state.clone()),
+            Path(module_id.clone()),
+            Json(ChunkInput { text: "E = mc^2".into(), domain: None, tags: vec![] }),
+        )
+        .await;
+        assert_eq!(added.0["total_chunks"], 2);
+
+        let removed = remove_chunk(
+            State(state.clone()),
+            Path((module_id.clone(), "chunk-x".into())),
+        )
+        .await;
+        assert_eq!(removed.0["remaining_chunks"], 1);
+    }
+
+    #[tokio::test]
+    async fn get_missing_module_returns_error() {
+        let state = AppState::new();
+        let result = get_module(State(state), Path("does-not-exist".into())).await;
+        assert_eq!(result.0["error"], "Module not found");
+    }
+
+    #[tokio::test]
+    async fn delete_module_removes_it() {
+        let state = AppState::new();
+        let created = create_module(State(state.clone()), Json(sample_request())).await;
+        let module_id = created.0["module_id"].as_str().unwrap().to_string();
+
+        let _ = delete_module(State(state.clone()), Path(module_id.clone())).await;
+        let list = list_modules(State(state.clone())).await;
+        assert!(list.0.is_empty());
+    }
+}
