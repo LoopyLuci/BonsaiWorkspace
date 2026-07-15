@@ -1,0 +1,298 @@
+/// Rule voting and community proposal system for Omnisystem
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use anyhow::Result;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleProposal {
+    pub proposal_id: String,
+    pub rule_id: String,
+    pub title: String,
+    pub description: String,
+    pub author: String,
+    pub created_at: i64,
+    pub status: ProposalStatus,
+    pub votes_for: usize,
+    pub votes_against: usize,
+    pub total_voters: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProposalStatus {
+    Draft,
+    Open,
+    Closed,
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Vote {
+    pub voter_id: String,
+    pub proposal_id: String,
+    pub in_favor: bool,
+    pub timestamp: i64,
+}
+
+pub struct VotingSystem {
+    proposals: Arc<RwLock<HashMap<String, RuleProposal>>>,
+    votes: Arc<RwLock<Vec<Vote>>>,
+}
+
+impl VotingSystem {
+    pub fn new() -> Self {
+        Self {
+            proposals: Arc::new(RwLock::new(HashMap::new())),
+            votes: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub async fn create_proposal(
+        &self,
+        rule_id: String,
+        title: String,
+        description: String,
+        author: String,
+    ) -> Result<String> {
+        let proposal_id = uuid::Uuid::new_v4().to_string();
+        let proposal = RuleProposal {
+            proposal_id: proposal_id.clone(),
+            rule_id,
+            title,
+            description,
+            author,
+            created_at: chrono::Utc::now().timestamp(),
+            status: ProposalStatus::Draft,
+            votes_for: 0,
+            votes_against: 0,
+            total_voters: 0,
+        };
+
+        let mut proposals = self.proposals.write().await;
+        proposals.insert(proposal_id.clone(), proposal);
+
+        tracing::info!("Created proposal: {}", proposal_id);
+        Ok(proposal_id)
+    }
+
+    pub async fn submit_vote(&self, voter_id: String, proposal_id: String, in_favor: bool) -> Result<()> {
+        let vote = Vote {
+            voter_id,
+            proposal_id: proposal_id.clone(),
+            in_favor,
+            timestamp: chrono::Utc::now().timestamp(),
+        };
+
+        let mut votes = self.votes.write().await;
+        votes.push(vote);
+
+        let mut proposals = self.proposals.write().await;
+        if let Some(proposal) = proposals.get_mut(&proposal_id) {
+            proposal.total_voters += 1;
+            if in_favor {
+                proposal.votes_for += 1;
+            } else {
+                proposal.votes_against += 1;
+            }
+        }
+
+        tracing::info!("Vote recorded for proposal: {}", proposal_id);
+        Ok(())
+    }
+
+    pub async fn get_proposal(&self, proposal_id: &str) -> Result<Option<RuleProposal>> {
+        let proposals = self.proposals.read().await;
+        Ok(proposals.get(proposal_id).cloned())
+    }
+
+    pub async fn approve_proposal(&self, proposal_id: &str) -> Result<()> {
+        let mut proposals = self.proposals.write().await;
+        if let Some(proposal) = proposals.get_mut(proposal_id) {
+            proposal.status = ProposalStatus::Approved;
+            tracing::info!("Proposal approved: {}", proposal_id);
+        }
+        Ok(())
+    }
+
+    pub async fn close_voting(&self, proposal_id: &str) -> Result<()> {
+        let mut proposals = self.proposals.write().await;
+        if let Some(proposal) = proposals.get_mut(proposal_id) {
+            proposal.status = ProposalStatus::Closed;
+        }
+        Ok(())
+    }
+
+    pub async fn get_all_proposals(&self) -> Result<Vec<RuleProposal>> {
+        let proposals = self.proposals.read().await;
+        Ok(proposals.values().cloned().collect())
+    }
+
+    pub async fn get_votes(&self, proposal_id: &str) -> Result<Vec<Vote>> {
+        let votes = self.votes.read().await;
+        Ok(votes.iter().filter(|v| v.proposal_id == proposal_id).cloned().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_voting_system_creation() {
+        let system = VotingSystem::new();
+        assert!(system.get_all_proposals().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_proposal() {
+        let system = VotingSystem::new();
+
+        let proposal_id = system
+            .create_proposal(
+                "unused-import".to_string(),
+                "Flag unused imports".to_string(),
+                "Warn when an import is never referenced".to_string(),
+                "author-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let proposal = system.get_proposal(&proposal_id).await.unwrap();
+        assert!(proposal.is_some());
+        let proposal = proposal.unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Draft);
+        assert_eq!(proposal.votes_for, 0);
+        assert_eq!(proposal.total_voters, 0);
+    }
+
+    #[tokio::test]
+    async fn test_vote_approval() {
+        let system = VotingSystem::new();
+
+        let proposal_id = system
+            .create_proposal(
+                "unused-import".to_string(),
+                "Flag unused imports".to_string(),
+                "Warn when an import is never referenced".to_string(),
+                "author-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        system
+            .submit_vote("voter-1".to_string(), proposal_id.clone(), true)
+            .await
+            .unwrap();
+        system
+            .submit_vote("voter-2".to_string(), proposal_id.clone(), true)
+            .await
+            .unwrap();
+
+        let proposal = system
+            .get_proposal(&proposal_id)
+            .await
+            .unwrap()
+            .expect("proposal should exist");
+
+        assert_eq!(proposal.votes_for, 2);
+        assert_eq!(proposal.votes_against, 0);
+        assert_eq!(proposal.total_voters, 2);
+
+        // Compute an approval rate directly from the real fields, in place
+        // of the nonexistent VoteSummary::approval_rate() the stale test
+        // used to reference.
+        let approval_rate = proposal.votes_for as f64 / proposal.total_voters as f64;
+        assert_eq!(approval_rate, 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_votes_and_approval_rate() {
+        let system = VotingSystem::new();
+
+        let proposal_id = system
+            .create_proposal(
+                "rule-1".to_string(),
+                "Title".to_string(),
+                "Description".to_string(),
+                "author-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        system
+            .submit_vote("voter-1".to_string(), proposal_id.clone(), true)
+            .await
+            .unwrap();
+        system
+            .submit_vote("voter-2".to_string(), proposal_id.clone(), true)
+            .await
+            .unwrap();
+        system
+            .submit_vote("voter-3".to_string(), proposal_id.clone(), false)
+            .await
+            .unwrap();
+
+        let proposal = system
+            .get_proposal(&proposal_id)
+            .await
+            .unwrap()
+            .expect("proposal should exist");
+
+        assert_eq!(proposal.votes_for, 2);
+        assert_eq!(proposal.votes_against, 1);
+        assert_eq!(proposal.total_voters, 3);
+
+        let approval_rate = proposal.votes_for as f64 / proposal.total_voters as f64;
+        assert!(approval_rate > 0.66 && approval_rate < 0.67);
+    }
+
+    #[tokio::test]
+    async fn test_approve_and_close_proposal() {
+        let system = VotingSystem::new();
+
+        let proposal_id = system
+            .create_proposal(
+                "rule-1".to_string(),
+                "Title".to_string(),
+                "Description".to_string(),
+                "author-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        system.approve_proposal(&proposal_id).await.unwrap();
+        let proposal = system.get_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Approved);
+
+        system.close_voting(&proposal_id).await.unwrap();
+        let proposal = system.get_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Closed);
+    }
+
+    #[tokio::test]
+    async fn test_get_votes() {
+        let system = VotingSystem::new();
+
+        let proposal_id = system
+            .create_proposal(
+                "rule-1".to_string(),
+                "Title".to_string(),
+                "Description".to_string(),
+                "author-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        system
+            .submit_vote("voter-1".to_string(), proposal_id.clone(), true)
+            .await
+            .unwrap();
+
+        let votes = system.get_votes(&proposal_id).await.unwrap();
+        assert_eq!(votes.len(), 1);
+        assert_eq!(votes[0].voter_id, "voter-1");
+        assert!(votes[0].in_favor);
+    }
+}
