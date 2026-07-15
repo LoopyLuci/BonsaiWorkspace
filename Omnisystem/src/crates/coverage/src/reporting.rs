@@ -28,7 +28,7 @@ pub struct CrateReport {
 
 /// Generates coverage reports
 pub struct CoverageReporter {
-    target_coverage: f64,
+    pub target_coverage: f64,
 }
 
 impl CoverageReporter {

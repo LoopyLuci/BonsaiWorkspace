@@ -97,6 +97,9 @@ pub struct UserInfo {
 
 /// Telegram adapter stub
 pub struct TelegramAdapter {
+    /// Bot token, retained for when this stub is wired up to the real
+    /// Telegram Bot API (currently every action just logs).
+    #[allow(dead_code)]
     token: String,
 }
 
@@ -130,7 +133,7 @@ impl PlatformAdapter for TelegramAdapter {
 
     async fn edit_message(
         &self,
-        user_id: &UserId,
+        _user_id: &UserId,
         message_id: &MessageId,
         text: &str,
     ) -> anyhow::Result<()> {
@@ -155,6 +158,9 @@ impl PlatformAdapter for TelegramAdapter {
 
 /// Discord adapter stub
 pub struct DiscordAdapter {
+    /// Bot token, retained for when this stub is wired up to the real
+    /// Discord API (currently every action just logs).
+    #[allow(dead_code)]
     token: String,
 }
 
@@ -187,7 +193,7 @@ impl PlatformAdapter for DiscordAdapter {
 
     async fn edit_message(
         &self,
-        user_id: &UserId,
+        _user_id: &UserId,
         message_id: &MessageId,
         text: &str,
     ) -> anyhow::Result<()> {
