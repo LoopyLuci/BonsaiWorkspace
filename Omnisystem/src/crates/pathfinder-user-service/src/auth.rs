@@ -85,3 +85,67 @@ pub fn validate_jwt(token: &str) -> Result<Claims> {
 
     Ok(data.claims)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// All tests in this module share one process, and `jwt_secret()`
+    /// caches the secret in a `OnceLock` the first time it's read -- so
+    /// every test that needs a secret sets the *same* value before
+    /// touching JWT functions. Whichever test runs first actually sets
+    /// it; the rest are no-ops against an already-initialized secret.
+    fn ensure_jwt_secret() {
+        std::env::set_var("JWT_SECRET", "test-secret-at-least-32-characters-long");
+    }
+
+    #[test]
+    fn test_hash_and_verify_password_roundtrip() {
+        let hashed = hash_password("correct horse battery staple").unwrap();
+        assert!(hashed.starts_with("$2"));
+        assert!(verify_password("correct horse battery staple", &hashed).is_ok());
+    }
+
+    #[test]
+    fn test_verify_password_rejects_wrong_password() {
+        let hashed = hash_password("right-password").unwrap();
+        assert!(verify_password("wrong-password", &hashed).is_err());
+    }
+
+    #[test]
+    fn test_generate_and_validate_jwt_roundtrip() {
+        ensure_jwt_secret();
+        let token = generate_jwt("user-42").unwrap();
+        let claims = validate_jwt(&token).unwrap();
+        assert_eq!(claims.sub, "user-42");
+        assert_eq!(claims.iss, "pathfinder");
+        assert!(claims.exp > claims.iat);
+    }
+
+    #[test]
+    fn test_validate_jwt_rejects_garbage_token() {
+        ensure_jwt_secret();
+        assert!(validate_jwt("not-a-real-token").is_err());
+    }
+
+    #[test]
+    fn test_validate_jwt_rejects_token_signed_with_different_secret() {
+        ensure_jwt_secret();
+        // Sign a token with a different secret than the process-wide one
+        // used by generate_jwt/validate_jwt, and confirm it's rejected.
+        let claims = Claims {
+            sub: "user-99".to_string(),
+            exp: (Utc::now() + Duration::days(1)).timestamp(),
+            iat: Utc::now().timestamp(),
+            iss: "pathfinder".to_string(),
+        };
+        let bogus_token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(b"a-completely-different-32-char-secret"),
+        )
+        .unwrap();
+
+        assert!(validate_jwt(&bogus_token).is_err());
+    }
+}

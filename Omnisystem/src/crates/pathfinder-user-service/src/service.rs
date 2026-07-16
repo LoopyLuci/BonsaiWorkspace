@@ -1,4 +1,17 @@
 // User Service Implementation
+//
+// NOTE: left un-wired (not declared as a module in lib.rs). Every handler
+// here returns hardcoded data regardless of its arguments -- e.g.
+// handle_authenticate always checks the password against the literal
+// string "$2b$12$somehash" (not a real stored hash for any user) and
+// handle_get_profile always returns "user@example.com" / "John Doe" for
+// any user_id. There's no database or in-memory store backing any of
+// it. This mirrors the same call made for pathfinder-core's own
+// service.rs (see that crate's lib.rs doc comment): decorative request
+// handlers aren't real logic, so they're kept on disk for reference but
+// not compiled. The one genuinely real piece of this crate, auth.rs
+// (bcrypt hashing + JWT sign/verify with a hardened env-var-backed
+// secret), is wired in instead.
 
 use anyhow::Result;
 use serde_json::{json, Value};
