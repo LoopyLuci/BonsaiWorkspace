@@ -50,6 +50,16 @@ impl Pipeline {
         }
     }
 
+    /// The pipeline's unique identifier.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The pipeline's human-readable name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn add_stage(&self, order: u32, stage_type: StageType) -> Result<()> {
         let stage = PipelineStage {
             order,
@@ -108,5 +118,12 @@ mod tests {
         assert_eq!(pipeline.stage_count(), 3);
         assert!(pipeline.execute().await.is_ok());
         assert!(pipeline.execution_count() > 0);
+    }
+
+    #[test]
+    fn test_pipeline_id_and_name() {
+        let pipeline = Pipeline::new("p1".to_string(), "ETL Pipeline".to_string());
+        assert_eq!(pipeline.id(), "p1");
+        assert_eq!(pipeline.name(), "ETL Pipeline");
     }
 }
