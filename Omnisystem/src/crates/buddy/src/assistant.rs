@@ -60,6 +60,9 @@ impl Buddy {
     }
 
     pub fn register_capability(&self, name: String, description: String) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(BuddyError::Other("capability name cannot be empty".to_string()));
+        }
         self.capabilities.register(name, description)
     }
 
@@ -103,5 +106,12 @@ mod tests {
         let buddy = Buddy::new("Buddy".to_string());
         buddy.set_context("user_name".to_string(), "Alice".to_string());
         assert_eq!(buddy.get_context("user_name"), Some("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_register_capability_rejects_empty_name() {
+        let buddy = Buddy::new("Buddy".to_string());
+        let result = buddy.register_capability("  ".to_string(), "desc".to_string());
+        assert!(matches!(result, Err(BuddyError::Other(_))));
     }
 }
