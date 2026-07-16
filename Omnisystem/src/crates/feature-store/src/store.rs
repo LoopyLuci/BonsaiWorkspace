@@ -1,4 +1,4 @@
-use crate::{Feature, FeatureValue, FeatureGroup, FeatureVersion, FeatureSet, FeatureMetadata, FeatureError, FeatureResult};
+use crate::{Feature, FeatureValue, FeatureGroup, FeatureVersion, FeatureError, FeatureResult};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;

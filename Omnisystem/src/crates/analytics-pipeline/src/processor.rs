@@ -1,4 +1,4 @@
-use crate::{DataRecord, Pipeline, TransformationRule, AggregationResult, QueryResult, DataSchema, AnalyticsError, AnalyticsResult};
+use crate::{DataRecord, Pipeline, TransformationRule, AggregationResult, DataSchema, AnalyticsError, AnalyticsResult, RuleType};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -81,9 +81,16 @@ impl AnalyticsProcessor {
             return Err(AnalyticsError::AggregationFailed);
         }
 
+        let avg_fields = if records.is_empty() {
+            0.0
+        } else {
+            let total_fields: usize = records.iter().map(|r| r.data.len()).sum();
+            total_fields as f32 / records.len() as f32
+        };
+
         let aggregations = vec![
             ("total_records".to_string(), records.len() as f32),
-            ("avg_fields".to_string(), 3.5),
+            ("avg_fields".to_string(), avg_fields),
         ];
 
         Ok(AggregationResult {
@@ -177,6 +184,86 @@ mod tests {
 
         let result = processor.aggregate_data(pipeline_id, records).await.unwrap();
         assert_eq!(result.record_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_data_computes_real_avg_fields() {
+        let processor = AnalyticsProcessor::new();
+        let pipeline_id = Uuid::new_v4();
+        let pipeline = Pipeline {
+            pipeline_id,
+            name: "analytics".to_string(),
+            stages: vec!["aggregate".to_string()],
+            is_active: true,
+            created_at: Utc::now(),
+        };
+        processor.create_pipeline(&pipeline).await.unwrap();
+
+        let records = vec![
+            DataRecord {
+                record_id: Uuid::new_v4(),
+                timestamp: Utc::now(),
+                data: vec![("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())],
+                tags: vec![],
+            },
+            DataRecord {
+                record_id: Uuid::new_v4(),
+                timestamp: Utc::now(),
+                data: vec![("a".to_string(), "1".to_string())],
+                tags: vec![],
+            },
+        ];
+
+        let result = processor.aggregate_data(pipeline_id, records).await.unwrap();
+        let avg_fields = result
+            .aggregations
+            .iter()
+            .find(|(name, _)| name == "avg_fields")
+            .map(|(_, v)| *v)
+            .unwrap();
+        // (2 fields + 1 field) / 2 records = 1.5, not a hardcoded constant.
+        assert_eq!(avg_fields, 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_data_unknown_pipeline_errors() {
+        let processor = AnalyticsProcessor::new();
+        let result = processor.aggregate_data(Uuid::new_v4(), vec![]).await;
+        assert!(matches!(result, Err(AnalyticsError::AggregationFailed)));
+    }
+
+    #[tokio::test]
+    async fn test_ingest_data_empty_record_errors() {
+        let processor = AnalyticsProcessor::new();
+        let record = DataRecord {
+            record_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            data: vec![],
+            tags: vec![],
+        };
+        let result = processor.ingest_data(&record).await;
+        assert!(matches!(result, Err(AnalyticsError::InvalidData)));
+    }
+
+    #[tokio::test]
+    async fn test_transform_data_filter_rule() {
+        let processor = AnalyticsProcessor::new();
+        let record = DataRecord {
+            record_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            data: vec![("score".to_string(), "42".to_string())],
+            tags: vec![],
+        };
+        let rule = TransformationRule {
+            rule_id: Uuid::new_v4(),
+            name: "filter_positive".to_string(),
+            source_field: "score".to_string(),
+            target_field: "score".to_string(),
+            rule_type: RuleType::Filter,
+        };
+
+        let transformed = processor.transform_data(&record, &rule).await.unwrap();
+        assert_eq!(transformed.data[0].1, "42");
     }
 
     #[tokio::test]

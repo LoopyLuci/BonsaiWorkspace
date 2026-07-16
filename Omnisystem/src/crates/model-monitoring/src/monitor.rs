@@ -29,6 +29,10 @@ impl ModelMonitor {
     }
 
     pub async fn detect_data_drift(&self, model_id: Uuid, feature_name: &str, drift_score: f64) -> MonitoringResult<DataDrift> {
+        if !(0.0..=1.0).contains(&drift_score) {
+            return Err(MonitoringError::InvalidScore);
+        }
+
         let drift_detected = drift_score > 0.3;
 
         let drift = DataDrift {
@@ -45,6 +49,10 @@ impl ModelMonitor {
     }
 
     pub async fn detect_prediction_drift(&self, model_id: Uuid, divergence: f64) -> MonitoringResult<PredictionDrift> {
+        if !(0.0..=1.0).contains(&divergence) {
+            return Err(MonitoringError::InvalidScore);
+        }
+
         let drift = PredictionDrift {
             prediction_id: Uuid::new_v4(),
             model_id,
@@ -83,6 +91,10 @@ impl ModelMonitor {
     }
 
     pub async fn detect_anomaly(&self, model_id: Uuid, input_signature: &str, anomaly_score: f64) -> MonitoringResult<AnomalyRecord> {
+        if !(0.0..=1.0).contains(&anomaly_score) {
+            return Err(MonitoringError::InvalidScore);
+        }
+
         let anomaly = AnomalyRecord {
             anomaly_id: Uuid::new_v4(),
             model_id,
@@ -175,5 +187,66 @@ mod tests {
         monitor.record_performance(&perf).await.unwrap();
         let check = monitor.perform_health_check(model_id).await.unwrap();
         assert_eq!(check.status, HealthStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn test_perform_health_check_degraded_and_unhealthy() {
+        let monitor = ModelMonitor::new();
+        let model_id = Uuid::new_v4();
+
+        monitor
+            .record_performance(&ModelPerformance {
+                perf_id: Uuid::new_v4(),
+                model_id,
+                timestamp: Utc::now(),
+                accuracy: 0.80,
+                precision: 0.78,
+                recall: 0.77,
+                f1_score: 0.775,
+            })
+            .await
+            .unwrap();
+        let check = monitor.perform_health_check(model_id).await.unwrap();
+        assert_eq!(check.status, HealthStatus::Degraded);
+
+        let model_id_2 = Uuid::new_v4();
+        monitor
+            .record_performance(&ModelPerformance {
+                perf_id: Uuid::new_v4(),
+                model_id: model_id_2,
+                timestamp: Utc::now(),
+                accuracy: 0.5,
+                precision: 0.5,
+                recall: 0.5,
+                f1_score: 0.5,
+            })
+            .await
+            .unwrap();
+        let check2 = monitor.perform_health_check(model_id_2).await.unwrap();
+        assert_eq!(check2.status, HealthStatus::Unhealthy);
+    }
+
+    #[tokio::test]
+    async fn test_detect_data_drift_rejects_out_of_range_score() {
+        let monitor = ModelMonitor::new();
+        let result = monitor.detect_data_drift(Uuid::new_v4(), "age", 1.5).await;
+        assert!(matches!(result, Err(MonitoringError::InvalidScore)));
+
+        let result_nan = monitor.detect_data_drift(Uuid::new_v4(), "age", f64::NAN).await;
+        assert!(matches!(result_nan, Err(MonitoringError::InvalidScore)));
+    }
+
+    #[tokio::test]
+    async fn test_detect_anomaly_rejects_out_of_range_score() {
+        let monitor = ModelMonitor::new();
+        let result = monitor.detect_anomaly(Uuid::new_v4(), "sig", -0.1).await;
+        assert!(matches!(result, Err(MonitoringError::InvalidScore)));
+    }
+
+    #[tokio::test]
+    async fn test_detect_anomaly_valid_score() {
+        let monitor = ModelMonitor::new();
+        let anomaly = monitor.detect_anomaly(Uuid::new_v4(), "sig", 0.75).await.unwrap();
+        assert_eq!(anomaly.anomaly_score, 0.75);
     }
 }
