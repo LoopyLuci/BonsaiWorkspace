@@ -9,6 +9,7 @@ pub struct RecoveryOrchestrator {
     points: Arc<DashMap<Uuid, RecoveryPoint>>,
     executions: Arc<DashMap<Uuid, RecoveryExecution>>,
     tests: Arc<DashMap<Uuid, RecoveryTest>>,
+    health_checks: Arc<DashMap<Uuid, HealthCheckResult>>,
 }
 
 impl RecoveryOrchestrator {
@@ -18,7 +19,33 @@ impl RecoveryOrchestrator {
             points: Arc::new(DashMap::new()),
             executions: Arc::new(DashMap::new()),
             tests: Arc::new(DashMap::new()),
+            health_checks: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Record the result of a health check against a resource (e.g. run
+    /// after `complete_recovery` to confirm the resource actually came back
+    /// healthy).
+    pub async fn record_health_check(&self, resource_id: &str, healthy: bool, issues: Vec<String>) -> RecoveryResult<HealthCheckResult> {
+        let check = HealthCheckResult {
+            check_id: Uuid::new_v4(),
+            resource_id: resource_id.to_string(),
+            healthy,
+            timestamp: Utc::now(),
+            issues,
+        };
+
+        self.health_checks.insert(check.check_id, check.clone());
+        Ok(check)
+    }
+
+    /// The most recent health check recorded for `resource_id`, if any.
+    pub fn latest_health_check(&self, resource_id: &str) -> Option<HealthCheckResult> {
+        self.health_checks
+            .iter()
+            .filter(|entry| entry.value().resource_id == resource_id)
+            .max_by_key(|entry| entry.value().timestamp)
+            .map(|entry| entry.value().clone())
     }
 
     pub async fn create_recovery_plan(&self, plan: &RecoveryPlan) -> RecoveryResult<()> {
@@ -171,5 +198,23 @@ mod tests {
         orchestrator.create_recovery_test(&test).await.unwrap();
         let success = orchestrator.run_recovery_test(test.test_id).await.unwrap();
         assert!(success);
+    }
+
+    #[tokio::test]
+    async fn test_record_and_fetch_latest_health_check() {
+        let orchestrator = RecoveryOrchestrator::new();
+
+        orchestrator.record_health_check("db1", false, vec!["disk full".to_string()]).await.unwrap();
+        let latest = orchestrator.record_health_check("db1", true, vec![]).await.unwrap();
+
+        let fetched = orchestrator.latest_health_check("db1").unwrap();
+        assert_eq!(fetched.check_id, latest.check_id);
+        assert!(fetched.healthy);
+    }
+
+    #[tokio::test]
+    async fn test_latest_health_check_unknown_resource_is_none() {
+        let orchestrator = RecoveryOrchestrator::new();
+        assert!(orchestrator.latest_health_check("unknown").is_none());
     }
 }
