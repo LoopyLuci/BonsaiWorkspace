@@ -196,4 +196,28 @@ mod tests {
         let analysis = calculator.analyze_trend("tenant1").await.unwrap();
         assert!(analysis.avg_daily_cost >= 0.0);
     }
+
+    #[tokio::test]
+    async fn test_calculate_cost_unknown_resource_errors() {
+        let calculator = CostCalculator::new();
+        let result = calculator.calculate_cost("tenant1", "gpu", 10.0).await;
+        assert!(matches!(result, Err(CostError::PricingNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_calculate_cost_matches_unit_price() {
+        let calculator = CostCalculator::new();
+        let model = PricingModel {
+            model_id: Uuid::new_v4(),
+            resource_type: "cpu".to_string(),
+            unit_cost: 0.05,
+            currency: "USD".to_string(),
+            billing_period: BillingPeriod::Hourly,
+        };
+        calculator.register_pricing_model(&model).await.unwrap();
+
+        let cost = calculator.calculate_cost("tenant1", "cpu", 240.0).await.unwrap();
+        assert_eq!(cost, 12.0);
+        assert_eq!(calculator.record_count(), 1);
+    }
 }

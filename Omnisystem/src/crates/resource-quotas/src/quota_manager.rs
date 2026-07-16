@@ -1,4 +1,4 @@
-use crate::{ResourceQuota, ResourceUsage, QuotaError, QuotaResult, PriorityClass, EnforcementAction, QuotaEnforcement};
+use crate::{ResourceQuota, ResourceUsage, QuotaError, QuotaResult, EnforcementAction, QuotaEnforcement};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -179,5 +179,75 @@ mod tests {
 
         let action = manager.enforce_quota("tenant1").await.unwrap();
         assert_eq!(action, EnforcementAction::Allow);
+    }
+
+    #[tokio::test]
+    async fn test_enforce_quota_denies_when_exceeded() {
+        let manager = QuotaManager::new();
+        let quota = ResourceQuota {
+            quota_id: Uuid::new_v4(),
+            tenant_id: "tenant1".to_string(),
+            cpu_cores: 4,
+            memory_mb: 8192,
+            storage_gb: 100,
+            network_mbps: 1000,
+            active: true,
+        };
+        manager.set_quota(&quota).await.unwrap();
+        manager.record_usage("tenant1", 5.0, 4096, 50, 500).await.unwrap();
+
+        let action = manager.enforce_quota("tenant1").await.unwrap();
+        assert_eq!(action, EnforcementAction::Deny);
+    }
+
+    #[tokio::test]
+    async fn test_enforce_quota_throttles_near_limit() {
+        let manager = QuotaManager::new();
+        let quota = ResourceQuota {
+            quota_id: Uuid::new_v4(),
+            tenant_id: "tenant1".to_string(),
+            cpu_cores: 10,
+            memory_mb: 10000,
+            storage_gb: 100,
+            network_mbps: 1000,
+            active: true,
+        };
+        manager.set_quota(&quota).await.unwrap();
+        manager.record_usage("tenant1", 9.5, 5000, 50, 500).await.unwrap();
+
+        let action = manager.enforce_quota("tenant1").await.unwrap();
+        assert_eq!(action, EnforcementAction::Throttle);
+    }
+
+    #[tokio::test]
+    async fn test_get_quota_unknown_tenant_errors() {
+        let manager = QuotaManager::new();
+        let result = manager.get_quota("nonexistent").await;
+        assert!(matches!(result, Err(QuotaError::QuotaNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_check_availability_unknown_tenant_errors() {
+        let manager = QuotaManager::new();
+        let result = manager.check_resource_availability("nonexistent", 1, 1024).await;
+        assert!(matches!(result, Err(QuotaError::TenantNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_check_availability_insufficient_resources() {
+        let manager = QuotaManager::new();
+        let quota = ResourceQuota {
+            quota_id: Uuid::new_v4(),
+            tenant_id: "tenant1".to_string(),
+            cpu_cores: 2,
+            memory_mb: 2048,
+            storage_gb: 10,
+            network_mbps: 100,
+            active: true,
+        };
+        manager.set_quota(&quota).await.unwrap();
+
+        let available = manager.check_resource_availability("tenant1", 4, 1024).await.unwrap();
+        assert!(!available);
     }
 }

@@ -181,4 +181,36 @@ mod tests {
         let invoice = manager.get_invoice(invoice_id).await.unwrap();
         assert_eq!(invoice.status, crate::InvoiceStatus::Paid);
     }
+
+    #[tokio::test]
+    async fn test_get_invoice_unknown_id_errors() {
+        let manager = ChargebackManager::new();
+        let result = manager.get_invoice(Uuid::new_v4()).await;
+        assert!(matches!(result, Err(ChargebackError::InvoiceGenerationFailed)));
+    }
+
+    #[tokio::test]
+    async fn test_mark_invoice_paid_unknown_id_errors() {
+        let manager = ChargebackManager::new();
+        let result = manager.mark_invoice_paid(Uuid::new_v4()).await;
+        assert!(matches!(result, Err(ChargebackError::InvoiceGenerationFailed)));
+    }
+
+    #[tokio::test]
+    async fn test_create_allocation_rule_and_generate_statement() {
+        let manager = ChargebackManager::new();
+        manager
+            .create_allocation_rule("even-split", AllocationMethod::EqualShare)
+            .await
+            .unwrap();
+
+        manager.allocate_cost("dept1", "team1", 600.0, 50.0).await.unwrap();
+        manager.allocate_cost("dept1", "team2", 400.0, 50.0).await.unwrap();
+        assert_eq!(manager.allocation_count(), 2);
+
+        let statement = manager.generate_statement("dept1", 1000.0).await.unwrap();
+        assert_eq!(statement.allocated_costs.len(), 2);
+        let total: f64 = statement.allocated_costs.iter().map(|(_, amt)| amt).sum();
+        assert_eq!(total, 1000.0);
+    }
 }
