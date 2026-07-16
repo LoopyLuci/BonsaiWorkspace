@@ -1,6 +1,6 @@
 //! Public interfaces for bonsai-bedf-sanitizers
 
 pub trait Component {
-    async fn init(&mut self) -> Result<(), anyhow::Error>;
+    fn init(&mut self) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send;
     fn name(&self) -> &str;
 }

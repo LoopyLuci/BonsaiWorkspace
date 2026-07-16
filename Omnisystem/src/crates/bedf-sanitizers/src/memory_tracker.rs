@@ -18,6 +18,13 @@ pub struct AccessRecord {
     pub size: usize,
     pub is_write: bool,
     pub timestamp: u64,
+    /// Whether this access touched a pointer that was already freed, and if
+    /// so by how many bytes it overran its allocation (if at all). Captured
+    /// at the moment of the access rather than re-derived later, so a
+    /// pointer's later deallocation can't retroactively flag earlier,
+    /// perfectly valid accesses as use-after-free.
+    use_after_free: bool,
+    overflow_by: Option<usize>,
 }
 
 impl MemoryTracker {
@@ -51,45 +58,47 @@ impl MemoryTracker {
             .unwrap_or_default()
             .as_nanos() as u64;
 
+        // Snapshot validity against the allocation table *now*, at the
+        // moment of the access, not later when issues are queried.
+        let (use_after_free, overflow_by) = match self.allocations.get(&ptr) {
+            Some(record) if !record.is_allocated => (true, None),
+            Some(record) if size > record.size => (false, Some(size - record.size)),
+            _ => (false, None),
+        };
+
         self.accesses.push(AccessRecord {
             ptr,
             size,
             is_write,
             timestamp,
+            use_after_free,
+            overflow_by,
         });
     }
 
     pub fn get_issues(&self) -> Vec<super::MemoryIssue> {
         let mut issues = Vec::new();
 
-        // Check for use-after-free
         for access in &self.accesses {
-            if let Some(record) = self.allocations.get(&access.ptr) {
-                if !record.is_allocated {
-                    issues.push(super::MemoryIssue {
-                        issue_type: super::IssueType::UseAfterFree,
-                        address: access.ptr,
-                        size: access.size,
-                        description: "Use after free detected".to_string(),
-                    });
-                }
+            if access.use_after_free {
+                issues.push(super::MemoryIssue {
+                    issue_type: super::IssueType::UseAfterFree,
+                    address: access.ptr,
+                    size: access.size,
+                    description: "Use after free detected".to_string(),
+                });
             }
-        }
 
-        // Check for buffer overflow
-        for access in &self.accesses {
-            if let Some(record) = self.allocations.get(&access.ptr) {
-                if access.size > record.size {
-                    issues.push(super::MemoryIssue {
-                        issue_type: super::IssueType::BufferOverflow,
-                        address: access.ptr,
-                        size: access.size,
-                        description: format!(
-                            "Buffer overflow: accessed {} bytes but allocated {}",
-                            access.size, record.size
-                        ),
-                    });
-                }
+            if let Some(allocated_size) = access.overflow_by.map(|over| access.size - over) {
+                issues.push(super::MemoryIssue {
+                    issue_type: super::IssueType::BufferOverflow,
+                    address: access.ptr,
+                    size: access.size,
+                    description: format!(
+                        "Buffer overflow: accessed {} bytes but allocated {}",
+                        access.size, allocated_size
+                    ),
+                });
             }
         }
 
@@ -149,5 +158,23 @@ mod tests {
 
         let issues = tracker.get_issues();
         assert!(!issues.is_empty());
+    }
+
+    #[test]
+    fn test_valid_access_not_retroactively_flagged_after_later_free() {
+        // Regression test: a legitimate access that happened *while the
+        // pointer was still allocated* must not turn into a false
+        // use-after-free report just because the pointer is freed later.
+        let mut tracker = MemoryTracker::new();
+        tracker.track_allocation(0x1000, 100);
+        tracker.track_access(0x1000, 50, false); // valid, allocated at the time
+        tracker.track_deallocation(0x1000);
+
+        let issues = tracker.get_issues();
+        assert!(
+            issues.is_empty(),
+            "a pre-free access should never be reported as use-after-free: {:?}",
+            issues
+        );
     }
 }
