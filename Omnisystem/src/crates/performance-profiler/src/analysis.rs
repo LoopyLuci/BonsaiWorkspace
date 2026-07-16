@@ -45,10 +45,12 @@ impl PerformanceAnalyzer {
         }
 
         let mut function_times: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut function_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
         for sample in samples {
             for frame in &sample.stack_trace {
                 *function_times.entry(frame.function_name.clone()).or_insert(0) += sample.duration_us;
+                *function_counts.entry(frame.function_name.clone()).or_insert(0) += 1;
             }
         }
 
@@ -56,10 +58,17 @@ impl PerformanceAnalyzer {
 
         let nodes: Vec<FlameGraphNode> = function_times
             .into_iter()
-            .map(|(name, time)| FlameGraphNode {
-                function_name: name,
-                time_percent: (time as f32 / total_time as f32) * 100.0,
-                sample_count: 1,
+            .map(|(name, time)| {
+                let sample_count = *function_counts.get(&name).unwrap_or(&0);
+                FlameGraphNode {
+                    time_percent: if total_time > 0 {
+                        (time as f32 / total_time as f32) * 100.0
+                    } else {
+                        0.0
+                    },
+                    function_name: name,
+                    sample_count,
+                }
             })
             .collect();
 
@@ -122,5 +131,41 @@ mod tests {
 
         let nodes = analyzer.generate_flamegraph(&samples).await.unwrap();
         assert!(!nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_flamegraph_sample_count_reflects_occurrences() {
+        let analyzer = PerformanceAnalyzer::new();
+        let frame = crate::StackFrame {
+            function_name: "foo".to_string(),
+            module_name: "lib".to_string(),
+            line_number: 1,
+            offset: 0,
+        };
+        // "foo" appears in three separate samples' stack traces.
+        let samples = vec![
+            CpuSample {
+                sample_id: Uuid::new_v4(),
+                timestamp: chrono::Utc::now(),
+                stack_trace: vec![frame.clone()],
+                duration_us: 100,
+            },
+            CpuSample {
+                sample_id: Uuid::new_v4(),
+                timestamp: chrono::Utc::now(),
+                stack_trace: vec![frame.clone()],
+                duration_us: 100,
+            },
+            CpuSample {
+                sample_id: Uuid::new_v4(),
+                timestamp: chrono::Utc::now(),
+                stack_trace: vec![frame],
+                duration_us: 100,
+            },
+        ];
+
+        let nodes = analyzer.generate_flamegraph(&samples).await.unwrap();
+        let foo_node = nodes.iter().find(|n| n.function_name == "foo").unwrap();
+        assert_eq!(foo_node.sample_count, 3);
     }
 }
