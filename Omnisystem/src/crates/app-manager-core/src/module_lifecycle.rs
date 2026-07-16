@@ -1,4 +1,5 @@
-use crate::{AppId, ModuleState, Result, AppManagerError};
+use crate::types::{AppId, ModuleState};
+use crate::error::{AppManagerError, AppManagerResult as Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use chrono::Utc;

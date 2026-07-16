@@ -1,4 +1,5 @@
-use crate::{AppId, ModuleNode, Result, AppManagerError, ModuleState};
+use crate::types::{AppId, ModuleNode, ModuleState};
+use crate::error::{AppManagerError, AppManagerResult as Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::collections::{HashSet, VecDeque};
@@ -211,7 +212,7 @@ impl Default for DependencyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Version, ModuleState, Dependency};
+    use crate::types::{Version, ModuleState, Dependency, VersionConstraint};
 
     fn make_node(id: &str) -> ModuleNode {
         ModuleNode {
@@ -252,14 +253,14 @@ mod tests {
 
         node_a.dependencies.push(Dependency {
             app_id: AppId::new("b").unwrap(),
-            version_constraint: crate::VersionConstraint::AtLeast(Version::new(1, 0, 0)),
+            version_constraint: VersionConstraint::AtLeast(Version::new(1, 0, 0)),
             optional: false,
             dev_only: false,
         });
 
         node_b.dependencies.push(Dependency {
             app_id: AppId::new("a").unwrap(),
-            version_constraint: crate::VersionConstraint::AtLeast(Version::new(1, 0, 0)),
+            version_constraint: VersionConstraint::AtLeast(Version::new(1, 0, 0)),
             optional: false,
             dev_only: false,
         });

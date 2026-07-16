@@ -16,6 +16,16 @@ pub enum AppManagerError {
     InvalidAppId(String),
     /// Invalid version string
     InvalidVersion(String),
+    /// Module has no recorded lifecycle state
+    ModuleNotLoaded(String),
+    /// Attempted an illegal module lifecycle state transition
+    InvalidStateTransition(String),
+    /// Circular dependency detected in the dependency graph
+    CircularDependency(String),
+    /// (De)serialization of a value failed
+    SerializationError(String),
+    /// Internal invariant violation
+    Internal(String),
     /// Other error
     Other(String),
 }
@@ -30,6 +40,11 @@ impl std::fmt::Display for AppManagerError {
             AppManagerError::ModuleNotFound(id) => write!(f, "module not found: {}", id),
             AppManagerError::InvalidAppId(id) => write!(f, "invalid app id: {}", id),
             AppManagerError::InvalidVersion(s) => write!(f, "invalid version: {}", s),
+            AppManagerError::ModuleNotLoaded(id) => write!(f, "module not loaded: {}", id),
+            AppManagerError::InvalidStateTransition(msg) => write!(f, "invalid state transition: {}", msg),
+            AppManagerError::CircularDependency(msg) => write!(f, "circular dependency: {}", msg),
+            AppManagerError::SerializationError(msg) => write!(f, "serialization error: {}", msg),
+            AppManagerError::Internal(msg) => write!(f, "internal error: {}", msg),
             AppManagerError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }

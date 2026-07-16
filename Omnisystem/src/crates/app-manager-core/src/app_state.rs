@@ -1,4 +1,4 @@
-use crate::{AppId, Version};
+use crate::types::{AppId, Version};
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
