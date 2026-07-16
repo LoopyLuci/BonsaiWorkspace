@@ -1,5 +1,7 @@
 use crate::{Result, InstallerError};
-use app_manager_core::{AppId, Version, ModuleResolver, DependencyGraph};
+use app_manager_core::dependency_graph::DependencyGraph;
+use app_manager_core::module_resolver::ModuleResolver;
+use app_manager_core::types::{AppId, Version};
 
 pub struct DependencyResolver;
 

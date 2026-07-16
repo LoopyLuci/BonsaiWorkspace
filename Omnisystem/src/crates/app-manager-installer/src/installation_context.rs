@@ -1,4 +1,4 @@
-use app_manager_core::{AppId, Version, Manifest};
+use app_manager_core::types::{AppId, Version, Manifest};
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;

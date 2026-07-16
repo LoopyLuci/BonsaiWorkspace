@@ -1,6 +1,6 @@
 use crate::{Result, InstallerError};
-use app_manager_core::AppId;
-use app_manager_core::AppSnapshot;
+use app_manager_core::types::{AppId, Version};
+use app_manager_core::app_state::AppSnapshot;
 use dashmap::DashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ impl RollbackManager {
     pub async fn create_snapshot(&self, app_id: &AppId, path: &PathBuf) -> Result<()> {
         tracing::info!("Creating snapshot for {}", app_id);
 
-        let mut snapshot = AppSnapshot::new(app_id.clone(), app_manager_core::Version::new(1, 0, 0));
+        let mut snapshot = AppSnapshot::new(app_id.clone(), Version::new(1, 0, 0));
 
         if path.exists() {
             let app_data = tokio::fs::read(path)
@@ -127,7 +127,7 @@ mod tests {
         let app_id = AppId::new("test-app").unwrap();
 
         // Manually insert a snapshot (bypassing the async create)
-        manager.snapshots.insert(app_id.clone(), AppSnapshot::new(app_id, app_manager_core::Version::new(1, 0, 0)));
+        manager.snapshots.insert(app_id.clone(), AppSnapshot::new(app_id, Version::new(1, 0, 0)));
         assert_eq!(manager.snapshot_count(), 1);
 
         manager.clear_all_snapshots();

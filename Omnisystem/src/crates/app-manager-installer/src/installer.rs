@@ -1,5 +1,6 @@
 use crate::{Result, InstallerError, InstallationContext, RollbackManager};
-use app_manager_core::{AppId, Version, ModuleLifecycleManager, ModuleState};
+use app_manager_core::module_lifecycle::ModuleLifecycleManager;
+use app_manager_core::types::{AppId, Version, ModuleState};
 use app_manager_repository::Repository as PackageRepository;
 use std::path::PathBuf;
 
