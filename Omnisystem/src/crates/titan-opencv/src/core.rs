@@ -2,6 +2,7 @@
 //!
 //! Memory-safe matrix implementation with capability-based access control
 
+use crate::error::{Error, Result};
 use std::fmt;
 
 /// A Titan-native Mat (matrix) for image data
@@ -28,9 +29,9 @@ impl Mat {
     ///
     /// # Safety
     /// Allocates memory for the entire matrix upfront
-    pub fn create(rows: usize, cols: usize, channels: u8, depth: u8) -> Result<Self, String> {
+    pub fn create(rows: usize, cols: usize, channels: u8, depth: u8) -> Result<Self> {
         if rows == 0 || cols == 0 {
-            return Err("Matrix dimensions must be positive".to_string());
+            return Err(Error::InvalidDimensions { rows, cols });
         }
 
         let bytes_per_element = match depth {
@@ -41,7 +42,7 @@ impl Mat {
             4 => 4,  // CV_32S
             5 => 4,  // CV_32F
             6 => 8,  // CV_64F
-            _ => return Err(format!("Unknown depth: {}", depth)),
+            _ => return Err(Error::UnknownDepth(depth)),
         };
 
         let step = cols * (channels as usize) * bytes_per_element;
@@ -98,12 +99,16 @@ impl Mat {
     }
 
     /// Get pixel value at (row, col, channel)
-    pub fn at(&self, row: usize, col: usize, ch: u8) -> Result<u8, String> {
+    pub fn at(&self, row: usize, col: usize, ch: u8) -> Result<u8> {
         if row >= self.rows || col >= self.cols || ch >= self.channels {
-            return Err(format!(
-                "Index out of bounds: ({}, {}, {}) in {}x{}x{}",
-                row, col, ch, self.rows, self.cols, self.channels
-            ));
+            return Err(Error::IndexOutOfBounds {
+                row,
+                col,
+                channel: ch,
+                rows: self.rows,
+                cols: self.cols,
+                channels: self.channels,
+            });
         }
 
         let idx = row * self.step + col * (self.channels as usize) + (ch as usize);
@@ -111,12 +116,16 @@ impl Mat {
     }
 
     /// Set pixel value at (row, col, channel)
-    pub fn set(&mut self, row: usize, col: usize, ch: u8, val: u8) -> Result<(), String> {
+    pub fn set(&mut self, row: usize, col: usize, ch: u8, val: u8) -> Result<()> {
         if row >= self.rows || col >= self.cols || ch >= self.channels {
-            return Err(format!(
-                "Index out of bounds: ({}, {}, {}) in {}x{}x{}",
-                row, col, ch, self.rows, self.cols, self.channels
-            ));
+            return Err(Error::IndexOutOfBounds {
+                row,
+                col,
+                channel: ch,
+                rows: self.rows,
+                cols: self.cols,
+                channels: self.channels,
+            });
         }
 
         let idx = row * self.step + col * (self.channels as usize) + (ch as usize);
