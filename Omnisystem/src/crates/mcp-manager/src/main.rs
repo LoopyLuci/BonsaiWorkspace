@@ -3,7 +3,7 @@ use axum::{
     routing::{get, post, put, delete},
 };
 use mcp_manager::{
-    AppState, McpServerConfig, McpClient, ExternalMcpServer, ToolEntry,
+    AppState, McpServerConfig, ExternalMcpServer, ToolEntry,
     server_config, clients, external_servers, tools,
 };
 use std::sync::Arc;
