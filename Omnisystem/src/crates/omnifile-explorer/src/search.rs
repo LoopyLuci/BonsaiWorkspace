@@ -1,5 +1,3 @@
-use crate::Result;
-
 pub struct FileSearchEngine;
 
 impl FileSearchEngine {
