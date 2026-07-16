@@ -1,4 +1,4 @@
-use crate::{Record, Error, Result};
+use crate::{Record, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;

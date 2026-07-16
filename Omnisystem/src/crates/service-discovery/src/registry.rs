@@ -2,6 +2,7 @@ use crate::{DiscoveryError, DiscoveryResult, ServiceInstance, ServiceRegistry, S
 use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
+#[cfg(test)]
 use std::collections::HashMap;
 
 pub struct ServiceRegistryImpl {
@@ -33,12 +34,21 @@ impl ServiceRegistryImpl {
     }
 
     pub async fn deregister(&self, service_name: &str, instance_id: &str) -> DiscoveryResult<()> {
-        if let Some(mut instances) = self.services.get_mut(service_name) {
+        let now_empty = if let Some(mut instances) = self.services.get_mut(service_name) {
             instances.retain(|i| i.instance_id != instance_id);
-            Ok(())
+            instances.is_empty()
         } else {
-            Err(DiscoveryError::ServiceNotFound)
+            return Err(DiscoveryError::ServiceNotFound);
+        };
+
+        // Drop the map entry entirely once a service has no instances left, so
+        // subsequent lookups correctly report `ServiceNotFound` instead of an
+        // empty-but-present registration.
+        if now_empty {
+            self.services.remove(service_name);
         }
+
+        Ok(())
     }
 
     pub async fn get_instances(&self, service_name: &str) -> DiscoveryResult<Vec<ServiceInstance>> {
