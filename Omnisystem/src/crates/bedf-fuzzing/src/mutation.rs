@@ -56,7 +56,7 @@ impl Mutator {
     fn dictionary_mutation(input: &[u8]) -> Vec<u8> {
         let mut rng = thread_rng();
         let mut output = input.to_vec();
-        let tokens = [b"GET", b"POST", b"HTTP", b"<!DOCTYPE", b"<script>"];
+        let tokens: [&[u8]; 5] = [b"GET", b"POST", b"HTTP", b"<!DOCTYPE", b"<script>"];
 
         if !output.is_empty() && rng.gen_bool(0.5) {
             let token = tokens[rng.gen_range(0..tokens.len())];
