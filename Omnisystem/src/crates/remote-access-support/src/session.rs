@@ -23,12 +23,16 @@ impl SessionManager {
 
     pub fn create_session(&self, user_id: String, device_id: String) -> String {
         let session_id = uuid::Uuid::new_v4().to_string();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let session = RemoteSession {
             session_id: session_id.clone(),
             user_id,
             device_id,
             connected: true,
-            timestamp: 0,
+            timestamp,
         };
         self.sessions.insert(session_id.clone(), session);
         session_id
@@ -71,5 +75,21 @@ mod tests {
         assert!(sm.disconnect_session(&session_id));
         let session = sm.get_session(&session_id).unwrap();
         assert!(!session.connected);
+    }
+
+    #[test]
+    fn test_session_timestamp_is_real_creation_time() {
+        // Regression test: timestamp used to be hardcoded to 0 regardless
+        // of when the session was actually created.
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let sm = SessionManager::new();
+        let session_id = sm.create_session("user1".to_string(), "device1".to_string());
+        let session = sm.get_session(&session_id).unwrap();
+
+        assert!(session.timestamp >= before);
     }
 }
