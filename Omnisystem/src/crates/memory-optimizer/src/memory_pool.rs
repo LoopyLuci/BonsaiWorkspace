@@ -45,6 +45,9 @@ impl MemoryPoolManager {
 
     pub async fn deallocate_to_pool(&self, pool_id: u64, block_size: u64) -> MemoryResult<()> {
         if let Some(mut pool) = self.pools.get_mut(&pool_id) {
+            if block_size != pool.block_size {
+                return Err(MemoryError::BlockSizeMismatch);
+            }
             if pool.free_blocks < pool.block_count {
                 pool.free_blocks += 1;
                 Ok(())
@@ -109,5 +112,21 @@ mod tests {
 
         let pool = manager.get_pool_status(1).await.unwrap();
         assert_eq!(pool.free_blocks, 10);
+    }
+
+    #[tokio::test]
+    async fn test_deallocate_to_pool_rejects_wrong_block_size() {
+        let manager = MemoryPoolManager::new();
+        manager.create_pool(1, 4096, 10).await.unwrap();
+        manager.allocate_from_pool(1).await.unwrap();
+
+        // Returning a block whose size doesn't match this fixed-size
+        // pool's block_size must be rejected, not silently accepted.
+        let result = manager.deallocate_to_pool(1, 2048).await;
+        assert_eq!(result, Err(MemoryError::BlockSizeMismatch));
+
+        // The bad call must not have incremented free_blocks.
+        let pool = manager.get_pool_status(1).await.unwrap();
+        assert_eq!(pool.free_blocks, 9);
     }
 }
