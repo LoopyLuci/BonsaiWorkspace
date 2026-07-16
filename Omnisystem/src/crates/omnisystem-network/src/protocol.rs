@@ -69,4 +69,23 @@ mod tests {
         let msg = RPCMessage::request("test", serde_json::json!({}));
         assert_eq!(msg.method, "test");
     }
+
+    #[test]
+    fn test_encode_decode_roundtrip_preserves_content() {
+        let handler = ProtocolHandler::new().unwrap();
+        let msg = RPCMessage::request("get_status", serde_json::json!({"verbose": true}));
+
+        let bytes = handler.encode(&msg).unwrap();
+        let decoded = handler.decode(&bytes).unwrap();
+
+        assert_eq!(decoded.id, msg.id);
+        assert_eq!(decoded.method, "get_status");
+        assert_eq!(decoded.params["verbose"], true);
+    }
+
+    #[test]
+    fn test_decode_rejects_garbage() {
+        let handler = ProtocolHandler::new().unwrap();
+        assert!(handler.decode(b"not json").is_err());
+    }
 }
