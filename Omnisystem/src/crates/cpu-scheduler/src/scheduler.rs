@@ -1,4 +1,4 @@
-use crate::{Priority, SchedulerError, SchedulerResult, ThreadInfo, ThreadState, SchedulingDecision, ProcessInfo};
+use crate::{Priority, SchedulerConfig, SchedulerError, SchedulerResult, ThreadInfo, ThreadState, SchedulingDecision, ProcessInfo};
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -7,11 +7,12 @@ pub struct CpuScheduler {
     processes: Arc<DashMap<u64, ProcessInfo>>,
     ready_queue: Arc<DashMap<Priority, Vec<u64>>>,
     cpu_cores: usize,
+    timeslice_ms: u32,
 }
 
 impl CpuScheduler {
     pub fn new(cpu_cores: usize) -> Self {
-        let mut ready_queue = DashMap::new();
+        let ready_queue = DashMap::new();
         ready_queue.insert(Priority::Low, Vec::new());
         ready_queue.insert(Priority::Normal, Vec::new());
         ready_queue.insert(Priority::High, Vec::new());
@@ -22,7 +23,46 @@ impl CpuScheduler {
             processes: Arc::new(DashMap::new()),
             ready_queue: Arc::new(ready_queue),
             cpu_cores,
+            timeslice_ms: 10,
         }
+    }
+
+    /// Build a scheduler from a full `SchedulerConfig`, honoring its
+    /// `cpu_cores` and `timeslice_ms` (the timeslice handed out by
+    /// `schedule_next`).
+    pub fn with_config(config: &SchedulerConfig) -> Self {
+        let mut scheduler = Self::new(config.cpu_cores);
+        scheduler.timeslice_ms = config.timeslice_ms;
+        scheduler
+    }
+
+    /// Register a process so its threads can be accounted against it.
+    pub async fn create_process(&self, process_id: u64) -> SchedulerResult<()> {
+        let process = ProcessInfo {
+            process_id,
+            threads: vec![],
+            total_cpu_time_ms: 0,
+            memory_mb: 0,
+        };
+        self.processes.insert(process_id, process);
+        Ok(())
+    }
+
+    /// Associate an existing thread with an existing process.
+    pub async fn assign_thread_to_process(&self, process_id: u64, thread_id: u64) -> SchedulerResult<()> {
+        if self.threads.get(&thread_id).is_none() {
+            return Err(SchedulerError::ThreadNotFound);
+        }
+        let mut process = self
+            .processes
+            .get_mut(&process_id)
+            .ok_or(SchedulerError::ThreadNotFound)?;
+        process.threads.push(thread_id);
+        Ok(())
+    }
+
+    pub fn process_count(&self) -> usize {
+        self.processes.len()
     }
 
     pub async fn create_thread(
@@ -62,7 +102,7 @@ impl CpuScheduler {
                             thread_id,
                             cpu_core,
                             priority: thread.priority,
-                            timeslice_ms: 10,
+                            timeslice_ms: self.timeslice_ms,
                         });
                     }
                 }
@@ -166,5 +206,49 @@ mod tests {
 
         let thread = scheduler.get_thread_info(1).await.unwrap();
         assert_eq!(thread.cpu_time_ms, 50);
+    }
+
+    #[tokio::test]
+    async fn test_with_config_honors_timeslice() {
+        let config = SchedulerConfig {
+            max_threads: 100,
+            timeslice_ms: 25,
+            enable_preemption: true,
+            cpu_cores: 8,
+        };
+        let scheduler = CpuScheduler::with_config(&config);
+        scheduler
+            .create_thread(1, Priority::Normal, vec![0])
+            .await
+            .unwrap();
+
+        let decision = scheduler.schedule_next().await.unwrap();
+        assert_eq!(decision.timeslice_ms, 25);
+        assert_eq!(decision.cpu_core, 1 % 8);
+    }
+
+    #[tokio::test]
+    async fn test_create_process_and_assign_thread() {
+        let scheduler = CpuScheduler::new(4);
+        scheduler.create_process(100).await.unwrap();
+        scheduler
+            .create_thread(1, Priority::Normal, vec![0])
+            .await
+            .unwrap();
+
+        scheduler.assign_thread_to_process(100, 1).await.unwrap();
+        assert_eq!(scheduler.process_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_assign_thread_to_unknown_process_errors() {
+        let scheduler = CpuScheduler::new(4);
+        scheduler
+            .create_thread(1, Priority::Normal, vec![0])
+            .await
+            .unwrap();
+
+        let result = scheduler.assign_thread_to_process(999, 1).await;
+        assert!(result.is_err());
     }
 }

@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash, Copy)]
 #[repr(u8)]
