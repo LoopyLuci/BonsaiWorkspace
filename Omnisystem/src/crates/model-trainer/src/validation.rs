@@ -11,7 +11,7 @@ impl Validator {
         let correct = predictions
             .iter()
             .zip(actual.iter())
-            .filter(|(p, a)| (p - a).abs() < 0.5)
+            .filter(|&(p, a)| (p - a).abs() < 0.5)
             .count();
         
         Ok(correct as f32 / predictions.len() as f32)

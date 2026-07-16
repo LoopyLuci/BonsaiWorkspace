@@ -1,4 +1,4 @@
-use crate::{Model, Result, TrainerError, ModelType};
+use crate::{Model, Result, TrainerError};
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -79,6 +79,7 @@ impl Default for Trainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModelType;
 
     #[test]
     fn test_trainer() {

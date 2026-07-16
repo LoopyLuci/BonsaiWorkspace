@@ -22,6 +22,10 @@ impl Dataset {
         }
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn add_sample(&self, sample: Sample) -> Result<()> {
         self.samples.insert(sample.id.clone(), sample);
         Ok(())
@@ -64,6 +68,7 @@ mod tests {
         };
         assert!(dataset.add_sample(sample).is_ok());
         assert_eq!(dataset.sample_count(), 1);
+        assert_eq!(dataset.name(), "test");
     }
 
     #[test]
