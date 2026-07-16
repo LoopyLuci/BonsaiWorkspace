@@ -26,6 +26,18 @@ impl HardwareEncoder {
         self.backend
     }
 
+    pub fn resolution(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn bitrate_kbps(&self) -> u32 {
+        self.bitrate_kbps
+    }
+
+    pub fn fps(&self) -> u32 {
+        self.fps
+    }
+
     pub async fn initialize(&mut self) -> BmnResult<()> {
         match self.backend {
             EncoderBackend::NVENC => {
@@ -72,5 +84,15 @@ mod tests {
         assert_eq!(encoder.width, 1920);
         assert_eq!(encoder.height, 1080);
         assert!(encoder.supports_b_frames());
+    }
+
+    #[test]
+    fn test_hardware_encoder_accessors() {
+        let encoder = HardwareEncoder::new(EncoderBackend::VAAPI, 1280, 720, 3000, 30);
+        assert_eq!(encoder.resolution(), (1280, 720));
+        assert_eq!(encoder.bitrate_kbps(), 3000);
+        assert_eq!(encoder.fps(), 30);
+        assert!(!encoder.supports_b_frames());
+        assert!(encoder.supports_10bit());
     }
 }

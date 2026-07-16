@@ -1,7 +1,6 @@
 // Encoder pool for parallel multi-bitrate encoding
 
 use crate::{HardwareEncoder, SoftwareEncoder, EncoderBackend};
-use bmn_common::error::BmnResult;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -70,8 +69,8 @@ mod tests {
         let enc1_again = pool.get_next_encoder().await;
 
         // Should cycle through all encoders
-        assert_ne!(enc1.as_ptr(), enc2.as_ptr());
-        assert_ne!(enc2.as_ptr(), enc3.as_ptr());
-        assert_eq!(enc1.as_ptr(), enc1_again.as_ptr());
+        assert!(!std::sync::Arc::ptr_eq(&enc1, &enc2));
+        assert!(!std::sync::Arc::ptr_eq(&enc2, &enc3));
+        assert!(std::sync::Arc::ptr_eq(&enc1, &enc1_again));
     }
 }

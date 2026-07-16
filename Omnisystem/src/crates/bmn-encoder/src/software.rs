@@ -29,6 +29,22 @@ impl SoftwareEncoder {
         self
     }
 
+    pub fn backend(&self) -> EncoderBackend {
+        self.backend
+    }
+
+    pub fn resolution(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn bitrate_kbps(&self) -> u32 {
+        self.bitrate_kbps
+    }
+
+    pub fn fps(&self) -> u32 {
+        self.fps
+    }
+
     pub async fn initialize(&mut self) -> BmnResult<()> {
         match self.backend {
             EncoderBackend::X264 => {
@@ -72,5 +88,14 @@ mod tests {
         let enc_fast = SoftwareEncoder::new(EncoderBackend::X264, 1920, 1080, 5000, 60)
             .with_preset("fast".into());
         assert_eq!(enc_fast.cpu_usage_percent(), 40.0);
+    }
+
+    #[test]
+    fn test_software_encoder_accessors() {
+        let encoder = SoftwareEncoder::new(EncoderBackend::X265, 3840, 2160, 12000, 24);
+        assert_eq!(encoder.backend(), EncoderBackend::X265);
+        assert_eq!(encoder.resolution(), (3840, 2160));
+        assert_eq!(encoder.bitrate_kbps(), 12000);
+        assert_eq!(encoder.fps(), 24);
     }
 }
