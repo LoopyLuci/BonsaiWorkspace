@@ -30,7 +30,7 @@ impl AlertManager {
         };
         
         if alert.threshold_exceeded {
-            tracing.info!("Alert triggered");
+            tracing::info!("Alert triggered");
             self.alerts.insert(alert.id.clone(), alert.clone());
         }
         
@@ -57,5 +57,14 @@ mod tests {
         let manager = AlertManager::new();
         let alert = manager.check_alert(85.0, 80.0).unwrap();
         assert!(alert.threshold_exceeded);
+        assert_eq!(manager.alert_count(), 1);
+    }
+
+    #[test]
+    fn test_alert_not_triggered_below_threshold() {
+        let manager = AlertManager::new();
+        let alert = manager.check_alert(50.0, 80.0).unwrap();
+        assert!(!alert.threshold_exceeded);
+        assert_eq!(manager.alert_count(), 0);
     }
 }
