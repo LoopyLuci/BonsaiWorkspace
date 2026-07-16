@@ -203,4 +203,68 @@ mod tests {
         let prediction = scaler.predict_demand("web").await.unwrap();
         assert!(prediction.predicted_replicas > 0);
     }
+
+    #[tokio::test]
+    async fn test_evaluate_scaling_scale_down_on_low_utilization() {
+        let scaler = AutoScaler::new();
+        let policy = ScalingPolicy {
+            policy_id: Uuid::new_v4(),
+            service_name: "worker".to_string(),
+            min_replicas: 1,
+            max_replicas: 8,
+            target_cpu_percent: 70,
+            target_memory_percent: 75,
+        };
+        scaler.register_policy(&policy).await.unwrap();
+
+        let metric = MetricSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            service_name: "worker".to_string(),
+            cpu_percent: 10,
+            memory_percent: 15,
+            request_count: 100,
+            response_time_ms: 20,
+        };
+        scaler.record_metrics(&metric).await.unwrap();
+
+        let decision = scaler.evaluate_scaling("worker", 4).await.unwrap();
+        assert_eq!(decision.action, ScalingAction::ScaleDown);
+        assert_eq!(decision.desired_replicas, 3);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_scaling_unknown_service_errors() {
+        let scaler = AutoScaler::new();
+        let result = scaler.evaluate_scaling("does-not-exist", 2).await;
+        assert_eq!(result.unwrap_err(), ScalingError::PolicyNotFound);
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_scaling_respects_min_max_replicas() {
+        let scaler = AutoScaler::new();
+        let policy = ScalingPolicy {
+            policy_id: Uuid::new_v4(),
+            service_name: "capped".to_string(),
+            min_replicas: 2,
+            max_replicas: 3,
+            target_cpu_percent: 50,
+            target_memory_percent: 50,
+        };
+        scaler.register_policy(&policy).await.unwrap();
+
+        let metric = MetricSnapshot {
+            snapshot_id: Uuid::new_v4(),
+            service_name: "capped".to_string(),
+            cpu_percent: 99,
+            memory_percent: 99,
+            request_count: 50000,
+            response_time_ms: 500,
+        };
+        scaler.record_metrics(&metric).await.unwrap();
+
+        // Already at max_replicas: scaling up further should be a no-op.
+        let decision = scaler.evaluate_scaling("capped", 3).await.unwrap();
+        assert_eq!(decision.action, ScalingAction::NoChange);
+        assert_eq!(decision.desired_replicas, 3);
+    }
 }
