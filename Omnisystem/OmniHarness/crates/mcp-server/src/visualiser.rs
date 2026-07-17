@@ -230,7 +230,7 @@ impl VisualiserState {
             let _ = notify_rust::Notification::new()
                 .summary(title)
                 .body(body)
-                .app_name("Bonsai Agent")
+                .appname("Bonsai Agent")
                 .show();
         }
         #[cfg(not(target_os = "windows"))]
