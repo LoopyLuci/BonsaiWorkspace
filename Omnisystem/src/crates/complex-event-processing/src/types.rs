@@ -1,6 +1,18 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
+
+/// A single ingested event with real, inspectable attributes. Patterns are
+/// matched and sequences/correlations are scored against this data rather
+/// than treated as opaque identifiers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CepEvent {
+    pub event_id: Uuid,
+    pub event_type: String,
+    pub timestamp: DateTime<Utc>,
+    pub attributes: HashMap<String, String>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventPattern {
