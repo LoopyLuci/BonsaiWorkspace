@@ -1,20 +1,15 @@
-//! Error types
+//! Privacy-specific error types.
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
+pub enum PrivacyError {
+    #[error("sensitive data detected")]
+    SensitiveDataDetected,
+    #[error("consent missing")]
+    ConsentMissing,
+    #[error("deletion failed")]
+    DeletionFailed,
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type PrivacyResult<T> = std::result::Result<T, PrivacyError>;

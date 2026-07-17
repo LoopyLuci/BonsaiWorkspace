@@ -76,8 +76,10 @@ impl EnvironmentSetup {
             // Node should be in system PATH after installation
         }
 
-        // Set npm to use secure registry
-        Command::new("npm")
+        // Set npm to use secure registry.
+        // On Windows, npm is a `.cmd` shim, which `Command::new` cannot launch
+        // directly (it looks for `npm.exe`), so route it through `cmd /C`.
+        Self::shim_command("npm")
             .args(&["config", "set", "registry", "https://registry.npmjs.org/"])
             .output()?;
 
@@ -121,6 +123,18 @@ impl EnvironmentSetup {
         env::set_var("RUST_LOG", "debug");
 
         Ok(())
+    }
+
+    /// Build a `Command` for launching a possibly-shimmed executable (e.g. `npm.cmd`
+    /// on Windows), which `Command::new` cannot spawn directly.
+    fn shim_command(command: &str) -> Command {
+        if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("cmd");
+            cmd.args(&["/C", command]);
+            cmd
+        } else {
+            Command::new(command)
+        }
     }
 
     fn is_in_path(command: &str) -> bool {
@@ -188,7 +202,7 @@ impl EnvironmentInfo {
     }
 
     fn detect_version(command: &str) -> String {
-        match Command::new(command).arg("--version").output() {
+        match EnvironmentSetup::shim_command(command).arg("--version").output() {
             Ok(output) => {
                 String::from_utf8_lossy(&output.stdout)
                     .trim()

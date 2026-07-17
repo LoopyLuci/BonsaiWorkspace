@@ -1,12 +1,8 @@
-//! CLI
-
-use docker_volume_manager::Component;
+//! CLI demo: initialize the docker-volume-manager module.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    docker_volume_manager::init().await?;
+    println!("docker-volume-manager initialized");
     Ok(())
 }

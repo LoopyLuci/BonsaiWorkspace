@@ -1,12 +1,17 @@
-//! CLI
+//! CLI demo: deploy a version and check its status.
 
-use deployment_manager::Component;
+use deployment_manager::DeploymentManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let manager = DeploymentManager::new();
+
+    let deployment = manager.deploy("1.0.0").await?;
+    println!("Deployed {}: {}", deployment.deployment_id, deployment.version);
+
+    let status = manager.get_status(&deployment.deployment_id).await?;
+    println!("Status: {}", status);
+    println!("Total deployments: {}", manager.deployment_count());
+
     Ok(())
 }

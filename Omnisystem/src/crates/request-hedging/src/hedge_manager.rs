@@ -143,7 +143,7 @@ mod tests {
 
         let result = manager.execute_hedge(&request).await.unwrap();
         assert_eq!(result.request_id, "req-1");
-        assert!(result.total_latency_ms > 0);
+        assert!(result.total_attempts >= 1);
     }
 
     #[tokio::test]

@@ -1,12 +1,8 @@
-//! CLI
-
-use health_check_engine::Component;
+//! CLI demo: initialize the health-check-engine module.
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    health_check_engine::init().await?;
+    println!("health-check-engine initialized");
     Ok(())
 }

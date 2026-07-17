@@ -123,6 +123,9 @@ mod tests {
         async fn terminate_session(&self, _session_id: &Uuid) -> LauncherResult<()> {
             Ok(())
         }
+        async fn update_session_status(&self, _session_id: &Uuid, _status: crate::session::SessionStatus) -> LauncherResult<()> {
+            Ok(())
+        }
     }
 
     struct MockAppRegistry;
@@ -140,6 +143,9 @@ mod tests {
         async fn search_apps(&self, _query: &str) -> LauncherResult<Vec<crate::AppMetadata>> {
             Ok(vec![])
         }
+        async fn unregister_app(&self, _app_id: &str) -> LauncherResult<()> {
+            Ok(())
+        }
     }
 
     struct MockLaunchCoordinator;
@@ -147,6 +153,9 @@ mod tests {
     impl crate::coordinator::LaunchCoordinator for MockLaunchCoordinator {
         async fn submit_launch_request(&self, _request: crate::LaunchRequest) -> LauncherResult<Uuid> {
             Ok(Uuid::new_v4())
+        }
+        async fn get_launch_status(&self, _request_id: &Uuid) -> LauncherResult<Option<crate::coordinator::LaunchContext>> {
+            Ok(None)
         }
         async fn cancel_launch(&self, _request_id: &Uuid) -> LauncherResult<()> {
             Ok(())
@@ -158,6 +167,9 @@ mod tests {
     impl crate::lifecycle::LifecycleManager for MockLifecycleManager {
         async fn publish_event(&self, _event: crate::LauncherEvent) -> LauncherResult<()> {
             Ok(())
+        }
+        async fn get_event_history(&self, _limit: usize) -> LauncherResult<Vec<crate::LauncherEvent>> {
+            Ok(vec![])
         }
     }
 }

@@ -1,20 +1,21 @@
-//! Error types
+//! Container-runtime specific error types.
 
-#[derive(Debug, Clone)]
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
 pub enum Error {
-    /// Other error
-    Other(String),
+    #[error("container already running: {0}")]
+    ContainerAlreadyRunning(String),
+    #[error("container not found: {0}")]
+    ContainerNotFound(String),
+    #[error("container not running: {0}")]
+    ContainerNotRunning(String),
+    #[error("image already exists: {0}")]
+    ImageAlreadyExists(String),
+    #[error("image not found: {0}")]
+    ImageNotFound(String),
+    #[error("registry error: {0}")]
+    RegistryError(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
 pub type Result<T> = std::result::Result<T, Error>;

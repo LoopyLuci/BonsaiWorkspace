@@ -55,34 +55,41 @@ impl CircuitBreaker {
     }
 
     pub async fn record_success(&self) -> CircuitBreakerResult<()> {
-        if let Some(mut status) = self.status.get_mut(&self.config.breaker_id) {
+        let should_close = {
+            let mut status = self
+                .status
+                .get_mut(&self.config.breaker_id)
+                .ok_or(CircuitBreakerError::CircuitNotFound)?;
             status.consecutive_failures = 0;
             status.consecutive_successes += 1;
 
-            if status.current_state == CircuitState::HalfOpen {
-                if status.consecutive_successes >= self.config.success_threshold {
-                    self.transition_state(CircuitState::Closed).await?;
-                }
-            }
-            Ok(())
-        } else {
-            Err(CircuitBreakerError::CircuitNotFound)
+            status.current_state == CircuitState::HalfOpen
+                && status.consecutive_successes >= self.config.success_threshold
+        };
+
+        if should_close {
+            self.transition_state(CircuitState::Closed).await?;
         }
+        Ok(())
     }
 
     pub async fn record_failure(&self) -> CircuitBreakerResult<()> {
-        if let Some(mut status) = self.status.get_mut(&self.config.breaker_id) {
+        let should_open = {
+            let mut status = self
+                .status
+                .get_mut(&self.config.breaker_id)
+                .ok_or(CircuitBreakerError::CircuitNotFound)?;
             status.consecutive_failures += 1;
             status.consecutive_successes = 0;
             status.last_failure_time = Some(Utc::now());
 
-            if status.consecutive_failures >= self.config.failure_threshold {
-                self.transition_state(CircuitState::Open).await?;
-            }
-            Ok(())
-        } else {
-            Err(CircuitBreakerError::CircuitNotFound)
+            status.consecutive_failures >= self.config.failure_threshold
+        };
+
+        if should_open {
+            self.transition_state(CircuitState::Open).await?;
         }
+        Ok(())
     }
 
     async fn transition_state(&self, new_state: CircuitState) -> CircuitBreakerResult<()> {

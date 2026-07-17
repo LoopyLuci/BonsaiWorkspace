@@ -1,12 +1,13 @@
-//! CLI
+//! CLI demo: process and analyze a sample scheduling request.
 
-use ai_scheduling_optimizer::Component;
+use ai_scheduling_optimizer::Service;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let service = Service::new();
+    let processed = service.process("sample-job-batch").await?;
+    println!("{}", processed);
+    let analysis = service.analyze("sample-job-batch").await?;
+    println!("{}", analysis);
     Ok(())
 }

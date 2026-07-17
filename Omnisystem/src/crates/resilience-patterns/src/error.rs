@@ -1,20 +1,15 @@
-//! Error types
+//! Resilience-pattern specific error types.
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
+pub enum ResilienceError {
+    #[error("bulkhead limit exceeded: {0} active calls")]
+    BulkheadLimitExceeded(usize),
+    #[error("retries exhausted")]
+    RetriesExhausted,
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type ResilienceResult<T> = std::result::Result<T, ResilienceError>;

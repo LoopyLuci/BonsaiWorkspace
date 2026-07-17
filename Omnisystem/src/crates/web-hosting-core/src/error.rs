@@ -1,20 +1,17 @@
-//! Error types
+//! Web-hosting specific error types.
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    /// Other error
-    Other(String),
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
+pub enum WebError {
+    #[error("configuration error: {0}")]
+    ConfigurationError(String),
+    #[error("virtual host not found: {0}")]
+    VirtualHostNotFound(String),
+    #[error("virtual host already exists: {0}")]
+    VirtualHostAlreadyExists(String),
+    #[error("certificate not found: {0}")]
+    CertificateNotFound(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Other(msg) => write!(f, "Error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Result type
-pub type Result<T> = std::result::Result<T, Error>;
+pub type WebResult<T> = std::result::Result<T, WebError>;

@@ -1,12 +1,11 @@
-//! CLI
+//! CLI demo: process a sample git webhook payload through the module.
 
-use git_integration::Component;
+use git_integration::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let module = Enterprise::new();
+    let processed = module.process("sample-push-event").await?;
+    println!("Processed: {}", processed);
     Ok(())
 }

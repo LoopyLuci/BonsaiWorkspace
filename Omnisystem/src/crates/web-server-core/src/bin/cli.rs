@@ -1,12 +1,12 @@
-//! CLI
+//! CLI demo: render the web-server-core component and handle a sample request.
 
-use web_server_core::Component;
+use web_server_core::WebComponent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let server = WebComponent::new();
+    println!("{}", server.render().await);
+    let handled = server.handle("GET /health").await?;
+    println!("Handled: {}", handled);
     Ok(())
 }

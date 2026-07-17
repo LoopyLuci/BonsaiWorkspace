@@ -92,7 +92,7 @@ impl StatusCode {
 }
 
 /// HTTP headers
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Headers {
     headers: HashMap<String, String>,
 }
@@ -166,7 +166,7 @@ impl Request {
 }
 
 /// HTTP response
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Response {
     pub status: StatusCode,
     pub headers: Headers,

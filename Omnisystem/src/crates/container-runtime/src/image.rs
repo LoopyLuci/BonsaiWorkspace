@@ -136,17 +136,20 @@ impl ImageManager {
     }
 
     pub async fn tag_image(&self, image_id: &ImageId, new_tag: &str) -> ContainerResult<()> {
-        if let Some(entry) = self.images.iter().find(|e| e.value().id == *image_id) {
-            let old_key = format!("{}:{}", entry.value().name, entry.value().tag);
-            let new_key = format!("{}:{}", entry.value().name, new_tag);
+        let old_key = {
+            let entry = self
+                .images
+                .iter()
+                .find(|e| e.value().id == *image_id)
+                .ok_or_else(|| ContainerError::ImageNotFound(image_id.0.clone()))?;
+            format!("{}:{}", entry.value().name, entry.value().tag)
+        };
 
-            if let Some((_, mut image)) = self.images.remove(&old_key) {
-                image.tag = new_tag.to_string();
-                self.images.insert(new_key, image);
-                Ok(())
-            } else {
-                Err(ContainerError::ImageNotFound(image_id.0.clone()))
-            }
+        if let Some((_, mut image)) = self.images.remove(&old_key) {
+            let new_key = format!("{}:{}", image.name, new_tag);
+            image.tag = new_tag.to_string();
+            self.images.insert(new_key, image);
+            Ok(())
         } else {
             Err(ContainerError::ImageNotFound(image_id.0.clone()))
         }

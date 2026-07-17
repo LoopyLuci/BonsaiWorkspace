@@ -1,12 +1,11 @@
-//! CLI
+//! CLI demo: process a sample tenant provisioning request through the module.
 
-use multi_tenancy_engine::Component;
+use multi_tenancy_engine::Enterprise;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+    let module = Enterprise::new();
+    let processed = module.process("sample-tenant-provisioning-request").await?;
+    println!("Processed: {}", processed);
     Ok(())
 }
