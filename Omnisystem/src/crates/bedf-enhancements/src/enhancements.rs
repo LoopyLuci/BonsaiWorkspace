@@ -14,7 +14,7 @@ pub struct EnhancementEngine {
 
 impl EnhancementEngine {
     pub fn new(config: super::EnhancementsConfig) -> Self {
-        let mut enhancements = vec![
+        let enhancements = vec![
             Enhancement {
                 id: 1,
                 name: "Resource-Aware Fuzzing".to_string(),
@@ -77,7 +77,7 @@ impl EnhancementEngine {
             },
         ];
 
-        enhancements
+        Self { enhancements }
     }
 
     pub fn list_enhancements(&self) -> Vec<Enhancement> {
@@ -91,6 +91,14 @@ impl EnhancementEngine {
             .cloned()
             .collect()
     }
+
+    pub fn get_by_id(&self, id: u32) -> Option<Enhancement> {
+        self.enhancements.iter().find(|e| e.id == id).cloned()
+    }
+
+    pub fn is_enabled(&self, name: &str) -> bool {
+        self.enhancements.iter().any(|e| e.name == name && e.enabled)
+    }
 }
 
 #[cfg(test)]
@@ -102,5 +110,37 @@ mod tests {
         let config = super::super::EnhancementsConfig::default();
         let engine = EnhancementEngine::new(config);
         assert_eq!(engine.list_enhancements().len(), 10);
+    }
+
+    #[test]
+    fn test_default_config_enables_everything() {
+        let config = super::super::EnhancementsConfig::default();
+        let engine = EnhancementEngine::new(config);
+        assert_eq!(engine.get_enabled().len(), 10);
+    }
+
+    #[test]
+    fn test_disabled_flag_excludes_specific_enhancement() {
+        let mut config = super::super::EnhancementsConfig::default();
+        config.enable_quantum_resistant = false;
+        config.enable_llm_fixes = false;
+
+        let engine = EnhancementEngine::new(config);
+        let enabled = engine.get_enabled();
+
+        assert_eq!(enabled.len(), 8);
+        assert!(!engine.is_enabled("Quantum-Resistant Fuzzing"));
+        assert!(!engine.is_enabled("LLM Fix Variants"));
+        assert!(engine.is_enabled("Resource-Aware Fuzzing"));
+    }
+
+    #[test]
+    fn test_get_by_id() {
+        let config = super::super::EnhancementsConfig::default();
+        let engine = EnhancementEngine::new(config);
+
+        let found = engine.get_by_id(3).unwrap();
+        assert_eq!(found.name, "Supply Chain Attack Detection");
+        assert!(engine.get_by_id(999).is_none());
     }
 }
