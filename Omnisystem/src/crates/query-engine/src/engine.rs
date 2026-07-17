@@ -1,6 +1,7 @@
 use crate::{Query, QueryStatus, QueryPlan, OptimizedPlan, ExecutionStats, IndexInfo, QueryError, QueryResult};
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -40,16 +41,34 @@ impl QueryEngine {
             return Err(QueryError::ExecutionFailed);
         }
 
+        let estimated_rows = Self::estimate_rows(&operations, estimated_cost);
+
         let plan = QueryPlan {
             plan_id: Uuid::new_v4(),
             query_id,
             operations,
             estimated_cost,
-            estimated_rows: 1000,
+            estimated_rows,
         };
 
         self.plans.insert(plan.plan_id, plan.clone());
         Ok(plan)
+    }
+
+    /// Derive a row-count estimate from the plan's operations and cost,
+    /// the way a real optimizer would use selectivity heuristics per
+    /// operator rather than a single constant regardless of the plan.
+    fn estimate_rows(operations: &[String], estimated_cost: f64) -> u64 {
+        let mut rows = (estimated_cost * 100.0).max(1.0);
+        for op in operations {
+            match op.as_str() {
+                "IndexScan" => rows *= 0.01,
+                "Filter" => rows *= 0.3,
+                "Join" => rows *= 2.0,
+                _ => {}
+            }
+        }
+        rows.round().max(1.0) as u64
     }
 
     pub async fn optimize_plan(&self, plan_id: Uuid) -> QueryResult<OptimizedPlan> {
@@ -72,18 +91,51 @@ impl QueryEngine {
         }
     }
 
+    /// Execute the query, using the most recent plan created for it (if
+    /// any) to derive real row-count estimates and checking the registered
+    /// index catalog for an index whose table appears in the SQL text,
+    /// rather than fabricating fixed numbers regardless of the query.
     pub async fn execute_query(&self, query_id: Uuid) -> QueryResult<ExecutionStats> {
-        if self.queries.get(&query_id).is_none() {
-            return Err(QueryError::ExecutionFailed);
-        }
+        let query = self
+            .queries
+            .get(&query_id)
+            .ok_or(QueryError::ExecutionFailed)?
+            .clone();
+
+        let started = Instant::now();
+
+        let plan = self
+            .plans
+            .iter()
+            .filter(|e| e.value().query_id == query_id)
+            .map(|e| e.value().clone())
+            .last();
+
+        let rows_examined = plan.as_ref().map(|p| p.estimated_rows).unwrap_or(0);
+
+        let index_used = self
+            .indexes
+            .iter()
+            .find(|idx| query.sql.contains(&idx.value().table_name))
+            .map(|idx| idx.value().index_name.clone());
+
+        // An index-assisted scan returns a much smaller fraction of the
+        // rows it examines than a full scan does.
+        let rows_returned = if index_used.is_some() {
+            ((rows_examined as f64) * 0.1).ceil() as u64
+        } else {
+            rows_examined
+        };
+
+        let execution_time_ms = started.elapsed().as_millis() as u64;
 
         let stats = ExecutionStats {
             stats_id: Uuid::new_v4(),
             query_id,
-            rows_examined: 1500,
-            rows_returned: 500,
-            execution_time_ms: 125,
-            index_used: Some("idx_primary".to_string()),
+            rows_examined,
+            rows_returned,
+            execution_time_ms,
+            index_used,
         };
 
         self.stats.insert(stats.stats_id, stats.clone());
@@ -161,5 +213,61 @@ mod tests {
 
         assert_eq!(index.index_name, "idx_user_id");
         assert_eq!(index.table_name, "users");
+    }
+
+    #[tokio::test]
+    async fn test_create_plan_estimated_rows_reflects_operations() {
+        let engine = QueryEngine::new();
+        let query = engine.submit_query("SELECT * FROM orders").await.unwrap();
+
+        let seq_scan = engine
+            .create_plan(query.query_id, vec!["SeqScan".to_string()], 100.0)
+            .await
+            .unwrap();
+        let index_scan = engine
+            .create_plan(query.query_id, vec!["IndexScan".to_string()], 100.0)
+            .await
+            .unwrap();
+
+        // An index scan should be estimated to touch far fewer rows than a
+        // sequential scan of the same estimated cost.
+        assert!(index_scan.estimated_rows < seq_scan.estimated_rows);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_uses_plan_and_index() {
+        let engine = QueryEngine::new();
+        let query = engine.submit_query("SELECT * FROM users WHERE id = 1").await.unwrap();
+        engine
+            .create_plan(query.query_id, vec!["IndexScan".to_string()], 10.0)
+            .await
+            .unwrap();
+        engine
+            .register_index("idx_users_id", "users", vec!["id".to_string()])
+            .await
+            .unwrap();
+
+        let stats = engine.execute_query(query.query_id).await.unwrap();
+        assert_eq!(stats.index_used.as_deref(), Some("idx_users_id"));
+        assert!(stats.rows_returned <= stats.rows_examined);
+        assert!(stats.rows_examined > 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_without_plan_or_index() {
+        let engine = QueryEngine::new();
+        let query = engine.submit_query("SELECT 1").await.unwrap();
+
+        let stats = engine.execute_query(query.query_id).await.unwrap();
+        assert_eq!(stats.rows_examined, 0);
+        assert_eq!(stats.rows_returned, 0);
+        assert!(stats.index_used.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_unknown_query_fails() {
+        let engine = QueryEngine::new();
+        let result = engine.execute_query(Uuid::new_v4()).await;
+        assert!(matches!(result, Err(QueryError::ExecutionFailed)));
     }
 }
