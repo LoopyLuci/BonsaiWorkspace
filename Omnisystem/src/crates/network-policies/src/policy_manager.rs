@@ -55,9 +55,40 @@ impl PolicyManager {
         Ok(())
     }
 
+    /// Look up a registered certificate and confirm it's actually marked
+    /// valid, rather than certificates being write-only (registered but
+    /// never checkable/consulted by anything).
+    pub async fn verify_certificate(&self, cert_id: Uuid) -> PolicyResult<Certificate> {
+        let cert = self.certificates.get(&cert_id).ok_or(PolicyError::CertificateInvalid)?;
+        if !cert.is_valid {
+            return Err(PolicyError::CertificateInvalid);
+        }
+        Ok(cert.clone())
+    }
+
     pub async fn create_network_segment(&self, segment: &NetworkSegment) -> PolicyResult<()> {
         self.segments.insert(segment.segment_id, segment.clone());
         Ok(())
+    }
+
+    pub async fn get_network_segment(&self, segment_id: Uuid) -> PolicyResult<NetworkSegment> {
+        self.segments.get(&segment_id).map(|s| s.clone()).ok_or(PolicyError::SegmentNotFound)
+    }
+
+    /// Determine whether traffic may cross between two network segments
+    /// based on their isolation levels: `Strict` segments never permit
+    /// cross-segment traffic (not even to another Strict segment) except
+    /// to themselves, while lower isolation levels are more permissive.
+    pub async fn segments_can_communicate(&self, segment_a_id: Uuid, segment_b_id: Uuid) -> PolicyResult<bool> {
+        let a = self.get_network_segment(segment_a_id).await?;
+        let b = self.get_network_segment(segment_b_id).await?;
+
+        if a.segment_id == b.segment_id {
+            return Ok(true);
+        }
+
+        let strictest = a.isolation_level.max(b.isolation_level);
+        Ok(strictest != IsolationLevel::Strict)
     }
 
     pub async fn set_access_control(&self, control: &AccessControl) -> PolicyResult<()> {
@@ -154,5 +185,89 @@ mod tests {
         manager.set_access_control(&control).await.unwrap();
         let allowed = manager.check_inter_service_access("frontend", "backend").await.unwrap();
         assert!(allowed);
+    }
+
+    #[tokio::test]
+    async fn test_verify_certificate_valid_and_invalid() {
+        let manager = PolicyManager::new();
+        let valid_cert = Certificate {
+            cert_id: Uuid::new_v4(),
+            common_name: "api.example.com".to_string(),
+            issuer: "Internal CA".to_string(),
+            valid_from: "2026-01-01".to_string(),
+            valid_to: "2027-01-01".to_string(),
+            is_valid: true,
+        };
+        let expired_cert = Certificate {
+            cert_id: Uuid::new_v4(),
+            common_name: "old.example.com".to_string(),
+            issuer: "Internal CA".to_string(),
+            valid_from: "2020-01-01".to_string(),
+            valid_to: "2021-01-01".to_string(),
+            is_valid: false,
+        };
+
+        manager.register_certificate(&valid_cert).await.unwrap();
+        manager.register_certificate(&expired_cert).await.unwrap();
+
+        assert!(manager.verify_certificate(valid_cert.cert_id).await.is_ok());
+        assert!(matches!(
+            manager.verify_certificate(expired_cert.cert_id).await,
+            Err(PolicyError::CertificateInvalid)
+        ));
+        assert!(matches!(
+            manager.verify_certificate(Uuid::new_v4()).await,
+            Err(PolicyError::CertificateInvalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_segments_can_communicate_respects_strict_isolation() {
+        let manager = PolicyManager::new();
+        let strict_segment = NetworkSegment {
+            segment_id: Uuid::new_v4(),
+            name: "payments".to_string(),
+            cidr: "10.0.1.0/24".to_string(),
+            isolation_level: IsolationLevel::Strict,
+        };
+        let low_segment = NetworkSegment {
+            segment_id: Uuid::new_v4(),
+            name: "public".to_string(),
+            cidr: "10.0.2.0/24".to_string(),
+            isolation_level: IsolationLevel::Low,
+        };
+
+        manager.create_network_segment(&strict_segment).await.unwrap();
+        manager.create_network_segment(&low_segment).await.unwrap();
+
+        // A Strict segment must not be able to talk to any other segment.
+        assert!(!manager
+            .segments_can_communicate(strict_segment.segment_id, low_segment.segment_id)
+            .await
+            .unwrap());
+        // But it can always talk to itself.
+        assert!(manager
+            .segments_can_communicate(strict_segment.segment_id, strict_segment.segment_id)
+            .await
+            .unwrap());
+        // Two non-strict segments may communicate.
+        let another_low = NetworkSegment {
+            segment_id: Uuid::new_v4(),
+            name: "dmz".to_string(),
+            cidr: "10.0.3.0/24".to_string(),
+            isolation_level: IsolationLevel::Medium,
+        };
+        manager.create_network_segment(&another_low).await.unwrap();
+        assert!(manager
+            .segments_can_communicate(low_segment.segment_id, another_low.segment_id)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_check_access_unknown_policy_fails() {
+        let manager = PolicyManager::new();
+        let result = manager.check_access("unknown_a", "unknown_b", 1).await;
+        assert!(matches!(result, Err(PolicyError::PolicyNotFound)));
     }
 }

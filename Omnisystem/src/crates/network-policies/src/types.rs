@@ -45,7 +45,7 @@ pub struct NetworkSegment {
     pub isolation_level: IsolationLevel,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub enum IsolationLevel {
     Low,
     Medium,
