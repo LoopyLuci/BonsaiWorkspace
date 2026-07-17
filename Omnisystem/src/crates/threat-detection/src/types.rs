@@ -12,7 +12,7 @@ pub struct SecurityEvent {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub enum EventType {
     UnauthorizedAccess,
     DataExfiltration,
