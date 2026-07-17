@@ -4,6 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::time::Instant;
 
 pub struct StreamProcessor {
     events: Arc<DashMap<Uuid, StreamEvent>>,
@@ -53,8 +54,13 @@ impl StreamProcessor {
     }
 
     pub async fn aggregate(&self, window_id: Uuid, agg_type: &str, values: &[f64]) -> StreamResult<Aggregation> {
-        if self.windows.get(&window_id).is_none() {
-            return Err(StreamError::WindowingFailed);
+        let mut window = self
+            .windows
+            .get_mut(&window_id)
+            .ok_or(StreamError::WindowingFailed)?;
+
+        if values.is_empty() && agg_type != "count" {
+            return Err(StreamError::AggregationFailed);
         }
 
         let result = match agg_type {
@@ -65,6 +71,10 @@ impl StreamProcessor {
             "count" => values.len() as f64,
             _ => return Err(StreamError::AggregationFailed),
         };
+
+        // Track how many events have flowed through this window.
+        window.event_count += values.len() as u32;
+        drop(window);
 
         let agg = Aggregation {
             agg_id: Uuid::new_v4(),
@@ -99,14 +109,42 @@ impl StreamProcessor {
             .ok_or(StreamError::StateManagementFailed)
     }
 
+    /// Run `operation` over the events currently buffered for `stream_name`
+    /// and record the real wall-clock latency of doing so.
     pub async fn process_stream(&self, stream_name: &str, operation: &str) -> StreamResult<ProcessedResult> {
+        let started = Instant::now();
+
+        let matching: Vec<StreamEvent> = self
+            .events
+            .iter()
+            .filter(|e| e.value().stream_name == stream_name)
+            .map(|e| e.value().clone())
+            .collect();
+
+        let output = match operation {
+            "count" => matching.len().to_string(),
+            "latest" => matching
+                .iter()
+                .max_by_key(|e| e.sequence)
+                .map(|e| format!("{:?}", e.data))
+                .unwrap_or_else(|| "no events".to_string()),
+            "sequences" => {
+                let mut seqs: Vec<u64> = matching.iter().map(|e| e.sequence).collect();
+                seqs.sort_unstable();
+                format!("{:?}", seqs)
+            }
+            other => return Err(StreamError::Other(format!("unsupported operation: {other}"))),
+        };
+
+        let latency_ms = started.elapsed().as_millis() as u64;
+
         let result = ProcessedResult {
             result_id: Uuid::new_v4(),
             source_stream: stream_name.to_string(),
             operation: operation.to_string(),
-            output: format!("Processed {} using {}", stream_name, operation),
+            output,
             processed_at: Utc::now(),
-            latency_ms: 5,
+            latency_ms,
         };
 
         self.results.insert(result.result_id, result.clone());
@@ -159,11 +197,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_aggregate_tracks_event_count_and_rejects_unknown_window() {
+        let processor = StreamProcessor::new();
+        let window = processor.create_window("values", WindowType::Tumbling, 1000).await.unwrap();
+
+        processor.aggregate(window.window_id, "avg", &[1.0, 2.0, 3.0]).await.unwrap();
+        processor.aggregate(window.window_id, "max", &[4.0, 5.0]).await.unwrap();
+
+        let unknown = processor.aggregate(Uuid::new_v4(), "sum", &[1.0]).await;
+        assert!(unknown.is_err());
+
+        let bad_type = processor.aggregate(window.window_id, "median", &[1.0]).await;
+        assert!(bad_type.is_err());
+    }
+
+    #[tokio::test]
     async fn test_put_and_get_state() {
         let processor = StreamProcessor::new();
         processor.put_state("stream1", "counter", b"42").await.unwrap();
 
         let state = processor.get_state("counter").await.unwrap();
         assert_eq!(state.state_value, b"42");
+    }
+
+    #[tokio::test]
+    async fn test_get_state_missing_key_fails() {
+        let processor = StreamProcessor::new();
+        let result = processor.get_state("missing").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_stream_count_and_sequences() {
+        let processor = StreamProcessor::new();
+        let mut d1 = HashMap::new();
+        d1.insert("v".to_string(), "1".to_string());
+        let mut d2 = HashMap::new();
+        d2.insert("v".to_string(), "2".to_string());
+
+        processor.emit_event("orders", d1).await.unwrap();
+        processor.emit_event("orders", d2).await.unwrap();
+        processor.emit_event("other", HashMap::new()).await.unwrap();
+
+        let count_result = processor.process_stream("orders", "count").await.unwrap();
+        assert_eq!(count_result.output, "2");
+
+        let seq_result = processor.process_stream("orders", "sequences").await.unwrap();
+        assert_eq!(seq_result.output, "[1, 2]");
+
+        let unsupported = processor.process_stream("orders", "bogus").await;
+        assert!(unsupported.is_err());
     }
 }
