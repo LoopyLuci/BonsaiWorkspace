@@ -309,9 +309,9 @@ async fn mgmt_swarm_submit(
 
     // Run swarm via the orchestrator — fire workers, collect results
     let run_id: String = {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        rand::thread_rng()
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
+        rand::rng()
             .sample_iter(&Alphanumeric)
             .take(12)
             .map(char::from)

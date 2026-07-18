@@ -1,7 +1,7 @@
 use crate::error::Result;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
@@ -119,8 +119,8 @@ impl fmt::Debug for DeviceIdentity {
 impl DeviceIdentity {
     /// Generate new device identity
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
-        let secret_bytes: [u8; 32] = rng.gen();
+        let mut rng = rand::rng();
+        let secret_bytes: [u8; 32] = rng.random();
         let secret_key = StaticSecret::from(secret_bytes);
         let public_key = PublicKey::from(&secret_key);
 

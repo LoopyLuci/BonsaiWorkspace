@@ -81,9 +81,11 @@ fn generate_invitation_code() -> String {
         "wolf", "hawk", "deer", "fish", "bird", "star", "moon", "sun", "wind", "rain", "snow",
         "fire", "stone",
     ];
-    let a = WORDS[rand::random::<usize>() % WORDS.len()];
-    let b = WORDS[rand::random::<usize>() % WORDS.len()];
-    let n = rand::random::<u16>() % 10000;
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let a = WORDS[rng.random_range(0..WORDS.len())];
+    let b = WORDS[rng.random_range(0..WORDS.len())];
+    let n = rng.random::<u16>() % 10000;
     format!("{a}-{b}-{n:04}")
 }
 

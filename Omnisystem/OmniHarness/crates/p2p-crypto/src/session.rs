@@ -10,7 +10,7 @@
 //! API stabilises. X25519 alone provides 128-bit classical security.
 
 use crate::error::CryptoResult;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 use zeroize::Zeroize;

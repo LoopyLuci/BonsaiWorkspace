@@ -905,9 +905,9 @@ pub async fn run_assistant_turn(
 
     // Build ToolContext for this turn.
     let turn_id = {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        rand::thread_rng()
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
+        rand::rng()
             .sample_iter(&Alphanumeric)
             .take(16)
             .map(char::from)
@@ -1838,9 +1838,9 @@ async fn run_plain_turn(
         .map_err(|_| "inference channel closed".to_string())??;
 
     let plain_turn_id = {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        rand::thread_rng()
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
+        rand::rng()
             .sample_iter(&Alphanumeric)
             .take(16)
             .map(char::from)

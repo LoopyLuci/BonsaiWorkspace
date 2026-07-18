@@ -1,5 +1,5 @@
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, RngExt};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ fn now_ms() -> u64 {
 }
 
 fn new_session_id() -> String {
-    let rand_tail: String = thread_rng()
+    let rand_tail: String = rng()
         .sample_iter(&Alphanumeric)
         .take(8)
         .map(char::from)

@@ -405,9 +405,9 @@ fn default_tool_context() -> crate::tool_core::ToolContext {
 }
 
 fn uuid_short() -> String {
-    use rand::distributions::Alphanumeric;
-    use rand::Rng;
-    rand::thread_rng()
+    use rand::distr::Alphanumeric;
+    use rand::RngExt;
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(12)
         .map(char::from)

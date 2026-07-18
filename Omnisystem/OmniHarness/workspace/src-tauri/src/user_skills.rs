@@ -48,9 +48,9 @@ fn sanitize_skill_args(s: &str) -> String {
 }
 
 fn new_id() -> String {
-    use rand::distributions::Alphanumeric;
-    use rand::Rng;
-    rand::thread_rng()
+    use rand::distr::Alphanumeric;
+    use rand::RngExt;
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(16)
         .map(char::from)

@@ -980,9 +980,9 @@ impl Tool for RandomBytesTool {
     }
     async fn run(&self, args: &Value) -> Result<ToolResult, String> {
         let n = args["count"].as_u64().unwrap_or(16).min(1024) as usize;
-        use rand::RngCore;
+        use rand::Rng;
         let mut bytes = vec![0u8; n];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         Ok(ToolResult::json(&json!({ "bytes": hex, "count": n })))
     }

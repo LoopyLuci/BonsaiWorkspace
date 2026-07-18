@@ -416,9 +416,9 @@ fn unix_now() -> i64 {
 }
 
 fn uuid() -> String {
-    use rand::distributions::Alphanumeric;
-    use rand::Rng;
-    rand::thread_rng()
+    use rand::distr::Alphanumeric;
+    use rand::RngExt;
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(16)
         .map(char::from)

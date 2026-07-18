@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
@@ -128,7 +128,7 @@ impl Slot {
     fn new(index: usize) -> Self {
         // Find a free port by trying to bind; avoids port collision race conditions
         let port = loop {
-            let candidate = rand::thread_rng().gen_range(30_000u16..50_000u16);
+            let candidate = rand::rng().random_range(30_000u16..50_000u16);
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)) {
                 // Port is free; drop listener to release the binding
                 drop(listener);

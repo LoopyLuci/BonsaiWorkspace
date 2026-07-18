@@ -174,7 +174,7 @@ impl AndroidBridge {
         );
 
         // In production, would sign with proper key infrastructure
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
         token.sign(signing_key)?;
 
         self.capability_registry.issue_token(token.clone())?;

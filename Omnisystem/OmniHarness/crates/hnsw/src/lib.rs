@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -175,8 +175,8 @@ impl HnswIndex {
     }
 
     fn random_layer(&self) -> usize {
-        let mut rng = rand::thread_rng();
-        let r: f64 = rng.r#gen::<f64>();
+        let mut rng = rand::rng();
+        let r: f64 = rng.random::<f64>();
         (-r.ln() * self.ml).floor() as usize
     }
 

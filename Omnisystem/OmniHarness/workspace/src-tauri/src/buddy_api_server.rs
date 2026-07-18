@@ -533,7 +533,7 @@ fn default_profile() -> AssistantProfile {
 }
 
 fn gen_id() -> String {
-    use rand::Rng;
-    let b: [u8; 8] = rand::thread_rng().gen();
+    use rand::RngExt;
+    let b: [u8; 8] = rand::rng().random();
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
