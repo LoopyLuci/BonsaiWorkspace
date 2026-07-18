@@ -105,9 +105,9 @@ impl AuthStore {
     }
 
     fn random_key() -> String {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let bytes: Vec<u8> = (0..32).map(|_| rng.random::<u8>()).collect();
         hex::encode(bytes)
     }
 
