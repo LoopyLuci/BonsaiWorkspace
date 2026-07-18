@@ -52,7 +52,7 @@ async fn compute_sha256(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&data);
     let result = hasher.finalize();
-    Ok(format!("{:x}", result))
+    Ok(hex::encode(result))
 }
 
 /// Load checksums from checksums.json. Returns empty map if file not found.
@@ -494,7 +494,7 @@ async fn download_and_extract(
             step(app, tag, 86, "Verifying SHA-256…");
             let mut hasher = Sha256::new();
             hasher.update(&buf);
-            let actual_hash = format!("{:x}", hasher.finalize());
+            let actual_hash = hex::encode(hasher.finalize());
 
             if actual_hash != *expected_hash {
                 return Err(anyhow::anyhow!(
@@ -680,7 +680,7 @@ async fn stream_file(
         let checksums = load_checksums().await.unwrap_or_default();
         if let Some(expected_hash) = checksums.get(tag) {
             step(app, tag, 95, "Verifying SHA-256…");
-            let actual_hash = format!("{:x}", hasher.finalize());
+            let actual_hash = hex::encode(hasher.finalize());
 
             if actual_hash != *expected_hash {
                 // Delete the file on mismatch
