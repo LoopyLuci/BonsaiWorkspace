@@ -81,12 +81,12 @@ impl Mutator {
     }
 
     fn random_json(&mut self) -> serde_json::Value {
-        let n = self.rng.gen_range(0..6);
+        let n = self.rng.random_range(0..6);
         match n {
             0 => serde_json::Value::Null,
-            1 => serde_json::Value::Bool(self.rng.gen()),
-            2 => serde_json::Value::Number(serde_json::Number::from(self.rng.gen::<i64>())),
-            3 => { let len = self.rng.gen_range(0..4096); serde_json::Value::String(self.random_string(len)) }
+            1 => serde_json::Value::Bool(self.rng.random()),
+            2 => serde_json::Value::Number(serde_json::Number::from(self.rng.random::<i64>())),
+            3 => { let len = self.rng.random_range(0..4096); serde_json::Value::String(self.random_string(len)) }
             4 => serde_json::json!([]),
             _ => serde_json::json!({}),
         }
@@ -103,7 +103,7 @@ impl Mutator {
             serde_json::Value::String("\0".to_string()),
             serde_json::Value::String("\u{FEFF}".to_string()), // BOM
         ];
-        boundaries[self.rng.gen_range(0..boundaries.len())].clone()
+        boundaries[self.rng.random_range(0..boundaries.len())].clone()
     }
 
     fn path_traversal_json(&mut self) -> serde_json::Value {
@@ -117,7 +117,7 @@ impl Mutator {
             "\x00malicious",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ];
-        let idx = self.rng.gen_range(0..payloads.len());
+        let idx = self.rng.random_range(0..payloads.len());
         serde_json::Value::String(payloads[idx].to_string())
     }
 
@@ -130,11 +130,11 @@ impl Mutator {
             serde_json::json!({"content": {"nested": "object"}}),
             serde_json::json!({"enabled": "yes"}),  // expects bool
         ];
-        wrong_types[self.rng.gen_range(0..wrong_types.len())].clone()
+        wrong_types[self.rng.random_range(0..wrong_types.len())].clone()
     }
 
     fn random_string(&mut self, len: usize) -> String {
-        (0..len).map(|_| self.rng.gen::<char>()).collect()
+        (0..len).map(|_| self.rng.random::<char>()).collect()
     }
 
     pub fn feedback(&mut self, _coverage_delta: f64) {

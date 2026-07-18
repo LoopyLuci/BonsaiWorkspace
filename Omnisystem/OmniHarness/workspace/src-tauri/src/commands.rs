@@ -6977,13 +6977,13 @@ mod tests {
 
     // ── Connection / pairing ────────────────────────────────────────────────
 
-    /// Token generation logic: rand::thread_rng + Alphanumeric produces an
+    /// Token generation logic: rand::rng + Alphanumeric produces an
     /// 8-char alphanumeric string.  Test the shape, not the exact value.
     #[test]
     fn pair_token_format() {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        let token: String = rand::thread_rng()
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
+        let token: String = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(8)
             .map(char::from)

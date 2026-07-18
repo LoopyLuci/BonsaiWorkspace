@@ -25,7 +25,7 @@ impl GoNet {
         let board = 19usize;
         let in_features = 17 * board * board;
         let policy_size = board * board;
-        let mut rng = StdRng::from_entropy();
+        let mut rng = rand::rng();
 
         let mut w1 = vec![0.0f32; hidden * in_features];
         let b1 = vec![0.0f32; hidden];

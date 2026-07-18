@@ -30,8 +30,8 @@ impl WhisperManager {
     /// fail gracefully until bootstrap completes and the app reloads.
     pub fn new(app: &AppHandle) -> Self {
         let port: u16 = {
-            use rand::Rng;
-            rand::thread_rng().gen_range(40_000u16..50_000u16)
+            use rand::RngExt;
+            rand::rng().random_range(40_000u16..50_000u16)
         };
         let url = format!("http://127.0.0.1:{}", port);
 

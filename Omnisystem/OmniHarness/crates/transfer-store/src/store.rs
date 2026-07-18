@@ -3,7 +3,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -103,8 +103,8 @@ impl EncryptedStore {
     fn encrypt(&self, plaintext: &[u8]) -> StoreResult<Vec<u8>> {
         let mut salt = [0u8; SALT_LEN];
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut salt);
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut nonce_bytes);
 
         let key_raw = self.derive_key(&salt)?;
         let key = Key::<Aes256Gcm>::from_slice(key_raw.as_ref());

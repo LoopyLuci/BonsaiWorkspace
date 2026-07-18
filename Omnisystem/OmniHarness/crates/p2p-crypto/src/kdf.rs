@@ -7,8 +7,8 @@ use crate::error::{CryptoError, CryptoResult};
 use crate::identity::WorkspaceIdentity;
 use argon2::{Algorithm, Argon2, Params, Version};
 use bip39::{Language, Mnemonic};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand_core::OsRng;
+use rand_core::RngCore;
 
 // Argon2id parameters — balanced for desktop security vs. speed.
 // Production: memory=65536 KiB (64 MiB), t_cost=3, p_cost=4

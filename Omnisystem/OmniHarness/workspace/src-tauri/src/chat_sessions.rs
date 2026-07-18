@@ -766,8 +766,8 @@ fn uuid() -> String {
 }
 
 fn rand_hex(n: usize) -> String {
-    use rand::Rng;
-    let bytes: Vec<u8> = (0..n).map(|_| rand::thread_rng().gen::<u8>()).collect();
+    use rand::RngExt;
+    let bytes: Vec<u8> = (0..n).map(|_| rand::rng().random::<u8>()).collect();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

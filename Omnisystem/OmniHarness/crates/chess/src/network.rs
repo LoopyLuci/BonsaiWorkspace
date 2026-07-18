@@ -12,7 +12,7 @@
 
 use crate::mcts::{BoardEvaluator, MaterialEvaluator};
 use crate::position::ChessPosition;
-use rand::Rng;
+use rand::RngExt;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -50,21 +50,21 @@ pub struct ChessNetWeights {
 impl ChessNetWeights {
     /// Xavier/He initialization — good starting point for ReLU activations.
     pub fn random() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let he1 = (2.0_f32 / INPUT_SIZE as f32).sqrt();
         let hep = (2.0_f32 / HIDDEN_SIZE as f32).sqrt();
         let hev = (2.0_f32 / HIDDEN_SIZE as f32).sqrt();
 
         let w1: Vec<f32> = (0..W1_LEN)
-            .map(|_| rng.gen::<f32>() * 2.0 * he1 - he1)
+            .map(|_| rng.random::<f32>() * 2.0 * he1 - he1)
             .collect();
         let b1 = vec![0.0f32; B1_LEN];
         let wp: Vec<f32> = (0..WP_LEN)
-            .map(|_| rng.gen::<f32>() * 2.0 * hep - hep)
+            .map(|_| rng.random::<f32>() * 2.0 * hep - hep)
             .collect();
         let bp = vec![0.0f32; BP_LEN];
         let wv: Vec<f32> = (0..WV_LEN)
-            .map(|_| rng.gen::<f32>() * 2.0 * hev - hev)
+            .map(|_| rng.random::<f32>() * 2.0 * hev - hev)
             .collect();
         let bv = vec![0.5f32; BV_LEN];
         Self {

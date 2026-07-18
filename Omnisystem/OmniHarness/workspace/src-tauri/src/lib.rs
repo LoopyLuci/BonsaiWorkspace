@@ -756,9 +756,9 @@ pub fn run() {
             let agent_connect = Arc::new(StdMutex::new(agent_connect::AgentConnectHub::new()));
 
             // Generate an 8-char alphanumeric pairing token for Android / VSCode.
-            use rand::distributions::Alphanumeric;
-            use rand::Rng;
-            let pair_token: String = rand::thread_rng()
+            use rand::distr::Alphanumeric;
+            use rand::RngExt;
+            let pair_token: String = rand::rng()
                 .sample_iter(&Alphanumeric)
                 .take(8)
                 .map(char::from)

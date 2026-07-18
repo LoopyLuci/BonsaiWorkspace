@@ -629,9 +629,9 @@ impl ConfirmationGate {
 
     /// Register a pending confirmation. Returns the single-use token.
     pub fn register(&self, tool: &str, args: Value) -> String {
-        use rand::distributions::Alphanumeric;
-        use rand::Rng;
-        let token: String = rand::thread_rng()
+        use rand::distr::Alphanumeric;
+        use rand::RngExt;
+        let token: String = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(32)
             .map(char::from)
