@@ -1,4 +1,5 @@
-use crate::{AppId, Version, Result};
+use crate::types::{AppId, Version};
+use crate::error::AppManagerResult as Result;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;

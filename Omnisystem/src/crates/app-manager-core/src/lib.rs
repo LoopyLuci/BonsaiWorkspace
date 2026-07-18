@@ -12,6 +12,13 @@ pub mod dependency;
 pub mod discovery;
 pub mod search;
 pub mod resolver;
+pub mod types;
+pub mod module_lifecycle;
+pub mod dependency_graph;
+pub mod app_state;
+pub mod app_metadata;
+pub mod version_manager;
+pub mod module_resolver;
 
 pub use app::{AppId, AppManifest, RegisteredApp, PublisherId};
 pub use module::{ModuleId, ModuleManifest, RegisteredModule, ModuleType, ModuleStatus};

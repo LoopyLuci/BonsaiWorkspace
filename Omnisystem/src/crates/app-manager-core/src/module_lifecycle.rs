@@ -1,4 +1,5 @@
-use crate::{AppId, ModuleState, Result, AppManagerError};
+use crate::types::{AppId, ModuleState};
+use crate::error::{AppManagerError, AppManagerResult as Result};
 use dashmap::DashMap;
 use std::sync::Arc;
 use chrono::Utc;
@@ -87,6 +88,7 @@ impl ModuleLifecycleManager {
                 | (ModuleState::Stopped, ModuleState::Running)
                 | (ModuleState::Loaded, ModuleState::Unloading)
                 | (ModuleState::Running, ModuleState::Unloading)
+                | (ModuleState::Stopped, ModuleState::Unloading)
                 | (ModuleState::Unloading, ModuleState::Unloaded)
                 | (ModuleState::Unloaded, ModuleState::Loading)
                 | (_, ModuleState::Failed)
@@ -246,6 +248,28 @@ mod tests {
 
         let state = manager.get_state(&app_id).unwrap();
         assert_eq!(state, ModuleState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_unload_from_stopped() {
+        // unload()'s own precondition allows Loaded | Running | Stopped, so a
+        // module that was started and then stopped must still be unloadable --
+        // (Stopped, Unloading) has to be a legal transition too.
+        let manager = ModuleLifecycleManager::new();
+        let app_id = AppId::new("test-app").unwrap();
+
+        manager.register_module(app_id.clone()).unwrap();
+        manager.download(&app_id).await.unwrap();
+        manager.verify(&app_id).await.unwrap();
+        manager.install(&app_id).await.unwrap();
+        manager.load(&app_id).await.unwrap();
+        manager.start(&app_id).await.unwrap();
+        manager.stop(&app_id).await.unwrap();
+
+        assert_eq!(manager.get_state(&app_id).unwrap(), ModuleState::Stopped);
+
+        manager.unload(&app_id).await.unwrap();
+        assert_eq!(manager.get_state(&app_id).unwrap(), ModuleState::Unloaded);
     }
 
     #[tokio::test]
