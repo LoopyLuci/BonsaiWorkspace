@@ -166,7 +166,7 @@ impl AuditLog {
 fn hash_args(args_json: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(args_json.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn now_ms() -> i64 {

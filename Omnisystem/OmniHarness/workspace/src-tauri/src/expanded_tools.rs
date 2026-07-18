@@ -793,12 +793,12 @@ impl Tool for HashTool {
             "sha256" => {
                 let mut h = sha2::Sha256::new();
                 h.update(input.as_bytes());
-                format!("{:x}", h.finalize())
+                hex::encode(h.finalize())
             }
             "sha512" => {
                 let mut h = sha2::Sha512::new();
                 h.update(input.as_bytes());
-                format!("{:x}", h.finalize())
+                hex::encode(h.finalize())
             }
             "sha1" => sha1_hex(input.as_bytes()),
             _ => return Err(format!("Unknown algorithm: {algorithm}")),

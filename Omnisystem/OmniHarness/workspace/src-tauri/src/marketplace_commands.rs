@@ -231,7 +231,7 @@ pub async fn install_skill_from_marketplace(
         .decode(&asset.install_hint)
         .map_err(|e| format!("Invalid WASM payload: {e}"))?;
 
-    let wasm_hash = format!("{:x}", sha2::Sha256::digest(&wasm_bytes));
+    let wasm_hash = hex::encode(sha2::Sha256::digest(&wasm_bytes));
     if wasm_hash != asset.cid {
         return Err(format!("WASM integrity check failed: hash mismatch"));
     }

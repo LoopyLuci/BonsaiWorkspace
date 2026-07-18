@@ -75,8 +75,7 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; KEY_LEN] {
 
 fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
     // Single-block PBKDF2 (output ≤ 32 bytes, one PRF block is sufficient)
-    use hmac::Hmac;
-    use sha2::digest::Mac;
+    use hmac::{Hmac, KeyInit, Mac};
     type HmacSha256 = Hmac<Sha256>;
 
     let mut u = {
@@ -557,7 +556,7 @@ pub async fn verify_backup(zip_path: &str, passphrase: Option<&str>) -> Result<b
 fn hex_sha256(data: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(data);
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 fn now_ms() -> i64 {

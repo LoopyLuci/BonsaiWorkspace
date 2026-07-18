@@ -619,7 +619,7 @@ fn scan_skill_content(content: &str) -> SecurityAssessment {
 fn sha256_hex(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn unix_ms() -> i64 {
