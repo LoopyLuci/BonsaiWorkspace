@@ -403,7 +403,7 @@
           ],
         };
       },
-      freeInlineCompletions: () => {
+      disposeInlineCompletions: () => {
         // no-op
       },
     };
