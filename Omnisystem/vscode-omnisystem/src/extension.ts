@@ -64,7 +64,7 @@ const APP_MANIFEST_NAMES = ['app.omnisystem.toml', 'app.bonsai.toml'] as const;
 // ─── Module-level state ───────────────────────────────────────────────────────
 
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel;
+let outputChannel: vscode.LogOutputChannel;
 let statusBarMain: vscode.StatusBarItem;
 let statusBarLsp: vscode.StatusBarItem;
 let statusBarPlatform: vscode.StatusBarItem;
@@ -92,7 +92,7 @@ function workspaceRoot(): string | undefined {
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     extensionContext = ctx;
 
-    outputChannel = vscode.window.createOutputChannel('Omnisystem');
+    outputChannel = vscode.window.createOutputChannel('Omnisystem', { log: true });
     ctx.subscriptions.push(outputChannel);
     outputChannel.appendLine('Omnisystem extension activating...');
     outputChannel.show(false);
