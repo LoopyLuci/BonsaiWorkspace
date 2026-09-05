@@ -68,7 +68,17 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str, file: &'a str) -> Self {
-        let chars: Vec<char> = src.chars().collect();
+        // Normalize CRLF/lone-CR to LF up front so every `\n`-based check
+        // downstream (blank-line detection in `measure_indent`, comment
+        // scanning, etc.) doesn't have to special-case a trailing '\r' --
+        // a CRLF blank line was previously misread as a zero-width
+        // indentation line, corrupting the indent stack.
+        let normalized: String = if src.contains('\r') {
+            src.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            src.to_string()
+        };
+        let chars: Vec<char> = normalized.chars().collect();
         Lexer { chars, i: 0, line: 1, col: 1, file, indents: vec![0], bracket_depth: 0, at_line_start: true }
     }
 
