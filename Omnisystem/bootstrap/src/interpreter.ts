@@ -16,8 +16,12 @@ import { callBuiltinMethod, staticBuiltin, isEnumCtorPath } from './builtins.ts'
 
 // ── control-flow signals ─────────────────────────────────────────────────────
 class ReturnSignal { value: Value; constructor(value: Value) { this.value = value; } }
-class BreakSignal { value: Value; constructor(value: Value) { this.value = value; } }
-class ContinueSignal {}
+// `label` is null for unlabeled break/continue (always targets the innermost
+// loop) or the target label's name (e.g. "outer" for `break 'outer`) — a
+// loop only swallows a labeled signal that names it, and rethrows otherwise
+// so it keeps unwinding through intermediate loop frames.
+class BreakSignal { value: Value; label: string | null; constructor(value: Value, label: string | null) { this.value = value; this.label = label; } }
+class ContinueSignal { label: string | null; constructor(label: string | null) { this.label = label; } }
 
 export interface RunResult {
   exitCode: number;
@@ -36,6 +40,10 @@ export class Interpreter {
   enumVariants = new Map<string, string>(); // variantName -> enumName (for bare ctors)
   assocConsts = new Map<string, Value>();   // "Type::NAME" -> value
   out: string[] = [];
+  // The declared error type name (`E` in `Result<_, E>`) of the innermost
+  // function call currently executing, if its return type declares one.
+  // Consulted by `?` to auto-convert a mismatched error type via `From`.
+  errTypeStack: (string | null)[] = [];
 
   constructor(file: string, source: string) {
     this.file = file;
@@ -109,11 +117,17 @@ export class Interpreter {
       env.set(p.name, args[ai++] ?? UNIT);
     }
     if (!fn.body) this.rt(`function \`${fn.name}\` has no body`, fn.span);
+    // `Result<_, E>` return type declares the error type `?` should convert
+    // propagated errors into (via `From`) for the duration of this call.
+    const errTy = (fn.ret && fn.ret.name === 'Result' && fn.ret.args[1]) ? fn.ret.args[1].name : null;
+    this.errTypeStack.push(errTy);
     try {
       return this.evalBlock(fn.body, env);
     } catch (e) {
       if (e instanceof ReturnSignal) return e.value;
       throw e;
+    } finally {
+      this.errTypeStack.pop();
     }
   }
 
@@ -182,8 +196,8 @@ export class Interpreter {
       case 'loop': return this.evalLoop(e, env);
       case 'blockExpr': return this.evalBlock(e.block, env);
       case 'return': throw new ReturnSignal(e.value ? this.eval(e.value, env) : UNIT);
-      case 'break': throw new BreakSignal(e.value ? this.eval(e.value, env) : UNIT);
-      case 'continue': throw new ContinueSignal();
+      case 'break': throw new BreakSignal(e.value ? this.eval(e.value, env) : UNIT, e.label);
+      case 'continue': throw new ContinueSignal(e.label);
       case 'structLit': return this.evalStructLit(e, env);
       case 'array': return this.evalArray(e, env);
       case 'tuple': return { t: 'tuple', items: e.elems.map((x) => this.eval(x, env)) };
@@ -497,6 +511,13 @@ export class Interpreter {
     this.rt(`no match arm covered value ${debug(v)}`, e.span, 'add a catch-all `_ => ...` arm');
   }
 
+  // A break/continue with no label always targets the innermost loop; one
+  // with a label only stops here if it names this loop, otherwise it must
+  // keep propagating outward to the enclosing loop that owns that label.
+  private labelMatches(sigLabel: string | null, myLabel: string | null): boolean {
+    return sigLabel === null || sigLabel === myLabel;
+  }
+
   private evalWhile(e: A.WhileExpr, env: Env): Value {
     for (;;) {
       if (e.letPat) {
@@ -504,11 +525,19 @@ export class Interpreter {
         const scope = env.child();
         if (!this.matchPattern(e.letPat, v, scope)) break;
         try { this.evalBlock(e.body, scope); }
-        catch (sig) { if (sig instanceof BreakSignal) break; if (sig instanceof ContinueSignal) continue; throw sig; }
+        catch (sig) {
+          if (sig instanceof BreakSignal) { if (this.labelMatches(sig.label, e.label)) break; throw sig; }
+          if (sig instanceof ContinueSignal) { if (this.labelMatches(sig.label, e.label)) continue; throw sig; }
+          throw sig;
+        }
       } else {
         if (!isTruthy(this.eval(e.cond, env))) break;
         try { this.evalBlock(e.body, env); }
-        catch (sig) { if (sig instanceof BreakSignal) break; if (sig instanceof ContinueSignal) continue; throw sig; }
+        catch (sig) {
+          if (sig instanceof BreakSignal) { if (this.labelMatches(sig.label, e.label)) break; throw sig; }
+          if (sig instanceof ContinueSignal) { if (this.labelMatches(sig.label, e.label)) continue; throw sig; }
+          throw sig;
+        }
       }
     }
     return UNIT;
@@ -521,7 +550,11 @@ export class Interpreter {
       const scope = env.child();
       this.bindPattern(e.pat, it, scope, true);
       try { this.evalBlock(e.body, scope); }
-      catch (sig) { if (sig instanceof BreakSignal) break; if (sig instanceof ContinueSignal) continue; throw sig; }
+      catch (sig) {
+        if (sig instanceof BreakSignal) { if (this.labelMatches(sig.label, e.label)) break; throw sig; }
+        if (sig instanceof ContinueSignal) { if (this.labelMatches(sig.label, e.label)) continue; throw sig; }
+        throw sig;
+      }
     }
     return UNIT;
   }
@@ -545,8 +578,8 @@ export class Interpreter {
     for (;;) {
       try { this.evalBlock(e.body, env); }
       catch (sig) {
-        if (sig instanceof BreakSignal) return sig.value;
-        if (sig instanceof ContinueSignal) continue;
+        if (sig instanceof BreakSignal) { if (this.labelMatches(sig.label, e.label)) return sig.value; throw sig; }
+        if (sig instanceof ContinueSignal) { if (this.labelMatches(sig.label, e.label)) continue; throw sig; }
         throw sig;
       }
     }
@@ -582,13 +615,37 @@ export class Interpreter {
     const v = this.eval(e.expr, env);
     if (v.t === 'enum' && v.enumName === 'Result') {
       if (v.variant === 'Ok') return v.payload[0];
-      throw new ReturnSignal(v); // propagate Err
+      throw new ReturnSignal(this.convertPropagatedErr(v.payload[0])); // propagate Err, converted via From if needed
     }
     if (v.t === 'enum' && v.enumName === 'Option') {
       if (v.variant === 'Some') return v.payload[0];
       throw new ReturnSignal(NONE);
     }
     this.rt('the `?` operator can only be applied to Result or Option', e.span);
+  }
+
+  // Implements `?`'s Rust-idiomatic error conversion: if the enclosing
+  // function declares `-> Result<_, E>` and the propagated error's type
+  // differs from `E`, look for `impl From<SourceErr> for E { fn from(..) }`
+  // and apply it — matching Rust's automatic `?` + `From` conversion so
+  // callers don't need `.map_err(...)` at every function boundary.
+  //
+  // Limitation: the method table is keyed by (target type, method name)
+  // only, not by source-parameter type, so if `E` has more than one `impl
+  // From<X> for E` the most-recently-registered `from` wins rather than
+  // dispatching on the actual source type. Fine for the common one-`From`
+  // case; multi-source `From` would need a richer method table.
+  private convertPropagatedErr(errVal: Value): Value {
+    const targetTy = this.errTypeStack[this.errTypeStack.length - 1];
+    if (!targetTy) return err(errVal);
+    if (this.typeNameOf(errVal) === targetTy) return err(errVal);
+    const fromFn = this.methods.get(targetTy)?.get('from');
+    if (!fromFn) return err(errVal); // no conversion registered — propagate unchanged
+    try {
+      return err(this.callFn(fromFn, [errVal], null));
+    } catch {
+      return err(errVal);
+    }
   }
 
   private evalCast(e: A.CastExpr, env: Env): Value {
@@ -697,6 +754,23 @@ export class Interpreter {
         return valueEq(lit, v);
       }
       case 'orPat': return pat.alts.some((a) => this.matchPattern(a, v, env));
+      case 'rangePat': {
+        // Ordered scalar (int/float/char) range membership test — inclusive
+        // (`..=`) includes the upper bound, exclusive (`..`) excludes it; an
+        // absent bound (`..=69` or `10..`) means unbounded on that side.
+        const x = rangeKey(v);
+        if (x === null) return false;
+        if (pat.lo) {
+          const lo = rangeKey(this.eval(pat.lo, env));
+          if (lo === null || x < lo) return false;
+        }
+        if (pat.hi) {
+          const hi = rangeKey(this.eval(pat.hi, env));
+          if (hi === null) return false;
+          if (pat.inclusive ? x > hi : x >= hi) return false;
+        }
+        return true;
+      }
       case 'tuplePat': {
         if (v.t !== 'tuple' || v.items.length !== pat.elems.length) return false;
         return pat.elems.every((p, i) => this.matchPattern(p, v.items[i], env));
@@ -732,4 +806,13 @@ export class Interpreter {
       }
     }
   }
+}
+
+// Maps int/float/char values to a common numeric ordering key for
+// range-pattern membership tests (`1..=9`, `..=69`, char ranges, ...).
+// Returns null for non-scalar values, which never match a range pattern.
+function rangeKey(v: Value): number | null {
+  if (v.t === 'int' || v.t === 'float') return v.v;
+  if (v.t === 'char') return v.v.charCodeAt(0);
+  return null;
 }

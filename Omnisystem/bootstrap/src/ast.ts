@@ -148,7 +148,8 @@ export type Pattern =
   | { kind: 'enumPat'; path: string[]; elems: Pattern[]; span: Span } // Some(x), Ok(v)
   | { kind: 'structPat'; path: string[]; fields: { name: string; pat: Pattern }[]; rest: boolean; span: Span }
   | { kind: 'refPat'; inner: Pattern; span: Span }
-  | { kind: 'orPat'; alts: Pattern[]; span: Span };
+  | { kind: 'orPat'; alts: Pattern[]; span: Span }
+  | { kind: 'rangePat'; lo: Expr | null; hi: Expr | null; inclusive: boolean; span: Span }; // 1..=9, 10..100, ..=69
 
 // ── Expressions ─────────────────────────────────────────────────────────────
 export type Expr =
@@ -178,13 +179,13 @@ export interface RangeExpr extends Node { kind: 'range'; from: Expr | null; to: 
 export interface IfExpr extends Node { kind: 'if'; cond: Expr; then: Block; else: Expr | Block | null; letPat: Pattern | null; }
 export interface MatchArm { pat: Pattern; guard: Expr | null; body: Expr; }
 export interface MatchExpr extends Node { kind: 'match'; scrut: Expr; arms: MatchArm[]; }
-export interface WhileExpr extends Node { kind: 'while'; cond: Expr; body: Block; letPat: Pattern | null; }
-export interface ForExpr extends Node { kind: 'for'; pat: Pattern; iter: Expr; body: Block; }
-export interface LoopExpr extends Node { kind: 'loop'; body: Block; }
+export interface WhileExpr extends Node { kind: 'while'; cond: Expr; body: Block; letPat: Pattern | null; label: string | null; }
+export interface ForExpr extends Node { kind: 'for'; pat: Pattern; iter: Expr; body: Block; label: string | null; }
+export interface LoopExpr extends Node { kind: 'loop'; body: Block; label: string | null; }
 export interface BlockExpr extends Node { kind: 'blockExpr'; block: Block; }
 export interface ReturnExpr extends Node { kind: 'return'; value: Expr | null; }
-export interface BreakExpr extends Node { kind: 'break'; value: Expr | null; }
-export interface ContinueExpr extends Node { kind: 'continue'; }
+export interface BreakExpr extends Node { kind: 'break'; value: Expr | null; label: string | null; }
+export interface ContinueExpr extends Node { kind: 'continue'; label: string | null; }
 export interface StructLitExpr extends Node { kind: 'structLit'; path: string[]; fields: { name: string; value: Expr }[]; spread: Expr | null; }
 export interface ArrayLit extends Node { kind: 'array'; elems: Expr[]; repeat: Expr | null; }
 export interface TupleExpr extends Node { kind: 'tuple'; elems: Expr[]; }

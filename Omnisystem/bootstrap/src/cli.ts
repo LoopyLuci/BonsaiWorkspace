@@ -127,7 +127,7 @@ function cmdBuild(file: string): number {
 }
 
 // Each test file may declare an expectation as a comment:
-//   //@ expect-stdout: <exact single line>
+//   //@ expect-stdout: <exact line>    (may repeat — one output line each)
 //   //@ expect-exit: <code>
 //   //@ expect-error            (compile/runtime error is the pass condition)
 function cmdTest(dir: string): number {
@@ -142,9 +142,12 @@ function cmdTest(dir: string): number {
   for (const file of files) {
     const src = readFileSync(file, 'utf8');
     const wantErr = /\/\/@\s*expect-error/.test(src);
-    const mOut = src.match(/\/\/@\s*expect-stdout:\s?(.*)/);
+    // A test may declare `//@ expect-stdout:` more than once — one directive
+    // per expected output line — so every match must be collected and joined,
+    // not just the first (a single `.match()` without /g only returns one).
+    const outLines = [...src.matchAll(/\/\/@\s*expect-stdout:\s?(.*)/g)].map((m) => m[1]);
     const mExit = src.match(/\/\/@\s*expect-exit:\s*(-?\d+)/);
-    const expectStdout = mOut ? mOut.slice(1).join('\n') : null;
+    const expectStdout = outLines.length > 0 ? outLines.join('\n') : null;
     const expectExit = mExit ? Number(mExit[1]) : null;
 
     let stdout = '', exit = 0, errored = false, errMsg = '';

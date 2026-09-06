@@ -561,6 +561,15 @@ export class Parser {
     return first;
   }
 
+  // Whether the current token can start the upper bound of a range pattern
+  // (a literal, or a leading `-` for a negative literal) — used to
+  // distinguish `10..100 => ...` (has an upper bound) from `10.. => ...`
+  // (open-ended, not exercised by the fixtures but handled for completeness).
+  private rangePatHasBound(): boolean {
+    const t = this.cur();
+    return t.kind === 'int' || t.kind === 'float' || t.kind === 'string' || t.kind === 'char' || t.kind === 'bool' || (t.kind === 'op' && t.value === '-');
+  }
+
   private parsePatternPrimary(): A.Pattern {
     const start = this.startPos();
     if (this.is('&')) { this.advance(); this.eat('mut'); return { kind: 'refPat', inner: this.parsePatternPrimary(), span: this.sp(start) }; }
@@ -575,10 +584,24 @@ export class Parser {
       this.expect(')');
       return { kind: 'tuplePat', elems, span: this.sp(start) };
     }
+    // open-low range pattern: `..=hi` / `..hi` (e.g. `..=69`)
+    if (this.is('..') || this.is('..=')) {
+      const inclusive = this.cur().value === '..=';
+      this.advance();
+      const hi = this.rangePatHasBound() ? this.parseUnary() : null;
+      return { kind: 'rangePat', lo: null, hi, inclusive, span: this.sp(start) };
+    }
     // literals in patterns
     const t = this.cur();
     if (t.kind === 'int' || t.kind === 'float' || t.kind === 'string' || t.kind === 'char' || t.kind === 'bool' || (t.kind === 'op' && t.value === '-')) {
       const value = this.parseUnary();
+      // range pattern: `lo..hi` (exclusive) / `lo..=hi` (inclusive)
+      if (this.is('..') || this.is('..=')) {
+        const inclusive = this.cur().value === '..=';
+        this.advance();
+        const hi = this.rangePatHasBound() ? this.parseUnary() : null;
+        return { kind: 'rangePat', lo: value, hi, inclusive, span: this.sp(start) };
+      }
       return { kind: 'litPat', value, span: this.sp(start) };
     }
     if (this.isKw('mut')) { this.advance(); const name = this.expectIdent(); return { kind: 'bindPat', name, mut: true, span: this.sp(start) }; }
@@ -772,13 +795,31 @@ export class Parser {
 
     if (this.isKw('if')) return this.parseIf();
     if (this.isKw('match')) return this.parseMatch();
-    if (this.isKw('while')) return this.parseWhile();
-    if (this.isKw('for')) return this.parseFor();
-    if (this.isKw('loop')) { this.advance(); const body = this.parseBlock(); return { kind: 'loop', body, span: this.sp(start) }; }
+    // labeled loop: `'outer: for ... / while ... / loop ...`
+    if (this.cur().kind === 'lifetime' && this.next().kind === 'op' && this.next().value === ':') {
+      const label = this.advance().value; // 'outer -> "outer"
+      this.expect(':');
+      if (this.isKw('while')) return this.parseWhile(label);
+      if (this.isKw('for')) return this.parseFor(label);
+      if (this.isKw('loop')) { this.advance(); const body = this.parseBlock(); return { kind: 'loop', body, label, span: this.sp(start) }; }
+      this.err(`loop label must be followed by 'while', 'for', or 'loop' but found '${this.cur().raw || this.cur().kind}'`, this.cur().span);
+    }
+    if (this.isKw('while')) return this.parseWhile(null);
+    if (this.isKw('for')) return this.parseFor(null);
+    if (this.isKw('loop')) { this.advance(); const body = this.parseBlock(); return { kind: 'loop', body, label: null, span: this.sp(start) }; }
     if (this.is('{')) { const block = this.parseBlock(); return { kind: 'blockExpr', block, span: this.sp(start) }; }
     if (this.isKw('return')) { this.advance(); const value = this.isExprStart() ? this.parseExpr() : null; return { kind: 'return', value, span: this.sp(start) }; }
-    if (this.isKw('break')) { this.advance(); const value = this.isExprStart() ? this.parseExpr() : null; return { kind: 'break', value, span: this.sp(start) }; }
-    if (this.isKw('continue')) { this.advance(); return { kind: 'continue', span: this.sp(start) }; }
+    if (this.isKw('break')) {
+      this.advance();
+      const label = this.cur().kind === 'lifetime' ? this.advance().value : null;
+      const value = this.isExprStart() ? this.parseExpr() : null;
+      return { kind: 'break', value, label, span: this.sp(start) };
+    }
+    if (this.isKw('continue')) {
+      this.advance();
+      const label = this.cur().kind === 'lifetime' ? this.advance().value : null;
+      return { kind: 'continue', label, span: this.sp(start) };
+    }
     if (this.isKw('move')) { this.advance(); return this.parseClosure(start); }
 
     // closure |args| body
@@ -958,7 +999,7 @@ export class Parser {
     return { kind: 'match', scrut, arms, span: this.sp(start) };
   }
 
-  private parseWhile(): A.Expr {
+  private parseWhile(label: string | null): A.Expr {
     const start = this.startPos();
     this.expect('while');
     let letPat: A.Pattern | null = null;
@@ -971,17 +1012,17 @@ export class Parser {
       cond = this.parseNoStruct(() => this.parseExpr());
     }
     const body = this.parseBlock();
-    return { kind: 'while', cond, body, letPat, span: this.sp(start) };
+    return { kind: 'while', cond, body, letPat, label, span: this.sp(start) };
   }
 
-  private parseFor(): A.Expr {
+  private parseFor(label: string | null): A.Expr {
     const start = this.startPos();
     this.expect('for');
     const pat = this.parsePattern();
     this.expect('in');
     const iter = this.parseNoStruct(() => this.parseExpr());
     const body = this.parseBlock();
-    return { kind: 'for', pat, iter, body, span: this.sp(start) };
+    return { kind: 'for', pat, iter, body, label, span: this.sp(start) };
   }
 }
 
