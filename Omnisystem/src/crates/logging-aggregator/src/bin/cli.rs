@@ -1,12 +1,18 @@
-//! CLI
+//! CLI for logging-aggregator.
+//!
+//! This crate is currently a thin scaffold: its only real logic is the
+//! init() bootstrap and the shared Metadata type. This CLI exercises both
+//! honestly rather than pretending a richer API exists.
 
-use logging_aggregator::Component;
+use logging_aggregator::Metadata;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+async fn main() -> logging_aggregator::Result<()> {
+    logging_aggregator::init().await?;
+    println!("logging-aggregator initialized");
+
+    let meta = Metadata::new();
+    println!("metadata id: {}, version: {}, created_at: {}", meta.id, meta.version, meta.created_at);
+
     Ok(())
 }

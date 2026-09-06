@@ -1,12 +1,24 @@
-//! CLI
+//! CLI for launcher — exercises the crate's real daemon lifecycle, health
+//! check and event bus, instead of the dead generic Component template.
 
-use launcher::Component;
+use launcher::{EventBus, HealthMonitor, LauncherDaemon, LauncherEvent};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+async fn main() -> anyhow::Result<()> {
+    let mut daemon = LauncherDaemon::new();
+    println!("daemon running: {}", daemon.is_running());
+    daemon.start().await?;
+    println!("daemon running: {}", daemon.is_running());
+
+    let status = HealthMonitor::check().await?;
+    println!("health status: {status:?}");
+
+    let bus = EventBus::new();
+    bus.publish(LauncherEvent::AppStarted("launcher_cli".to_string())).await?;
+    println!("published LauncherEvent::AppStarted");
+
+    daemon.stop().await?;
+    println!("daemon running: {}", daemon.is_running());
+
     Ok(())
 }

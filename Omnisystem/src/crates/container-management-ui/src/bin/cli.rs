@@ -1,12 +1,17 @@
-//! CLI
+//! CLI for container-management-ui — exercises the crate's real UI widget API.
 
-use container_management_ui::Component;
+use container_management_ui::UI;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+fn main() -> container_management_ui::Result<()> {
+    let mut ui = UI::new();
+    println!("initial render: {}", ui.render());
+
+    let content = std::env::args().nth(1).unwrap_or_else(|| "hello from the CLI".to_string());
+    ui.update(content)?;
+    println!("after update:   {}", ui.render());
+
+    ui.toggle();
+    println!("after toggle:   {:?}", ui.render());
+
     Ok(())
 }

@@ -1,12 +1,18 @@
-//! CLI
+//! CLI for notification-dispatcher.
+//!
+//! This crate is currently a thin scaffold: its only real logic is the
+//! init() bootstrap and the shared Metadata type. This CLI exercises both
+//! honestly rather than pretending a richer API exists.
 
-use notification_dispatcher::Component;
+use notification_dispatcher::Metadata;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let c = Component::new();
-    println!("Component ready");
-    c.execute("test").await?;
-    println!("Status: {}", c.status());
+async fn main() -> notification_dispatcher::Result<()> {
+    notification_dispatcher::init().await?;
+    println!("notification-dispatcher initialized");
+
+    let meta = Metadata::new();
+    println!("metadata id: {}, version: {}, created_at: {}", meta.id, meta.version, meta.created_at);
+
     Ok(())
 }
