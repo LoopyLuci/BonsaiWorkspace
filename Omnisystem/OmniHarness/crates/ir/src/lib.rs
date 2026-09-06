@@ -11,6 +11,7 @@ pub mod effects;
 pub mod error;
 pub mod ops;
 pub mod parser;
+pub mod titan_lower;
 pub mod types;
 
 pub use codegen::{Codegen, CodegenError, RustCodegen};
@@ -20,6 +21,7 @@ pub use error::{Error, Result};
 pub use ir_repr::Ir;
 pub use ops::{IrFunction, IrModule, IrOp, IrType};
 pub use parser::{parse, parse_expr, ParseError};
+pub use titan_lower::{lower_source as lower_titan, LowerError as TitanLowerError};
 pub use types::State;
 
 /// Parses Sylva-subset source and lowers it to Rust, caching generated
@@ -42,6 +44,24 @@ impl IrCompiler {
         }
 
         let module = parse(src, module_name)?;
+        let rust_src = RustCodegen::new().emit_module(&module)?;
+
+        self.cache.set(key, rust_src.clone());
+        Ok(rust_src)
+    }
+
+    /// Parse Titan source (the `titan`/`bootstrap-rs` surface language) and
+    /// lower it directly to Rust source, through the same `IrModule` and
+    /// `RustCodegen` the Sylva-subset path uses. Covers only the subset
+    /// documented in `titan_lower` — see that module before assuming a
+    /// Titan feature is handled.
+    pub fn compile_titan_to_rust(&self, src: &str, file: &str, module_name: &str) -> Result<String> {
+        let key = format!("titan\0{module_name}\0{src}");
+        if let Some(cached) = self.cache.get(&key) {
+            return Ok(cached);
+        }
+
+        let module = titan_lower::lower_source(src, file, module_name)?;
         let rust_src = RustCodegen::new().emit_module(&module)?;
 
         self.cache.set(key, rust_src.clone());

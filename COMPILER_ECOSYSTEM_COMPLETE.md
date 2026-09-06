@@ -7,6 +7,61 @@
 
 ---
 
+## ⚠️ CORRECTION — added 2026-09-05, do not delete
+
+An audit on 2026-09-05 found that this document's claims below —
+**"Machine code generation (x86-64 & ARM64)"**, **"ELF64 binary emission"**,
+**"PE32+ binary emission"**, and the "OmniCC unified compiler driver" as
+described — **do not correspond to anything that exists or runs.** The
+`Omnisystem/bin/omnicc.js` file this document describes is a regex-based
+text-substitution script, not a compiler, and produces no ELF/PE/Mach-O
+output of any kind. Nothing in this repository emits machine code. Treat
+every claim in this file about binary/machine-code generation as fiction
+until a future correction says otherwise.
+
+What is **real**, as of 2026-09-05 (see commit history around this date):
+
+- A genuine typed intermediate representation, **UniIR**
+  (`Omnisystem/OmniHarness/crates/ir`), with a real recursive-descent parser
+  for a Sylva-subset surface syntax (`src/parser.rs`) and a real Rust code
+  generator (`src/codegen.rs`) — `IrModule` → real, compilable Rust source
+  text (not machine code; a `.rs` file that `rustc`/`cargo` then compiles).
+  18 passing unit tests (`cargo test -p ir`).
+- A new, real lowering pass, `src/titan_lower.rs`, from **actual Titan
+  source** (parsed by the real `titan`/`bootstrap-rs` parser, not
+  re-implemented) into the same `IrModule`, covering a real but partial
+  subset: top-level functions, `let`/expression-statement blocks, integer /
+  float / string / bool literals, arithmetic/comparison/logical/bitwise
+  binary ops, unary neg/not, `if/else`, `return`, calls between functions,
+  and the `println!`/`print!`/`eprintln!`/`format!` macros. Explicitly
+  **not** covered: structs, enums, `impl`/methods/`self`, traits, `match`,
+  `loop`/`while`/`for`, closures, arrays/tuples, and more — see the doc
+  comment at the top of `titan_lower.rs` for the full, honest list.
+- A real CLI, `omnicc` (`Omnisystem/OmniHarness/crates/ir/src/bin/omnicc.rs`,
+  a new `[[bin]]` target of the `ir` crate — unrelated to the old
+  `Omnisystem/bin/omnicc.js`), with real subcommands:
+  `omnicc compile --from sylva --to rust <file>` and
+  `omnicc compile --from titan --to rust <file>`.
+- **Real, executed proof, not just "it compiles":** `Omnisystem/bootstrap/tests/01_hello.titan`
+  and `02_fib.titan` (two of Titan's own 16 interpreter-tested fixtures) were
+  run through `omnicc compile --from titan --to rust`, the generated Rust was
+  compiled with real `rustc`, and the real executable's stdout was diffed
+  against each fixture's own `//@ expect-stdout:` line (the same ground
+  truth Titan's own interpreter test suite checks against):
+  - `01_hello.titan` → generated Rust → compiled → ran → printed
+    `Hello, Omnisystem!` (exact match).
+  - `02_fib.titan` → generated Rust → compiled → ran → printed
+    `fib(10) = 55` (exact match).
+  The pre-existing Sylva-subset path was re-verified the same way with two
+  hand-written Sylva-subset inputs (`add`, `fib`), confirming it was not
+  broken by this change.
+
+This is a real, working v1 covering **two languages' basic subset through
+one shared IR** — a genuine first step, not a finished universal compiler
+for all 7 Omni-Languages, and not machine-code generation of any kind.
+
+---
+
 ## Executive Summary
 
 The Omnisystem 7-language compiler ecosystem has been **fully implemented** across all 9 phases. The system now supports:

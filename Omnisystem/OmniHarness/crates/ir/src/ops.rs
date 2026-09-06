@@ -232,6 +232,15 @@ pub enum IrOp {
         op: ArrayOpKind,
         args: Vec<IrOp>,
     },
+
+    // ── Formatting macros (added for the Titan lowering pass) ────────────────
+    /// A source-language formatting macro (`println!`, `print!`, `eprintln!`,
+    /// `format!`) carried through to Rust as the equivalent real macro call.
+    /// `args[0]` is conventionally the format-string literal.
+    Macro {
+        name: String,
+        args: Vec<IrOp>,
+    },
 }
 
 /// DataFrame operations (mirrors Polars lazy API).

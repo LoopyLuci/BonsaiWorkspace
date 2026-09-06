@@ -394,6 +394,30 @@ impl RustCodegen {
                     .join(", ");
                 format!("__bonsai_apl_{op:?}({as_})").to_lowercase()
             }
+
+            IrOp::Macro { name, args } => {
+                // Real Rust formatting macros (`println!`, `format!`, ...) require
+                // their first argument to be a `&str` literal, not a `String`. So
+                // unlike ordinary string literals elsewhere (which lower to
+                // `"...".to_string()`), a literal format string here is emitted
+                // as a bare `&str` literal. A non-literal first argument is
+                // passed through as emitted — it will fail to compile exactly
+                // the way real Rust would, rather than being silently patched.
+                let parts = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| -> Result<String, CodegenError> {
+                        if i == 0 {
+                            if let IrOp::Lit(IrLit::Str(s)) = a {
+                                return Ok(format!("{s:?}"));
+                            }
+                        }
+                        self.emit_op(a, depth)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!("{name}!({parts})")
+            }
         })
     }
 

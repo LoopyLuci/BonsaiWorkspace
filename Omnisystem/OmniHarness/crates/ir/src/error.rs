@@ -2,6 +2,7 @@
 
 use crate::codegen::CodegenError;
 use crate::parser::ParseError;
+use crate::titan_lower::LowerError as TitanLowerError;
 
 #[derive(Debug, Clone)]
 pub enum Error {
@@ -34,6 +35,12 @@ impl From<ParseError> for Error {
 impl From<CodegenError> for Error {
     fn from(e: CodegenError) -> Self {
         Error::Codegen(e.to_string())
+    }
+}
+
+impl From<TitanLowerError> for Error {
+    fn from(e: TitanLowerError) -> Self {
+        Error::Parse(e.to_string())
     }
 }
 

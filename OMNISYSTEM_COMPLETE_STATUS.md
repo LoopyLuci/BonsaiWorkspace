@@ -8,6 +8,34 @@
 
 ---
 
+## ⚠️ CORRECTION — added 2026-09-05, do not delete
+
+An audit on 2026-09-05 found that this document's claims about **encoding
+machine code for x86-64/ARM64** and **emitting ELF64/PE32+/Mach-O
+binaries** (below) **do not correspond to anything that exists or runs** in
+this repository. `Omnisystem/bin/omnicc.js`, the tool these claims are
+attributed to, is a regex-based text-substitution script — it produces no
+binary output of any format. Nothing in this codebase generates machine
+code. Treat those specific claims as fiction until a future correction
+says otherwise; the rest of this document's phase claims were not
+re-audited as part of this correction and are not vouched for either way.
+
+What is **real** as of 2026-09-05: a genuine two-language front end feeding
+one shared typed IR (UniIR, `Omnisystem/OmniHarness/crates/ir`) to a real
+Rust code generator — real Titan source and a Sylva-subset surface syntax
+both lower to `IrModule` and compile to real, `rustc`-verified Rust. This
+covers a real but deliberately partial subset of each language (documented
+in `Omnisystem/OmniHarness/crates/ir/src/titan_lower.rs`), proven by
+actually compiling and running the generated Rust for two of Titan's own
+test fixtures (`01_hello.titan`, `02_fib.titan`) and matching their real
+stdout against the fixtures' own `//@ expect-stdout:` expectations. Full
+detail and the exact proof commands are in the correction section added the
+same day to `COMPILER_ECOSYSTEM_COMPLETE.md`. This is a real v1 first step
+for 2 languages' basic subset — not machine-code generation, and not a
+finished compiler for all 7 Omni-Languages.
+
+---
+
 ## Executive Summary
 
 The Omnisystem project is **100% COMPLETE** across all dimensions:
